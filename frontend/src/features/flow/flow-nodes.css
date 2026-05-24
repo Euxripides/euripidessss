@@ -1,0 +1,134 @@
+.flow-node {
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+  text-align: center;
+  overflow: visible;
+  pointer-events: none !important;
+}
+.flow-node .react-flow__handle,
+.flow-handle {
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
+  pointer-events: none !important;
+}
+.flow-node .dynamic-anchor {
+  pointer-events: none;
+}
+.flow-node strong,
+.flow-node span {
+  display: block;
+}
+.flow-node span {
+  color: inherit;
+}
+.flow-node.source {
+  color: #7c4a03;
+}
+.flow-node.target {
+  color: #334155;
+}
+.flow-node.self {
+  color: #166534;
+}
+.flow-node.manual {
+  color: #6d28d9;
+}
+.flow-node.path-focus {
+  filter: drop-shadow(0 0 8px rgba(220, 38, 38, 0.35));
+}
+.flow-entity {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  width: 220px;
+  min-width: 220px;
+  pointer-events: none;
+}
+.entity-icon {
+  display: grid !important;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: 0 auto;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #ffffff, #f1f5f9);
+  color: currentColor;
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.14);
+  font-size: 18px;
+  pointer-events: auto !important;
+}
+.entity-person .entity-icon {
+  border-color: #bfdbfe;
+  background: linear-gradient(180deg, #eff6ff, #dbeafe);
+  color: #1d4ed8;
+}
+.entity-group .entity-icon {
+  border-color: #bbf7d0;
+  background: linear-gradient(180deg, #f0fdf4, #dcfce7);
+  color: #15803d;
+}
+.entity-account .entity-icon {
+  border-color: #fde68a;
+  background: linear-gradient(180deg, #fffbeb, #fef3c7);
+  color: #92400e;
+}
+.entity-company .entity-icon {
+  border-color: #fecaca;
+  background: linear-gradient(180deg, #fff1f2, #ffe4e6);
+  color: #be123c;
+}
+.entity-merchant .entity-icon {
+  border-color: #ddd6fe;
+  background: linear-gradient(180deg, #f5f3ff, #ede9fe);
+  color: #6d28d9;
+}
+.entity-unknown .entity-icon {
+  border-color: #cbd5e1;
+  background: linear-gradient(180deg, #ffffff, #f1f5f9);
+  color: #475569;
+}
+.flow-entity strong {
+  width: fit-content;
+  max-width: 220px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  pointer-events: auto !important;
+}
+.flow-route {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #263244;
+  font-size: 12px;
+}
+.flow-route span {
+  color: #3b5bdb;
+  font-weight: 800;
+}
+.path-result {
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid #e3e9f2;
+  border-radius: 8px;
+  background: #f9fbfd;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}

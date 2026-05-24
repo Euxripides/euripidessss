@@ -1,0 +1,25 @@
+.clean-preview {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid #e3e9f2;
+}
+.preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.preview-head h3 {
+  margin: 0;
+  color: #172033;
+  font-size: 16px;
+}
+.preview-head p {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+.clean-preview .ant-table-cell {
+  max-width: 240px;
+}

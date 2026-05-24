@@ -1,0 +1,480 @@
+.graph-panel {
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+.graph-toolbar span {
+  color: #64748b;
+}
+.flow-canvas {
+  position: relative;
+  height: calc(100vh - 150px);
+  min-height: 660px;
+  background: #fbfcfe;
+}
+.graph-layer-floating {
+  position: absolute;
+  top: 64px;
+  left: 14px;
+  z-index: 18;
+  width: min(170px, calc(100% - 28px));
+  padding: 8px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.14);
+}
+.graph-layer-floating.collapsed {
+  width: 24px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.flow-minimap {
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.flow-minimap svg,
+.flow-minimap .react-flow__minimap,
+.flow-minimap .react-flow__minimap-svg {
+  background: transparent !important;
+}
+.flow-minimap .react-flow__minimap-mask {
+  fill: transparent !important;
+}
+.flow-minimap .react-flow__minimap-node {
+  rx: 2;
+  ry: 2;
+}
+.minimap-toggle {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 11;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #475569;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+}
+.minimap-toggle.collapsed {
+  right: 12px;
+  bottom: 12px;
+}
+.graph-layer-floating-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.graph-layer-floating-head strong {
+  flex: 1 1 auto;
+}
+.graph-layer-floating-head strong {
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 700;
+}
+.graph-layer-toggle {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 42px;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 0 8px 8px 0;
+  background: rgba(255, 255, 255, 0.96);
+  color: #64748b;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.14);
+}
+.graph-layer-floating:not(.collapsed) .graph-layer-toggle svg {
+  transform: rotate(180deg);
+}
+.graph-layer-floating-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.graph-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.graph-layer-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #d7dfeb;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  cursor: pointer;
+}
+.graph-layer-chip.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+.graph-layer-chip span {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+.graph-layer-chip em {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-layer-floating p {
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.edge-floating-panel {
+  position: absolute;
+  top: 72px;
+  right: 16px;
+  z-index: 20;
+  width: min(340px, calc(100% - 32px));
+  padding: 14px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+}
+.edge-floating-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: #172033;
+}
+.edge-summary {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid #e3e9f2;
+  border-radius: 6px;
+  background: #fbfcfe;
+  color: #334155;
+  font-size: 12px;
+}
+.edge-detail-modal-shell .ant-modal-content {
+  display: flex;
+  flex-direction: column;
+  height: 88vh;
+  padding: 0;
+  overflow: hidden;
+}
+.edge-detail-modal-shell .ant-modal-header {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid #d9d9d9;
+}
+.edge-detail-modal-shell .ant-modal-close {
+  top: 10px;
+}
+.edge-detail-modal-shell .ant-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.edge-detail-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+  min-width: 0;
+}
+.edge-detail-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #d9d9d9;
+  background: #f3f6fb;
+}
+.edge-detail-toolbar strong,
+.edge-detail-toolbar span {
+  display: block;
+}
+.edge-detail-toolbar strong {
+  max-width: 720px;
+  overflow: hidden;
+  color: #172033;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.edge-detail-toolbar span {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+.edge-detail-search {
+  width: min(360px, 40vw);
+}
+.edge-detail-modal .ant-table-wrapper {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.edge-detail-modal .ant-spin-nested-loading,
+.edge-detail-modal .ant-spin-container {
+  height: 100%;
+  min-height: 0;
+}
+.edge-detail-modal .ant-table {
+  border-radius: 0;
+  font-size: 12px;
+}
+.edge-detail-modal .ant-table-container {
+  border-inline-start: 1px solid #d9d9d9 !important;
+  border-top: 1px solid #d9d9d9 !important;
+}
+.edge-detail-modal .ant-table-thead > tr > th {
+  height: 28px;
+  padding: 3px 6px !important;
+  border-color: #d9d9d9 !important;
+  background: #f3f3f3 !important;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.edge-detail-modal .ant-table-tbody > tr > td {
+  height: 26px;
+  padding: 2px 6px !important;
+  border-color: #e0e0e0 !important;
+  background: #ffffff;
+  color: #111827;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.edge-detail-modal .ant-table-tbody > tr:hover > td {
+  background: #eaf3ff !important;
+}
+.edge-detail-modal .ant-table-cell-fix-left,
+.edge-detail-modal .ant-table-cell-fix-right {
+  background: inherit;
+}
+.edge-detail-modal .ant-table-pagination {
+  flex: 0 0 auto;
+  margin: 8px 12px !important;
+}
+.excel-cell-text {
+  display: block;
+  min-height: 20px;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+.graph-empty {
+  display: grid;
+  place-items: center;
+  min-height: 560px;
+  padding: 48px 24px;
+  background: #fbfcfe;
+  text-align: center;
+}
+.graph-empty h2 {
+  margin: 0;
+  color: #172033;
+  font-size: 22px;
+}
+.graph-empty p {
+  max-width: 560px;
+  margin: 12px 0 24px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.graph-layer-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #e3e9f2;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+.graph-layer-list strong {
+  margin-right: 2px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 500;
+}
+.graph-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 370px;
+  min-height: 560px;
+}
+.graph-main {
+  min-width: 0;
+  min-height: 560px;
+}
+.graph-toolbar-collapse {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: min(760px, calc(100% - 280px));
+  min-width: 46px;
+  z-index: 15;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 30px rgba(37, 61, 92, 0.14);
+  backdrop-filter: blur(10px);
+}
+.graph-toolbar-collapse.toolbar-collapsed {
+  width: 46px;
+  overflow: hidden;
+  border-radius: 8px;
+}
+.graph-toolbar-collapse.toolbar-collapsed .ant-collapse-header {
+  width: 46px;
+  height: 42px;
+  padding: 10px 14px !important;
+}
+.graph-toolbar-collapse.toolbar-collapsed .ant-collapse-header-text {
+  display: none;
+}
+.graph-toolbar-collapse .ant-collapse-item {
+  border-bottom: 0;
+}
+.graph-toolbar-collapse .ant-collapse-header {
+  align-items: center !important;
+  padding: 10px 14px !important;
+  color: #172033 !important;
+  font-weight: 700;
+}
+.graph-toolbar-collapse .ant-collapse-header-text {
+  min-width: 0;
+}
+.graph-toolbar-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.graph-toolbar-title > span {
+  order: -1;
+  flex: 1 1 auto;
+  color: #172033;
+  font-weight: 700;
+}
+.graph-toolbar-collapse .ant-collapse-content-box {
+  padding: 0 14px 12px !important;
+}
+.graph-canvas-actions {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 16;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 30px rgba(37, 61, 92, 0.14);
+  backdrop-filter: blur(10px);
+}
+.graph-toolbar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 8px;
+  align-items: center;
+}
+.graph-toolbar .ant-btn,
+.graph-toolbar .ant-select,
+.graph-toolbar .ant-input-number,
+.graph-toolbar .ant-color-picker-trigger {
+  width: 100%;
+}
+.react-flow__edge-path {
+  filter: none;
+  transition:
+    stroke-width 120ms ease,
+    filter 120ms ease,
+    opacity 120ms ease;
+}
+.react-flow__edge:hover .react-flow__edge-path,
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 4px !important;
+  filter: drop-shadow(0 0 3px rgba(37, 99, 235, 0.38));
+}
+.react-flow__edge:hover .react-flow__edge-path {
+  animation: edge-hover-pulse 900ms ease-in-out infinite;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  animation: edge-selected-pulse 1.15s ease-in-out infinite;
+}
+.react-flow__edge-interaction {
+  cursor: pointer;
+  stroke-width: 36px !important;
+  pointer-events: stroke;
+  opacity: 0;
+}
+.react-flow__edge[data-type="directional"] .react-flow__edge-interaction {
+  stroke-width: 18px !important;
+}
+.directional-edge-hit {
+  cursor: pointer;
+}
+.react-flow__edge-textbg {
+  stroke: transparent;
+  stroke-width: 0;
+}
+.react-flow__edge-text {
+  fill: #111827;
+  font-size: 11px;
+  font-weight: 500;
+}
+.directional-edge-label {
+  position: absolute;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #111827;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.16);
+}

@@ -1,0 +1,106 @@
+{
+  "providers": {
+    "alipay": [],
+    "bank": [
+      {
+        "columns": [
+          "a",
+          "b"
+        ],
+        "signature": "test123"
+      }
+    ],
+    "wechat": []
+  },
+  "flow_mapping_rules": [
+    {
+      "mapping": {
+        "amount_column": "交易金额（元）",
+        "direction_column": "进出标志",
+        "source_account_column": "主体卡号",
+        "source_column": "主体户名",
+        "source_id_column": "主体证件号",
+        "source_name_column": "主体户名",
+        "target_card_column": "交易对手帐卡号",
+        "target_column": "对手户名",
+        "target_id_column": "对手证件号",
+        "target_name_column": "对手户名",
+        "time_column": "交易时间"
+      },
+      "signature": "b62dcee368ce4865471903d6ab590b6dc9bd2f99",
+      "source_columns": [
+        "数据来源文件",
+        "主体户名",
+        "主体卡号",
+        "主体证件号",
+        "开户行",
+        "交易金额（元）",
+        "交易时间",
+        "交易余额（元）",
+        "进出标志",
+        "交易对手帐卡号",
+        "对手户名",
+        "对手证件号",
+        "对手开户行",
+        "摘要",
+        "备注",
+        "交易发生地"
+      ],
+      "updated_at": "2026-05-21 17:30:35"
+    },
+    {
+      "mapping": {
+        "amount_column": "交易金额（元）",
+        "direction_column": "进出标志",
+        "source_account_column": "主体卡号",
+        "source_column": "主体户名",
+        "source_id_column": "主体证件号",
+        "source_name_column": "主体户名",
+        "target_card_column": "交易对手帐卡号",
+        "target_column": "对手户名",
+        "target_id_column": "对手证件号",
+        "target_name_column": "对手户名",
+        "time_column": "交易时间"
+      },
+      "signature": "844b371bacf44d9dd77a4d1fb99388010252464d",
+      "source_columns": [
+        "主体户名",
+        "主体卡号",
+        "主体证件号",
+        "开户行",
+        "交易金额（元）",
+        "交易时间",
+        "交易余额（元）",
+        "进出标志",
+        "交易对手帐卡号",
+        "对手户名",
+        "对手证件号",
+        "对手开户行",
+        "摘要",
+        "备注",
+        "交易发生地"
+      ],
+      "updated_at": "2026-05-24 12:00:00"
+    },
+    {
+      "mapping": {
+        "amount_column": "列C",
+        "source_column": "列A",
+        "target_column": "列B"
+      },
+      "signature": "852d7a2abe1c2e6816969dc3bcb92126b7438a2a",
+      "source_columns": [
+        "列A",
+        "列B",
+        "列C"
+      ],
+      "updated_at": "2026-05-24 14:55:54"
+    }
+  ],
+  "direction_aliases": {
+    "出": "出",
+    "支出": "出",
+    "收入": "进",
+    "进": "进"
+  }
+}

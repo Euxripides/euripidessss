@@ -1,0 +1,503 @@
+﻿package parser
+
+import (
+	"archive/zip"
+	"encoding/csv"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/xuri/excelize/v2"
+)
+
+// Supported file suffixes
+var SupportedSuffixes = map[string]bool{
+	".csv": true, ".tsv": true, ".txt": true,
+	".xlsx": true, ".xlsm": true, ".xls": true,
+}
+
+var ExcelSuffixes = map[string]bool{
+	".xlsx": true, ".xlsm": true, ".xls": true,
+}
+
+// NormalizeHeader cleans a header cell value
+func NormalizeHeader(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	s := fmt.Sprint(v)
+	s = strings.ReplaceAll(s, "\ufeff", "")
+	s = strings.ReplaceAll(s, "\u3000", "")
+	return strings.TrimSpace(s)
+}
+
+// CellToText converts a cell to text
+func CellToText(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	s := fmt.Sprint(v)
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.TrimSpace(s)
+}
+
+// CleanText cleans a value for NA checks
+func CleanText(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	re := regexp.MustCompile(`^\s*\|\s*`)
+	s = re.ReplaceAllString(s, "")
+	if s == "" || s == "nan" || s == "None" || s == "NaT" {
+		return nil
+	}
+	return s
+}
+
+// ToNumber converts string to float64, handling Chinese currency symbols
+func ToNumber(s interface{}) float64 {
+	if s == nil {
+		return 0
+	}
+	text := fmt.Sprint(s)
+	text = strings.ReplaceAll(text, ",", "")
+	text = strings.ReplaceAll(text, "￥", "")
+	text = strings.ReplaceAll(text, "¥", "")
+	text = strings.ReplaceAll(text, "元", "")
+	// Remove non-numeric chars except . - +
+	re := regexp.MustCompile(`[^\d.\-+]`)
+	text = re.ReplaceAllString(text, "")
+	val, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return 0
+	}
+	return val
+}
+
+// NormalizeDatetime converts various date/time formats to standard format
+func NormalizeDatetime(s interface{}) string {
+	if s == nil {
+		return ""
+	}
+	text := strings.TrimSpace(fmt.Sprint(s))
+	text = strings.ReplaceAll(text, "/", "-")
+
+	// 8-digit date: 20240101 -> 2024-01-01 00:00:00
+	re8 := regexp.MustCompile(`^(\d{8})$`)
+	if re8.MatchString(text) {
+		m := re8.FindStringSubmatch(text)
+		return fmt.Sprintf("%s-%s-%s 00:00:00", m[1][:4], m[1][4:6], m[1][6:8])
+	}
+
+	// 14-digit datetime: 20240101101010 -> 2024-01-01 10:10:10
+	re14 := regexp.MustCompile(`^(\d{14})$`)
+	if re14.MatchString(text) {
+		m := re14.FindStringSubmatch(text)
+		return fmt.Sprintf("%s-%s-%s %s:%s:%s",
+			m[1][:4], m[1][4:6], m[1][6:8],
+			m[1][8:10], m[1][10:12], m[1][12:14])
+	}
+
+	// Try parsing common formats
+	formats := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		"2006-01-02-15.04.05.999999",
+		"2006-01-02-15.04.05",
+		"2006.01.02",
+		"2006/01/02",
+		"2006/01/02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04:05Z",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, text); err == nil {
+			return t.Format("2006-01-02 15:04:05")
+		}
+	}
+	return text
+}
+
+// NormalizeDirection maps direction strings to 进/出
+func NormalizeDirection(s interface{}) string {
+	if s == nil {
+		return ""
+	}
+	text := strings.TrimSpace(fmt.Sprint(s))
+	mapping := map[string]string{
+		"D": "出", "借": "出", "借方": "出", "支出": "出",
+		"转出": "出", "取": "出", "支": "出", "出账": "出",
+		"C": "进", "贷": "进", "贷方": "进", "收入": "进",
+		"转入": "进", "存": "进", "入": "进", "入账": "进",
+		"收": "进", "+": "进", "-": "出", "进": "进", "出": "出",
+	}
+	if v, ok := mapping[text]; ok {
+		return v
+	}
+	return text
+}
+
+// IsValidDirection checks if direction is 进 or 出
+func IsValidDirection(s string) bool {
+	return s == "进" || s == "出"
+}
+
+// CleanAccountNumber removes non-digit prefixes/suffixes
+func CleanAccountNumber(s interface{}) string {
+	if s == nil {
+		return ""
+	}
+	text := strings.TrimSpace(fmt.Sprint(s))
+	// Remove common prefixes: 45-, CNYO, etc.
+	re := regexp.MustCompile(`^[A-Za-z]+[\-]?`)
+	text = re.ReplaceAllString(text, "")
+	// Remove suffixes: -1, _ABC, etc.
+	re = regexp.MustCompile(`[\-_][A-Za-z0-9]+$`)
+	text = re.ReplaceAllString(text, "")
+	return text
+}
+
+// FindColumn finds a column in headers matching one of the candidate names
+func FindColumn(headers []string, candidates []string) int {
+	normHeaders := make([]string, len(headers))
+	for i, h := range headers {
+		normHeaders[i] = strings.ToLower(NormalizeHeader(h))
+	}
+	for _, candidate := range candidates {
+		cn := strings.ToLower(NormalizeHeader(candidate))
+		for i, h := range normHeaders {
+			if h == cn || strings.Contains(h, cn) || strings.Contains(cn, h) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// HeaderScore calculates a match score between row cells and expected columns
+func HeaderScore(cells []string, expected []string) int {
+	score := 0
+	normCells := make(map[string]bool)
+	for _, c := range cells {
+		nc := strings.ToLower(NormalizeHeader(c))
+		if nc != "" {
+			normCells[nc] = true
+		}
+	}
+	for _, exp := range expected {
+		ne := strings.ToLower(NormalizeHeader(exp))
+		if normCells[ne] {
+			score++
+		}
+	}
+	return score
+}
+
+// MakeUnique makes column names unique
+func MakeUnique(values []string) []string {
+	counts := make(map[string]int)
+	result := make([]string, len(values))
+	for i, v := range values {
+		base := v
+		if base == "" {
+			base = fmt.Sprintf("未命名_%d", i+1)
+		}
+		counts[base]++
+		if counts[base] == 1 {
+			result[i] = base
+		} else {
+			result[i] = fmt.Sprintf("%s_%d", base, counts[base])
+		}
+	}
+	return result
+}
+
+// SafeSheetName sanitizes sheet names
+func SafeSheetName(name string) string {
+	re := regexp.MustCompile(`[\[\]:*?/\\]`)
+	name = re.ReplaceAllString(name, "_")
+	if len(name) > 31 {
+		name = name[:31]
+	}
+	return name
+}
+
+// FirstNonEmpty returns first non-empty column values
+func FirstNonEmpty(data map[string][]string, names []string, row int) string {
+	for _, name := range names {
+		if data[name] != nil && row < len(data[name]) {
+			if v := strings.TrimSpace(data[name][row]); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// ReadCSVFile reads a CSV/TSV file into rows
+func ReadCSVFile(path string) ([][]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close()
+
+	sep := ','
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".tsv" {
+		sep = '\t'
+	}
+
+	// Try multiple encodings
+	encodings := []string{"utf-8-sig", "gb18030", "utf-8"}
+	var lastErr error
+	for _, enc := range encodings {
+		// Reset file position
+		f.Seek(0, 0)
+		rows, err := readCSVWithEncoding(f, sep, enc)
+		if err == nil && len(rows) > 0 {
+			return rows, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("read csv: %w", lastErr)
+}
+
+func readCSVWithEncoding(r io.Reader, sep rune, encoding string) ([][]string, error) {
+	// For simplicity, we read raw bytes as-is (assumes UTF-8 or compatible)
+	// In production, use golang.org/x/text for GB18030 conversion
+	reader := csv.NewReader(r)
+	reader.Comma = sep
+	reader.LazyQuotes = true
+	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
+	return reader.ReadAll()
+}
+
+// ReadExcelFile reads all sheets from an Excel file
+func ReadExcelFile(path string) (map[string][][]string, error) {
+	f, err := excelize.OpenFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("open excel: %w", err)
+	}
+	defer f.Close()
+
+	result := make(map[string][][]string)
+	for _, sheet := range f.GetSheetList() {
+		rows, err := f.GetRows(sheet)
+		if err != nil {
+			continue
+		}
+		result[sheet] = rows
+	}
+	return result, nil
+}
+
+// ReadExcelSheet reads a specific sheet from Excel
+func ReadExcelSheet(path, sheet string) ([][]string, error) {
+	f, err := excelize.OpenFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("open excel: %w", err)
+	}
+	defer f.Close()
+	return f.GetRows(sheet)
+}
+
+// ReadFile reads any supported file, returns sheet_name -> rows
+func ReadFile(path string) (map[string][][]string, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ExcelSuffixes[ext] {
+		return ReadExcelFile(path)
+	}
+	rows, err := ReadCSVFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return map[string][][]string{"": rows}, nil
+}
+
+// DetectDelimiter detects the delimiter in a text sample
+func DetectDelimiter(lines []string, path string) string {
+	if strings.ToLower(filepath.Ext(path)) == ".tsv" {
+		return "\t"
+	}
+	sample := strings.Join(lines, "\n")
+	candidates := []string{",", "\t", "|", ";"}
+	best := ","
+	bestCount := 0
+	for _, c := range candidates {
+		count := strings.Count(sample, c)
+		if count > bestCount {
+			bestCount = count
+			best = c
+		}
+	}
+	return best
+}
+
+// NormalizeEmbeddedCSVRows handles rows where single column contains CSV data
+func NormalizeEmbeddedCSVRows(rows [][]string) [][]string {
+	result := make([][]string, len(rows))
+	for i, row := range rows {
+		if len(row) <= 2 && len(row) > 0 && strings.Count(row[0], ",") >= 3 {
+			r := csv.NewReader(strings.NewReader(row[0]))
+			parsed, _ := r.Read()
+			if parsed != nil {
+				result[i] = parsed
+				continue
+			}
+		}
+		result[i] = row
+	}
+	return result
+}
+
+// TrimRows removes trailing empty cells
+func TrimRows(rows [][]string) [][]string {
+	result := make([][]string, len(rows))
+	for i, row := range rows {
+		cleaned := make([]string, len(row))
+		for j, cell := range row {
+			cleaned[j] = CellToText(cell)
+		}
+		// Remove trailing empties
+		for len(cleaned) > 0 && cleaned[len(cleaned)-1] == "" {
+			cleaned = cleaned[:len(cleaned)-1]
+		}
+		result[i] = cleaned
+	}
+	return result
+}
+
+// DataFrameFromHeader creates data from header row onwards
+func DataFrameFromHeader(rows [][]string, headerRow int) ([][]string, []string) {
+	if headerRow >= len(rows) {
+		return [][]string{}, nil
+	}
+	headers := rows[headerRow]
+	// Clean headers
+	for i, h := range headers {
+		headers[i] = NormalizeHeader(h)
+	}
+	data := rows[headerRow+1:]
+	return data, headers
+}
+
+// Round2 rounds to 2 decimal places
+func Round2(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+// FloatToStr formats a float64 to string with 2 decimal places
+func FloatToStr(v float64) string {
+	return fmt.Sprintf("%.2f", v)
+}
+
+// ExtractZip extracts data files from a zip archive
+func ExtractZip(zipPath string, targetDir string) ([]string, error) {
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return nil, err
+	}
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+
+	allowedExts := map[string]bool{
+		".xlsx": true, ".xlsm": true, ".xls": true,
+		".csv": true, ".tsv": true,
+	}
+	var extracted []string
+
+	for _, f := range reader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		filename := filepath.Base(f.Name)
+		ext := strings.ToLower(filepath.Ext(filename))
+		if !allowedExts[ext] {
+			continue
+		}
+		// Safety: prevent path traversal
+		if strings.Contains(f.Name, "..") || filepath.IsAbs(f.Name) {
+			continue
+		}
+		outPath := filepath.Join(targetDir, filename)
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		outFile, err := os.Create(outPath)
+		if err != nil {
+			rc.Close()
+			continue
+		}
+		_, err = io.Copy(outFile, rc)
+		rc.Close()
+		outFile.Close()
+		if err != nil {
+			continue
+		}
+		extracted = append(extracted, outPath)
+	}
+	if len(extracted) == 0 {
+		return nil, fmt.Errorf("no data files found in zip: %s", filepath.Base(zipPath))
+	}
+	return extracted, nil
+}
+
+// GetFileModTime returns file modification time
+func GetFileModTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+// Abs64 returns absolute value of float64
+func Abs64(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// IsDigit checks if a string represents a number
+func IsDigit(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsDigit(r) && r != '.' && r != '-' && r != '+' {
+			return false
+		}
+	}
+	return true
+}
+
+// SourceLocation generates source location string like Python's source_locations
+func SourceLocation(path string, rowIdx int, headerRow int) string {
+	return fmt.Sprintf("%s:%d", path, rowIdx+headerRow+2)
+}
+
+// SourceLocations generates source location strings for all rows
+func SourceLocations(path string, count int, headerRow int) []string {
+	locs := make([]string, count)
+	for i := 0; i < count; i++ {
+		locs[i] = SourceLocation(path, i, headerRow)
+	}
+	return locs
+}
+

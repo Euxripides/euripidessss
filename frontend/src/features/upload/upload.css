@@ -1,0 +1,74 @@
+.transfer-panel {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 3000;
+  display: grid;
+  gap: 8px;
+  width: min(420px, calc(100vw - 36px));
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  box-shadow: 0 14px 34px rgba(37, 61, 92, 0.18);
+}
+.transfer-panel > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+.transfer-panel strong {
+  color: #172033;
+  grid-column: 1 / -1;
+}
+.transfer-panel span,
+.transfer-panel em {
+  color: #475569;
+  font-size: 12px;
+  font-style: normal;
+}
+.transfer-panel span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transfer-panel em {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.transfer-panel.transfer-done {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.transfer-panel.transfer-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.metric-card,
+.panel {
+  background: #fff;
+  border: 1px solid #e3e9f2;
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(37, 61, 92, 0.07);
+}
+.metric-card {
+  padding: 16px;
+}
+.upload-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.data-import-actions {
+  display: grid;
+  gap: 8px;
+}

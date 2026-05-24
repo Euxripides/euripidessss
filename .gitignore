@@ -1,0 +1,37 @@
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# Go / local binaries
+bin/
+*.exe
+*.exe~
+
+# Logs and temporary output
+*.log
+tmp/
+backend/data/logs/
+backend/data/outputs/
+backend/data/uploads/
+
+# Local one-off repair/check scripts
+/check_*.py
+/fix_*.py
+/find_func.py
+/replace_func.py
+/test_import.csv
