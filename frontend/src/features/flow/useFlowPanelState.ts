@@ -112,6 +112,23 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     optimizeAnchors,
     selectedEdgeIds,
   });
+  const graphLayerKey = useMemo(() => props.graphLayers.map((layer) => layer.id).join("|"), [props.graphLayers]);
+
+  useEffect(() => {
+    setSubjectIds([]);
+    setMinAmount(0);
+    setPathSource(undefined);
+    setPathTarget(undefined);
+    setSelectedEdgeIds([]);
+  }, [graphLayerKey]);
+
+  useEffect(() => {
+    const availableSubjects = new Set(subjectOptions.map((option) => option.value));
+    setSubjectIds((items) => items.filter((id) => availableSubjects.has(id)));
+    setPathSource((id) => (id && availableSubjects.has(id) ? id : undefined));
+    setPathTarget((id) => (id && availableSubjects.has(id) ? id : undefined));
+    setMinAmount((value) => Math.min(value, maxAmount || 0));
+  }, [maxAmount, subjectOptions]);
 
   const selectedEdges = useMemo(
     () =>

@@ -120,6 +120,24 @@ import {
 
 import type { ProcessResponse } from "../types";
 
+type FlowGraphPayload = ProcessResponse["flow_graph"];
+
+type BuildFlowPayload = Partial<ProcessResponse> & Partial<FlowGraphPayload>;
+
+function normalizeFlowGraphPayload(payload: BuildFlowPayload): FlowGraphPayload {
+  const graph = payload.flow_graph ?? {
+    nodes: payload.nodes,
+    edges: payload.edges,
+    meta: payload.meta,
+  };
+
+  return {
+    nodes: Array.isArray(graph?.nodes) ? graph.nodes : [],
+    edges: Array.isArray(graph?.edges) ? graph.edges : [],
+    meta: graph?.meta ?? {},
+  };
+}
+
 
 
 
@@ -2071,6 +2089,20 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
+  function acceptDatabaseImportedDataset(dataset: ImportedDataset) {
+    setImportedDataset(dataset);
+    setFieldMapping(autoFlowMapping(dataset.columns ?? []));
+    setFlowBuildStatus({ visible: false, status: "normal", text: "" });
+    setFlowImportProgress({
+      visible: true,
+      percent: 100,
+      status: "success",
+      text: "已导入" + (dataset.rows ?? 0) + " 条数据库数据",
+    });
+  }
+
+
+
   async function confirmDirectionRules(): Promise<"close-mapping" | null> {
 
 
@@ -2579,7 +2611,8 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-      const meta = payload.flow_graph?.meta ?? {};
+      const flowGraph = normalizeFlowGraphPayload(payload);
+      const meta = flowGraph.meta ?? {};
 
 
 
@@ -2621,7 +2654,7 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-      const applied = applyFlowGraph(payload.flow_graph, {
+      const applied = applyFlowGraph(flowGraph, {
 
 
 
@@ -2968,7 +3001,8 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-      applyFlowGraph(payload.flow_graph, {
+      if (payload.flow_graph) {
+        applyFlowGraph(normalizeFlowGraphPayload(payload), {
 
 
 
@@ -2997,7 +3031,8 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-      });
+        });
+      }
 
 
 
@@ -3092,7 +3127,18 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-      applyFlowGraph(payload.flow_graph, { label: payload.name, rows: payload.rows, detailContext: { kind: "cleaned", jobId } });
+      if (payload.flow_graph) {
+        applyFlowGraph(normalizeFlowGraphPayload(payload), { label: payload.name, rows: payload.rows, detailContext: { kind: "cleaned", jobId } });
+      } else if (payload.session_id) {
+        const dataset = payload as ImportedDataset;
+        const savedMapping = dataset.mapping_rule?.mapping;
+        setImportedDataset(dataset);
+        setFieldMapping(savedMapping ? sanitizeFlowMapping(savedMapping, dataset.columns ?? []) : autoFlowMapping(dataset.columns ?? []));
+        setFlowBuildStatus({ visible: false, status: "normal", text: "" });
+        message.info("已加载历史数据，请确认字段后生成图谱");
+      } else {
+        throw new Error("历史图谱数据结构不完整");
+      }
 
 
 
@@ -3100,7 +3146,7 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-      message.success("已加载历史清洗数据 " + payload.name);
+      message.success("已加载历史数据 " + (payload.name ?? jobId));
 
 
 
@@ -4178,7 +4224,7 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-    resetFlowGraph,
+    resetFlowGraph, acceptDatabaseImportedDataset,
 
 
 

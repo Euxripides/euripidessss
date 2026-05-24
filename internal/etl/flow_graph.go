@@ -1,4 +1,4 @@
-﻿package etl
+package etl
 
 import (
 	"fmt"
@@ -22,25 +22,36 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 			Edges: []model.FlowEdge{},
 			Meta: map[string]interface{}{
 				"total_edges": 0, "total_nodes": 0,
+				"rendered_edges": 0, "rendered_nodes": 0,
 				"truncated": false, "edge_limit": maxEdges,
 			},
 		}
 	}
 	type flowRow struct {
-		source, target  string
-		amount          float64
-		tradeTime       string
+		source, target string
+		amount         float64
+		tradeTime      string
 	}
 	work := make([]flowRow, 0, len(txns))
 	for _, txn := range txns {
 		amt := parser.ToNumber(txn["交易金额"])
 		own := txn["交易卡号"]
-		if own == "" { own = txn["交易账号"] }
-		if own == "" { own = txn["交易户名"] }
-		if own == "" { own = "本方未知" }
+		if own == "" {
+			own = txn["交易账号"]
+		}
+		if own == "" {
+			own = txn["交易户名"]
+		}
+		if own == "" {
+			own = "本方未知"
+		}
 		counter := txn["交易对手账卡号"]
-		if counter == "" { counter = txn["对手户名"] }
-		if counter == "" { counter = "对手未知" }
+		if counter == "" {
+			counter = txn["对手户名"]
+		}
+		if counter == "" {
+			counter = "对手未知"
+		}
 		dir := txn["收付标志"]
 		timeVal := txn["交易时间"]
 		var source, target string
@@ -66,7 +77,9 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 	deduped := make([]flowRow, 0, len(work))
 	for _, r := range work {
 		k := flowKey{r.source, r.target, math.Round(r.amount*100) / 100, r.tradeTime}
-		if seen[k] { continue }
+		if seen[k] {
+			continue
+		}
 		seen[k] = true
 		deduped = append(deduped, r)
 	}
@@ -91,9 +104,18 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 			ea.maxAmount = r.amount
 		}
 		if r.tradeTime != "" {
-			if ea.firstTime == "" || r.tradeTime < ea.firstTime { ea.firstTime = r.tradeTime }
-			if ea.lastTime == "" || r.tradeTime > ea.lastTime { ea.lastTime = r.tradeTime }
+			if ea.firstTime == "" || r.tradeTime < ea.firstTime {
+				ea.firstTime = r.tradeTime
+			}
+			if ea.lastTime == "" || r.tradeTime > ea.lastTime {
+				ea.lastTime = r.tradeTime
+			}
 		}
+	}
+	totalNodeSet := make(map[string]bool)
+	for _, ea := range edgeMap {
+		totalNodeSet[ea.source] = true
+		totalNodeSet[ea.target] = true
 	}
 	sortedEdges := make([]*edgeAgg, 0, len(edgeMap))
 	for _, ea := range edgeMap {
@@ -146,7 +168,9 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 	nodes := make([]model.FlowNode, 0, len(nodeStats))
 	for _, n := range nodeStats {
 		n.Label = maskLabel(n.ID)
-		if n.Label == "" { n.Label = n.ID }
+		if n.Label == "" {
+			n.Label = n.ID
+		}
 		nodes = append(nodes, *n)
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
@@ -172,21 +196,28 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 	return model.FlowGraph{
 		Nodes: nodes, Edges: edges,
 		Meta: map[string]interface{}{
-			"total_edges": len(edgeMap), "total_nodes": len(degreeMap),
+			"total_edges": len(edgeMap), "total_nodes": len(totalNodeSet),
+			"rendered_edges": len(edges), "rendered_nodes": len(nodes),
 			"truncated": truncated, "edge_limit": maxEdges,
 		},
 	}
 }
 
 func updateNodeTime(m map[string]map[string]string, node, timeVal string) {
-	if timeVal == "" { return }
+	if timeVal == "" {
+		return
+	}
 	entry, ok := m[node]
 	if !ok {
 		m[node] = map[string]string{"first": timeVal, "last": timeVal}
 		return
 	}
-	if entry["first"] == "" || timeVal < entry["first"] { entry["first"] = timeVal }
-	if entry["last"] == "" || timeVal > entry["last"] { entry["last"] = timeVal }
+	if entry["first"] == "" || timeVal < entry["first"] {
+		entry["first"] = timeVal
+	}
+	if entry["last"] == "" || timeVal > entry["last"] {
+		entry["last"] = timeVal
+	}
 }
 
 func initNode(m map[string]*model.FlowNode, id string) {
@@ -203,11 +234,18 @@ func maskLabel(value string) string {
 	if len(value) >= 12 {
 		allDigit := true
 		for _, c := range value {
-			if c < '0' || c > '9' { allDigit = false; break }
+			if c < '0' || c > '9' {
+				allDigit = false
+				break
+			}
 		}
-		if allDigit { return value[:4] + "..." + value[len(value)-4:] }
+		if allDigit {
+			return value[:4] + "..." + value[len(value)-4:]
+		}
 	}
-	if len(value) > 24 { return value[:24] }
+	if len(value) > 24 {
+		return value[:24]
+	}
 	return value
 }
 
@@ -217,6 +255,8 @@ func Float64ToStr(v float64) string {
 }
 
 func strPtr(s string) *string {
-	if s == "" { return nil }
+	if s == "" {
+		return nil
+	}
 	return &s
 }

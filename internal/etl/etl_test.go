@@ -1,4 +1,4 @@
-﻿package etl
+package etl
 
 import (
 	"testing"
@@ -61,9 +61,9 @@ func TestBuildSummary(t *testing.T) {
 func TestBuildFlowGraph(t *testing.T) {
 	rows := []model.TransactionRow{
 		{"交易时间": "2024-01-01", "交易金额": "100", "收付标志": "出",
-		 "交易卡号": "card1", "交易账号": "acct1", "交易对手账卡号": "card2", "对手户名": "user2"},
+			"交易卡号": "card1", "交易账号": "acct1", "交易对手账卡号": "card2", "对手户名": "user2"},
 		{"交易时间": "2024-01-02", "交易金额": "200", "收付标志": "进",
-		 "交易卡号": "card1", "交易账号": "acct1", "交易对手账卡号": "card3", "对手户名": "user3"},
+			"交易卡号": "card1", "交易账号": "acct1", "交易对手账卡号": "card3", "对手户名": "user3"},
 	}
 	graph := BuildFlowGraph(rows, 10)
 	if len(graph.Nodes) == 0 {
@@ -74,6 +74,28 @@ func TestBuildFlowGraph(t *testing.T) {
 	}
 	if graph.Meta == nil {
 		t.Errorf("expected non-nil meta")
+	}
+}
+
+func TestBuildFlowGraphMetaCountsUntruncatedTotals(t *testing.T) {
+	rows := []model.TransactionRow{
+		{"交易时间": "2024-01-01", "交易金额": "300", "收付标志": "出", "交易卡号": "card1", "交易对手账卡号": "card2"},
+		{"交易时间": "2024-01-02", "交易金额": "200", "收付标志": "出", "交易卡号": "card1", "交易对手账卡号": "card3"},
+		{"交易时间": "2024-01-03", "交易金额": "100", "收付标志": "出", "交易卡号": "card1", "交易对手账卡号": "card4"},
+	}
+
+	graph := BuildFlowGraph(rows, 1)
+	if got := graph.Meta["total_edges"]; got != 3 {
+		t.Fatalf("expected total_edges=3, got %v", got)
+	}
+	if got := graph.Meta["total_nodes"]; got != 4 {
+		t.Fatalf("expected total_nodes=4, got %v", got)
+	}
+	if got := graph.Meta["rendered_edges"]; got != 1 {
+		t.Fatalf("expected rendered_edges=1, got %v", got)
+	}
+	if got := graph.Meta["rendered_nodes"]; got != 2 {
+		t.Fatalf("expected rendered_nodes=2, got %v", got)
 	}
 }
 

@@ -1,7 +1,6 @@
-import { UploadOutlined } from '@ant-design/icons';
+import { DatabaseOutlined, UploadOutlined } from '@ant-design/icons';
 import { Button, Modal, Select, Upload } from 'antd';
 import type { UploadFile } from 'antd';
-import type { ProcessResponse } from '../../types';
 import type { HistoryItem } from './flowTypes';
 import { filterImportFiles } from './flowImportFiles';
 
@@ -10,9 +9,7 @@ export function FlowSourceModal(props: {
   loading: boolean;
   uploadFiles: UploadFile[];
   onUploadFilesChange: (files: UploadFile[]) => void;
-  currentResult: ProcessResponse | null;
-  onUseCurrent: () => void;
-  onOpenImport: () => void;
+  onOpenDatabaseImport: () => void;
   onImportData: (files: UploadFile[]) => Promise<boolean>;
   historyItems: HistoryItem[];
   selectedHistory?: string;
@@ -68,21 +65,15 @@ export function FlowSourceModal(props: {
           </div>
         </div>
         <div className="source-card">
-          <strong>清洗的文件</strong>
-          <span>{props.currentResult ? `使用本次刚清洗完成的 ${props.currentResult.rows} 行数据。` : '本次还没有清洗结果。'}</span>
+          <strong>数据库导入</strong>
+          <span>连接 MySQL 或 PostgreSQL，预览表数据并确认字段映射后导入流向图。</span>
           <div className="source-actions">
             <div className="stacked-actions">
-              <Button disabled={!props.currentResult} loading={props.loading} onClick={() => {
-                props.onUseCurrent();
+              <Button icon={<DatabaseOutlined />} type="primary" onClick={() => {
                 props.onClose();
+                props.onOpenDatabaseImport();
               }}>
-                使用刚清洗数据
-              </Button>
-              <Button onClick={() => {
-                props.onClose();
-                props.onOpenImport();
-              }}>
-                去清洗页上传流水
+                打开数据库导入
               </Button>
             </div>
           </div>
@@ -114,7 +105,7 @@ export function FlowSourceModal(props: {
         <div className="format-hint">
           <strong>上传数据格式</strong>
           <span>直接图谱表：付款方账号/付款方/来源主体，收款方账号/收款方/目标主体，交易金额/金额；可选交易时间、收付标志。</span>
-          <span>清洗结果表：交易卡号/交易账号/交易户名，交易对手账卡号/对手户名，交易金额，收付标志，交易时间。</span>
+          <span>数据库导入表：字段需映射到交易方、对手方、交易时间、交易金额、收付标志等目标字段；必填字段未确认时不能导入。</span>
         </div>
       </div>
     </Modal>

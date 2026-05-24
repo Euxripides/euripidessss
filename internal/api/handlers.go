@@ -1,11 +1,12 @@
-﻿package api
+package api
 
 import (
 	"fmt"
-	"time"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -13,6 +14,7 @@ import (
 	"github.com/xuri/excelize/v2"
 
 	"github.com/etl/backend/internal/config"
+	"github.com/etl/backend/internal/dbimport"
 	"github.com/etl/backend/internal/etl"
 	"github.com/etl/backend/internal/model"
 	"github.com/etl/backend/internal/parser"
@@ -22,14 +24,23 @@ import (
 )
 
 var (
-	cfg   *config.Config
-	store *storage.FileStorage
+	cfg       *config.Config
+	store     *storage.FileStorage
+	dbStore   *dbimport.Store
+	dbService *dbimport.Service
+)
+
+const (
+	defaultFlowEdgeLimit = 600
+	auditFlowEdgeLimit   = 5000
 )
 
 // Setup initializes the API package with config
 func Setup(c *config.Config) {
 	cfg = c
 	store = storage.NewFileStorage(c.UploadDir, c.OutputDir)
+	dbStore = dbimport.NewStore(filepath.Join(c.RootDir, "backend", "data", "db_import"))
+	dbService = dbimport.NewService(dbStore, c.UploadDir)
 }
 
 // RegisterRoutes registers all API routes on the Gin router
@@ -55,6 +66,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.GET("/files/current", HandleCurrentFiles)
 		api.POST("/rules/analyze", HandleAnalyzeRules)
 		api.POST("/rules/confirm", HandleConfirmRules)
+		registerDBImportRoutes(api)
 	}
 }
 
@@ -140,30 +152,139 @@ func HandleDownload(c *gin.Context) {
 
 // HandleFlowHistory returns list of flow sessions
 func HandleFlowHistory(c *gin.Context) {
-	sessions, err := store.ListSessions()
+	var items []map[string]interface{}
+
+	sessionsDir := filepath.Join(cfg.UploadDir, "flow_sessions")
+	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(200, gin.H{"items": []map[string]interface{}{}})
+			return
+		}
 		c.JSON(500, gin.H{"detail": err.Error()})
 		return
 	}
-	var items []map[string]interface{}
-	for _, s := range sessions {
-		items = append(items, map[string]interface{}{"id": s.ID, "status": s.Status})
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		item, err := summarizeFlowSession(entry.Name())
+		if err == nil {
+			items = append(items, item)
+		}
 	}
 	if items == nil {
 		items = []map[string]interface{}{}
 	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i]["updated_at"].(int64) > items[j]["updated_at"].(int64)
+	})
 	c.JSON(200, gin.H{"items": items})
 }
 
 // HandleLoadHistoryFlow loads a specific flow session
 func HandleLoadHistoryFlow(c *gin.Context) {
 	jobID := c.Param("job_id")
-	session, err := store.GetSession(jobID)
-	if err != nil {
-		c.JSON(404, gin.H{"detail": err.Error()})
+	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", jobID)
+	if _, err := os.Stat(sessionDir); err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(404, gin.H{"detail": "session not found: " + jobID})
+			return
+		}
+		c.JSON(500, gin.H{"detail": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"session": session})
+
+	columns, sample, totalRows := extractFileColumns(sessionDir)
+	files := listFlowSessionFiles(sessionDir)
+
+	var signature string
+	var mappingRule map[string]interface{}
+	if len(columns) > 0 {
+		signature = rules.GenerateColumnSignature(columns)
+		mappingRule = rules.FlowMappingRule(signature)
+	}
+
+	c.JSON(200, gin.H{
+		"session_id":   jobID,
+		"job_id":       jobID,
+		"name":         flowSessionName(jobID, files),
+		"rows":         totalRows,
+		"columns":      columns,
+		"files":        files,
+		"sample":       sample,
+		"signature":    signature,
+		"mapping_rule": mappingRule,
+	})
+}
+
+func summarizeFlowSession(sessionID string) (map[string]interface{}, error) {
+	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", sessionID)
+	var size int64
+	var updatedAt int64
+	files := []string{}
+
+	err := filepath.Walk(sessionDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.ModTime().Unix() > updatedAt {
+			updatedAt = info.ModTime().Unix()
+		}
+		if info.IsDir() {
+			return nil
+		}
+		size += info.Size()
+		if parser.SupportedSuffixes[strings.ToLower(filepath.Ext(path))] {
+			if rel, err := filepath.Rel(sessionDir, path); err == nil {
+				files = append(files, rel)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if updatedAt == 0 {
+		if info, err := os.Stat(sessionDir); err == nil {
+			updatedAt = info.ModTime().Unix()
+		}
+	}
+
+	return map[string]interface{}{
+		"id":         sessionID,
+		"job_id":     sessionID,
+		"name":       flowSessionName(sessionID, files),
+		"size":       size,
+		"updated_at": updatedAt,
+		"status":     "exists",
+	}, nil
+}
+
+func listFlowSessionFiles(sessionDir string) []string {
+	files := []string{}
+	filepath.Walk(sessionDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		if !parser.SupportedSuffixes[strings.ToLower(filepath.Ext(path))] {
+			return nil
+		}
+		if rel, err := filepath.Rel(sessionDir, path); err == nil {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	return files
+}
+
+func flowSessionName(sessionID string, files []string) string {
+	if len(files) == 0 {
+		return sessionID
+	}
+	return filepath.Base(files[0])
 }
 
 // HandleFlowEdgeDetail returns edge detail for a job
@@ -181,14 +302,14 @@ func HandleFlowEdgeDetail(c *gin.Context) {
 // HandleImportedFlowEdgeDetail handles edge detail for imported data
 func HandleImportedFlowEdgeDetail(c *gin.Context) {
 	var payload struct {
-		SessionID      string `json:"session_id"`
-		SourceColumn   string `json:"source_column"`
-		TargetColumn   string `json:"target_column"`
-		AmountColumn   string `json:"amount_column"`
-		TimeColumn     string `json:"time_column"`
-		Source         string `json:"source"`
-		Target         string `json:"target"`
-		Limit          int `json:"limit"`
+		SessionID    string `json:"session_id"`
+		SourceColumn string `json:"source_column"`
+		TargetColumn string `json:"target_column"`
+		AmountColumn string `json:"amount_column"`
+		TimeColumn   string `json:"time_column"`
+		Source       string `json:"source"`
+		Target       string `json:"target"`
+		Limit        int    `json:"limit"`
 	}
 	if err := c.BindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{"detail": "invalid json"})
@@ -305,18 +426,18 @@ func HandleImportFlowData(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"session_id":  sessionID,
-		"rows":        totalRows,
-		"columns":     columns,
-		"files":       fileNames,
-		"sample":      sample,
+		"session_id":   sessionID,
+		"rows":         totalRows,
+		"columns":      columns,
+		"files":        fileNames,
+		"sample":       sample,
 		"mapping_rule": mappingRule,
 	})
 }
 func HandleSaveFlowMapping(c *gin.Context) {
 	var payload struct {
-		Columns []string                 `json:"columns"`
-		Mapping map[string]interface{}   `json:"mapping"`
+		Columns []string               `json:"columns"`
+		Mapping map[string]interface{} `json:"mapping"`
 	}
 	if err := c.BindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{"detail": "invalid json"})
@@ -429,7 +550,7 @@ func HandleBuildImportedFlow(c *gin.Context) {
 	// Build preview and flow graph
 	preview, columns := etl.BuildPreview(filteredTxns, 200)
 	summary := etl.BuildSummary(filteredTxns)
-	flowGraph := etl.BuildFlowGraph(filteredTxns, 600)
+	flowGraph := etl.BuildFlowGraph(filteredTxns, flowEdgeLimit(payload))
 
 	c.JSON(200, gin.H{
 		"nodes":      flowGraph.Nodes,
@@ -437,7 +558,7 @@ func HandleBuildImportedFlow(c *gin.Context) {
 		"meta":       flowGraph.Meta,
 		"columns":    columns,
 		"preview":    preview,
-		"rows": len(filteredTxns),
+		"rows":       len(filteredTxns),
 		"session_id": sessionID,
 		"summary":    summary,
 	})
@@ -451,7 +572,7 @@ func HandleAnalyzeFlowWithAI(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{
-		"report": "AI analysis not configured. Set DEEPSEEK_API_KEY for AI-powered analysis.",
+		"report":   "AI analysis not configured. Set DEEPSEEK_API_KEY for AI-powered analysis.",
 		"filtered": 0, "session_id": payload["session_id"],
 	})
 }
@@ -493,9 +614,15 @@ func HandleCheckFlowDirectionValues(c *gin.Context) {
 
 	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", sessionID)
 	rawValues := extractColumnValues(sessionDir, column, 500)
+	aliases := make(map[string]string)
+	for k, v := range rules.LoadDirectionAliases() {
+		aliases[strings.TrimSpace(k)] = v
+		aliases[parser.NormalizeHeader(k)] = v
+	}
 	var values []string
 	for _, v := range rawValues {
-		if v != "出" && v != "进" {
+		normalized := normalizeFlowDirection(v, aliases)
+		if normalized != "出" && normalized != "进" {
 			values = append(values, v)
 		}
 	}
@@ -511,7 +638,7 @@ func HandleFlowFieldValues(c *gin.Context) {
 		SessionID string `json:"session_id"`
 		Column    string `json:"column"`
 		Search    string `json:"search"`
-		Limit     int `json:"limit"`
+		Limit     int    `json:"limit"`
 	}
 	if err := c.BindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{"detail": "invalid json"})
@@ -618,7 +745,6 @@ func listLocalFiles(dir string) []map[string]interface{} {
 	return files
 }
 
-
 // ========== Import/Flow helper functions ==========
 
 // extractFileColumns scans a directory and extracts columns and sample data
@@ -723,7 +849,12 @@ func readSessionData(sessionDir string, sourceCol, accountCol, targetCol, target
 	directionCol = parser.NormalizeHeader(directionCol)
 	// Also normalize dirMap keys for consistent matching
 	normalizedDirMap := make(map[string]string, len(dirMap))
+	for k, v := range rules.LoadDirectionAliases() {
+		normalizedDirMap[strings.TrimSpace(k)] = v
+		normalizedDirMap[parser.NormalizeHeader(k)] = v
+	}
 	for k, v := range dirMap {
+		normalizedDirMap[strings.TrimSpace(k)] = v
 		normalizedDirMap[parser.NormalizeHeader(k)] = v
 	}
 
@@ -798,11 +929,7 @@ func readSessionData(sessionDir string, sourceCol, accountCol, targetCol, target
 			}
 			if directionCol != "" {
 				if idx, ok := colIdx[directionCol]; ok && idx < len(row) {
-					val := row[idx]
-					val = parser.NormalizeHeader(val)
-					if mapped, ok := normalizedDirMap[val]; ok {
-						val = mapped
-					}
+					val := normalizeFlowDirection(row[idx], normalizedDirMap)
 					txn["\u6536\u4ed8\u6807\u5fd7"] = val
 				}
 			}
@@ -813,6 +940,25 @@ func readSessionData(sessionDir string, sourceCol, accountCol, targetCol, target
 	})
 
 	return txns
+}
+
+func normalizeFlowDirection(value string, aliases map[string]string) string {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return ""
+	}
+	if mapped, ok := aliases[raw]; ok {
+		return mapped
+	}
+	normalizedKey := parser.NormalizeHeader(raw)
+	if mapped, ok := aliases[normalizedKey]; ok {
+		return mapped
+	}
+	normalized := parser.NormalizeDirection(raw)
+	if mapped, ok := aliases[normalized]; ok {
+		return mapped
+	}
+	return normalized
 }
 
 // checkUnknownDirections checks for direction values that aren't \"\u8fdb\" or \"\u51fa\"
@@ -833,54 +979,126 @@ func checkUnknownDirections(txns []model.TransactionRow) []string {
 
 // applyFilters applies source/target filters to transactions
 func applyFilters(txns []model.TransactionRow, payload map[string]interface{}) []model.TransactionRow {
-	// Parse source filters
 	sourceFilters, _ := payload["source_filters"].([]interface{})
+	targetFilters, _ := payload["target_filters"].([]interface{})
+	directions := stringSet(payload["directions"])
+	startDate, _ := payload["start_date"].(string)
+	endDate, _ := payload["end_date"].(string)
 	filtered := make([]model.TransactionRow, 0)
 
 	for _, txn := range txns {
-		include := true
-		for _, sf := range sourceFilters {
-			f, ok := sf.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			col, _ := f["column"].(string)
-			vals, _ := f["values"].([]interface{})
-			if col == "" || len(vals) == 0 {
-				continue
-			}
-			var normCol string
-			switch col {
-			case "source_name_column":
-				normCol = "\u4ea4\u6613\u6237\u540d"
-			case "source_account_column":
-				normCol = "\u4ea4\u6613\u8d26\u53f7"
-			case "target_name_column":
-				normCol = "\u5bf9\u624b\u6237\u540d"
-			case "target_card_column":
-				normCol = "\u4ea4\u6613\u5bf9\u624b\u8d26\u5361\u53f7"
-			}
-			if normCol == "" {
-				continue
-			}
-			val := txn[normCol]
-			found := false
-			for _, v := range vals {
-				if fmt.Sprint(v) == val {
-					found = true
-					break
-				}
-			}
-			if !found {
-				include = false
-				break
-			}
-		}
-		if include {
+		if matchesFilterGroups(txn, sourceFilters) &&
+			matchesFilterGroups(txn, targetFilters) &&
+			matchesDirection(txn, directions) &&
+			matchesDateRange(txn, startDate, endDate) {
 			filtered = append(filtered, txn)
 		}
 	}
 	return filtered
+}
+
+func flowEdgeLimit(payload map[string]interface{}) int {
+	if requested := intPayloadValue(payload["max_edges"]); requested > 0 {
+		if requested > auditFlowEdgeLimit {
+			return auditFlowEdgeLimit
+		}
+		return requested
+	}
+	sourceFilters, _ := payload["source_filters"].([]interface{})
+	targetFilters, _ := payload["target_filters"].([]interface{})
+	if hasActiveFilterGroups(sourceFilters) || hasActiveFilterGroups(targetFilters) {
+		return auditFlowEdgeLimit
+	}
+	return defaultFlowEdgeLimit
+}
+
+func intPayloadValue(value interface{}) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func hasActiveFilterGroups(filters []interface{}) bool {
+	for _, item := range filters {
+		filter, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		column, _ := filter["column"].(string)
+		if column != "" && len(stringSet(filter["values"])) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesFilterGroups(txn model.TransactionRow, filters []interface{}) bool {
+	for _, item := range filters {
+		filter, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		column, _ := filter["column"].(string)
+		values := stringSet(filter["values"])
+		if column == "" || len(values) == 0 {
+			continue
+		}
+		if !values[txn[parser.NormalizeHeader(column)]] {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesDirection(txn model.TransactionRow, directions map[string]bool) bool {
+	if len(directions) == 0 {
+		return true
+	}
+	return directions[txn["\u6536\u4ed8\u6807\u5fd7"]]
+}
+
+func matchesDateRange(txn model.TransactionRow, startDate, endDate string) bool {
+	if startDate == "" && endDate == "" {
+		return true
+	}
+	tradeTime := parser.NormalizeDatetime(txn["\u4ea4\u6613\u65f6\u95f4"])
+	if len(tradeTime) >= 10 {
+		tradeTime = tradeTime[:10]
+	}
+	if tradeTime == "" {
+		return false
+	}
+	if startDate != "" && tradeTime < startDate {
+		return false
+	}
+	if endDate != "" && tradeTime > endDate {
+		return false
+	}
+	return true
+}
+
+func stringSet(raw interface{}) map[string]bool {
+	values := make(map[string]bool)
+	items, ok := raw.([]interface{})
+	if !ok {
+		return values
+	}
+	for _, item := range items {
+		value := strings.TrimSpace(fmt.Sprint(item))
+		if value != "" {
+			values[value] = true
+		}
+	}
+	return values
 }
 
 // extractColumnValues extracts unique values for a given column from session files
@@ -946,14 +1164,14 @@ func extractColumnValues(sessionDir string, column string, limit int) []string {
 
 // queryEdgeRows queries transaction rows matching source/target
 func queryEdgeRows(sessionDir string, p struct {
-	SessionID    string  `json:"session_id"`
-	SourceColumn string  `json:"source_column"`
-	TargetColumn string  `json:"target_column"`
-	AmountColumn string  `json:"amount_column"`
-	TimeColumn   string  `json:"time_column"`
-	Source       string  `json:"source"`
-	Target       string  `json:"target"`
-	Limit        int     `json:"limit"`
+	SessionID    string `json:"session_id"`
+	SourceColumn string `json:"source_column"`
+	TargetColumn string `json:"target_column"`
+	AmountColumn string `json:"amount_column"`
+	TimeColumn   string `json:"time_column"`
+	Source       string `json:"source"`
+	Target       string `json:"target"`
+	Limit        int    `json:"limit"`
 }) []map[string]interface{} {
 	var result []map[string]interface{}
 
@@ -1018,6 +1236,3 @@ func queryEdgeRows(sessionDir string, p struct {
 
 	return result
 }
-
-
-

@@ -1,0 +1,187 @@
+.db-import-modal .ant-modal-body {
+  padding: 0;
+}
+
+.db-import-shell {
+  display: grid;
+  grid-template-columns: 330px minmax(0, 1fr);
+  min-height: 690px;
+  border-top: 1px solid #edf0f5;
+}
+
+.db-import-side {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  border-right: 1px solid #e6e8ec;
+  padding: 8px 0 8px 8px;
+}
+
+.db-import-toolbar,
+.db-main-toolbar,
+.mapping-actions,
+.connection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.db-import-toolbar .ant-btn:first-child {
+  flex: 1;
+}
+
+.connection-actions .ant-btn {
+  flex: 1;
+}
+
+.connection-actions .ant-btn:last-child {
+  flex: 0 0 36px;
+}
+
+.db-browser-tree {
+  height: 548px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.db-browser-tree .ant-tree-node-content-wrapper {
+  border-radius: 0;
+  min-height: 24px;
+  line-height: 24px;
+  padding-inline: 3px;
+}
+
+.db-browser-tree .ant-tree-node-content-wrapper.ant-tree-node-selected {
+  background: #bfe1ff;
+  color: #111827;
+}
+
+.db-browser-tree .ant-tree-title {
+  font-size: 14px;
+}
+
+.db-import-main {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.db-main-toolbar {
+  justify-content: space-between;
+  min-height: 34px;
+  border-bottom: 1px solid #eef0f3;
+  padding: 4px 10px;
+}
+
+.db-object-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  background: #fafafa;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 8px;
+}
+
+.db-object-tab {
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  min-width: 96px;
+  border-left: 1px solid #e5e7eb;
+  border-right: 1px solid #e5e7eb;
+  background: #ffffff;
+  font-weight: 500;
+}
+
+.db-current-path {
+  min-height: 28px;
+  border-bottom: 1px solid #eef0f3;
+  color: #475569;
+  font-size: 12px;
+  line-height: 28px;
+  overflow: hidden;
+  padding: 0 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-search {
+  width: 220px;
+}
+
+.db-null {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.db-mapping-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.db-mapping-panel .ant-select {
+  width: 100%;
+}
+
+.mapping-actions {
+  justify-content: space-between;
+  border-top: 1px solid #edf1f7;
+  padding-top: 12px;
+}
+
+.db-task-panel {
+  display: grid;
+  gap: 10px;
+  max-width: 520px;
+  padding: 12px;
+}
+
+.db-query-panel,
+.db-edit-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.db-edit-panel .ant-select {
+  width: 180px;
+}
+
+.db-import-main .ant-tabs {
+  min-width: 0;
+  padding: 0 8px 8px;
+}
+
+.db-import-main .ant-tabs-nav {
+  margin-bottom: 8px;
+}
+
+.db-object-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.db-object-name .anticon {
+  color: #2b8bd8;
+}
+
+.db-object-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.db-object-groups {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  border-bottom: 1px solid #eef0f3;
+  padding-bottom: 6px;
+}

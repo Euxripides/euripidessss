@@ -14,6 +14,8 @@ import {
 
 import { FlowGraphWorkspace } from "./FlowGraphWorkspace";
 
+import { DBImportModal } from "./DBImportModal";
+
 import { FlowSourceModal } from "./FlowSourceModal";
 
 import type {
@@ -25,8 +27,6 @@ import type {
   HistoryItem,
   ImportedDataset,
 } from "./flowTypes";
-
-import type { ProcessResponse } from "../../types";
 
 import { useFlowFilters } from "./useFlowFilters";
 
@@ -41,8 +41,6 @@ export function FlowPanel(props: {
   meta: Record<string, unknown>;
 
   graphLayers: GraphLayer[];
-
-  currentResult: ProcessResponse | null;
 
   importedDataset: ImportedDataset | null;
 
@@ -74,13 +72,11 @@ export function FlowPanel(props: {
 
   onAddNode: () => void;
 
-  onOpenImport: () => void;
-
-  onUseCurrent: () => void;
-
   onUploadGraph: (files: UploadFile[]) => Promise<void>;
 
   onImportData: (files: UploadFile[]) => Promise<boolean>;
+
+  onDatabaseImported: (dataset: ImportedDataset) => void;
 
   onOpenMapping: () => void;
 
@@ -91,6 +87,8 @@ export function FlowPanel(props: {
   onLoadHistory: (jobId: string) => Promise<void>;
 
 }) {
+
+  const [dbImportOpen, setDbImportOpen] = useState(false);
 
   const {
 
@@ -496,9 +494,7 @@ export function FlowPanel(props: {
         loading={props.loading}
         uploadFiles={uploadFiles}
         onUploadFilesChange={setUploadFiles}
-        currentResult={props.currentResult}
-        onUseCurrent={props.onUseCurrent}
-        onOpenImport={props.onOpenImport}
+        onOpenDatabaseImport={() => setDbImportOpen(true)}
         onImportData={props.onImportData}
         historyItems={historyItems}
         selectedHistory={selectedHistory}
@@ -506,6 +502,11 @@ export function FlowPanel(props: {
         onRefreshHistory={refreshHistory}
         onLoadHistory={props.onLoadHistory}
         onClose={() => setSourceModalOpen(false)}
+      />
+      <DBImportModal
+        open={dbImportOpen}
+        onClose={() => setDbImportOpen(false)}
+        onImported={props.onDatabaseImported}
       />
     </>
   );

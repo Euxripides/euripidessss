@@ -68,7 +68,8 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
 
 
-  const maxAmount = useMemo(() => Math.ceil(Math.max(0, ...edges.map((edge) => getEdgeAmount(edge)))), [edges]);
+  const maxAmount = useMemo(() => Math.ceil(Math.max(0, ...edges.map((edge) => getEdgeAmount(edge)))), [edges]);
+  const effectiveMinAmount = Math.min(minAmount, maxAmount || 0);
 
   const subjectOptions = useMemo(
 
@@ -116,7 +117,8 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
     const pathEdgeIds = new Set(pathResult.edges);
 
-    const timeCutoff = getTimeCutoff(latestEdgeTime, timeWindow);
+    const timeCutoff = getTimeCutoff(latestEdgeTime, timeWindow);
+    const hasEdgeFilter = effectiveMinAmount > 0 || Boolean(timeCutoff);
 
 
 
@@ -124,7 +126,7 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
       .filter((edge) => {
 
-        if (getEdgeAmount(edge) < minAmount) return false;
+        if (getEdgeAmount(edge) < effectiveMinAmount) return false;
 
         if (timeCutoff && getEdgeTime(edge, 'last') < timeCutoff) return false;
 
@@ -254,7 +256,7 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
 
 
-    const visibleNodes = (hasSubjectFilter || (renderLimit > 0 && renderLimit < edges.length) || pathNodeIds.size > 0)
+    const visibleNodes = (hasSubjectFilter || hasEdgeFilter || (renderLimit > 0 && renderLimit < edges.length) || pathNodeIds.size > 0)
 
       ? nodes
 
@@ -274,7 +276,7 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
     return { nodes: visibleNodes, edges: visibleEdges };
 
-  }, [arrowMode, edgeLabelMode, latestEdgeTime, lineColor, lineType, lineWidth, minAmount, nodePositions, optimizeAnchors, optimizedHandleMap, pathResult.edges, pathResult.nodes, edges, nodes, renderLimit, selectedEdgeIds, subjectIds, timeWindow]);
+  }, [arrowMode, edgeLabelMode, latestEdgeTime, lineColor, lineType, lineWidth, effectiveMinAmount, minAmount, nodePositions, optimizeAnchors, optimizedHandleMap, pathResult.edges, pathResult.nodes, edges, nodes, renderLimit, selectedEdgeIds, subjectIds, timeWindow]);
 
 
 

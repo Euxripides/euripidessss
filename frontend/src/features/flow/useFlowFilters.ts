@@ -512,6 +512,8 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
     end_date: dateRange?.[1]?.format?.('YYYY-MM-DD'),
 
+    max_edges: sourceFilterPayload.length || targetFilterPayload.length ? 5000 : 600,
+
 
 
     append: appendGraph,

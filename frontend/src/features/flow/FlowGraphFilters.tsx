@@ -21,6 +21,7 @@ export function FlowGraphFilters(props: {
   onCenterGraphLayer: (layerId: string) => void;
   formatMoney: (value: number) => string;
 }) {
+  const effectiveMinAmount = Math.min(props.minAmount, props.maxAmount || 0);
   return (
     <>
       <div className="inspector-title">
@@ -44,11 +45,11 @@ export function FlowGraphFilters(props: {
       <Slider
         min={0}
         max={props.maxAmount || 1}
-        value={Math.min(props.minAmount, props.maxAmount || 1)}
+        value={effectiveMinAmount}
         onChange={(value) => props.onMinAmountChange(Number(value))}
         tooltip={{ formatter: (value) => `>= ${props.formatMoney(Number(value ?? 0))}` }}
       />
-      <div className="filter-value">最小金额：{props.formatMoney(props.minAmount)}</div>
+      <div className="filter-value">最小金额：{props.formatMoney(effectiveMinAmount)}</div>
       <div className="inspector-title">
         <strong>路径追踪</strong>
         <span>{props.pathResult.nodes.length ? `${props.pathResult.nodes.length} 个主体` : '选择两端主体'}</span>

@@ -267,7 +267,7 @@ export function App() {
       }
       setResult(payload as ProcessResponse);
       flowOps.resetFlowGraph();
-      message.success("数据清洗完成，可在资金流向图中选择'清洗的文件'进行分析");
+      message.success("数据清洗完成，可在资金流向图中继续生成或导入数据分析");
     } catch (error) {
       failTransfer(
         networkMode,
@@ -362,7 +362,6 @@ export function App() {
                 edges={flowOps.edges}
                 meta={flowOps.flowMeta}
                 graphLayers={flowOps.graphLayers}
-                currentResult={result}
                 importedDataset={flowOps.importedDataset}
                 fieldMapping={flowOps.fieldMapping}
                 buildStatus={flowOps.flowBuildStatus}
@@ -378,13 +377,9 @@ export function App() {
                 onConnect={flowOps.onConnect}
                 onNodeClick={(_, node) => flowOps.setSelectedNode(node)}
                 onAddNode={flowOps.addManualNode}
-                onOpenImport={() => setActive("clean")}
-                onUseCurrent={() => {
-                  const result_ = flowOps.useCurrentCleanedGraph(result);
-                  if (result_ === "clean") setActive("clean");
-                }}
                 onUploadGraph={flowOps.uploadFlowGraph}
                 onImportData={flowOps.handleImportData}
+                onDatabaseImported={flowOps.acceptDatabaseImportedDataset}
                 onOpenMapping={() => modals.setMappingModalOpen(true)}
                 onBuildFilteredGraph={flowOps.buildFilteredGraph}
                 onSmartAnalyze={flowOps.runSmartAnalysis}

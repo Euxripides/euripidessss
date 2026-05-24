@@ -28,6 +28,7 @@ tmp/
 backend/data/logs/
 backend/data/outputs/
 backend/data/uploads/
+backend/data/db_import/
 
 # Local one-off repair/check scripts
 /check_*.py
