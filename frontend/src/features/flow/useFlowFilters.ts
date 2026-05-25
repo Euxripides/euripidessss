@@ -503,6 +503,52 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
+  const directionFilterPayload = normalizeDirectionFilterValues(directionValues);
+
+
+
+  const startDatePayload = dateRange?.[0]?.format?.('YYYY-MM-DD HH:mm:ss');
+
+
+
+  const endDatePayload = dateRange?.[1]?.format?.('YYYY-MM-DD HH:mm:ss');
+
+
+
+  const hasAuditFilter =
+
+
+
+    sourceFilterPayload.length > 0 ||
+
+
+
+    targetFilterPayload.length > 0 ||
+
+
+
+    detailFilterPayload.length > 0 ||
+
+
+
+    Boolean(sourceLabelColumn && sourceLabelValues.length) ||
+
+
+
+    Boolean(targetLabelColumn && targetLabelValues.length) ||
+
+
+
+    directionFilterPayload.length > 0 ||
+
+
+
+    Boolean(startDatePayload || endDatePayload);
+
+
+
+
+
   const filterPayload = {
 
 
@@ -599,17 +645,17 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
-    directions: normalizeDirectionFilterValues(directionValues),
+    directions: directionFilterPayload,
 
 
 
-    start_date: dateRange?.[0]?.format?.('YYYY-MM-DD HH:mm:ss'),
+    start_date: startDatePayload,
 
 
 
-    end_date: dateRange?.[1]?.format?.('YYYY-MM-DD HH:mm:ss'),
+    end_date: endDatePayload,
 
-    max_edges: sourceFilterPayload.length || targetFilterPayload.length || detailFilterPayload.length ? 5000 : 600,
+    max_edges: hasAuditFilter ? 5000 : 600,
 
 
 

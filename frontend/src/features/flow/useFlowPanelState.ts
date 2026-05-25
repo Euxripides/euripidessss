@@ -285,6 +285,13 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
   }
 
   function handleNodeDragStart(_event: React.MouseEvent, node: Node) {
+    const selectedNodeIds = props.nodes
+      .filter((item) => item.selected)
+      .map((item) => item.id);
+    if (selectedNodeIds.length > 1 && selectedNodeIds.includes(node.id)) {
+      layerDragRef.current = null;
+      return;
+    }
     const layerId = String(node.data?.graphLayerId ?? "");
     layerDragRef.current =
       layerId && selectedGraphLayerIds.includes(layerId)

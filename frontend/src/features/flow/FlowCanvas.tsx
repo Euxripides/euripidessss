@@ -13,6 +13,7 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  SelectionMode,
   type Edge,
   type Node,
   type OnConnect,
@@ -162,6 +163,11 @@ export function FlowCanvas(props: FlowCanvasProps) {
         edges={props.visibleGraph.edges}
         nodeTypes={flowNodeTypes}
         edgeTypes={flowEdgeTypes}
+        selectionOnDrag
+        selectionMode={SelectionMode.Partial}
+        panOnDrag={[1, 2]}
+        nodesDraggable
+        selectNodesOnDrag={false}
         elevateEdgesOnSelect
         onInit={props.onReactFlowInit}
         onNodesChange={props.onNodesChange}

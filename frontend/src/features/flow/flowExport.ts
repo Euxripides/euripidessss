@@ -3,6 +3,11 @@ import { toCanvas, toSvg } from 'html-to-image';
 import JSZip from 'jszip';
 import type { CanvasImageExportFormat, GraphExportFormat, GraphExportPayload, GraphLayer } from './flowTypes';
 
+const EXPORT_PADDING = 120;
+const MAX_RASTER_DIMENSION = 12000;
+const MAX_RASTER_AREA = 80_000_000;
+const MAX_SVG_DIMENSION = 32000;
+
 export function saveBlob(blob: Blob, filename: string) {
   const blobUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -29,13 +34,14 @@ export async function exportCanvasImage(format: CanvasImageExportFormat, contain
 
 async function captureCanvasRaster(container: HTMLElement | null, format: Exclude<CanvasImageExportFormat, 'svg'>) {
   const target = findReactFlowExportTarget(container);
-  const { restore, bounds } = expandForFullCapture(target);
+  const { restore, bounds } = expandForFullCapture(target, 'raster');
   try {
+    await waitForPaint();
     const canvas = await toCanvas(target, {
       backgroundColor: '#fbfcfe',
       cacheBust: true,
       filter: shouldExportDomNode,
-      pixelRatio: 2,
+      pixelRatio: 1,
       width: bounds.width,
       height: bounds.height,
     });
@@ -48,8 +54,9 @@ async function captureCanvasRaster(container: HTMLElement | null, format: Exclud
 
 async function captureCanvasSvg(container: HTMLElement | null) {
   const target = findReactFlowExportTarget(container);
-  const { restore, bounds } = expandForFullCapture(target);
+  const { restore, bounds } = expandForFullCapture(target, 'svg');
   try {
+    await waitForPaint();
     const dataUrl = await toSvg(target, {
       backgroundColor: '#fbfcfe',
       cacheBust: true,
@@ -86,63 +93,108 @@ function shouldExportDomNode(node: HTMLElement) {
 /**
  * Temporarily expands the ReactFlow container to encompass all graph nodes,
  * so html-to-image captures the full graph instead of only the visible viewport.
+ * Raster export is scaled down when needed to stay below browser canvas limits;
+ * this preserves the complete canvas instead of returning a truncated image.
  * Returns a restore function and the expanded bounds.
  */
-function expandForFullCapture(target: HTMLElement) {
+function expandForFullCapture(target: HTMLElement, mode: 'raster' | 'svg') {
   const viewport = target.querySelector('.react-flow__viewport') as HTMLElement | null;
   const nodes = target.querySelectorAll('.react-flow__node');
 
   const empty = { restore: () => {}, bounds: { width: 0, height: 0 } };
   if (!viewport || nodes.length === 0) return empty;
 
-  // Compute bounding box of all nodes relative to the container
   const targetRect = target.getBoundingClientRect();
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const transform = parseViewportTransform(viewport.style.transform || getComputedStyle(viewport).transform);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
 
   nodes.forEach((node) => {
     const rect = node.getBoundingClientRect();
-    minX = Math.min(minX, rect.left - targetRect.left);
-    minY = Math.min(minY, rect.top - targetRect.top);
-    maxX = Math.max(maxX, rect.right - targetRect.left);
-    maxY = Math.max(maxY, rect.bottom - targetRect.top);
+    const left = (rect.left - targetRect.left - transform.x) / transform.scale;
+    const top = (rect.top - targetRect.top - transform.y) / transform.scale;
+    const right = (rect.right - targetRect.left - transform.x) / transform.scale;
+    const bottom = (rect.bottom - targetRect.top - transform.y) / transform.scale;
+    minX = Math.min(minX, left);
+    minY = Math.min(minY, top);
+    maxX = Math.max(maxX, right);
+    maxY = Math.max(maxY, bottom);
   });
 
   if (!isFinite(minX)) return empty;
 
-  // Save original styles
   const origOverflow = target.style.overflow;
   const origWidth = target.style.width;
   const origHeight = target.style.height;
+  const origMinWidth = target.style.minWidth;
+  const origMinHeight = target.style.minHeight;
   const origViewportTransform = viewport.style.transform;
 
-  const padding = 40;
-  const fullWidth = Math.ceil(maxX - minX + padding * 2);
-  const fullHeight = Math.ceil(maxY - minY + padding * 2);
+  const graphWidth = Math.max(1, maxX - minX + EXPORT_PADDING * 2);
+  const graphHeight = Math.max(1, maxY - minY + EXPORT_PADDING * 2);
+  const exportScale = mode === 'raster'
+    ? safeRasterScale(graphWidth, graphHeight)
+    : safeVectorScale(graphWidth, graphHeight);
+  const fullWidth = Math.ceil(graphWidth * exportScale);
+  const fullHeight = Math.ceil(graphHeight * exportScale);
 
-  // Parse current viewport scale
-  let scale = 1;
-  const scaleMatch = origViewportTransform.match(/scale\(([\d.]+)\)/);
-  if (scaleMatch) scale = parseFloat(scaleMatch[1]);
-
-  // Expand container so nothing is clipped
   target.style.overflow = 'visible';
   target.style.width = `${fullWidth}px`;
   target.style.height = `${fullHeight}px`;
+  target.style.minWidth = `${fullWidth}px`;
+  target.style.minHeight = `${fullHeight}px`;
 
-  // Re-center the content so the leftmost/topmost node is at (padding, padding)
-  const offsetX = padding - minX;
-  const offsetY = padding - minY;
-  viewport.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+  const offsetX = (EXPORT_PADDING - minX) * exportScale;
+  const offsetY = (EXPORT_PADDING - minY) * exportScale;
+  viewport.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${exportScale})`;
 
   return {
     restore: () => {
       target.style.overflow = origOverflow;
       target.style.width = origWidth;
       target.style.height = origHeight;
+      target.style.minWidth = origMinWidth;
+      target.style.minHeight = origMinHeight;
       viewport.style.transform = origViewportTransform;
     },
-    bounds: { width: fullWidth, height: fullHeight },
+    bounds: { width: fullWidth, height: fullHeight, scale: exportScale },
   };
+}
+
+function parseViewportTransform(transform: string) {
+  if (!transform || transform === 'none') return { x: 0, y: 0, scale: 1 };
+  const matrix = transform.match(/^matrix\(([-\d.eE+, ]+)\)$/);
+  if (matrix) {
+    const parts = matrix[1].split(',').map((part) => Number(part.trim()));
+    return {
+      x: Number.isFinite(parts[4]) ? parts[4] : 0,
+      y: Number.isFinite(parts[5]) ? parts[5] : 0,
+      scale: Number.isFinite(parts[0]) && parts[0] !== 0 ? Math.abs(parts[0]) : 1,
+    };
+  }
+  const translate = transform.match(/translate\(\s*([-\d.eE]+)px(?:,\s*| )([-\d.eE]+)px\s*\)/);
+  const scale = transform.match(/scale\(\s*([-\d.eE]+)\s*\)/);
+  return {
+    x: translate ? Number(translate[1]) || 0 : 0,
+    y: translate ? Number(translate[2]) || 0 : 0,
+    scale: scale ? Math.abs(Number(scale[1])) || 1 : 1,
+  };
+}
+
+function safeRasterScale(width: number, height: number) {
+  const dimensionScale = Math.min(1, MAX_RASTER_DIMENSION / width, MAX_RASTER_DIMENSION / height);
+  const areaScale = Math.min(1, Math.sqrt(MAX_RASTER_AREA / Math.max(1, width * height)));
+  return Math.max(0.02, Math.min(dimensionScale, areaScale));
+}
+
+function safeVectorScale(width: number, height: number) {
+  return Math.max(0.02, Math.min(1, MAX_SVG_DIMENSION / width, MAX_SVG_DIMENSION / height));
+}
+
+function waitForPaint() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number) {

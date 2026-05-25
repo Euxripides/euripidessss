@@ -45,7 +45,12 @@ export function EdgeStylePanel(props: {
         </Button>
         {!isBatch && (
           <Space.Compact className="full">
-            <DatePicker.RangePicker className="full" value={dateRange} onChange={setDateRange} />
+            <DatePicker.RangePicker
+              className="full"
+              value={dateRange}
+              onChange={setDateRange}
+              placeholder={['开始时间', '结束时间']}
+            />
             <Button onClick={() => props.onRecalculateDateRange(dateRange)}>重算</Button>
           </Space.Compact>
         )}

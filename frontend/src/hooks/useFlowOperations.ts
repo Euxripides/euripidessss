@@ -2819,6 +2819,10 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
+          sourceLabelValues: values.source_label_values as string[] | undefined,
+
+
+
 
 
 
@@ -2839,6 +2843,10 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
           targetValues: values.target_values as string[] | undefined,
+
+
+
+          targetLabelValues: values.target_label_values as string[] | undefined,
 
 
 

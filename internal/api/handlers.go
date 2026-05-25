@@ -55,26 +55,35 @@ type flowColumnMapping struct {
 }
 
 type EdgeDetailPayload struct {
-	SessionID    string `json:"session_id"`
-	SourceColumn string `json:"source_column"`
-	TargetColumn string `json:"target_column"`
-	AmountColumn string `json:"amount_column"`
-	TimeColumn   string `json:"time_column"`
-	Source       string `json:"source"`
-	Target       string `json:"target"`
-	Limit        int    `json:"limit"`
+	SessionID       string `json:"session_id"`
+	SourceColumn    string `json:"source_column"`
+	TargetColumn    string `json:"target_column"`
+	AmountColumn    string `json:"amount_column"`
+	TimeColumn      string `json:"time_column"`
+	DirectionColumn string `json:"direction_column"`
+	Source          string `json:"source"`
+	Target          string `json:"target"`
+	Limit           int    `json:"limit"`
 
-	SourceAccountColumn string `json:"source_account_column"`
-	SourceNameColumn    string `json:"source_name_column"`
-	SourceIDColumn      string `json:"source_id_column"`
-	SourceLabelColumn   string `json:"source_label_column"`
-	TargetCardColumn    string `json:"target_card_column"`
-	TargetNameColumn    string `json:"target_name_column"`
-	TargetIDColumn      string `json:"target_id_column"`
-	TargetLabelColumn   string `json:"target_label_column"`
-	SerialColumn        string `json:"serial_column"`
-	SummaryColumn       string `json:"summary_column"`
-	RemarkColumn        string `json:"remark_column"`
+	SourceAccountColumn string        `json:"source_account_column"`
+	SourceNameColumn    string        `json:"source_name_column"`
+	SourceIDColumn      string        `json:"source_id_column"`
+	SourceLabelColumn   string        `json:"source_label_column"`
+	TargetCardColumn    string        `json:"target_card_column"`
+	TargetNameColumn    string        `json:"target_name_column"`
+	TargetIDColumn      string        `json:"target_id_column"`
+	TargetLabelColumn   string        `json:"target_label_column"`
+	SerialColumn        string        `json:"serial_column"`
+	SummaryColumn       string        `json:"summary_column"`
+	RemarkColumn        string        `json:"remark_column"`
+	SourceFilters       []interface{} `json:"source_filters"`
+	TargetFilters       []interface{} `json:"target_filters"`
+	DetailFilters       []interface{} `json:"detail_filters"`
+	SourceLabelValues   []interface{} `json:"source_label_values"`
+	TargetLabelValues   []interface{} `json:"target_label_values"`
+	Directions          []interface{} `json:"directions"`
+	StartDate           string        `json:"start_date"`
+	EndDate             string        `json:"end_date"`
 }
 
 func flowColumnMappingFromPayload(payload map[string]interface{}) flowColumnMapping {
@@ -513,8 +522,9 @@ func HandleImportedFlowEdgeDetail(c *gin.Context) {
 	}
 	// Calculate total amount
 	var totalAmount float64
+	amountColumn := parser.NormalizeHeader(payload.AmountColumn)
 	for _, row := range rows {
-		if v, ok := row[payload.AmountColumn]; ok {
+		if v, ok := row[amountColumn]; ok {
 			if s, ok := v.(string); ok {
 				totalAmount += parser.ToNumber(s)
 			}
@@ -1012,23 +1022,7 @@ func rowsToSample(rows [][]string, columns []string, maxRows int) []map[string]i
 // readSessionData reads session files and builds TransactionRows with column mapping
 func readSessionData(sessionDir string, mapping flowColumnMapping, dirMap map[string]string) []model.TransactionRow {
 	var txns []model.TransactionRow
-	// Normalize all column lookup keys to match normalized headers
-	mapping.SourceCol = parser.NormalizeHeader(mapping.SourceCol)
-	mapping.SourceAccount = parser.NormalizeHeader(mapping.SourceAccount)
-	mapping.SourceName = parser.NormalizeHeader(mapping.SourceName)
-	mapping.SourceID = parser.NormalizeHeader(mapping.SourceID)
-	mapping.SourceLabel = parser.NormalizeHeader(mapping.SourceLabel)
-	mapping.TargetCol = parser.NormalizeHeader(mapping.TargetCol)
-	mapping.TargetCard = parser.NormalizeHeader(mapping.TargetCard)
-	mapping.TargetName = parser.NormalizeHeader(mapping.TargetName)
-	mapping.TargetID = parser.NormalizeHeader(mapping.TargetID)
-	mapping.TargetLabel = parser.NormalizeHeader(mapping.TargetLabel)
-	mapping.Amount = parser.NormalizeHeader(mapping.Amount)
-	mapping.Time = parser.NormalizeHeader(mapping.Time)
-	mapping.Direction = parser.NormalizeHeader(mapping.Direction)
-	mapping.Serial = parser.NormalizeHeader(mapping.Serial)
-	mapping.Summary = parser.NormalizeHeader(mapping.Summary)
-	mapping.Remark = parser.NormalizeHeader(mapping.Remark)
+	mapping = normalizeFlowColumnMapping(mapping)
 	// Also normalize dirMap keys for consistent matching
 	normalizedDirMap := make(map[string]string, len(dirMap))
 	for k, v := range rules.LoadDirectionAliases() {
@@ -1076,43 +1070,70 @@ func readSessionData(sessionDir string, mapping flowColumnMapping, dirMap map[st
 		}
 
 		for _, row := range rows[1:] {
-			txn := make(model.TransactionRow)
-			setMappedValue := func(sourceColumn, targetColumn string) {
-				if sourceColumn == "" {
-					return
-				}
-				if idx, ok := colIdx[sourceColumn]; ok && idx < len(row) {
-					txn[targetColumn] = row[idx]
-				}
-			}
-
-			// Map source columns
-			setMappedValue(firstNonEmpty(mapping.SourceCol, mapping.SourceName, mapping.SourceAccount, mapping.SourceID), "交易户名")
-			setMappedValue(mapping.SourceAccount, "交易账号")
-			setMappedValue(mapping.SourceID, "交易方身份证号")
-			setMappedValue(mapping.SourceLabel, "交易方标签")
-			setMappedValue(firstNonEmpty(mapping.TargetCol, mapping.TargetName, mapping.TargetCard, mapping.TargetID), "对手户名")
-			setMappedValue(mapping.TargetCard, "交易对手账卡号")
-			setMappedValue(mapping.TargetID, "对手身份证号")
-			setMappedValue(mapping.TargetLabel, "对手标签")
-			setMappedValue(mapping.Amount, "交易金额")
-			setMappedValue(mapping.Time, "交易时间")
-			setMappedValue(mapping.Serial, "交易流水号")
-			setMappedValue(mapping.Summary, "摘要说明")
-			setMappedValue(mapping.Remark, "备注")
-			if mapping.Direction != "" {
-				if idx, ok := colIdx[mapping.Direction]; ok && idx < len(row) {
-					val := normalizeFlowDirection(row[idx], normalizedDirMap)
-					txn["\u6536\u4ed8\u6807\u5fd7"] = val
-				}
-			}
-
-			txns = append(txns, txn)
+			txns = append(txns, transactionFromMappedRow(row, colIdx, mapping, normalizedDirMap))
 		}
 		return nil
 	})
 
 	return txns
+}
+
+func normalizeFlowColumnMapping(mapping flowColumnMapping) flowColumnMapping {
+	mapping.SourceCol = parser.NormalizeHeader(mapping.SourceCol)
+	mapping.SourceAccount = parser.NormalizeHeader(mapping.SourceAccount)
+	mapping.SourceName = parser.NormalizeHeader(mapping.SourceName)
+	mapping.SourceID = parser.NormalizeHeader(mapping.SourceID)
+	mapping.SourceLabel = parser.NormalizeHeader(mapping.SourceLabel)
+	mapping.TargetCol = parser.NormalizeHeader(mapping.TargetCol)
+	mapping.TargetCard = parser.NormalizeHeader(mapping.TargetCard)
+	mapping.TargetName = parser.NormalizeHeader(mapping.TargetName)
+	mapping.TargetID = parser.NormalizeHeader(mapping.TargetID)
+	mapping.TargetLabel = parser.NormalizeHeader(mapping.TargetLabel)
+	mapping.Amount = parser.NormalizeHeader(mapping.Amount)
+	mapping.Time = parser.NormalizeHeader(mapping.Time)
+	mapping.Direction = parser.NormalizeHeader(mapping.Direction)
+	mapping.Serial = parser.NormalizeHeader(mapping.Serial)
+	mapping.Summary = parser.NormalizeHeader(mapping.Summary)
+	mapping.Remark = parser.NormalizeHeader(mapping.Remark)
+	return mapping
+}
+
+func transactionFromMappedRow(row []string, colIdx map[string]int, mapping flowColumnMapping, dirMap map[string]string) model.TransactionRow {
+	txn := make(model.TransactionRow)
+	setMappedValue := func(sourceColumn, targetColumn string) {
+		if sourceColumn == "" {
+			return
+		}
+		if idx, ok := colIdx[sourceColumn]; ok && idx < len(row) {
+			txn[targetColumn] = row[idx]
+		}
+	}
+
+	setMappedValue(firstNonEmpty(mapping.SourceCol, mapping.SourceName, mapping.SourceAccount, mapping.SourceID), "交易户名")
+	setMappedValue(mapping.SourceAccount, "交易账号")
+	setMappedValue(mapping.SourceID, "交易方身份证号")
+	setMappedValue(mapping.SourceLabel, "交易方标签")
+	setMappedValue(firstNonEmpty(mapping.TargetCol, mapping.TargetName, mapping.TargetCard, mapping.TargetID), "对手户名")
+	setMappedValue(mapping.TargetCard, "交易对手账卡号")
+	setMappedValue(mapping.TargetID, "对手身份证号")
+	setMappedValue(mapping.TargetLabel, "对手标签")
+	setMappedValue(mapping.Amount, "交易金额")
+	setMappedValue(mapping.Time, "交易时间")
+	setMappedValue(mapping.Serial, "交易流水号")
+	setMappedValue(mapping.Summary, "摘要说明")
+	setMappedValue(mapping.Remark, "备注")
+	if mapping.Direction != "" {
+		if idx, ok := colIdx[mapping.Direction]; ok && idx < len(row) {
+			txn["\u6536\u4ed8\u6807\u5fd7"] = normalizeFlowDirection(row[idx], dirMap)
+		}
+	}
+	if txn["交易时间"] != "" {
+		txn["交易时间"] = parser.NormalizeDatetime(txn["交易时间"])
+	}
+	if txn["交易金额"] != "" {
+		txn["交易金额"] = parser.FloatToStr(parser.ToNumber(txn["交易金额"]))
+	}
+	return txn
 }
 
 func normalizeFlowDirection(value string, aliases map[string]string) string {
@@ -1161,6 +1182,17 @@ func checkUnknownDirections(txns []model.TransactionRow) []string {
 
 // applyFilters applies source/target filters to transactions
 func applyFilters(txns []model.TransactionRow, payload map[string]interface{}) []model.TransactionRow {
+	filtered := make([]model.TransactionRow, 0)
+
+	for _, txn := range txns {
+		if transactionMatchesFilters(txn, payload) {
+			filtered = append(filtered, txn)
+		}
+	}
+	return filtered
+}
+
+func transactionMatchesFilters(txn model.TransactionRow, payload map[string]interface{}) bool {
 	sourceFilters, _ := payload["source_filters"].([]interface{})
 	targetFilters, _ := payload["target_filters"].([]interface{})
 	detailFilters, _ := payload["detail_filters"].([]interface{})
@@ -1169,20 +1201,14 @@ func applyFilters(txns []model.TransactionRow, payload map[string]interface{}) [
 	targetLabelValues := stringSet(payload["target_label_values"])
 	startDate, _ := payload["start_date"].(string)
 	endDate, _ := payload["end_date"].(string)
-	filtered := make([]model.TransactionRow, 0)
 
-	for _, txn := range txns {
-		if matchesFilterGroups(txn, sourceFilters) &&
-			matchesFilterGroups(txn, targetFilters) &&
-			matchesFilterGroups(txn, detailFilters) &&
-			matchesValueSet(txn["交易方标签"], sourceLabelValues) &&
-			matchesValueSet(txn["对手标签"], targetLabelValues) &&
-			matchesDirection(txn, directions) &&
-			matchesDateRange(txn, startDate, endDate) {
-			filtered = append(filtered, txn)
-		}
-	}
-	return filtered
+	return matchesFilterGroups(txn, sourceFilters) &&
+		matchesFilterGroups(txn, targetFilters) &&
+		matchesFilterGroups(txn, detailFilters) &&
+		matchesValueSet(txn["交易方标签"], sourceLabelValues) &&
+		matchesValueSet(txn["对手标签"], targetLabelValues) &&
+		matchesDirection(txn, directions) &&
+		matchesDateRange(txn, startDate, endDate)
 }
 
 func flowEdgeLimit(payload map[string]interface{}) int {
@@ -1195,7 +1221,16 @@ func flowEdgeLimit(payload map[string]interface{}) int {
 	sourceFilters, _ := payload["source_filters"].([]interface{})
 	targetFilters, _ := payload["target_filters"].([]interface{})
 	detailFilters, _ := payload["detail_filters"].([]interface{})
-	if hasActiveFilterGroups(sourceFilters) || hasActiveFilterGroups(targetFilters) || hasActiveFilterGroups(detailFilters) {
+	startDate, _ := payload["start_date"].(string)
+	endDate, _ := payload["end_date"].(string)
+	if hasActiveFilterGroups(sourceFilters) ||
+		hasActiveFilterGroups(targetFilters) ||
+		hasActiveFilterGroups(detailFilters) ||
+		hasActiveValues(payload["source_label_values"]) ||
+		hasActiveValues(payload["target_label_values"]) ||
+		hasActiveValues(payload["directions"]) ||
+		strings.TrimSpace(startDate) != "" ||
+		strings.TrimSpace(endDate) != "" {
 		return auditFlowEdgeLimit
 	}
 	return defaultFlowEdgeLimit
@@ -1228,6 +1263,10 @@ func hasActiveFilterGroups(filters []interface{}) bool {
 		}
 	}
 	return false
+}
+
+func hasActiveValues(raw interface{}) bool {
+	return len(stringSet(raw)) > 0
 }
 
 func matchesFilterGroups(txn model.TransactionRow, filters []interface{}) bool {
@@ -1382,6 +1421,30 @@ func extractColumnValues(sessionDir string, column string, limit int) []string {
 // queryEdgeRows queries transaction rows matching source/target
 func queryEdgeRows(sessionDir string, p EdgeDetailPayload) []map[string]interface{} {
 	var result []map[string]interface{}
+	mapping := normalizeFlowColumnMapping(flowColumnMapping{
+		SourceCol:     p.SourceColumn,
+		SourceAccount: p.SourceAccountColumn,
+		SourceName:    p.SourceNameColumn,
+		SourceID:      p.SourceIDColumn,
+		SourceLabel:   p.SourceLabelColumn,
+		TargetCol:     p.TargetColumn,
+		TargetCard:    p.TargetCardColumn,
+		TargetName:    p.TargetNameColumn,
+		TargetID:      p.TargetIDColumn,
+		TargetLabel:   p.TargetLabelColumn,
+		Amount:        p.AmountColumn,
+		Time:          p.TimeColumn,
+		Direction:     p.DirectionColumn,
+		Serial:        p.SerialColumn,
+		Summary:       p.SummaryColumn,
+		Remark:        p.RemarkColumn,
+	})
+	filterPayload := edgeDetailFilterPayload(p)
+	dirMap := make(map[string]string)
+	for k, v := range rules.LoadDirectionAliases() {
+		dirMap[strings.TrimSpace(k)] = v
+		dirMap[parser.NormalizeHeader(k)] = v
+	}
 
 	filepath.Walk(sessionDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -1419,13 +1482,12 @@ func queryEdgeRows(sessionDir string, p EdgeDetailPayload) []map[string]interfac
 		}
 
 		for _, row := range rows[1:] {
-			if len(result) >= p.Limit {
-				break
-			}
-			if !rowMatchesAnyColumn(row, colIdx, p.Source, p.SourceColumn, p.SourceAccountColumn, p.SourceNameColumn, p.SourceIDColumn) {
+			txn := transactionFromMappedRow(row, colIdx, mapping, dirMap)
+			if !transactionMatchesFilters(txn, filterPayload) {
 				continue
 			}
-			if !rowMatchesAnyColumn(row, colIdx, p.Target, p.TargetColumn, p.TargetCardColumn, p.TargetNameColumn, p.TargetIDColumn) {
+			source, target := flowEndpointsForTransaction(txn)
+			if source != p.Source || target != p.Target {
 				continue
 			}
 			m := make(map[string]interface{})
@@ -1434,6 +1496,8 @@ func queryEdgeRows(sessionDir string, p EdgeDetailPayload) []map[string]interfac
 					m[parser.NormalizeHeader(h)] = row[j]
 				}
 			}
+			m["流向源"] = source
+			m["流向目标"] = target
 			result = append(result, m)
 		}
 		return nil
@@ -1442,19 +1506,43 @@ func queryEdgeRows(sessionDir string, p EdgeDetailPayload) []map[string]interfac
 	return result
 }
 
-func rowMatchesAnyColumn(row []string, colIdx map[string]int, expected string, columns ...string) bool {
-	if expected == "" {
-		return true
+func edgeDetailFilterPayload(p EdgeDetailPayload) map[string]interface{} {
+	return map[string]interface{}{
+		"source_filters":      p.SourceFilters,
+		"target_filters":      p.TargetFilters,
+		"detail_filters":      p.DetailFilters,
+		"source_label_values": p.SourceLabelValues,
+		"target_label_values": p.TargetLabelValues,
+		"directions":          p.Directions,
+		"start_date":          p.StartDate,
+		"end_date":            p.EndDate,
 	}
-	for _, column := range columns {
-		column = parser.NormalizeHeader(column)
-		if column == "" {
-			continue
-		}
-		idx, ok := colIdx[column]
-		if ok && idx < len(row) && strings.TrimSpace(row[idx]) == expected {
-			return true
-		}
+}
+
+func flowEndpointsForTransaction(txn model.TransactionRow) (string, string) {
+	own := txn["交易卡号"]
+	if own == "" {
+		own = txn["交易账号"]
 	}
-	return false
+	if own == "" {
+		own = txn["交易户名"]
+	}
+	if own == "" {
+		own = "本方未知"
+	}
+	counter := txn["交易对手账卡号"]
+	if counter == "" {
+		counter = txn["对手户名"]
+	}
+	if counter == "" {
+		counter = "对手未知"
+	}
+	switch txn["收付标志"] {
+	case "出":
+		return own, counter
+	case "进":
+		return counter, own
+	default:
+		return "", ""
+	}
 }

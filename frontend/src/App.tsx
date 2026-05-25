@@ -22,6 +22,9 @@ import {
   message,
   theme,
 } from "antd";
+import zhCN from "antd/locale/zh_CN";
+import dayjs from "dayjs";
+import "dayjs/locale/zh-cn";
 import type { MenuProps, UploadFile } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -184,6 +187,8 @@ import { useFlowModals } from "./hooks/useFlowModals";
 
 const { Sider, Content } = Layout;
 
+dayjs.locale("zh-cn");
+
 const menuItems = [
   { key: "clean", icon: <UploadOutlined />, label: "数据清洗" },
   { key: "graph", icon: <ApartmentOutlined />, label: "资金流向图" },
@@ -300,6 +305,7 @@ export function App() {
 
   return (
     <ConfigProvider
+      locale={zhCN}
       theme={{
         algorithm: theme.defaultAlgorithm,
         token: {

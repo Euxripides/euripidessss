@@ -104,8 +104,10 @@ export type GraphDetailContext = {
   directionColumn?: string;
   sourceValues?: string[];
   sourceFilters?: SourceFilterPayload[];
+  sourceLabelValues?: string[];
   targetValues?: string[];
   targetFilters?: TargetFilterPayload[];
+  targetLabelValues?: string[];
   detailFilters?: DetailFilterPayload[];
   directionValues?: string[];
   startDate?: string;

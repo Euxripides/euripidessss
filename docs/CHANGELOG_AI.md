@@ -1,37 +1,106 @@
-﻿### 2026-05-25 当前
+﻿### 2026-05-25 15:13
 
 #### 本次任务
+- 将日期筛选框和日期选择弹层改为中文显示，避免 Ant Design 日期控件出现英文文案。
+
+#### 新增功能
+- 全局 Ant Design `ConfigProvider` 使用中文 locale。
+- 全局 dayjs locale 设置为 `zh-cn`，日期面板月份、星期、按钮等文案按中文显示。
+- 线条样式面板日期范围框补充 `开始时间` / `结束时间` 中文占位符。
+
+#### 修改文件
+- `frontend/src/App.tsx`
+- `frontend/src/features/flow/EdgeStylePanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- `App.tsx` 引入 `antd/locale/zh_CN`、`dayjs` 和 `dayjs/locale/zh-cn`，并在 `ConfigProvider` 上设置 `locale={zhCN}`。
+- `EdgeStylePanel.tsx` 的 `DatePicker.RangePicker` 明确设置中文占位符。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有的大 chunk warning。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `rg -n "�" frontend\src\App.tsx frontend\src\features\flow\EdgeStylePanel.tsx frontend\dist\assets` 无匹配。
+- `frontend/dist/index.html` 已引用当前构建产物 `assets/index-B2S0PUmd.js` 和 `assets/index-B-imr4oU.css`。
+- `http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+- `http://127.0.0.1:8000` 已引用当前构建产物 `assets/index-B2S0PUmd.js` 和 `assets/index-B-imr4oU.css`。
+
+#### 未完成/待确认
+- 浏览器如果缓存旧资源，需要强制刷新后再查看日期控件。
+- 本次未新增依赖；`dayjs` 来自现有 Ant Design 依赖树。
+
+### 2026-05-25 当前
+
+#### 本次任务
+- 修复导入交易时间格式与后台标准格式不一致时，时间筛选和审计统计口径不一致的问题。
+- 重新进行后端审计统计校验，要求所有筛选条件同时带入后，统计、建图、线条明细一致。
+- 修复点击资金流向图线条后，明细弹窗的笔数、金额和真实流向与 Excel 手工统计不一致的问题。
 - 修复点击线条后明细数据为空的问题：后端 queryEdgeRows 只匹配主列，当实体名来自备用列时（如 交易账号 而非 交易户名）匹配不到任何行。
 
 #### 新增功能
+- 导入流向图数据时，映射后的 `交易时间` 会统一归一化为 `YYYY-MM-DD HH:mm:ss`，再参与预览、筛选、统计、建图和明细匹配。
+- `parser.NormalizeDatetime` 扩展支持 Excel 序列日期、紧凑数字时间、单双位年月日、中文年月日时分秒、点号/斜杠日期、毫秒、RFC3339 时区、Unix 秒/毫秒等常见交易时间格式。
+- 任一筛选条件生效时都会使用 5000 条审计关系上限，包括交易方、对手方、双方标签、明细字段、方向、开始时间、结束时间。
+- 新增后端审计测试：混合时间格式数据 + 交易方筛选 + 对手方筛选 + 双方标签 + 流水号 + 摘要 + 备注 + 方向 + 起止时间全部同时带入后，核对筛选统计、建图边、线条明细的笔数和金额一致。
 - 边缘明细数据现在能正确匹配通过备用列（交易账号/交易户名/交易方身份证号/对手卡号/对手户名等）解析的实体名称。
 - 新增 lowColumnMapping 结构体和 lowColumnMappingFromPayload 函数，统一管理列映射提取。
 - matchesDateRange 时间过滤逻辑增加了 
 ormalizeFilterBoundary 精确时间边界处理。
+- 边缘明细现在按建图同一套逻辑先生成标准交易行、归一化收付标志、应用当前筛选条件，再按计算出的真实资金流向匹配被点击的边。
+- 对 `收付标志=进` 的原始流水，明细查询会按“对手 -> 本方”匹配线条，不再误按“本方 -> 对手”匹配。
+- 明细接口现在会应用当前图层的源/目标筛选、标签筛选、明细字段筛选、方向筛选和时间范围。
+- 明细返回行新增 `流向源`、`流向目标` 字段。
+- 明细总笔数和总金额在服务端按全部匹配行统计，再按 limit 截断返回行。
 
 #### 修改文件
 - internal/api/handlers.go
+- internal/api/handlers_test.go
+- frontend/src/features/flow/flowApi.ts
+- frontend/src/features/flow/flowTypes.ts
+- frontend/src/features/flow/useFlowFilters.ts
+- frontend/src/hooks/useFlowOperations.ts
+- internal/parser/parser.go
+- internal/parser/parser_test.go
 - docs/AI_HANDOFF.md
 - docs/CHANGELOG_AI.md
 
 #### 接口变化
 - 无新增/删除/重命名端点路径。
 - /api/flow/edge-detail/imported 请求体新增可选字段：source_account_column, source_name_column, source_id_column, source_label_column, 	arget_card_column, 	arget_name_column, 	arget_id_column, 	arget_label_column。
+- /api/flow/edge-detail/imported 继续兼容原请求体，并补充使用以下已有/新增可选字段：direction_column、source_filters、target_filters、detail_filters、source_label_values、target_label_values、directions、start_date、end_date。
+- /api/flow/edge-detail/imported 响应 rows 中新增 `流向源`、`流向目标` 两列。
+- /api/flow/build 的请求/响应路径不变；后端现在会对所有活跃筛选条件使用审计上限并用归一化后的交易时间统计。
 
 #### 数据库变化
 - 无。
 
 #### 前端变化
-- 无。
+- 图层的边明细上下文会把源/目标标签筛选值一并传给后端，确保点击线条后的明细口径与当前图一致。
+- 前端构建图 payload 的 `max_edges` 判断改为任意筛选条件生效即请求 5000 条审计关系上限，覆盖标签、方向和时间筛选。
 
 #### 验证结果
 - go build -o bin\etl-server.exe .\cmd\server\ 通过
 - go test ./internal/... — 全部 29 个测试通过
 - cd frontend; npm run build — TypeScript + Vite 构建通过
+- go test ./internal/api -run "TestQueryEdgeRowsMatchesDirectedGraphEndpointAndFilters|TestFlowFilterEndToEndAuditMatchesGraphAggregates" -count=1 -v 通过
+- go test ./internal/api -run "TestFlowEdgeLimitUsesAuditLimitForAnyActiveFilter|TestFlowAuditAllFiltersAndMixedTimeFormatsStayConsistent" -count=1 -v 通过
+- go test ./internal/parser -run TestNormalizeDatetime -count=1 -v 通过
+- cd E:\codex\etl\frontend; npx tsc --noEmit 通过
+- go vet ./internal/... 通过
+- 已重启 E:\codex\etl\bin\etl-server.exe，http://127.0.0.1:8000/api/health 返回 {"status":"ok"}。
+- http://127.0.0.1:8000 已引用当前构建产物 assets/index-CS-QR2Md.js 和 assets/index-B-imr4oU.css。
 
 #### 未完成/待确认
-- 需要重启 8000 端口的 etl-server.exe 使修复生效。
-- 用户需要在实际图中点击边缘验证明细数据显示正常。
+- 用户需要用实际 Excel 对照的那条线再次点击验证；浏览器如果缓存旧 JS，需要强制刷新。
+- 时间格式无法数学意义上覆盖所有可能输入；本次覆盖银行/Excel/CSV 常见格式，无法识别的极端自定义格式仍会原样保留并可能无法进入时间范围筛选。
 
 ### 2026-05-24 23:34
 
@@ -373,4 +442,39 @@ ormalizeFilterBoundary 精确时间边界处理。
 
 #### 未完成/待确认
 - 浏览器如缓存旧资源，需要强制刷新后再验证右侧筛选区。
+- 工作区已有多处先前未提交改动及 `backend/config/custom_rules.json` 修改，本次未回退。
+### 2026-05-25 13:54
+
+#### 本次任务
+- 修复画布过大时图片导出不完整的问题，确保导出的 PNG/JPEG/WebP/SVG 覆盖完整资金流向图画布。
+
+#### 新增功能
+- 图片导出按 ReactFlow 图坐标计算全部节点包围盒，不再依赖当前可视区域或当前缩放状态。
+- PNG/JPEG/WebP 导出在超大画布时自动按浏览器 canvas 安全上限缩放，优先保证完整画布不被截断。
+- SVG 导出同样使用完整包围盒，并对超大尺寸做安全限制。
+
+#### 修改文件
+- `frontend/src/features/flow/flowExport.ts`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- `expandForFullCapture` 改为解析 ReactFlow viewport transform，并在导出前临时设置完整画布尺寸与导出缩放。
+- 导出捕获前等待两帧渲染，降低临时布局尚未生效导致的截断风险。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有的大 chunk warning。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `rg -n "�" frontend/src/features/flow/flowExport.ts frontend/dist/assets` 无匹配。
+- `http://127.0.0.1:8000` 已引用当前构建产物 `assets/index-JxTRmcgH.js` 和 `assets/index-B-imr4oU.css`。
+
+#### 未完成/待确认
+- 未用用户实际超大画布手动导出复现；请强制刷新浏览器后测试导出结果。
 - 工作区已有多处先前未提交改动及 `backend/config/custom_rules.json` 修改，本次未回退。

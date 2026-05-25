@@ -1,4 +1,4 @@
-﻿package parser
+package parser
 
 import (
 	"archive/zip"
@@ -88,44 +88,147 @@ func NormalizeDatetime(s interface{}) string {
 	if s == nil {
 		return ""
 	}
-	text := strings.TrimSpace(fmt.Sprint(s))
-	text = strings.ReplaceAll(text, "/", "-")
-
-	// 8-digit date: 20240101 -> 2024-01-01 00:00:00
-	re8 := regexp.MustCompile(`^(\d{8})$`)
-	if re8.MatchString(text) {
-		m := re8.FindStringSubmatch(text)
-		return fmt.Sprintf("%s-%s-%s 00:00:00", m[1][:4], m[1][4:6], m[1][6:8])
+	text := NormalizeHeader(s)
+	if text == "" {
+		return ""
+	}
+	text = strings.Trim(text, `"'`)
+	if normalized := normalizeExcelSerialDatetime(text); normalized != "" {
+		return normalized
 	}
 
-	// 14-digit datetime: 20240101101010 -> 2024-01-01 10:10:10
-	re14 := regexp.MustCompile(`^(\d{14})$`)
-	if re14.MatchString(text) {
-		m := re14.FindStringSubmatch(text)
-		return fmt.Sprintf("%s-%s-%s %s:%s:%s",
-			m[1][:4], m[1][4:6], m[1][6:8],
-			m[1][8:10], m[1][10:12], m[1][12:14])
+	digits := regexp.MustCompile(`^\d+$`)
+	if digits.MatchString(text) {
+		switch len(text) {
+		case 8:
+			return fmt.Sprintf("%s-%s-%s 00:00:00", text[:4], text[4:6], text[6:8])
+		case 10:
+			if strings.HasPrefix(text, "19") || strings.HasPrefix(text, "20") {
+				return fmt.Sprintf("%s-%s-%s %s:00:00", text[:4], text[4:6], text[6:8], text[8:10])
+			}
+		case 12:
+			return fmt.Sprintf("%s-%s-%s %s:%s:00", text[:4], text[4:6], text[6:8], text[8:10], text[10:12])
+		case 14:
+			return fmt.Sprintf("%s-%s-%s %s:%s:%s", text[:4], text[4:6], text[6:8], text[8:10], text[10:12], text[12:14])
+		case 13:
+			if ts, err := strconv.ParseInt(text, 10, 64); err == nil && ts > 0 {
+				return time.UnixMilli(ts).Local().Format("2006-01-02 15:04:05")
+			}
+		}
 	}
 
-	// Try parsing common formats
+	if ts, err := strconv.ParseInt(text, 10, 64); err == nil && ts >= 946684800 && ts <= 4102444800 {
+		return time.Unix(ts, 0).Local().Format("2006-01-02 15:04:05")
+	}
+
+	candidates := datetimeCandidates(text)
 	formats := []string{
 		"2006-01-02 15:04:05",
+		"2006-1-2 15:04:05",
+		"2006-1-2 15:4:5",
+		"2006-01-02 15:04:05.999999999",
 		"2006-01-02 15:04",
+		"2006-1-2 15:4",
+		"2006-1-2 15:04",
 		"2006-01-02",
+		"2006-1-2",
 		"2006-01-02-15.04.05.999999",
 		"2006-01-02-15.04.05",
 		"2006.01.02",
-		"2006/01/02",
+		"2006.1.2",
 		"2006/01/02 15:04:05",
+		"2006/1/2 15:04:05",
+		"2006/1/2 15:4:5",
+		"2006/01/02 15:04",
+		"2006/1/2 15:04",
+		"2006/1/2 15:4",
+		"2006/01/02",
+		"2006/1/2",
+		"20060102 150405",
+		"20060102 1504",
+		"2006-01-02T15:04:05.999999999",
 		"2006-01-02T15:04:05",
-		"2006-01-02T15:04:05Z",
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05 -0700",
+		"2006-01-02 15:04:05 MST",
+		"2006-01-02 03:04:05 PM",
+		"2006-1-2 3:04:05 PM",
+		"02-01-2006 15:04:05",
+		"2-1-2006 15:04:05",
+		"02/01/2006 15:04:05",
+		"2/1/2006 15:04:05",
+		"01/02/2006 15:04:05",
+		"1/2/2006 15:04:05",
+		"02-01-2006",
+		"2-1-2006",
+		"02/01/2006",
+		"2/1/2006",
+		"01/02/2006",
+		"1/2/2006",
 	}
-	for _, f := range formats {
-		if t, err := time.Parse(f, text); err == nil {
-			return t.Format("2006-01-02 15:04:05")
+	for _, candidate := range candidates {
+		for _, f := range formats {
+			if t, err := time.ParseInLocation(f, candidate, time.Local); err == nil {
+				return t.Format("2006-01-02 15:04:05")
+			}
 		}
 	}
 	return text
+}
+
+func normalizeExcelSerialDatetime(text string) string {
+	if !regexp.MustCompile(`^\d+(\.\d+)?$`).MatchString(text) || len(strings.Split(text, ".")[0]) > 5 {
+		return ""
+	}
+	serial, err := strconv.ParseFloat(text, 64)
+	if err != nil || serial < 1 || serial > 100000 {
+		return ""
+	}
+	base := time.Date(1899, 12, 30, 0, 0, 0, 0, time.Local)
+	wholeDays := math.Floor(serial)
+	seconds := math.Round((serial - wholeDays) * 86400)
+	return base.AddDate(0, 0, int(wholeDays)).Add(time.Duration(seconds) * time.Second).Format("2006-01-02 15:04:05")
+}
+
+func datetimeCandidates(text string) []string {
+	replacer := strings.NewReplacer(
+		"\u00a0", " ",
+		"T", " ",
+		"年", "-",
+		"月", "-",
+		"日", " ",
+		"时", ":",
+		"時", ":",
+		"分", ":",
+		"秒", "",
+	)
+	normalized := strings.Join(strings.Fields(replacer.Replace(text)), " ")
+	normalized = strings.TrimSuffix(normalized, ":")
+	candidates := []string{text, normalized}
+	if strings.HasSuffix(normalized, "Z") {
+		candidates = append(candidates, strings.TrimSuffix(normalized, "Z")+" +0000")
+	}
+	if strings.Contains(normalized, "/") {
+		candidates = append(candidates, strings.ReplaceAll(normalized, "/", "-"))
+	}
+	if strings.Contains(normalized, ".") {
+		candidates = append(candidates, strings.ReplaceAll(normalized, ".", "-"))
+	}
+	return uniqueStrings(candidates)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 // NormalizeDirection maps direction strings to 进/出
@@ -500,4 +603,3 @@ func SourceLocations(path string, count int, headerRow int) []string {
 	}
 	return locs
 }
-
