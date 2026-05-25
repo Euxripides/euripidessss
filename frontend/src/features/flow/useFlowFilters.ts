@@ -14,6 +14,10 @@ import {
 
 
 
+  resolveDetailFilterRawColumn,
+
+
+
   resolveEffectiveFlowMapping,
 
 
@@ -39,6 +43,18 @@ import type {
 
 
   FlowFieldMapping,
+
+
+
+  DetailFilterField,
+
+
+
+  DetailFilterPayload,
+
+
+
+  DetailFilterState,
 
 
 
@@ -78,6 +94,10 @@ import {
 
 
 
+  DETAIL_FILTER_FIELDS,
+
+
+
   SOURCE_FILTER_FIELDS,
 
 
@@ -110,6 +130,10 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
+  const [detailFilters, setDetailFilters] = useState<DetailFilterState[]>([]);
+
+
+
   const [amountColumn, setAmountColumn] = useState<string>();
 
 
@@ -131,6 +155,10 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
   const [targetValueOptionsByField, setTargetValueOptionsByField] = useState<Record<string, Array<{ label: string; value: string }>>>({});
+
+
+
+  const [detailValueOptionsByField, setDetailValueOptionsByField] = useState<Record<string, Array<{ label: string; value: string }>>>({});
 
 
 
@@ -254,6 +282,10 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
+    setDetailValueOptionsByField({});
+
+
+
     setSourceLabelOptions([]);
 
 
@@ -267,6 +299,10 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
     setTargetFilters([]);
+
+
+
+    setDetailFilters([]);
 
 
 
@@ -348,6 +384,27 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
   );
 
+  const mappedDetailFields = useMemo(
+    () => DETAIL_FILTER_FIELDS
+      .filter((field) => resolveDetailFilterRawColumn(field.value, effectiveMapping, importedDataset?.columns ?? []))
+      .map((field) => field.value),
+    [effectiveMapping, importedDataset],
+  );
+
+  const mappedDetailFieldKey = mappedDetailFields.join('|');
+
+  useEffect(() => {
+    if (!datasetSessionId || !mappedDetailFields.length) return;
+    setDetailFilters((current) => {
+      const active = new Set(current.map((filter) => filter.field));
+      const next = [...current];
+      for (const field of mappedDetailFields) {
+        if (!active.has(field)) next.push({ field, values: [] });
+      }
+      return next.length === current.length ? current : next;
+    });
+  }, [datasetSessionId, mappedDetailFieldKey]);
+
 
 
   const sourceLabelColumn = effectiveMapping.source_label_column;
@@ -418,6 +475,30 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
+  const detailFilterPayload: DetailFilterPayload[] = detailFilters
+
+
+
+    .reduce<DetailFilterPayload[]>((items, filter) => {
+
+
+
+      const config = DETAIL_FILTER_FIELDS.find((field) => field.value === filter.field);
+
+
+
+      if (config && filter.values.length) items.push({ column: config.normalizedColumn, values: filter.values });
+
+
+
+      return items;
+
+
+
+    }, []);
+
+
+
 
 
 
@@ -466,6 +547,18 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
+    serial_column: effectiveMapping.serial_column,
+
+
+
+    summary_column: effectiveMapping.summary_column,
+
+
+
+    remark_column: effectiveMapping.remark_column,
+
+
+
     amount_column: effectiveMapping.amount_column ?? amountColumn,
 
 
@@ -483,6 +576,10 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
     target_filters: targetFilterPayload,
+
+
+
+    detail_filters: detailFilterPayload,
 
 
 
@@ -506,13 +603,13 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
-    start_date: dateRange?.[0]?.format?.('YYYY-MM-DD'),
+    start_date: dateRange?.[0]?.format?.('YYYY-MM-DD HH:mm:ss'),
 
 
 
-    end_date: dateRange?.[1]?.format?.('YYYY-MM-DD'),
+    end_date: dateRange?.[1]?.format?.('YYYY-MM-DD HH:mm:ss'),
 
-    max_edges: sourceFilterPayload.length || targetFilterPayload.length ? 5000 : 600,
+    max_edges: sourceFilterPayload.length || targetFilterPayload.length || detailFilterPayload.length ? 5000 : 600,
 
 
 
@@ -740,6 +837,86 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
 
+  function addDetailFilter(field?: DetailFilterField) {
+
+
+
+    if (!field) return;
+
+
+
+    setDetailFilters((current) => current.some((item) => item.field === field) ? current : [...current, { field, values: [] }]);
+
+
+
+  }
+
+
+
+  function removeDetailFilter(field: DetailFilterField) {
+
+
+
+    setDetailFilters((current) => current.filter((item) => item.field !== field));
+
+
+
+    setDetailValueOptionsByField((current) => {
+
+
+
+      const next = { ...current };
+
+
+
+      delete next[field];
+
+
+
+      return next;
+
+
+
+    });
+
+
+
+  }
+
+
+
+  function updateDetailFilterValues(field: DetailFilterField, values: string[]) {
+
+
+
+    setDetailFilters((current) => current.map((item) => item.field === field ? { ...item, values } : item));
+
+
+
+  }
+
+
+
+  function loadDetailFilterValues(field: DetailFilterField, search = '') {
+
+
+
+    const rawColumn = resolveDetailFilterRawColumn(field, effectiveMapping, importedDataset?.columns ?? []);
+
+
+
+    if (!rawColumn) return;
+
+
+
+    loadFieldValues(rawColumn, (items) => setDetailValueOptionsByField((current) => ({ ...current, [field]: items })), search);
+
+
+
+  }
+
+
+
 
 
 
@@ -752,6 +929,10 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
     targetFilters,
+
+
+
+    detailFilters,
 
 
 
@@ -780,6 +961,10 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
     targetValueOptionsByField,
+
+
+
+    detailValueOptionsByField,
 
 
 
@@ -886,6 +1071,22 @@ export function useFlowFilters(importedDataset: ImportedDataset | null, fieldMap
 
 
     loadTargetFilterValues,
+
+
+
+    addDetailFilter,
+
+
+
+    removeDetailFilter,
+
+
+
+    updateDetailFilterValues,
+
+
+
+    loadDetailFilterValues,
 
 
 

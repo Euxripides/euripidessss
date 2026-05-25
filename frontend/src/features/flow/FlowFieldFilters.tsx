@@ -1,14 +1,18 @@
 import { DeleteOutlined } from '@ant-design/icons';
 import { Button, Select } from 'antd';
 import {
+  DETAIL_FILTER_FIELDS,
   SOURCE_FILTER_FIELDS,
   TARGET_FILTER_FIELDS,
+  type DetailFilterField,
+  type DetailFilterState,
   type SourceFilterField,
   type SourceFilterState,
   type TargetFilterField,
   type TargetFilterState,
 } from './flowTypes';
 import {
+  resolveDetailFilterRawColumn,
   resolveSourceFilterRawColumn,
   resolveTargetFilterRawColumn,
   type ResolvedFlowMapping,
@@ -32,11 +36,22 @@ export function FlowFieldFilters(props: {
   onLoadTargetFilterValues: (field: TargetFilterField, search?: string) => void;
   onUpdateTargetFilterValues: (field: TargetFilterField, values: string[]) => void;
   onRemoveTargetFilter: (field: TargetFilterField) => void;
+  detailFilters: DetailFilterState[];
+  detailValueOptionsByField: Record<string, ValueOption[]>;
+  onAddDetailFilter: (field?: DetailFilterField) => void;
+  onLoadDetailFilterValues: (field: DetailFilterField, search?: string) => void;
+  onUpdateDetailFilterValues: (field: DetailFilterField, values: string[]) => void;
+  onRemoveDetailFilter: (field: DetailFilterField) => void;
 }) {
   const activeSourceFields = new Set(props.sourceFilters.map((filter) => filter.field));
   const availableSourceFields = SOURCE_FILTER_FIELDS.filter((field) => !activeSourceFields.has(field.value));
   const activeTargetFields = new Set(props.targetFilters.map((filter) => filter.field));
   const availableTargetFields = TARGET_FILTER_FIELDS.filter((field) => !activeTargetFields.has(field.value));
+  const activeDetailFields = new Set(props.detailFilters.map((filter) => filter.field));
+  const availableDetailFields = DETAIL_FILTER_FIELDS.filter((field) => {
+    if (activeDetailFields.has(field.value)) return false;
+    return Boolean(resolveDetailFilterRawColumn(field.value, props.effectiveMapping, props.columns));
+  });
 
   return (
     <>
@@ -112,6 +127,44 @@ export function FlowFieldFilters(props: {
                 filterOption={false}
               />
               <Button danger size="small" icon={<DeleteOutlined />} onClick={() => props.onRemoveTargetFilter(filter.field)} />
+            </div>
+          ) : null;
+        })}
+      </div>
+      <div className="multi-field-filter">
+        {!!availableDetailFields.length && (
+          <Select
+            allowClear
+            placeholder="请选择明细筛选字段"
+            value={undefined}
+            options={availableDetailFields}
+            onChange={(value) => value && props.onAddDetailFilter(value as DetailFilterField)}
+          />
+        )}
+        {props.detailFilters.map((filter) => {
+          const config = DETAIL_FILTER_FIELDS.find((field) => field.value === filter.field);
+          const options = props.detailValueOptionsByField[filter.field] ?? [];
+          const rawColumn = resolveDetailFilterRawColumn(filter.field, props.effectiveMapping, props.columns);
+          return config && rawColumn ? (
+            <div key={filter.field} className="filter-row">
+              <span>{config.label}</span>
+              <Select
+                key={`detail-values-${props.datasetSessionId}-${filter.field}`}
+                mode="multiple"
+                allowClear
+                showSearch
+                maxTagCount="responsive"
+                className="no-wrap-select"
+                placeholder={`${config.label}筛选（留空为全部）`}
+                value={filter.values}
+                options={options.length ? [{ label: '全选', value: '__ALL__' }, ...options] : options}
+                notFoundContent="暂无待选项"
+                onFocus={() => props.onLoadDetailFilterValues(filter.field)}
+                onSearch={(value) => props.onLoadDetailFilterValues(filter.field, value)}
+                onChange={(values) => props.onUpdateDetailFilterValues(filter.field, resolveAllSelection(values, options))}
+                filterOption={false}
+              />
+              <Button danger size="small" icon={<DeleteOutlined />} onClick={() => props.onRemoveDetailFilter(filter.field)} />
             </div>
           ) : null;
         })}

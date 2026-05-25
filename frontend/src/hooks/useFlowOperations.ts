@@ -176,6 +176,10 @@ import {
 
 
 
+  type DetailFilterPayload,
+
+
+
 
 
 
@@ -2766,6 +2770,27 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
+          serialColumn: values.serial_column as string | undefined,
+
+
+
+
+
+
+          summaryColumn: values.summary_column as string | undefined,
+
+
+
+
+
+
+          remarkColumn: values.remark_column as string | undefined,
+
+
+
+
+
+
           amountColumn: values.amount_column, timeColumn: values.time_column,
 
 
@@ -2800,6 +2825,13 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
           targetFilters: values.target_filters as TargetFilterPayload[] | undefined,
 
+
+
+
+
+
+
+          detailFilters: values.detail_filters as DetailFilterPayload[] | undefined,
 
 
 
@@ -3023,7 +3055,7 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-        detailContext: { kind: "imported", sessionId: importedDataset.session_id, sourceColumn: values.source_column, targetColumn: values.target_column, amountColumn: values.amount_column, timeColumn: values.time_column, directionColumn: values.direction_column },
+        detailContext: { kind: "imported", sessionId: importedDataset.session_id, sourceColumn: values.source_column, targetColumn: values.target_column, serialColumn: values.serial_column as string | undefined, summaryColumn: values.summary_column as string | undefined, remarkColumn: values.remark_column as string | undefined, amountColumn: values.amount_column, timeColumn: values.time_column, directionColumn: values.direction_column },
 
 
 
@@ -4068,7 +4100,10 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-    if (saved) setMappingModalOpen(false);
+    if (saved) {
+      setFieldMapping(mapping);
+      setMappingModalOpen(false);
+    }
 
 
 

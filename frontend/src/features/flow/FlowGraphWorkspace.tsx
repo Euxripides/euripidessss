@@ -109,6 +109,12 @@ export function FlowGraphWorkspace(props: FlowGraphWorkspaceProps) {
             onLoadTargetFilterValues={props.onLoadTargetFilterValues}
             onUpdateTargetFilterValues={props.onUpdateTargetFilterValues}
             onRemoveTargetFilter={props.onRemoveTargetFilter}
+            detailFilters={props.detailFilters}
+            detailValueOptionsByField={props.detailValueOptionsByField}
+            onAddDetailFilter={props.onAddDetailFilter}
+            onLoadDetailFilterValues={props.onLoadDetailFilterValues}
+            onUpdateDetailFilterValues={props.onUpdateDetailFilterValues}
+            onRemoveDetailFilter={props.onRemoveDetailFilter}
             directionValues={props.directionValues}
             onDirectionValuesChange={props.onDirectionValuesChange}
             dateRange={props.dateRange}

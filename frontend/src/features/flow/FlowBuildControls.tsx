@@ -35,7 +35,14 @@ export function FlowBuildControls(props: {
           onChange={props.onDirectionValuesChange}
         />
       </div>
-      <DatePicker.RangePicker className="full" value={props.dateRange} onChange={props.onDateRangeChange} />
+      <DatePicker.RangePicker
+        className="full"
+        value={props.dateRange}
+        onChange={props.onDateRangeChange}
+        placeholder={['开始时间', '结束时间']}
+        showTime={{ format: 'HH:mm:ss' }}
+        format="YYYY-MM-DD HH:mm:ss"
+      />
       <Checkbox checked={props.appendGraph} disabled={!props.canAppend} onChange={(event) => props.onAppendGraphChange(event.target.checked)}>
         追加到当前画布
       </Checkbox>

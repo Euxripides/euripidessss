@@ -1,9 +1,11 @@
 import {
   FLOW_TEMPLATE_COLUMNS,
   FLOW_TEMPLATE_MAPPING,
+  DETAIL_FILTER_FIELDS,
   SOURCE_FILTER_FIELDS,
   TARGET_FILTER_FIELDS,
   type FlowFieldMapping,
+  type DetailFilterField,
   type SourceFilterField,
   type TargetFilterField,
 } from './flowTypes';
@@ -33,6 +35,12 @@ export function autoFlowMapping(columns: string[]): FlowFieldMapping {
     }
   }
   for (const field of TARGET_FILTER_FIELDS) {
+    if (!mapping[field.value]) {
+      const picked = pickColumn(columns, [...field.keywords]);
+      if (picked) mapping[field.value] = picked;
+    }
+  }
+  for (const field of DETAIL_FILTER_FIELDS) {
     if (!mapping[field.value]) {
       const picked = pickColumn(columns, [...field.keywords]);
       if (picked) mapping[field.value] = picked;
@@ -73,6 +81,13 @@ export function resolveTargetFilterRawColumn(field: TargetFilterField, mapping: 
   const mapped = mapping[field];
   if (mapped && columns.includes(mapped)) return mapped;
   const config = TARGET_FILTER_FIELDS.find((item) => item.value === field);
+  return config ? pickColumn(columns, [...config.keywords]) : undefined;
+}
+
+export function resolveDetailFilterRawColumn(field: DetailFilterField, mapping: ResolvedFlowMapping, columns: string[]) {
+  const mapped = mapping[field];
+  if (mapped && columns.includes(mapped)) return mapped;
+  const config = DETAIL_FILTER_FIELDS.find((item) => item.value === field);
   return config ? pickColumn(columns, [...config.keywords]) : undefined;
 }
 

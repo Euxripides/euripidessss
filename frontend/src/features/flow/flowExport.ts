@@ -29,31 +29,39 @@ export async function exportCanvasImage(format: CanvasImageExportFormat, contain
 
 async function captureCanvasRaster(container: HTMLElement | null, format: Exclude<CanvasImageExportFormat, 'svg'>) {
   const target = findReactFlowExportTarget(container);
-  const rect = target.getBoundingClientRect();
-  const canvas = await toCanvas(target, {
-    backgroundColor: '#fbfcfe',
-    cacheBust: true,
-    filter: shouldExportDomNode,
-    height: Math.ceil(rect.height),
-    pixelRatio: 2,
-    width: Math.ceil(rect.width),
-  });
-  const mimeType = format === 'jpeg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
-  return canvasToBlob(canvas, mimeType, format === 'jpeg' ? 0.92 : 0.96);
+  const { restore, bounds } = expandForFullCapture(target);
+  try {
+    const canvas = await toCanvas(target, {
+      backgroundColor: '#fbfcfe',
+      cacheBust: true,
+      filter: shouldExportDomNode,
+      pixelRatio: 2,
+      width: bounds.width,
+      height: bounds.height,
+    });
+    const mimeType = format === 'jpeg' ? 'image/jpeg' : format === 'webp' ? 'image/webp' : 'image/png';
+    return canvasToBlob(canvas, mimeType, format === 'jpeg' ? 0.92 : 0.96);
+  } finally {
+    restore();
+  }
 }
 
 async function captureCanvasSvg(container: HTMLElement | null) {
   const target = findReactFlowExportTarget(container);
-  const rect = target.getBoundingClientRect();
-  const dataUrl = await toSvg(target, {
-    backgroundColor: '#fbfcfe',
-    cacheBust: true,
-    filter: shouldExportDomNode,
-    height: Math.ceil(rect.height),
-    width: Math.ceil(rect.width),
-  });
-  const response = await fetch(dataUrl);
-  return response.blob();
+  const { restore, bounds } = expandForFullCapture(target);
+  try {
+    const dataUrl = await toSvg(target, {
+      backgroundColor: '#fbfcfe',
+      cacheBust: true,
+      filter: shouldExportDomNode,
+      width: bounds.width,
+      height: bounds.height,
+    });
+    const response = await fetch(dataUrl);
+    return response.blob();
+  } finally {
+    restore();
+  }
 }
 
 function findReactFlowExportTarget(container: HTMLElement | null) {
@@ -73,6 +81,68 @@ function shouldExportDomNode(node: HTMLElement) {
     classList?.contains('minimap-toggle') ||
     classList?.contains('edge-floating-panel')
   );
+}
+
+/**
+ * Temporarily expands the ReactFlow container to encompass all graph nodes,
+ * so html-to-image captures the full graph instead of only the visible viewport.
+ * Returns a restore function and the expanded bounds.
+ */
+function expandForFullCapture(target: HTMLElement) {
+  const viewport = target.querySelector('.react-flow__viewport') as HTMLElement | null;
+  const nodes = target.querySelectorAll('.react-flow__node');
+
+  const empty = { restore: () => {}, bounds: { width: 0, height: 0 } };
+  if (!viewport || nodes.length === 0) return empty;
+
+  // Compute bounding box of all nodes relative to the container
+  const targetRect = target.getBoundingClientRect();
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  nodes.forEach((node) => {
+    const rect = node.getBoundingClientRect();
+    minX = Math.min(minX, rect.left - targetRect.left);
+    minY = Math.min(minY, rect.top - targetRect.top);
+    maxX = Math.max(maxX, rect.right - targetRect.left);
+    maxY = Math.max(maxY, rect.bottom - targetRect.top);
+  });
+
+  if (!isFinite(minX)) return empty;
+
+  // Save original styles
+  const origOverflow = target.style.overflow;
+  const origWidth = target.style.width;
+  const origHeight = target.style.height;
+  const origViewportTransform = viewport.style.transform;
+
+  const padding = 40;
+  const fullWidth = Math.ceil(maxX - minX + padding * 2);
+  const fullHeight = Math.ceil(maxY - minY + padding * 2);
+
+  // Parse current viewport scale
+  let scale = 1;
+  const scaleMatch = origViewportTransform.match(/scale\(([\d.]+)\)/);
+  if (scaleMatch) scale = parseFloat(scaleMatch[1]);
+
+  // Expand container so nothing is clipped
+  target.style.overflow = 'visible';
+  target.style.width = `${fullWidth}px`;
+  target.style.height = `${fullHeight}px`;
+
+  // Re-center the content so the leftmost/topmost node is at (padding, padding)
+  const offsetX = padding - minX;
+  const offsetY = padding - minY;
+  viewport.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+
+  return {
+    restore: () => {
+      target.style.overflow = origOverflow;
+      target.style.width = origWidth;
+      target.style.height = origHeight;
+      viewport.style.transform = origViewportTransform;
+    },
+    bounds: { width: fullWidth, height: fullHeight },
+  };
 }
 
 function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality: number) {
@@ -339,3 +409,4 @@ function toExportNumber(value: unknown) {
 function formatMoney(value: number) {
   return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
 }
+

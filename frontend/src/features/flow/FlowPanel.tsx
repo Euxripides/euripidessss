@@ -96,6 +96,8 @@ export function FlowPanel(props: {
 
     targetFilters,
 
+    detailFilters,
+
     amountColumn,
 
     timeColumn,
@@ -109,6 +111,8 @@ export function FlowPanel(props: {
     sourceValueOptionsByField,
 
     targetValueOptionsByField,
+
+    detailValueOptionsByField,
 
     sourceLabelValues,
 
@@ -161,6 +165,14 @@ export function FlowPanel(props: {
     updateTargetFilterValues,
 
     loadTargetFilterValues,
+
+    addDetailFilter,
+
+    removeDetailFilter,
+
+    updateDetailFilterValues,
+
+    loadDetailFilterValues,
 
     loadFieldValues,
     setSourceLabelOptions,
@@ -445,6 +457,12 @@ export function FlowPanel(props: {
         onLoadTargetFilterValues={loadTargetFilterValues}
         onUpdateTargetFilterValues={updateTargetFilterValues}
         onRemoveTargetFilter={removeTargetFilter}
+        detailFilters={detailFilters}
+        detailValueOptionsByField={detailValueOptionsByField}
+        onAddDetailFilter={addDetailFilter}
+        onLoadDetailFilterValues={loadDetailFilterValues}
+        onUpdateDetailFilterValues={updateDetailFilterValues}
+        onRemoveDetailFilter={removeDetailFilter}
         directionValues={directionValues}
         onDirectionValuesChange={setDirectionValues}
         dateRange={dateRange}

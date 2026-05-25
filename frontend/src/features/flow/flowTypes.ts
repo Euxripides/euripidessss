@@ -1,4 +1,4 @@
-export const FLOW_TEMPLATE_COLUMNS = ['交易方户名', '交易方账户', '交易方身份证号', '交易方标签', '交易时间', '交易金额', '收付标志', '交易余额', '交易对手账卡号', '对手户名', '对手身份证号', '对手标签', '摘要说明', '备注'];
+export const FLOW_TEMPLATE_COLUMNS = ['交易方户名', '交易方账户', '交易方身份证号', '交易方标签', '交易时间', '交易金额', '收付标志', '交易余额', '交易对手账卡号', '对手户名', '对手身份证号', '对手标签', '交易流水号', '摘要说明', '备注'];
 
 export const SOURCE_FILTER_FIELDS = [
   { label: '交易方户名', value: 'source_name_column', normalizedColumn: '交易户名', keywords: ['交易方户名', '交易户名', '主体户名', '主体名称', '户名', '姓名', '名称', 'name'] },
@@ -10,6 +10,12 @@ export const TARGET_FILTER_FIELDS = [
   { label: '交易对手账卡号', value: 'target_card_column', normalizedColumn: '交易对手账卡号', keywords: ['交易对手账卡号', '对手账卡号', '对手账号', '对方账号', '对手卡号', '对方卡号', '收款方账号', '付款方账号', 'target', 'card', 'account'] },
   { label: '对手户名', value: 'target_name_column', normalizedColumn: '对手户名', keywords: ['对手户名', '交易对手户名', '对方户名', '对方姓名', '对手姓名', '对方名称', '交易对手', '户名', '姓名', '名称', 'name'] },
   { label: '对手身份证号', value: 'target_id_column', normalizedColumn: '对手身份证号', keywords: ['对手身份证号', '对手证件号', '对方身份证号', '对方证件号', '证件号码', '证件号', '身份证号', 'id'] },
+] as const;
+
+export const DETAIL_FILTER_FIELDS = [
+  { label: '交易流水号', value: 'serial_column', normalizedColumn: '交易流水号', keywords: ['交易流水号', '流水号', '交易号', '订单号', '商户订单号', '微信支付订单号', '支付宝交易号', 'serial', 'transaction'] },
+  { label: '摘要说明', value: 'summary_column', normalizedColumn: '摘要说明', keywords: ['摘要说明', '摘要', '交易摘要', '商品说明', '交易说明', '用途', 'description', 'summary'] },
+  { label: '备注', value: 'remark_column', normalizedColumn: '备注', keywords: ['备注', '附言', '说明', 'remark', 'memo'] },
 ] as const;
 
 export const DIRECTION_OPTIONS = [{ label: '进', value: '进' }, { label: '出', value: '出' }];
@@ -29,6 +35,9 @@ export const FLOW_TEMPLATE_MAPPING = {
   target_name_column: '对手户名',
   target_id_column: '对手身份证号',
   target_label_column: '对手标签',
+  serial_column: '交易流水号',
+  summary_column: '摘要说明',
+  remark_column: '备注',
   amount_column: '交易金额',
   time_column: '交易时间',
   direction_column: '收付标志',
@@ -69,6 +78,9 @@ export type SourceFilterPayload = { column: string; values: string[] };
 export type TargetFilterField = typeof TARGET_FILTER_FIELDS[number]['value'];
 export type TargetFilterState = { field: TargetFilterField; values: string[] };
 export type TargetFilterPayload = { column: string; values: string[] };
+export type DetailFilterField = typeof DETAIL_FILTER_FIELDS[number]['value'];
+export type DetailFilterState = { field: DetailFilterField; values: string[] };
+export type DetailFilterPayload = { column: string; values: string[] };
 
 export type GraphDetailContext = {
   kind: 'cleaned' | 'imported' | 'none';
@@ -84,6 +96,9 @@ export type GraphDetailContext = {
   targetNameColumn?: string;
   targetIdColumn?: string;
   targetLabelColumn?: string;
+  serialColumn?: string;
+  summaryColumn?: string;
+  remarkColumn?: string;
   amountColumn?: string;
   timeColumn?: string;
   directionColumn?: string;
@@ -91,6 +106,7 @@ export type GraphDetailContext = {
   sourceFilters?: SourceFilterPayload[];
   targetValues?: string[];
   targetFilters?: TargetFilterPayload[];
+  detailFilters?: DetailFilterPayload[];
   directionValues?: string[];
   startDate?: string;
   endDate?: string;

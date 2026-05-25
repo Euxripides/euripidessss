@@ -18,7 +18,11 @@ import { ResolvedFlowMapping } from './flowMapping';
 
 import type {
 
-  FlowBuildStatus,
+  FlowBuildStatus,
+
+  DetailFilterField,
+
+  DetailFilterState,
 
   FlowEdgeRow,
 
@@ -38,9 +42,9 @@ import type {
 
   TargetFilterField,
 
-  TargetFilterPayload,
-
-  TargetFilterState,
+  TargetFilterPayload,
+
+  TargetFilterState,
 
 } from './flowTypes';
 
@@ -86,7 +90,19 @@ export interface FlowInspectorPanelProps {
 
   onUpdateTargetFilterValues: (field: TargetFilterField, values: string[]) => void;
 
-  onRemoveTargetFilter: (field: TargetFilterField) => void;
+  onRemoveTargetFilter: (field: TargetFilterField) => void;
+
+  detailFilters: DetailFilterState[];
+
+  detailValueOptionsByField: Record<string, Array<{ label: string; value: string }>>;
+
+  onAddDetailFilter: (field?: DetailFilterField) => void;
+
+  onLoadDetailFilterValues: (field: DetailFilterField, search?: string) => void;
+
+  onUpdateDetailFilterValues: (field: DetailFilterField, values: string[]) => void;
+
+  onRemoveDetailFilter: (field: DetailFilterField) => void;
 
   directionValues: string[];
 
@@ -228,7 +244,19 @@ export function FlowInspectorPanel(props: FlowInspectorPanelProps) {
 
     onUpdateTargetFilterValues,
 
-    onRemoveTargetFilter,
+    onRemoveTargetFilter,
+
+    detailFilters,
+
+    detailValueOptionsByField,
+
+    onAddDetailFilter,
+
+    onLoadDetailFilterValues,
+
+    onUpdateDetailFilterValues,
+
+    onRemoveDetailFilter,
 
     directionValues,
 
@@ -413,11 +441,23 @@ export function FlowInspectorPanel(props: FlowInspectorPanelProps) {
 
                       onLoadTargetFilterValues={onLoadTargetFilterValues}
 
-                      onUpdateTargetFilterValues={onUpdateTargetFilterValues}
-
-                      onRemoveTargetFilter={onRemoveTargetFilter}
-
-                    />
+                      onUpdateTargetFilterValues={onUpdateTargetFilterValues}
+
+                      onRemoveTargetFilter={onRemoveTargetFilter}
+
+                      detailFilters={detailFilters}
+
+                      detailValueOptionsByField={detailValueOptionsByField}
+
+                      onAddDetailFilter={onAddDetailFilter}
+
+                      onLoadDetailFilterValues={onLoadDetailFilterValues}
+
+                      onUpdateDetailFilterValues={onUpdateDetailFilterValues}
+
+                      onRemoveDetailFilter={onRemoveDetailFilter}
+
+                    />
 
                     <FlowBuildControls
 

@@ -35,6 +35,73 @@ const (
 	auditFlowEdgeLimit   = 5000
 )
 
+type flowColumnMapping struct {
+	SourceCol     string
+	SourceAccount string
+	SourceName    string
+	SourceID      string
+	SourceLabel   string
+	TargetCol     string
+	TargetCard    string
+	TargetName    string
+	TargetID      string
+	TargetLabel   string
+	Amount        string
+	Time          string
+	Direction     string
+	Serial        string
+	Summary       string
+	Remark        string
+}
+
+type EdgeDetailPayload struct {
+	SessionID    string `json:"session_id"`
+	SourceColumn string `json:"source_column"`
+	TargetColumn string `json:"target_column"`
+	AmountColumn string `json:"amount_column"`
+	TimeColumn   string `json:"time_column"`
+	Source       string `json:"source"`
+	Target       string `json:"target"`
+	Limit        int    `json:"limit"`
+
+	SourceAccountColumn string `json:"source_account_column"`
+	SourceNameColumn    string `json:"source_name_column"`
+	SourceIDColumn      string `json:"source_id_column"`
+	SourceLabelColumn   string `json:"source_label_column"`
+	TargetCardColumn    string `json:"target_card_column"`
+	TargetNameColumn    string `json:"target_name_column"`
+	TargetIDColumn      string `json:"target_id_column"`
+	TargetLabelColumn   string `json:"target_label_column"`
+	SerialColumn        string `json:"serial_column"`
+	SummaryColumn       string `json:"summary_column"`
+	RemarkColumn        string `json:"remark_column"`
+}
+
+func flowColumnMappingFromPayload(payload map[string]interface{}) flowColumnMapping {
+	stringValue := func(key string) string {
+		value, _ := payload[key].(string)
+		return value
+	}
+	return flowColumnMapping{
+		SourceCol:     stringValue("source_column"),
+		SourceAccount: stringValue("source_account_column"),
+		SourceName:    stringValue("source_name_column"),
+		SourceID:      stringValue("source_id_column"),
+		SourceLabel:   stringValue("source_label_column"),
+		TargetCol:     stringValue("target_column"),
+		TargetCard:    stringValue("target_card_column"),
+		TargetName:    stringValue("target_name_column"),
+		TargetID:      stringValue("target_id_column"),
+		TargetLabel:   stringValue("target_label_column"),
+		Amount:        stringValue("amount_column"),
+		Time:          stringValue("time_column"),
+		Direction:     stringValue("direction_column"),
+		Serial:        stringValue("serial_column"),
+		Summary:       stringValue("summary_column"),
+		Remark:        stringValue("remark_column"),
+	}
+}
+
 // Setup initializes the API package with config
 func Setup(c *config.Config) {
 	cfg = c
@@ -287,7 +354,7 @@ func flowSessionName(sessionID string, files []string) string {
 	return filepath.Base(files[0])
 }
 
-// HandleFlowEdgeDetail returns edge detail for a job
+// HandleFlowEdgeDetail reads the cleaned output file and returns rows matching source/target
 func HandleFlowEdgeDetail(c *gin.Context) {
 	jobID := c.Query("job_id")
 	source := c.Query("source")
@@ -296,21 +363,133 @@ func HandleFlowEdgeDetail(c *gin.Context) {
 		c.JSON(400, gin.H{"detail": "job_id, source, target required"})
 		return
 	}
-	c.JSON(200, gin.H{"job_id": jobID, "source": source, "target": target, "rows": []map[string]interface{}{}})
+
+	pattern := filepath.Join(cfg.OutputDir, "*"+jobID+"*")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		c.JSON(404, gin.H{"detail": "输出文件不存在或已被清理。"})
+		return
+	}
+
+	path := matches[0]
+	ext := strings.ToLower(filepath.Ext(path))
+	if !parser.SupportedSuffixes[ext] {
+		c.JSON(400, gin.H{"detail": "不支持的文件格式"})
+		return
+	}
+
+	var rows [][]string
+	if parser.ExcelSuffixes[ext] {
+		sheets, err := parser.ReadExcelFile(path)
+		if err != nil {
+			c.JSON(500, gin.H{"detail": "读取Excel文件失败: " + err.Error()})
+			return
+		}
+		for _, s := range sheets {
+			rows = append(rows, s...)
+		}
+	} else {
+		rows, err = parser.ReadCSVFile(path)
+		if err != nil {
+			c.JSON(500, gin.H{"detail": "读取CSV文件失败: " + err.Error()})
+			return
+		}
+	}
+
+	if len(rows) < 2 {
+		c.JSON(200, gin.H{"job_id": jobID, "source": source, "target": target, "rows": []map[string]interface{}{}, "columns": []string{}, "total_rows": 0})
+		return
+	}
+
+	headers := rows[0]
+	colIdx := make(map[string]int)
+	for i, h := range headers {
+		colIdx[parser.NormalizeHeader(h)] = i
+	}
+
+	getVal := func(name string, row []string) string {
+		if idx, ok := colIdx[parser.NormalizeHeader(name)]; ok && idx < len(row) {
+			return row[idx]
+		}
+		return ""
+	}
+
+	var result []map[string]interface{}
+	for _, row := range rows[1:] {
+		own := getVal("交易卡号", row)
+		if own == "" {
+			own = getVal("交易账号", row)
+		}
+		if own == "" {
+			own = getVal("交易户名", row)
+		}
+		if own == "" {
+			own = "本方未知"
+		}
+
+		counter := getVal("交易对手账卡号", row)
+		if counter == "" {
+			counter = getVal("对手户名", row)
+		}
+		if counter == "" {
+			counter = "对手未知"
+		}
+
+		dir := getVal("收付标志", row)
+		var rowSource, rowTarget string
+		if dir == "出" {
+			rowSource, rowTarget = own, counter
+		} else if dir == "进" {
+			rowSource, rowTarget = counter, own
+		} else {
+			continue
+		}
+
+		if rowSource != source || rowTarget != target {
+			continue
+		}
+
+		m := make(map[string]interface{})
+		for j, h := range headers {
+			if j < len(row) {
+				m[parser.NormalizeHeader(h)] = row[j]
+			}
+		}
+		result = append(result, m)
+	}
+
+	var columns []string
+	if len(result) > 0 {
+		for k := range result[0] {
+			columns = append(columns, k)
+		}
+	}
+
+	var totalAmount float64
+	for _, row := range result {
+		if v, ok := row[parser.NormalizeHeader("交易金额")]; ok {
+			if s, ok := v.(string); ok {
+				totalAmount += parser.ToNumber(s)
+			}
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"job_id":        jobID,
+		"source":        source,
+		"target":        target,
+		"total_rows":    len(result),
+		"returned_rows": len(result),
+		"amount":        totalAmount,
+		"columns":       columns,
+		"rows":          result,
+		"truncated":     false,
+	})
 }
 
 // HandleImportedFlowEdgeDetail handles edge detail for imported data
 func HandleImportedFlowEdgeDetail(c *gin.Context) {
-	var payload struct {
-		SessionID    string `json:"session_id"`
-		SourceColumn string `json:"source_column"`
-		TargetColumn string `json:"target_column"`
-		AmountColumn string `json:"amount_column"`
-		TimeColumn   string `json:"time_column"`
-		Source       string `json:"source"`
-		Target       string `json:"target"`
-		Limit        int    `json:"limit"`
-	}
+	var payload EdgeDetailPayload
 	if err := c.BindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{"detail": "invalid json"})
 		return
@@ -474,7 +653,7 @@ func HandleDownloadFlowTemplate(c *gin.Context) {
 		os.MkdirAll(filepath.Dir(templatePath), 0755)
 		f := excelize.NewFile()
 		columns := []string{"交易方户名", "交易方账户", "交易方身份证号", "交易方标签", "交易时间", "交易金额", "收付标志",
-			"交易余额", "交易对手账卡号", "对手户名", "对手身份证号", "对手标签", "摘要说明", "备注"}
+			"交易余额", "交易对手账卡号", "对手户名", "对手身份证号", "对手标签", "交易流水号", "摘要说明", "备注"}
 		for i, h := range columns {
 			cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 			f.SetCellValue("Sheet1", cell, h)
@@ -506,13 +685,7 @@ func HandleBuildImportedFlow(c *gin.Context) {
 	}
 
 	// Extract column mapping from payload
-	sourceCol, _ := payload["source_column"].(string)
-	accountCol, _ := payload["source_account_column"].(string)
-	targetCol, _ := payload["target_column"].(string)
-	targetCardCol, _ := payload["target_card_column"].(string)
-	amountCol, _ := payload["amount_column"].(string)
-	timeCol, _ := payload["time_column"].(string)
-	directionCol, _ := payload["direction_column"].(string)
+	mapping := flowColumnMappingFromPayload(payload)
 	directionValues, _ := payload["direction_values"].([]interface{})
 
 	// Parse direction values mapping
@@ -528,7 +701,7 @@ func HandleBuildImportedFlow(c *gin.Context) {
 	}
 
 	// Read source files and build transaction rows
-	txns := readSessionData(sessionDir, sourceCol, accountCol, targetCol, targetCardCol, amountCol, timeCol, directionCol, dirMap)
+	txns := readSessionData(sessionDir, mapping, dirMap)
 
 	// Check for unknown direction values
 	unknownDirs := checkUnknownDirections(txns)
@@ -837,16 +1010,25 @@ func rowsToSample(rows [][]string, columns []string, maxRows int) []map[string]i
 }
 
 // readSessionData reads session files and builds TransactionRows with column mapping
-func readSessionData(sessionDir string, sourceCol, accountCol, targetCol, targetCardCol, amountCol, timeCol, directionCol string, dirMap map[string]string) []model.TransactionRow {
+func readSessionData(sessionDir string, mapping flowColumnMapping, dirMap map[string]string) []model.TransactionRow {
 	var txns []model.TransactionRow
 	// Normalize all column lookup keys to match normalized headers
-	sourceCol = parser.NormalizeHeader(sourceCol)
-	accountCol = parser.NormalizeHeader(accountCol)
-	targetCol = parser.NormalizeHeader(targetCol)
-	targetCardCol = parser.NormalizeHeader(targetCardCol)
-	amountCol = parser.NormalizeHeader(amountCol)
-	timeCol = parser.NormalizeHeader(timeCol)
-	directionCol = parser.NormalizeHeader(directionCol)
+	mapping.SourceCol = parser.NormalizeHeader(mapping.SourceCol)
+	mapping.SourceAccount = parser.NormalizeHeader(mapping.SourceAccount)
+	mapping.SourceName = parser.NormalizeHeader(mapping.SourceName)
+	mapping.SourceID = parser.NormalizeHeader(mapping.SourceID)
+	mapping.SourceLabel = parser.NormalizeHeader(mapping.SourceLabel)
+	mapping.TargetCol = parser.NormalizeHeader(mapping.TargetCol)
+	mapping.TargetCard = parser.NormalizeHeader(mapping.TargetCard)
+	mapping.TargetName = parser.NormalizeHeader(mapping.TargetName)
+	mapping.TargetID = parser.NormalizeHeader(mapping.TargetID)
+	mapping.TargetLabel = parser.NormalizeHeader(mapping.TargetLabel)
+	mapping.Amount = parser.NormalizeHeader(mapping.Amount)
+	mapping.Time = parser.NormalizeHeader(mapping.Time)
+	mapping.Direction = parser.NormalizeHeader(mapping.Direction)
+	mapping.Serial = parser.NormalizeHeader(mapping.Serial)
+	mapping.Summary = parser.NormalizeHeader(mapping.Summary)
+	mapping.Remark = parser.NormalizeHeader(mapping.Remark)
 	// Also normalize dirMap keys for consistent matching
 	normalizedDirMap := make(map[string]string, len(dirMap))
 	for k, v := range rules.LoadDirectionAliases() {
@@ -895,40 +1077,31 @@ func readSessionData(sessionDir string, sourceCol, accountCol, targetCol, target
 
 		for _, row := range rows[1:] {
 			txn := make(model.TransactionRow)
+			setMappedValue := func(sourceColumn, targetColumn string) {
+				if sourceColumn == "" {
+					return
+				}
+				if idx, ok := colIdx[sourceColumn]; ok && idx < len(row) {
+					txn[targetColumn] = row[idx]
+				}
+			}
 
 			// Map source columns
-			if sourceCol != "" {
-				if idx, ok := colIdx[sourceCol]; ok && idx < len(row) {
-					txn["\u4ea4\u6613\u6237\u540d"] = row[idx]
-				}
-			}
-			if accountCol != "" {
-				if idx, ok := colIdx[accountCol]; ok && idx < len(row) {
-					txn["\u4ea4\u6613\u8d26\u53f7"] = row[idx]
-				}
-			}
-			if targetCol != "" {
-				if idx, ok := colIdx[targetCol]; ok && idx < len(row) {
-					txn["\u5bf9\u624b\u6237\u540d"] = row[idx]
-				}
-			}
-			if targetCardCol != "" {
-				if idx, ok := colIdx[targetCardCol]; ok && idx < len(row) {
-					txn["\u4ea4\u6613\u5bf9\u624b\u8d26\u5361\u53f7"] = row[idx]
-				}
-			}
-			if amountCol != "" {
-				if idx, ok := colIdx[amountCol]; ok && idx < len(row) {
-					txn["\u4ea4\u6613\u91d1\u989d"] = row[idx]
-				}
-			}
-			if timeCol != "" {
-				if idx, ok := colIdx[timeCol]; ok && idx < len(row) {
-					txn["\u4ea4\u6613\u65f6\u95f4"] = row[idx]
-				}
-			}
-			if directionCol != "" {
-				if idx, ok := colIdx[directionCol]; ok && idx < len(row) {
+			setMappedValue(firstNonEmpty(mapping.SourceCol, mapping.SourceName, mapping.SourceAccount, mapping.SourceID), "交易户名")
+			setMappedValue(mapping.SourceAccount, "交易账号")
+			setMappedValue(mapping.SourceID, "交易方身份证号")
+			setMappedValue(mapping.SourceLabel, "交易方标签")
+			setMappedValue(firstNonEmpty(mapping.TargetCol, mapping.TargetName, mapping.TargetCard, mapping.TargetID), "对手户名")
+			setMappedValue(mapping.TargetCard, "交易对手账卡号")
+			setMappedValue(mapping.TargetID, "对手身份证号")
+			setMappedValue(mapping.TargetLabel, "对手标签")
+			setMappedValue(mapping.Amount, "交易金额")
+			setMappedValue(mapping.Time, "交易时间")
+			setMappedValue(mapping.Serial, "交易流水号")
+			setMappedValue(mapping.Summary, "摘要说明")
+			setMappedValue(mapping.Remark, "备注")
+			if mapping.Direction != "" {
+				if idx, ok := colIdx[mapping.Direction]; ok && idx < len(row) {
 					val := normalizeFlowDirection(row[idx], normalizedDirMap)
 					txn["\u6536\u4ed8\u6807\u5fd7"] = val
 				}
@@ -961,6 +1134,15 @@ func normalizeFlowDirection(value string, aliases map[string]string) string {
 	return normalized
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // checkUnknownDirections checks for direction values that aren't \"\u8fdb\" or \"\u51fa\"
 func checkUnknownDirections(txns []model.TransactionRow) []string {
 	seen := make(map[string]bool)
@@ -981,7 +1163,10 @@ func checkUnknownDirections(txns []model.TransactionRow) []string {
 func applyFilters(txns []model.TransactionRow, payload map[string]interface{}) []model.TransactionRow {
 	sourceFilters, _ := payload["source_filters"].([]interface{})
 	targetFilters, _ := payload["target_filters"].([]interface{})
+	detailFilters, _ := payload["detail_filters"].([]interface{})
 	directions := stringSet(payload["directions"])
+	sourceLabelValues := stringSet(payload["source_label_values"])
+	targetLabelValues := stringSet(payload["target_label_values"])
 	startDate, _ := payload["start_date"].(string)
 	endDate, _ := payload["end_date"].(string)
 	filtered := make([]model.TransactionRow, 0)
@@ -989,6 +1174,9 @@ func applyFilters(txns []model.TransactionRow, payload map[string]interface{}) [
 	for _, txn := range txns {
 		if matchesFilterGroups(txn, sourceFilters) &&
 			matchesFilterGroups(txn, targetFilters) &&
+			matchesFilterGroups(txn, detailFilters) &&
+			matchesValueSet(txn["交易方标签"], sourceLabelValues) &&
+			matchesValueSet(txn["对手标签"], targetLabelValues) &&
 			matchesDirection(txn, directions) &&
 			matchesDateRange(txn, startDate, endDate) {
 			filtered = append(filtered, txn)
@@ -1006,7 +1194,8 @@ func flowEdgeLimit(payload map[string]interface{}) int {
 	}
 	sourceFilters, _ := payload["source_filters"].([]interface{})
 	targetFilters, _ := payload["target_filters"].([]interface{})
-	if hasActiveFilterGroups(sourceFilters) || hasActiveFilterGroups(targetFilters) {
+	detailFilters, _ := payload["detail_filters"].([]interface{})
+	if hasActiveFilterGroups(sourceFilters) || hasActiveFilterGroups(targetFilters) || hasActiveFilterGroups(detailFilters) {
 		return auditFlowEdgeLimit
 	}
 	return defaultFlowEdgeLimit
@@ -1066,17 +1255,23 @@ func matchesDirection(txn model.TransactionRow, directions map[string]bool) bool
 	return directions[txn["\u6536\u4ed8\u6807\u5fd7"]]
 }
 
+func matchesValueSet(value string, values map[string]bool) bool {
+	if len(values) == 0 {
+		return true
+	}
+	return values[value]
+}
+
 func matchesDateRange(txn model.TransactionRow, startDate, endDate string) bool {
 	if startDate == "" && endDate == "" {
 		return true
 	}
 	tradeTime := parser.NormalizeDatetime(txn["\u4ea4\u6613\u65f6\u95f4"])
-	if len(tradeTime) >= 10 {
-		tradeTime = tradeTime[:10]
-	}
 	if tradeTime == "" {
 		return false
 	}
+	startDate = normalizeFilterBoundary(startDate, false)
+	endDate = normalizeFilterBoundary(endDate, true)
 	if startDate != "" && tradeTime < startDate {
 		return false
 	}
@@ -1084,6 +1279,28 @@ func matchesDateRange(txn model.TransactionRow, startDate, endDate string) bool 
 		return false
 	}
 	return true
+}
+
+func normalizeFilterBoundary(value string, end bool) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	dateOnly := len(value) == 10 && strings.Count(value, "-") == 2
+	normalized := parser.NormalizeDatetime(value)
+	if normalized == "" {
+		normalized = value
+	}
+	if dateOnly || len(normalized) == 10 {
+		if len(normalized) > 10 {
+			normalized = normalized[:10]
+		}
+		if end {
+			return normalized + " 23:59:59"
+		}
+		return normalized + " 00:00:00"
+	}
+	return normalized
 }
 
 func stringSet(raw interface{}) map[string]bool {
@@ -1163,16 +1380,7 @@ func extractColumnValues(sessionDir string, column string, limit int) []string {
 }
 
 // queryEdgeRows queries transaction rows matching source/target
-func queryEdgeRows(sessionDir string, p struct {
-	SessionID    string `json:"session_id"`
-	SourceColumn string `json:"source_column"`
-	TargetColumn string `json:"target_column"`
-	AmountColumn string `json:"amount_column"`
-	TimeColumn   string `json:"time_column"`
-	Source       string `json:"source"`
-	Target       string `json:"target"`
-	Limit        int    `json:"limit"`
-}) []map[string]interface{} {
+func queryEdgeRows(sessionDir string, p EdgeDetailPayload) []map[string]interface{} {
 	var result []map[string]interface{}
 
 	filepath.Walk(sessionDir, func(path string, info os.FileInfo, err error) error {
@@ -1214,13 +1422,10 @@ func queryEdgeRows(sessionDir string, p struct {
 			if len(result) >= p.Limit {
 				break
 			}
-			// Check source match
-			sourceIdx, sok := colIdx[parser.NormalizeHeader(p.SourceColumn)]
-			targetIdx, tok := colIdx[parser.NormalizeHeader(p.TargetColumn)]
-			if !sok || !tok || sourceIdx >= len(row) || targetIdx >= len(row) {
+			if !rowMatchesAnyColumn(row, colIdx, p.Source, p.SourceColumn, p.SourceAccountColumn, p.SourceNameColumn, p.SourceIDColumn) {
 				continue
 			}
-			if row[sourceIdx] != p.Source || row[targetIdx] != p.Target {
+			if !rowMatchesAnyColumn(row, colIdx, p.Target, p.TargetColumn, p.TargetCardColumn, p.TargetNameColumn, p.TargetIDColumn) {
 				continue
 			}
 			m := make(map[string]interface{})
@@ -1235,4 +1440,21 @@ func queryEdgeRows(sessionDir string, p struct {
 	})
 
 	return result
+}
+
+func rowMatchesAnyColumn(row []string, colIdx map[string]int, expected string, columns ...string) bool {
+	if expected == "" {
+		return true
+	}
+	for _, column := range columns {
+		column = parser.NormalizeHeader(column)
+		if column == "" {
+			continue
+		}
+		idx, ok := colIdx[column]
+		if ok && idx < len(row) && strings.TrimSpace(row[idx]) == expected {
+			return true
+		}
+	}
+	return false
 }
