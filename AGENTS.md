@@ -39,6 +39,39 @@
 - 禁止删除历史记录
 - 禁止重构无关模块
 
+## Codex 上下文控制规则
+
+1. 启动后只优先阅读：
+   - AGENTS.md
+   - docs/AI_HANDOFF.md
+   - docs/CHANGELOG_AI.md
+   - docs/CLAUDE.md
+
+2. 禁止启动时全量扫描项目。
+
+3. 查找代码必须优先使用精确搜索，例如：
+   - rg "关键词"
+   - rg "函数名"
+   - rg "组件名"
+
+4. 未经明确要求，不得读取以下内容：
+   - node_modules
+   - dist
+   - build
+   - release
+   - logs
+   - 数据库文件
+   - csv/xlsx/parquet 大数据文件
+   - exe/zip/7z/rar 构建或压缩文件
+
+5. 每次只处理一个最小任务。
+
+6. 完成后必须更新：
+   - docs/AI_HANDOFF.md
+   - docs/CHANGELOG_AI.md
+
+7. 如果上下文接近上限，优先总结当前任务状态写入 CHANGELOG_AI.md，不要继续扩大读取范围。
+
 
 ## 1. 项目概述
 

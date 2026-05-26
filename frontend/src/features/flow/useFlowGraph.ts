@@ -44,13 +44,21 @@ interface UseFlowGraphParams {
 
   optimizeAnchors: boolean;
 
-  selectedEdgeIds: string[];
+  selectedEdgeIds: string[];
+
+  dataPenetrationEnabled: boolean;
+
+  expandedPenetrationNodeIds: string[];
+
+  onExpandDataPenetrationNode?: (nodeId: string) => void;
+
+  onCollapseDataPenetrationNode?: (nodeId: string) => void;
+
+}
 
-}
 
 
-
-export function useFlowGraph(params: UseFlowGraphParams) {
+export function useFlowGraph(params: UseFlowGraphParams) {
 
   const {
 
@@ -62,9 +70,13 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
     arrowMode, lineColor, lineType, lineWidth,
 
-    optimizeAnchors, selectedEdgeIds,
-
-  } = params;
+    optimizeAnchors, selectedEdgeIds,
+
+    dataPenetrationEnabled, expandedPenetrationNodeIds,
+
+    onExpandDataPenetrationNode, onCollapseDataPenetrationNode,
+
+  } = params;
 
 
 
@@ -148,11 +160,19 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
       .sort((a, b) => getEdgeAmount(b) - getEdgeAmount(a));
 
-    const baseVisibleEdges = renderLimit > 0 ? sortedVisibleEdges.slice(0, renderLimit) : sortedVisibleEdges;
-
-    const reciprocalPairKeys = findReciprocalPairKeys(baseVisibleEdges);
-
-    const visibleEdges = baseVisibleEdges
+    const baseVisibleEdges = renderLimit > 0 ? sortedVisibleEdges.slice(0, renderLimit) : sortedVisibleEdges;
+
+    const penetrationState = dataPenetrationEnabled
+      ? buildDataPenetrationState(baseVisibleEdges, expandedPenetrationNodeIds)
+      : undefined;
+
+    const edgeCandidates = penetrationState
+      ? baseVisibleEdges.filter((edge) => penetrationState.visibleEdgeIds.has(edge.id))
+      : baseVisibleEdges;
+
+    const reciprocalPairKeys = findReciprocalPairKeys(edgeCandidates);
+
+    const visibleEdges = edgeCandidates
 
       .map((edge) => {
 
@@ -252,11 +272,18 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
     }
 
-    for (const nodeId of pathNodeIds) connectedNodeIds.add(nodeId);
-
-
-
-    const visibleNodes = (hasSubjectFilter || hasEdgeFilter || (renderLimit > 0 && renderLimit < edges.length) || pathNodeIds.size > 0)
+    for (const nodeId of pathNodeIds) connectedNodeIds.add(nodeId);
+
+    const enrichNodeData = (node: ReactFlowNode) => ({
+      ...node.data,
+      dynamicHandles: optimizedHandleMap.get(node.id) ?? [],
+      penetrationCanExpand: Boolean(penetrationState?.canExpandNodeIds.has(node.id)),
+      penetrationCanCollapse: Boolean(penetrationState?.canCollapseNodeIds.has(node.id)),
+      onPenetrationExpand: onExpandDataPenetrationNode,
+      onPenetrationCollapse: onCollapseDataPenetrationNode,
+    });
+
+    const visibleNodes = (dataPenetrationEnabled || hasSubjectFilter || hasEdgeFilter || (renderLimit > 0 && renderLimit < edges.length) || pathNodeIds.size > 0)
 
       ? nodes
 
@@ -266,17 +293,17 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
             ...node,
 
-            data: { ...node.data, dynamicHandles: optimizedHandleMap.get(node.id) ?? [] },
+            data: enrichNodeData(node),
 
             className: pathNodeIds.has(node.id) ? node.className + ' path-focus' : node.className,
 
           }))
 
-      : nodes.map((node) => ({ ...node, data: { ...node.data, dynamicHandles: optimizedHandleMap.get(node.id) ?? [] } }));
+      : nodes.map((node) => ({ ...node, data: enrichNodeData(node) }));
 
     return { nodes: visibleNodes, edges: visibleEdges };
 
-  }, [arrowMode, edgeLabelMode, latestEdgeTime, lineColor, lineType, lineWidth, effectiveMinAmount, minAmount, nodePositions, optimizeAnchors, optimizedHandleMap, pathResult.edges, pathResult.nodes, edges, nodes, renderLimit, selectedEdgeIds, subjectIds, timeWindow]);
+  }, [arrowMode, dataPenetrationEnabled, edgeLabelMode, expandedPenetrationNodeIds, latestEdgeTime, lineColor, lineType, lineWidth, effectiveMinAmount, minAmount, nodePositions, onCollapseDataPenetrationNode, onExpandDataPenetrationNode, optimizeAnchors, optimizedHandleMap, pathResult.edges, pathResult.nodes, edges, nodes, renderLimit, selectedEdgeIds, subjectIds, timeWindow]);
 
 
 
@@ -398,7 +425,92 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
     insightItems,
 
-  };
-
-}
+  };
+
+}
+
+function buildDataPenetrationState(edges: ReactFlowEdge[], expandedNodeIds: string[]) {
+  const expanded = new Set(expandedNodeIds);
+  const visibleEdgeIds = new Set<string>();
+  const canExpandNodeIds = new Set<string>();
+  const canCollapseNodeIds = new Set<string>();
+  const incomingByNode = new Map<string, ReactFlowEdge[]>();
+  const outgoingByNode = new Map<string, ReactFlowEdge[]>();
+
+  for (const edge of edges) {
+    const incoming = incomingByNode.get(edge.target) ?? [];
+    incoming.push(edge);
+    incomingByNode.set(edge.target, incoming);
+    const outgoing = outgoingByNode.get(edge.source) ?? [];
+    outgoing.push(edge);
+    outgoingByNode.set(edge.source, outgoing);
+  }
+
+  const rootSources = new Set<string>();
+  for (const source of outgoingByNode.keys()) {
+    if (!incomingByNode.has(source)) rootSources.add(source);
+  }
+
+  if (rootSources.size > 0) {
+    for (const edge of edges) {
+      if (rootSources.has(edge.source)) visibleEdgeIds.add(edge.id);
+    }
+  } else {
+    const earliest = [...edges].sort((a, b) => edgeFirstTime(a) - edgeFirstTime(b))[0];
+    if (earliest) visibleEdgeIds.add(earliest.id);
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const visibleIncomingCutoffs = visibleIncomingTimes(edges, visibleEdgeIds);
+    for (const edge of edges) {
+      if (visibleEdgeIds.has(edge.id) || !expanded.has(edge.source)) continue;
+      const cutoff = visibleIncomingCutoffs.get(edge.source) ?? 0;
+      if (!edgeIsAfter(edge, cutoff)) continue;
+      visibleEdgeIds.add(edge.id);
+      changed = true;
+    }
+  }
+
+  const finalIncomingCutoffs = visibleIncomingTimes(edges, visibleEdgeIds);
+  for (const edge of edges) {
+    const cutoff = finalIncomingCutoffs.get(edge.source);
+    if (!cutoff || !edgeIsAfter(edge, cutoff)) continue;
+    if (visibleEdgeIds.has(edge.id)) {
+      if (expanded.has(edge.source)) canCollapseNodeIds.add(edge.source);
+    } else {
+      canExpandNodeIds.add(edge.source);
+    }
+  }
+
+  return { visibleEdgeIds, canExpandNodeIds, canCollapseNodeIds };
+}
+
+function visibleIncomingTimes(edges: ReactFlowEdge[], visibleEdgeIds: Set<string>) {
+  const incoming = new Map<string, number>();
+  for (const edge of edges) {
+    if (!visibleEdgeIds.has(edge.id)) continue;
+    const time = edgeLastTime(edge);
+    if (!time) continue;
+    const current = incoming.get(edge.target) ?? 0;
+    if (!current || time < current) incoming.set(edge.target, time);
+  }
+  return incoming;
+}
+
+function edgeIsAfter(edge: ReactFlowEdge, cutoff: number) {
+  if (!cutoff) return true;
+  const first = edgeFirstTime(edge);
+  const last = edgeLastTime(edge);
+  return first > cutoff || (!first && last > cutoff);
+}
+
+function edgeFirstTime(edge: ReactFlowEdge) {
+  return getEdgeTime(edge, 'first') || edgeLastTime(edge);
+}
+
+function edgeLastTime(edge: ReactFlowEdge) {
+  return getEdgeTime(edge, 'last') || getEdgeTime(edge, 'first');
+}
 

@@ -1,4 +1,4 @@
-﻿package model
+package model
 
 import "time"
 
@@ -27,18 +27,21 @@ type QualityReport struct {
 }
 
 type FlowNode struct {
-	ID        string   `json:"id"`
-	Label     string   `json:"label"`
-	Role      string   `json:"role"`
-	AmountIn  float64  `json:"amount_in"`
-	AmountOut float64  `json:"amount_out"`
-	TxCount   int      `json:"tx_count"`
-	InCount   int      `json:"in_count"`
-	OutCount  int      `json:"out_count"`
-	Degree    int      `json:"degree"`
-	FirstTime *string  `json:"first_time,omitempty"`
-	LastTime  *string  `json:"last_time,omitempty"`
-	Tags      []string `json:"tags"`
+	ID          string   `json:"id"`
+	Label       string   `json:"label"`
+	Role        string   `json:"role"`
+	AccountNo   string   `json:"account_no,omitempty"`
+	AccountName string   `json:"account_name,omitempty"`
+	IDNumber    string   `json:"id_number,omitempty"`
+	AmountIn    float64  `json:"amount_in"`
+	AmountOut   float64  `json:"amount_out"`
+	TxCount     int      `json:"tx_count"`
+	InCount     int      `json:"in_count"`
+	OutCount    int      `json:"out_count"`
+	Degree      int      `json:"degree"`
+	FirstTime   *string  `json:"first_time,omitempty"`
+	LastTime    *string  `json:"last_time,omitempty"`
+	Tags        []string `json:"tags"`
 }
 
 type FlowEdge struct {
@@ -55,8 +58,8 @@ type FlowEdge struct {
 }
 
 type FlowGraph struct {
-	Nodes []FlowNode            `json:"nodes"`
-	Edges []FlowEdge            `json:"edges"`
+	Nodes []FlowNode             `json:"nodes"`
+	Edges []FlowEdge             `json:"edges"`
 	Meta  map[string]interface{} `json:"meta"`
 }
 
@@ -105,7 +108,7 @@ type SheetCandidate struct {
 }
 
 type DirectoryScan struct {
-	SourceDir    string          `json:"source_dir"`
+	SourceDir    string           `json:"source_dir"`
 	Transactions []SheetCandidate `json:"transactions"`
 	Accounts     []SheetCandidate `json:"accounts"`
 	Labels       []SheetCandidate `json:"labels"`

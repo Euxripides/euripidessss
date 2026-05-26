@@ -12,6 +12,10 @@ import { FLOW_NODE_ICON_SIZE, FLOW_NODE_LABEL_WIDTH, type DynamicAnchor } from '
 
 export function FlowEntityNode(props: NodeProps) {
   const dynamicHandles = dedupeDynamicAnchors((props.data.dynamicHandles as DynamicAnchor[] | undefined) ?? []);
+  const canExpand = Boolean(props.data.penetrationCanExpand);
+  const canCollapse = Boolean(props.data.penetrationCanCollapse);
+  const onExpand = props.data.onPenetrationExpand as ((nodeId: string) => void) | undefined;
+  const onCollapse = props.data.onPenetrationCollapse as ((nodeId: string) => void) | undefined;
   const updateNodeInternals = useUpdateNodeInternals();
   const dynamicHandleKey = dynamicHandles
     .map((anchor) => `${anchor.id}:${anchor.side}:${anchor.offset.toFixed(2)}:${anchor.x?.toFixed(2) ?? ''}:${anchor.y?.toFixed(2) ?? ''}`)
@@ -37,7 +41,37 @@ export function FlowEntityNode(props: NodeProps) {
           style={styleForDynamicAnchor(anchor)}
         />
       ))}
-      <div>{props.data.label as ReactNode}</div>
+      <div className="flow-node-content">
+        {props.data.label as ReactNode}
+        {canExpand && (
+          <button
+            className="penetration-toggle penetration-expand"
+            type="button"
+            title="展开后续交易"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onExpand?.(props.id);
+            }}
+          >
+            +
+          </button>
+        )}
+        {canCollapse && (
+          <button
+            className="penetration-toggle penetration-collapse"
+            type="button"
+            title="折叠后续交易"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onCollapse?.(props.id);
+            }}
+          >
+            -
+          </button>
+        )}
+      </div>
       <Handle className="flow-handle base-anchor" id="top-source" type="source" position={Position.Top} style={styleForDynamicAnchor({ id: 'top', side: 'top', offset: 50 })} />
       <Handle className="flow-handle base-anchor" id="right-source" type="source" position={Position.Right} style={styleForDynamicAnchor({ id: 'right', side: 'right', offset: 50 })} />
       <Handle className="flow-handle base-anchor" id="bottom-source" type="source" position={Position.Bottom} style={styleForDynamicAnchor({ id: 'bottom', side: 'bottom', offset: 50 })} />

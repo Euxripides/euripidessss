@@ -77,6 +77,49 @@ func TestBuildFlowGraph(t *testing.T) {
 	}
 }
 
+func TestBuildFlowGraphIncludesSubjectIdentityFields(t *testing.T) {
+	rows := []model.TransactionRow{
+		{"交易时间": "2024-01-01", "交易金额": "100", "收付标志": "出",
+			"交易卡号": "card1", "交易账号": "acct1", "交易户名": "张三", "交易证件号码": "ID-001",
+			"交易对手账卡号": "card2", "对手户名": "李四", "对手身份证号": "ID-002"},
+		{"交易时间": "2024-01-02", "交易金额": "200", "收付标志": "进",
+			"交易账号": "acct3", "交易户名": "王五", "交易方身份证号": "ID-003",
+			"交易对手账卡号": "card4", "对手户名": "赵六", "对手身份证号": "ID-004"},
+	}
+
+	graph := BuildFlowGraph(rows, 10)
+	card1 := findFlowNode(graph.Nodes, "card1")
+	if card1 == nil {
+		t.Fatalf("expected node card1")
+	}
+	if card1.AccountNo != "card1" || card1.AccountName != "张三" || card1.IDNumber != "ID-001" {
+		t.Fatalf("unexpected card1 identity: account=%q name=%q id=%q", card1.AccountNo, card1.AccountName, card1.IDNumber)
+	}
+	card2 := findFlowNode(graph.Nodes, "card2")
+	if card2 == nil {
+		t.Fatalf("expected node card2")
+	}
+	if card2.AccountNo != "card2" || card2.AccountName != "李四" || card2.IDNumber != "ID-002" {
+		t.Fatalf("unexpected card2 identity: account=%q name=%q id=%q", card2.AccountNo, card2.AccountName, card2.IDNumber)
+	}
+	acct3 := findFlowNode(graph.Nodes, "acct3")
+	if acct3 == nil {
+		t.Fatalf("expected node acct3")
+	}
+	if acct3.AccountNo != "acct3" || acct3.AccountName != "王五" || acct3.IDNumber != "ID-003" {
+		t.Fatalf("unexpected acct3 identity: account=%q name=%q id=%q", acct3.AccountNo, acct3.AccountName, acct3.IDNumber)
+	}
+}
+
+func findFlowNode(nodes []model.FlowNode, id string) *model.FlowNode {
+	for i := range nodes {
+		if nodes[i].ID == id {
+			return &nodes[i]
+		}
+	}
+	return nil
+}
+
 func TestBuildFlowGraphMetaCountsUntruncatedTotals(t *testing.T) {
 	rows := []model.TransactionRow{
 		{"交易时间": "2024-01-01", "交易金额": "300", "收付标志": "出", "交易卡号": "card1", "交易对手账卡号": "card2"},

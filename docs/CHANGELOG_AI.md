@@ -1,4 +1,213 @@
-﻿### 2026-05-25 15:13
+### 2026-05-25 21:06
+
+#### 本次任务
+- 主体详情框在 ID 下方显示该主体的交易卡号、交易户名、身份证号；有数据才显示对应字段，没有数据则不显示。
+
+#### 新增功能
+- Flow 节点新增可选身份字段 `account_no`、`account_name`、`id_number`。
+- 主体详情抽屉新增“交易卡号”“交易户名”“身份证号”三行条件显示。
+
+#### 修改文件
+- `internal/model/model.go`
+- `internal/etl/flow_graph.go`
+- `internal/etl/etl_test.go`
+- `frontend/src/types.ts`
+- `frontend/src/features/flow/flowElements.ts`
+- `frontend/src/features/flow/SubjectDetailDrawer.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名接口路径。
+- `/api/process` 的 `flow_graph.nodes` 和 `/api/flow/build` 的 `nodes` 中，节点对象新增可选字段 `account_no`、`account_name`、`id_number`。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- `buildFlowElements` 透传节点身份字段。
+- `SubjectDetailDrawer` 在 ID 下方渲染非空身份字段，空值不显示。
+
+#### 验证结果
+- `cd E:\codex\etl; go test ./internal/etl` 通过。
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `cd E:\codex\etl; go vet ./internal/...` 通过。
+- `cd E:\codex\etl; go build -o bin\etl-server.exe .\cmd\server\` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有的大 chunk warning；当前产物为 `assets/index-CHBt3q_H.js` 和 `assets/index-BbV9x_Qb.css`。
+
+#### 未完成/待确认
+- 未做浏览器手动点选主体详情复测；如浏览器缓存旧资源，需强制刷新后查看。
+
+### 2026-05-25 20:49
+
+#### 本次任务
+- 修复新增“数据穿透”后资金流向图主体图标丢失的问题。
+
+#### 新增功能
+- 无，本次为可视回归修复。
+
+#### 修改文件
+- `frontend/src/features/flow/FlowGraphPrimitives.tsx`
+- `frontend/src/features/flow/flow-nodes.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- 新增 `.flow-node-content` 内部容器承载主体内容和“+/-”穿透按钮。
+- 移除 `.flow-node` 上的 `position: relative`，避免干扰 ReactFlow 节点外层定位和测量。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有的大 chunk warning；当前产物为 `assets/index-Dek-ebL1.js` 和 `assets/index-BbV9x_Qb.css`。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `git diff --check -- frontend/src/features/flow/FlowGraphPrimitives.tsx frontend/src/features/flow/flow-nodes.css` 通过。
+- 扫描 `FlowGraphPrimitives.tsx` 和 `flow-nodes.css`，未发现 U+FFFD 替换字符。
+
+#### 未完成/待确认
+- 未做浏览器截图复测；浏览器如缓存旧资源，需要强制刷新后再查看主体图标。
+
+### 2026-05-25 20:33
+
+#### 本次任务
+- 新增资金流向图“数据穿透”功能，在主体图标右上显示“+”展开后续交易，右下显示“-”折叠后续交易。
+- 在全局设置中新增“数据穿透”开关，默认关闭。
+- 展开逻辑按交易时间判断，只有后续流出时间晚于主体当前可见入账时间时才允许展开。
+
+#### 新增功能
+- “数据穿透”开启后，图谱先显示初始根关系，后续主体按时间逐层展开。
+- 有后续流出交易的主体显示“+”；已展开后续交易的主体显示“-”。
+- 关闭“数据穿透”后恢复原有完整关系渲染。
+
+#### 修改文件
+- `frontend/src/features/flow/FlowStyleToolbar.tsx`
+- `frontend/src/features/flow/FlowPanel.tsx`
+- `frontend/src/features/flow/useFlowPanelState.ts`
+- `frontend/src/features/flow/useFlowGraph.ts`
+- `frontend/src/features/flow/FlowGraphPrimitives.tsx`
+- `frontend/src/features/flow/flow-nodes.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- 全局设置栏新增“数据穿透”开关。
+- `useFlowGraph` 新增按 `first_time` / `last_time` 计算的穿透折叠视图。
+- 主体节点新增“+/-”穿透按钮，按钮点击不会触发节点拖拽或选中。
+- 图层切换时清空已展开的穿透主体状态。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有的大 chunk warning。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `cd E:\codex\etl; go vet ./internal/...` 通过。
+- 扫描本次触及的 Flow 文件和 `frontend\dist\assets`，未发现 U+FFFD 替换字符。
+- `git diff --check -- frontend/src/features/flow/FlowGraphPrimitives.tsx frontend/src/features/flow/FlowStyleToolbar.tsx frontend/src/features/flow/useFlowGraph.ts frontend/src/features/flow/useFlowPanelState.ts frontend/src/features/flow/flow-nodes.css frontend/src/features/flow/FlowPanel.tsx` 通过。
+
+#### 未完成/待确认
+- 未做浏览器手动点击“+/-”验证；浏览器如缓存旧资源，需要强制刷新后再测试。
+- 当前实现以聚合边为显示单位；如果一条聚合边包含入账时间前后的多笔交易，展开时仍显示该聚合关系。
+
+### 2026-05-25 16:39
+
+#### 本次任务
+- 将资金流向图框选逻辑改为默认关闭，通过全局设置里的“主体多选”开关控制。
+- 将全局设置移动到“资金流向图”标题右侧，保持展开显示。
+- 删除顶部说明文案“清洗、合并、标注和分析支付宝、微信、银行卡流水。”。
+
+#### 新增功能
+- 新增“主体多选”全局开关，默认关闭。
+- 开启后，画布空白区域左键拖动可框选主体；关闭时左键拖动画布仍用于平移。
+- 全局设置从画布左上角移到页面标题右侧，并改为不折叠。
+
+#### 修改文件
+- `frontend/src/App.tsx`
+- `frontend/src/features/flow/FlowCanvas.tsx`
+- `frontend/src/features/flow/FlowGraphWorkspace.tsx`
+- `frontend/src/features/flow/FlowPanel.tsx`
+- `frontend/src/features/flow/FlowStyleToolbar.tsx`
+- `frontend/src/features/flow/useFlowPanelState.ts`
+- `frontend/src/styles/shared.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- `FlowCanvas.tsx` 的框选能力改由 `subjectMultiSelect` 控制。
+- `FlowStyleToolbar.tsx` 新增“主体多选”开关，并改为常驻展开的全局设置栏。
+- `FlowPanel.tsx` 通过 portal 将全局设置渲染到 App 顶部标题旁。
+- `App.tsx` 删除顶部说明文案并提供标题旁设置挂载点。
+- `shared.css` 补充标题行设置栏和开关布局样式。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有的大 chunk warning。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `rg -n "清洗、合并、标注|主体多选|全局设置|�" frontend\src frontend\dist\assets` 确认旧说明文案已移除，未发现 U+FFFD。
+- `http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+- `http://127.0.0.1:8000` 已引用当前构建产物 `assets/index-CMxAVzpe.js` 和 `assets/index-CP7hcI7w.css`。
+
+#### 未完成/待确认
+- 未做浏览器手动框选操作验证；浏览器如缓存旧资源，需要强制刷新后再测试。
+
+### 2026-05-25 15:39
+
+#### 本次任务
+- 支持资金流向图画布像 Windows 桌面一样用鼠标画框批量选中节点，并批量移动。
+- 批量移动时保持现有动态连接点优化逻辑，避免多节点移动时边连接点退回固定位置或被图层移动逻辑重复位移。
+
+#### 新增功能
+- ReactFlow 画布现在支持左键拖动画布空白处框选节点。
+- 框选规则改为部分相交即选中节点，更接近桌面框选。
+- 选中多个节点后，拖动任意选中节点可整体移动。
+- 画布平移改为中键/右键拖动，避免与左键框选冲突。
+
+#### 修改文件
+- `frontend/src/features/flow/FlowCanvas.tsx`
+- `frontend/src/features/flow/useFlowPanelState.ts`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- `FlowCanvas.tsx` 的 ReactFlow 增加 `selectionOnDrag`、`selectionMode={SelectionMode.Partial}`、`panOnDrag={[1, 2]}`、`nodesDraggable`、`selectNodesOnDrag={false}`。
+- `useFlowPanelState.ts` 在多节点选中拖拽时禁用图层整体拖拽分支，避免重复位移。
+- 连接点优化继续由 `useFlowGraph` 按当前节点位置重算动态锚点。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有的大 chunk warning。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `rg -n "�" frontend\src\features\flow\FlowCanvas.tsx frontend\src\features\flow\useFlowPanelState.ts frontend\dist\assets` 无匹配。
+- `http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+- `http://127.0.0.1:8000` 已引用当前构建产物 `assets/index-B8aQzR94.js` 和 `assets/index-B-imr4oU.css`。
+
+#### 未完成/待确认
+- 浏览器如果缓存旧资源，需要强制刷新后再测试框选。
+- 框选对象是节点；如果框内只有边线、端点节点不在框内，ReactFlow 不会仅通过边线选中并移动端点节点。
+
+### 2026-05-25 15:13
 
 #### 本次任务
 - 将日期筛选框和日期选择弹层改为中文显示，避免 Ant Design 日期控件出现英文文案。

@@ -336,8 +336,12 @@ export function App() {
           <Content className="content">
             <section className="topbar">
               <div>
-                <h1>{titleFor(active)}</h1>
-                <p>清洗、合并、标注和分析支付宝、微信、银行卡流水。</p>
+                <div className="topbar-title-row">
+                  <h1>{titleFor(active)}</h1>
+                  {active === "graph" && (
+                    <div id="graph-topbar-settings" className="topbar-settings-slot" />
+                  )}
+                </div>
               </div>
               <Space>
                 {result && (

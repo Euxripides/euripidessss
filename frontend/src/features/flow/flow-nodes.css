@@ -46,6 +46,12 @@
 .flow-node.path-focus {
   filter: drop-shadow(0 0 8px rgba(220, 38, 38, 0.35));
 }
+.flow-node-content {
+  position: relative;
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
+}
 .flow-entity {
   display: grid;
   justify-items: center;
@@ -67,6 +73,36 @@
   box-shadow: 0 2px 4px rgba(15, 23, 42, 0.14);
   font-size: 18px;
   pointer-events: auto !important;
+}
+.penetration-toggle {
+  position: absolute;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #d0d7e2;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #172033;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: auto !important;
+  box-shadow: 0 5px 12px rgba(15, 23, 42, 0.18);
+}
+.penetration-toggle:hover {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+.penetration-expand {
+  top: -5px;
+  left: 122px;
+}
+.penetration-collapse {
+  top: 15px;
+  left: 122px;
 }
 .entity-person .entity-icon {
   border-color: #bfdbfe;

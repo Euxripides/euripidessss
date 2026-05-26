@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { MenuProps, UploadFile } from "antd";
 
@@ -17,6 +18,7 @@ import { FlowGraphWorkspace } from "./FlowGraphWorkspace";
 import { DBImportModal } from "./DBImportModal";
 
 import { FlowSourceModal } from "./FlowSourceModal";
+import { FlowStyleToolbar } from "./FlowStyleToolbar";
 
 import type {
   EdgePatch,
@@ -89,6 +91,11 @@ export function FlowPanel(props: {
 }) {
 
   const [dbImportOpen, setDbImportOpen] = useState(false);
+  const [settingsHost, setSettingsHost] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    setSettingsHost(document.getElementById("graph-topbar-settings"));
+  }, []);
 
   const {
 
@@ -283,6 +290,14 @@ export function FlowPanel(props: {
 
     setMiniMapCollapsed,
 
+    subjectMultiSelect,
+
+    setSubjectMultiSelect,
+
+    dataPenetrationEnabled,
+
+    setDataPenetrationEnabled,
+
     reactFlowInstance,
 
     setReactFlowInstance,
@@ -373,6 +388,33 @@ export function FlowPanel(props: {
 
     return (
     <>
+      {settingsHost && createPortal(
+        <FlowStyleToolbar
+          collapsed={false}
+          onCollapsedChange={setToolbarCollapsed}
+          edgeLabelMode={edgeLabelMode}
+          onEdgeLabelModeChange={setEdgeLabelMode}
+          lineType={lineType}
+          onLineTypeChange={setLineType}
+          arrowMode={arrowMode}
+          onArrowModeChange={setArrowMode}
+          optimizeAnchors={optimizeAnchors}
+          onOptimizeAnchorsChange={setOptimizeAnchors}
+          lineColor={lineColor}
+          onLineColorChange={setLineColor}
+          lineWidth={lineWidth}
+          onLineWidthChange={setLineWidth}
+          timeWindow={timeWindow}
+          onTimeWindowChange={setTimeWindow}
+          renderLimit={renderLimit}
+          onRenderLimitChange={setRenderLimit}
+          subjectMultiSelect={subjectMultiSelect}
+          onSubjectMultiSelectChange={setSubjectMultiSelect}
+          dataPenetrationEnabled={dataPenetrationEnabled}
+          onDataPenetrationEnabledChange={setDataPenetrationEnabled}
+        />,
+        settingsHost,
+      )}
       <FlowGraphWorkspace
         inspectorOpen={inspectorOpen}
         onInspectorOpenChange={setInspectorOpen}
@@ -403,6 +445,7 @@ export function FlowPanel(props: {
         onTimeWindowChange={setTimeWindow}
         renderLimit={renderLimit}
         onRenderLimitChange={setRenderLimit}
+        subjectMultiSelect={subjectMultiSelect}
         toolbarCollapsed={toolbarCollapsed}
         onToolbarCollapsedChange={setToolbarCollapsed}
         miniMapCollapsed={miniMapCollapsed}

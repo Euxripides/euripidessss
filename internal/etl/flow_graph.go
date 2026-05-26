@@ -33,22 +33,14 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 		tradeTime      string
 	}
 	work := make([]flowRow, 0, len(txns))
+	nodeInfoMap := make(map[string]*flowNodeInfo)
 	for _, txn := range txns {
 		amt := parser.ToNumber(txn["交易金额"])
-		own := txn["交易卡号"]
-		if own == "" {
-			own = txn["交易账号"]
-		}
-		if own == "" {
-			own = txn["交易户名"]
-		}
+		own := firstTransactionValue(txn, "交易卡号", "交易账号", "交易户名")
 		if own == "" {
 			own = "本方未知"
 		}
-		counter := txn["交易对手账卡号"]
-		if counter == "" {
-			counter = txn["对手户名"]
-		}
+		counter := firstTransactionValue(txn, "交易对手账卡号", "对手户名")
 		if counter == "" {
 			counter = "对手未知"
 		}
@@ -65,6 +57,8 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 		if source == target || source == "" || target == "" {
 			continue
 		}
+		addFlowNodeInfo(nodeInfoMap, own, flowNodeInfoFromTransaction(txn, true))
+		addFlowNodeInfo(nodeInfoMap, counter, flowNodeInfoFromTransaction(txn, false))
 		work = append(work, flowRow{source, target, amt, timeVal})
 	}
 	// Dedup
@@ -159,6 +153,11 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 		if strings.HasPrefix(id, "本方") || id == "本方未知" {
 			stats.Role = "self"
 		}
+		if info, ok := nodeInfoMap[id]; ok {
+			stats.AccountNo = info.value("account")
+			stats.AccountName = info.value("name")
+			stats.IDNumber = info.value("id")
+		}
 		if tm, ok := nodeTimeMap[id]; ok {
 			stats.FirstTime = strPtr(tm["first"])
 			stats.LastTime = strPtr(tm["last"])
@@ -224,6 +223,102 @@ func initNode(m map[string]*model.FlowNode, id string) {
 	if _, ok := m[id]; !ok {
 		m[id] = &model.FlowNode{ID: id, Label: id, Tags: []string{}}
 	}
+}
+
+type flowNodeInfo struct {
+	accountNos   []string
+	accountNames []string
+	idNumbers    []string
+}
+
+func flowNodeInfoFromTransaction(txn model.TransactionRow, own bool) flowNodeInfo {
+	if own {
+		return flowNodeInfo{
+			accountNos:   singleNonEmptyValue(firstTransactionValue(txn, "交易卡号", "交易账号")),
+			accountNames: nonEmptyTransactionValues(txn, "交易户名"),
+			idNumbers:    singleNonEmptyValue(firstTransactionValue(txn, "交易证件号码", "交易方身份证号")),
+		}
+	}
+	return flowNodeInfo{
+		accountNos:   nonEmptyTransactionValues(txn, "交易对手账卡号"),
+		accountNames: nonEmptyTransactionValues(txn, "对手户名"),
+		idNumbers:    nonEmptyTransactionValues(txn, "对手身份证号"),
+	}
+}
+
+func addFlowNodeInfo(m map[string]*flowNodeInfo, node string, info flowNodeInfo) {
+	if node == "" {
+		return
+	}
+	current, ok := m[node]
+	if !ok {
+		current = &flowNodeInfo{}
+		m[node] = current
+	}
+	current.accountNos = appendUniqueValues(current.accountNos, info.accountNos...)
+	current.accountNames = appendUniqueValues(current.accountNames, info.accountNames...)
+	current.idNumbers = appendUniqueValues(current.idNumbers, info.idNumbers...)
+}
+
+func (info flowNodeInfo) value(kind string) string {
+	switch kind {
+	case "account":
+		return strings.Join(info.accountNos, "、")
+	case "name":
+		return strings.Join(info.accountNames, "、")
+	case "id":
+		return strings.Join(info.idNumbers, "、")
+	default:
+		return ""
+	}
+}
+
+func firstTransactionValue(txn model.TransactionRow, columns ...string) string {
+	values := nonEmptyTransactionValues(txn, columns...)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func nonEmptyTransactionValues(txn model.TransactionRow, columns ...string) []string {
+	values := make([]string, 0, len(columns))
+	for _, column := range columns {
+		value := strings.TrimSpace(txn[column])
+		if value == "" {
+			continue
+		}
+		values = appendUniqueValues(values, value)
+	}
+	return values
+}
+
+func singleNonEmptyValue(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return []string{value}
+}
+
+func appendUniqueValues(values []string, additions ...string) []string {
+	for _, addition := range additions {
+		addition = strings.TrimSpace(addition)
+		if addition == "" {
+			continue
+		}
+		exists := false
+		for _, value := range values {
+			if value == addition {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			values = append(values, addition)
+		}
+	}
+	return values
 }
 
 func flowEdgeID(source, target string) string {

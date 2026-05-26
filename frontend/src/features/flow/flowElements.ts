@@ -26,6 +26,9 @@ export function buildFlowElements(
       data: {
         entityLabel: item.label,
         rawEntityId: item.id,
+        accountNo: item.account_no,
+        accountName: item.account_name,
+        idNumber: item.id_number,
         graphLayerId: layerId,
         graphLayerLabel: options.layerLabel,
         entityKind,

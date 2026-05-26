@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import message from "antd/es/message";
 import type { UploadFile } from "antd";
 import type { MenuProps } from "antd";
@@ -75,6 +75,9 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
   const [graphLayerPanelCollapsed, setGraphLayerPanelCollapsed] = useState(false);
   const [toolbarCollapsed, setToolbarCollapsed] = useState(true);
   const [miniMapCollapsed, setMiniMapCollapsed] = useState(false);
+  const [subjectMultiSelect, setSubjectMultiSelect] = useState(false);
+  const [dataPenetrationEnabled, setDataPenetrationEnabled] = useState(false);
+  const [expandedPenetrationNodeIds, setExpandedPenetrationNodeIds] = useState<string[]>([]);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const flowCanvasRef = useRef<HTMLDivElement | null>(null);
   const layerDragRef = useRef<{
@@ -83,6 +86,14 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     x: number;
     y: number;
   } | null>(null);
+
+  const expandDataPenetrationNode = useCallback((nodeId: string) => {
+    setExpandedPenetrationNodeIds((items) => (items.includes(nodeId) ? items : [...items, nodeId]));
+  }, []);
+
+  const collapseDataPenetrationNode = useCallback((nodeId: string) => {
+    setExpandedPenetrationNodeIds((items) => items.filter((id) => id !== nodeId));
+  }, []);
 
   const {
     maxAmount,
@@ -111,6 +122,10 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     lineWidth,
     optimizeAnchors,
     selectedEdgeIds,
+    dataPenetrationEnabled,
+    expandedPenetrationNodeIds,
+    onExpandDataPenetrationNode: expandDataPenetrationNode,
+    onCollapseDataPenetrationNode: collapseDataPenetrationNode,
   });
   const graphLayerKey = useMemo(() => props.graphLayers.map((layer) => layer.id).join("|"), [props.graphLayers]);
 
@@ -120,6 +135,7 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     setPathSource(undefined);
     setPathTarget(undefined);
     setSelectedEdgeIds([]);
+    setExpandedPenetrationNodeIds([]);
   }, [graphLayerKey]);
 
   useEffect(() => {
@@ -444,6 +460,12 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     setToolbarCollapsed,
     miniMapCollapsed,
     setMiniMapCollapsed,
+    subjectMultiSelect,
+    setSubjectMultiSelect,
+    dataPenetrationEnabled,
+    setDataPenetrationEnabled,
+    expandedPenetrationNodeIds,
+    setExpandedPenetrationNodeIds,
     reactFlowInstance,
     setReactFlowInstance,
     flowCanvasRef,

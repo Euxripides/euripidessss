@@ -6,6 +6,66 @@ body,
 body {
   background: #f5f7fb;
 }
+.topbar {
+  align-items: flex-start;
+  gap: 16px;
+}
+.topbar > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.topbar-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+}
+.topbar-title-row h1 {
+  flex: 0 0 auto;
+  line-height: 40px;
+}
+.topbar-settings-slot {
+  flex: 1 1 720px;
+  min-width: 360px;
+  max-width: 980px;
+}
+.topbar-settings-slot:empty {
+  display: none;
+}
+.topbar-settings-slot .graph-toolbar-collapse {
+  position: static;
+  z-index: auto;
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 26px rgba(37, 61, 92, 0.1);
+  backdrop-filter: none;
+}
+.topbar-settings-slot .graph-toolbar-title {
+  margin-bottom: 8px;
+}
+.topbar-settings-slot .graph-toolbar {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
+.graph-switch-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  background: #ffffff;
+}
+.graph-switch-field span {
+  color: #475569;
+  font-size: 13px;
+  white-space: nowrap;
+}
 .panel {
   padding: 18px;
 }

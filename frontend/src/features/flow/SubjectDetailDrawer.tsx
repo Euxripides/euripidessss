@@ -32,6 +32,11 @@ export function SubjectDetailDrawer(props: {
   const layerId = props.node.data?.graphLayerId;
   const layerLabel = String(props.node.data?.graphLayerLabel ?? (layerId ? '当前画布' : '手工画布'));
   const stats = props.stats;
+  const identityRows = [
+    { label: '交易卡号', value: readNodeText(props.node.data.accountNo), code: true },
+    { label: '交易户名', value: readNodeText(props.node.data.accountName), code: false },
+    { label: '身份证号', value: readNodeText(props.node.data.idNumber), code: true },
+  ].filter((item) => item.value);
 
   return (
     <Space direction="vertical" size="middle" className="full subject-detail">
@@ -44,6 +49,12 @@ export function SubjectDetailDrawer(props: {
           <span>ID</span>
           <code>{rawId}</code>
         </div>
+        {identityRows.map((item) => (
+          <div className="subject-row" key={item.label}>
+            <span>{item.label}</span>
+            {item.code ? <code>{item.value}</code> : <strong>{item.value}</strong>}
+          </div>
+        ))}
         <div className="subject-row">
           <span>画布</span>
           <Tag color="blue">{layerLabel}</Tag>
@@ -202,4 +213,8 @@ function SubjectMetricBar(props: { leftLabel: string; rightLabel: string; left: 
 
 function formatMoney(value: number) {
   return Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+}
+
+function readNodeText(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
 }

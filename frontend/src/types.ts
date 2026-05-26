@@ -2,6 +2,9 @@ export type FlowNode = {
   id: string;
   label: string;
   role: string;
+  account_no?: string;
+  account_name?: string;
+  id_number?: string;
   amount_in: number;
   amount_out: number;
   tx_count: number;

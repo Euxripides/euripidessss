@@ -44,6 +44,7 @@ export const FLOW_TEMPLATE_MAPPING = {
 };
 
 export type EntityKind = 'person' | 'group' | 'account' | 'company' | 'merchant' | 'unknown';
+export type NodeIdentityField = 'accountNo' | 'accountName' | 'idNumber';
 
 export type ManualNodeFormValues = {
   label: string;

@@ -25,7 +25,6 @@ import {
 import { EdgeDetailModal } from "./EdgeDetailModal";
 import { EdgeStylePanel } from "./EdgeStylePanel";
 import { FlowLayerPanel } from "./FlowLayerPanel";
-import { FlowStyleToolbar } from "./FlowStyleToolbar";
 import { DirectionalFlowEdge, FlowEntityNode } from "./FlowGraphPrimitives";
 import { miniMapNodeColor, miniMapNodeStrokeColor } from "./flowNodes";
 import type { EdgeDetailPayload, EdgeLabelMode, EdgePatch, EdgeLinePattern, GraphExportFormat, GraphLayer, LineType, ArrowMode, TimeWindow } from "./flowTypes";
@@ -65,6 +64,7 @@ export interface FlowCanvasProps {
   onTimeWindowChange: (w: TimeWindow) => void;
   renderLimit: number;
   onRenderLimitChange: (l: number) => void;
+  subjectMultiSelect: boolean;
   toolbarCollapsed: boolean;
   onToolbarCollapsedChange: (c: boolean) => void;
   miniMapCollapsed: boolean;
@@ -117,26 +117,6 @@ export interface FlowCanvasProps {
 export function FlowCanvas(props: FlowCanvasProps) {
   return (
     <div className="flow-canvas" ref={props.flowCanvasRef}>
-      <FlowStyleToolbar
-        collapsed={props.toolbarCollapsed}
-        onCollapsedChange={props.onToolbarCollapsedChange}
-        edgeLabelMode={props.edgeLabelMode}
-        onEdgeLabelModeChange={props.onEdgeLabelModeChange}
-        lineType={props.lineType}
-        onLineTypeChange={props.onLineTypeChange}
-        arrowMode={props.arrowMode}
-        onArrowModeChange={props.onArrowModeChange}
-        optimizeAnchors={props.optimizeAnchors}
-        onOptimizeAnchorsChange={props.onOptimizeAnchorsChange}
-        lineColor={props.lineColor}
-        onLineColorChange={props.onLineColorChange}
-        lineWidth={props.lineWidth}
-        onLineWidthChange={props.onLineWidthChange}
-        timeWindow={props.timeWindow}
-        onTimeWindowChange={props.onTimeWindowChange}
-        renderLimit={props.renderLimit}
-        onRenderLimitChange={props.onRenderLimitChange}
-      />
       <div className="graph-canvas-actions">
         <Button type="primary" icon={<PlusOutlined />} onClick={props.onAddNode}>
           新建主体
@@ -163,9 +143,9 @@ export function FlowCanvas(props: FlowCanvasProps) {
         edges={props.visibleGraph.edges}
         nodeTypes={flowNodeTypes}
         edgeTypes={flowEdgeTypes}
-        selectionOnDrag
+        selectionOnDrag={props.subjectMultiSelect}
         selectionMode={SelectionMode.Partial}
-        panOnDrag={[1, 2]}
+        panOnDrag={props.subjectMultiSelect ? [1, 2] : true}
         nodesDraggable
         selectNodesOnDrag={false}
         elevateEdgesOnSelect
