@@ -1,3 +1,32 @@
+### 2026-05-26 Git Push
+
+#### Task
+- Push local Git commits from `main` to the configured remote repository.
+
+#### New Functionality
+- None. Repository publishing only.
+
+#### Modified Files
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### API Changes
+- None.
+
+#### Database Changes
+- None.
+
+#### Frontend Changes
+- None.
+
+#### Verified Commands
+- `git status -sb` showed `main...origin/main [ahead 4]` before the first push.
+- `git remote -v` confirmed `origin` points to `https://github.com/Euxripides/euripidessss.git`.
+- `git push origin main` pushed `f007062..c5fd6b3` to `origin/main`.
+
+#### Open Items / Notes
+- `gh` is not installed in this environment, so no GitHub PR workflow was attempted.
+
 ### 2026-05-25 21:06
 
 #### 本次任务
