@@ -7,9 +7,12 @@
 必须先阅读以下文件：
 
 1. AGENTS.md
-2. docs/AI_HANDOFF.md
-3. docs/CHANGELOG_AI.md
-4. docs/CLAUDE.md
+2. repo-context.xml（项目完整代码上下文，包含所有源文件）
+3. docs/AI_HANDOFF.md
+4. docs/CHANGELOG_AI.md
+5. docs/CLAUDE.md
+
+repo-context.xml 由 repomix 生成，包含项目全部源代码。读完此文件即掌握项目全貌，禁止重新扫描项目目录。
 
 未阅读前，禁止修改代码。
 

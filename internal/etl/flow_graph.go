@@ -31,6 +31,7 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 		source, target string
 		amount         float64
 		tradeTime      string
+		serial         string
 	}
 	work := make([]flowRow, 0, len(txns))
 	nodeInfoMap := make(map[string]*flowNodeInfo)
@@ -46,6 +47,7 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 		}
 		dir := txn["收付标志"]
 		timeVal := txn["交易时间"]
+		serial := strings.TrimSpace(txn["交易流水号"])
 		var source, target string
 		if dir == "出" {
 			source, target = own, counter
@@ -59,18 +61,22 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 		}
 		addFlowNodeInfo(nodeInfoMap, own, flowNodeInfoFromTransaction(txn, true))
 		addFlowNodeInfo(nodeInfoMap, counter, flowNodeInfoFromTransaction(txn, false))
-		work = append(work, flowRow{source, target, amt, timeVal})
+		work = append(work, flowRow{source, target, amt, timeVal, serial})
 	}
 	// Dedup
 	type flowKey struct {
 		source, target string
 		amount         float64
 		timeKey        string
+		serial         string
 	}
 	seen := make(map[flowKey]bool)
 	deduped := make([]flowRow, 0, len(work))
 	for _, r := range work {
-		k := flowKey{r.source, r.target, math.Round(r.amount*100) / 100, r.tradeTime}
+		k := flowKey{source: r.source, target: r.target, amount: math.Round(r.amount*100) / 100, timeKey: r.tradeTime}
+		if r.serial != "" {
+			k.serial = r.serial
+		}
 		if seen[k] {
 			continue
 		}

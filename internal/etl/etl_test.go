@@ -77,6 +77,29 @@ func TestBuildFlowGraph(t *testing.T) {
 	}
 }
 
+func TestBuildFlowGraphKeepsDistinctSerialsWithSameEndpointAmountAndTime(t *testing.T) {
+	rows := []model.TransactionRow{
+		{"交易时间": "2024-01-01 10:00:00", "交易金额": "100", "收付标志": "出",
+			"交易卡号": "card1", "交易对手账卡号": "card2", "交易流水号": "TX-001"},
+		{"交易时间": "2024-01-01 10:00:00", "交易金额": "100", "收付标志": "出",
+			"交易卡号": "card1", "交易对手账卡号": "card2", "交易流水号": "TX-002"},
+		{"交易时间": "2024-01-01 10:00:00", "交易金额": "100", "收付标志": "出",
+			"交易卡号": "card1", "交易对手账卡号": "card2", "交易流水号": "TX-001"},
+	}
+
+	graph := BuildFlowGraph(rows, 10)
+	if len(graph.Edges) != 1 {
+		t.Fatalf("expected 1 aggregated edge, got %d", len(graph.Edges))
+	}
+	edge := graph.Edges[0]
+	if edge.TxCount != 2 {
+		t.Fatalf("expected 2 distinct serial transactions, got %d", edge.TxCount)
+	}
+	if edge.Amount != 200 {
+		t.Fatalf("expected amount 200, got %.2f", edge.Amount)
+	}
+}
+
 func TestBuildFlowGraphIncludesSubjectIdentityFields(t *testing.T) {
 	rows := []model.TransactionRow{
 		{"交易时间": "2024-01-01", "交易金额": "100", "收付标志": "出",
