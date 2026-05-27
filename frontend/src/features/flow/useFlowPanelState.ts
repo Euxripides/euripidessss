@@ -95,6 +95,11 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     setExpandedPenetrationNodeIds((items) => items.filter((id) => id !== nodeId));
   }, []);
 
+  const updateDataPenetrationEnabled = useCallback((enabled: boolean) => {
+    setDataPenetrationEnabled(enabled);
+    if (!enabled) setExpandedPenetrationNodeIds([]);
+  }, []);
+
   const {
     maxAmount,
     subjectOptions,
@@ -463,7 +468,7 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     subjectMultiSelect,
     setSubjectMultiSelect,
     dataPenetrationEnabled,
-    setDataPenetrationEnabled,
+    setDataPenetrationEnabled: updateDataPenetrationEnabled,
     expandedPenetrationNodeIds,
     setExpandedPenetrationNodeIds,
     reactFlowInstance,

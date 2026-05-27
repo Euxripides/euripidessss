@@ -6,6 +6,13 @@
   border-right: 1px solid #e5eaf2;
   box-shadow: 8px 0 28px rgba(37, 61, 92, 0.06);
 }
+.side .ant-layout-sider-zero-width-trigger {
+  top: 18px;
+  border-radius: 0 8px 8px 0;
+  background: #ffffff;
+  color: #3b5bdb;
+  box-shadow: 8px 0 18px rgba(37, 61, 92, 0.14);
+}
 .brand {
   display: flex;
   gap: 12px;
@@ -48,6 +55,9 @@
 }
 .content {
   padding: 24px;
+}
+.content-graph {
+  padding-top: 0;
 }
 .topbar {
   display: flex;

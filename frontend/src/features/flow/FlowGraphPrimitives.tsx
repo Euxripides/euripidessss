@@ -45,9 +45,10 @@ export function FlowEntityNode(props: NodeProps) {
         {props.data.label as ReactNode}
         {canExpand && (
           <button
-            className="penetration-toggle penetration-expand"
+            className="penetration-toggle penetration-expand nodrag nopan"
             type="button"
             title="展开后续交易"
+            onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();
@@ -59,9 +60,10 @@ export function FlowEntityNode(props: NodeProps) {
         )}
         {canCollapse && (
           <button
-            className="penetration-toggle penetration-collapse"
+            className="penetration-toggle penetration-collapse nodrag nopan"
             type="button"
             title="折叠后续交易"
+            onPointerDown={(event) => event.stopPropagation()}
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => {
               event.stopPropagation();

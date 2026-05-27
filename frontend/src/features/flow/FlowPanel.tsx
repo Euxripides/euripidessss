@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { useState } from "react";
 
 import type { MenuProps, UploadFile } from "antd";
 
@@ -91,11 +90,6 @@ export function FlowPanel(props: {
 }) {
 
   const [dbImportOpen, setDbImportOpen] = useState(false);
-  const [settingsHost, setSettingsHost] = useState<HTMLElement | null>(null);
-
-  useEffect(() => {
-    setSettingsHost(document.getElementById("graph-topbar-settings"));
-  }, []);
 
   const {
 
@@ -388,7 +382,7 @@ export function FlowPanel(props: {
 
     return (
     <>
-      {settingsHost && createPortal(
+      <section className="flow-settings-bar">
         <FlowStyleToolbar
           collapsed={false}
           onCollapsedChange={setToolbarCollapsed}
@@ -412,9 +406,8 @@ export function FlowPanel(props: {
           onSubjectMultiSelectChange={setSubjectMultiSelect}
           dataPenetrationEnabled={dataPenetrationEnabled}
           onDataPenetrationEnabledChange={setDataPenetrationEnabled}
-        />,
-        settingsHost,
-      )}
+        />
+      </section>
       <FlowGraphWorkspace
         inspectorOpen={inspectorOpen}
         onInspectorOpenChange={setInspectorOpen}

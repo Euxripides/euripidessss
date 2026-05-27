@@ -1109,11 +1109,11 @@ func transactionFromMappedRow(row []string, colIdx map[string]int, mapping flowC
 		}
 	}
 
-	setMappedValue(firstNonEmpty(mapping.SourceCol, mapping.SourceName, mapping.SourceAccount, mapping.SourceID), "交易户名")
+	setMappedValue(flowNameColumn(mapping.SourceName, mapping.SourceCol), "交易户名")
 	setMappedValue(mapping.SourceAccount, "交易账号")
 	setMappedValue(mapping.SourceID, "交易方身份证号")
 	setMappedValue(mapping.SourceLabel, "交易方标签")
-	setMappedValue(firstNonEmpty(mapping.TargetCol, mapping.TargetName, mapping.TargetCard, mapping.TargetID), "对手户名")
+	setMappedValue(flowNameColumn(mapping.TargetName, mapping.TargetCol), "对手户名")
 	setMappedValue(mapping.TargetCard, "交易对手账卡号")
 	setMappedValue(mapping.TargetID, "对手身份证号")
 	setMappedValue(mapping.TargetLabel, "对手标签")
@@ -1160,6 +1160,20 @@ func firstNonEmpty(values ...string) string {
 		if value != "" {
 			return value
 		}
+	}
+	return ""
+}
+
+func flowNameColumn(nameColumn, fallbackColumn string) string {
+	if nameColumn != "" {
+		return nameColumn
+	}
+	normalized := parser.NormalizeHeader(fallbackColumn)
+	if normalized == "" || strings.Contains(normalized, "银行") || strings.Contains(normalized, "开户行") {
+		return ""
+	}
+	if strings.Contains(normalized, "户名") || strings.Contains(normalized, "姓名") || strings.Contains(normalized, "名称") || normalized == "name" {
+		return fallbackColumn
 	}
 	return ""
 }

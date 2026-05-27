@@ -3,6 +3,25 @@
   overflow: hidden;
   position: relative;
 }
+.flow-settings-bar {
+  margin-bottom: 12px;
+}
+.flow-settings-bar .graph-toolbar-collapse {
+  position: static;
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #dbe3ee;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 26px rgba(37, 61, 92, 0.1);
+  backdrop-filter: none;
+}
+.flow-settings-bar .graph-toolbar-title {
+  margin-bottom: 8px;
+}
+.flow-settings-bar .graph-toolbar {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
 .graph-toolbar span {
   color: #64748b;
 }

@@ -1,3 +1,159 @@
+### 2026-05-26 19:58
+
+#### 本次任务
+- 修复主体详情中“交易户名”取值错误：交易户名应对应“交易方户名”，不应显示主体列里的银行名称。
+
+#### 新增功能
+- 无新增业务功能；本次为导入流水字段归一化修复。
+
+#### 修改文件
+- `internal/api/handlers.go`
+- `internal/api/handlers_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名接口路径。
+- `/api/flow/build` 仍使用原有请求字段；归一化交易行时，`交易户名` 优先取 `source_name_column`（交易方户名），`对手户名` 优先取 `target_name_column`（对手户名）；仅在没有显式户名映射且主体列本身明显是户名/姓名/名称字段时才兜底使用主体列，并明确排除银行/开户行列。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- 无前端代码变更。
+- 主体详情展示逻辑不变，后端节点 `account_name` 的来源已修正。
+
+#### 验证结果
+- `cd E:\codex\etl; go test ./internal/api` 通过。
+- `cd E:\codex\etl; gofmt -w internal\api\handlers.go internal\api\handlers_test.go` 已执行。
+- `cd E:\codex\etl; go test ./internal/...` 通过。
+- `cd E:\codex\etl; go vet ./internal/...` 通过。
+- `cd E:\codex\etl; go build -o bin\etl-server.exe .\cmd\server\` 通过。
+- 已重启 `E:\codex\etl\bin\etl-server.exe`，`http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+
+#### 未完成 / 待确认
+- 未做浏览器手动点选主体详情复测；如页面仍显示旧图数据，需要重新导入或重新构建资金流向图。
+
+#### 注意事项
+- 本次修复的是导入映射阶段的字段优先级：避免 `SourceCol/TargetCol` 中的银行名称覆盖真正户名；既有接口路径和数据库结构不变。
+
+### 2026-05-26 18:01
+
+#### 本次任务
+- 修复资金流向图“数据穿透”功能失效：开启数据穿透后，节点上的展开/折叠按钮需要可靠响应点击。
+
+#### 新增功能
+- 无新增业务功能；本次为数据穿透交互修复。
+
+#### 修改文件
+- `frontend/src/features/flow/FlowGraphPrimitives.tsx`
+- `frontend/src/features/flow/useFlowPanelState.ts`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- 数据穿透节点 `+/-` 按钮新增 ReactFlow 约定的 `nodrag nopan` class，避免按钮点击被节点拖拽或画布平移逻辑抢占。
+- 数据穿透节点 `+/-` 按钮新增 `onPointerDown` 阻止事件冒泡，兼容 ReactFlow v12 的 pointer 事件交互。
+- 关闭数据穿透开关时清空已展开节点列表，避免重新开启时沿用旧展开状态。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过；仍有既有大 chunk warning；当前产物为 `assets/index-CBYjaJUa.js` 和 `assets/index-wvt7uB6u.css`。
+- `cd E:\codex\etl; git diff --check -- frontend\src\features\flow\FlowGraphPrimitives.tsx frontend\src\features\flow\useFlowPanelState.ts` 通过，仅有工作区 LF/CRLF 提示。
+- `http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+- `http://127.0.0.1:8000` 已引用当前构建产物 `assets/index-CBYjaJUa.js` 和 `assets/index-wvt7uB6u.css`。
+
+#### 未完成/待确认
+- 未做浏览器手动点击 `+/-` 截图复测；如浏览器缓存旧资源，强制刷新后再测试。
+
+#### 注意事项
+- 本次只修前端 ReactFlow 节点按钮事件处理，不涉及后端接口、数据处理逻辑或数据库结构。
+
+### 2026-05-26 17:52
+
+#### 本次任务
+- 修正资金流向图页面右侧内容顶部留白：全局设置需要贴近页面顶部显示。
+
+#### 新增功能
+- 资金流向图页面内容区新增专用布局 class，用于去除该页面顶部 padding。
+
+#### 修改文件
+- `frontend/src/App.tsx`
+- `frontend/src/styles/layout.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- `App.tsx` 在 `active === "graph"` 时给 `Content` 增加 `content-graph` class。
+- `layout.css` 新增 `.content-graph { padding-top: 0; }`，让右侧全局设置区域置顶。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl; git diff --check -- frontend\src\App.tsx frontend\src\styles\layout.css` 通过，仅有工作区 LF/CRLF 提示。
+- `cd E:\codex\etl\frontend; npm run build` 通过；仍有既有大 chunk warning；当前产物为 `assets/index-BLmuebEp.js` 和 `assets/index-wvt7uB6u.css`。
+- `http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+- `http://127.0.0.1:8000` 已引用当前构建产物 `assets/index-BLmuebEp.js` 和 `assets/index-wvt7uB6u.css`。
+
+#### 未完成/待确认
+- 未做浏览器截图复测；如浏览器缓存旧资源，强制刷新后查看。
+
+#### 注意事项
+- 本次只改前端顶部间距，不涉及后端接口、数据处理逻辑或数据库结构。
+
+### 2026-05-26 17:46
+
+#### 本次任务
+- 修改资金流向图页面布局：点击左侧“资金流向图”后左侧导航自动折叠，右侧工作区扩展；移除顶层标题“资金流向图”；页面打开后改为上方全局设置、下方画布/功能区。
+
+#### 新增功能
+- 资金流向图菜单激活时，左侧 Ant Design `Sider` 自动折叠到 0 宽，保留折叠触发器用于展开导航。
+- 全局设置栏固定在 Flow 页面内容顶部，不再挂载到页面标题旁。
+
+#### 修改文件
+- `frontend/src/App.tsx`
+- `frontend/src/features/flow/FlowPanel.tsx`
+- `frontend/src/features/flow/flow-canvas.css`
+- `frontend/src/styles/layout.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- `App.tsx` 新增侧栏折叠状态，点击 `graph` 菜单时自动折叠左侧导航；资金流向图页不再渲染顶层 `topbar` 和标题。
+- `FlowPanel.tsx` 移除全局设置 portal，直接在 Flow 页面顶部渲染 `FlowStyleToolbar`。
+- `flow-canvas.css` 新增页面顶部全局设置栏样式，覆盖原先浮层定位。
+- `layout.css` 调整 0 宽侧栏触发器显示样式。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npx tsc --noEmit` 通过。
+- `cd E:\codex\etl\frontend; npm run build` 通过；仍有既有大 chunk warning；当前产物为 `assets/index-DY0Pp_e9.js` 和 `assets/index-BDD8pi7Y.css`。
+- `cd E:\codex\etl; git diff --check -- frontend\src\App.tsx frontend\src\features\flow\FlowPanel.tsx frontend\src\features\flow\flow-canvas.css frontend\src\styles\layout.css` 通过，仅有工作区 LF/CRLF 提示。
+- `http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+- `http://127.0.0.1:8000` 已引用当前构建产物 `assets/index-DY0Pp_e9.js` 和 `assets/index-BDD8pi7Y.css`。
+
+#### 未完成/待确认
+- 未做浏览器手动点击截图复测；浏览器如缓存旧资源，需要强制刷新后查看。
+
+#### 注意事项
+- 本次只改前端布局，不涉及后端接口、数据处理逻辑或数据库结构。
+
 ### 2026-05-26 Git Push
 
 #### Task

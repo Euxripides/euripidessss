@@ -196,6 +196,7 @@ const menuItems = [
 
 export function App() {
   const [active, setActive] = useState("clean");
+  const [sideCollapsed, setSideCollapsed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ProcessResponse | null>(null);
 
@@ -303,6 +304,12 @@ export function App() {
     }
   }
 
+  const handleMenuClick: MenuProps["onClick"] = (item) => {
+    const nextActive = String(item.key);
+    setActive(nextActive);
+    setSideCollapsed(nextActive === "graph");
+  };
+
   return (
     <ConfigProvider
       locale={zhCN}
@@ -317,7 +324,14 @@ export function App() {
       }}
     >
       <Layout className="app-shell">
-        <Sider width={248} className="side">
+        <Sider
+          width={248}
+          collapsedWidth={0}
+          collapsible
+          collapsed={sideCollapsed}
+          onCollapse={setSideCollapsed}
+          className="side"
+        >
           <div className="brand">
             <div className="brand-mark">资</div>
             <div>
@@ -329,32 +343,31 @@ export function App() {
             mode="inline"
             selectedKeys={[active]}
             items={menuItems}
-            onClick={(item) => setActive(item.key)}
+            onClick={handleMenuClick}
           />
         </Sider>
         <Layout>
-          <Content className="content">
-            <section className="topbar">
-              <div>
-                <div className="topbar-title-row">
-                  <h1>{titleFor(active)}</h1>
-                  {active === "graph" && (
-                    <div id="graph-topbar-settings" className="topbar-settings-slot" />
-                  )}
+          <Content className={`content ${active === "graph" ? "content-graph" : ""}`}>
+            {active === "clean" && (
+              <section className="topbar">
+                <div>
+                  <div className="topbar-title-row">
+                    <h1>{titleFor(active)}</h1>
+                  </div>
                 </div>
-              </div>
-              <Space>
-                {result && (
-                  <Button
-                    icon={<DownloadOutlined />}
-                    onClick={() => downloadResult(result)}
-                    type="primary"
-                  >
-                    下载结果
-                  </Button>
-                )}
-              </Space>
-            </section>
+                <Space>
+                  {result && (
+                    <Button
+                      icon={<DownloadOutlined />}
+                      onClick={() => downloadResult(result)}
+                      type="primary"
+                    >
+                      下载结果
+                    </Button>
+                  )}
+                </Space>
+              </section>
+            )}
             <TransferPanel status={transferStatus} />
 
             {active === "clean" && (

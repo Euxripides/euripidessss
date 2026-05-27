@@ -71,6 +71,68 @@ func TestNormalizeFlowDirectionUsesBuiltInsAndAliases(t *testing.T) {
 	}
 }
 
+func TestTransactionFromMappedRowUsesNameColumnsForAccountNames(t *testing.T) {
+	row := []string{
+		"中国工商银行", "40000253115008797", "张三", "ID-001",
+		"对手银行", "6222000000000001", "李四", "ID-002",
+		"100", "2024-01-02 10:00:00", "出",
+	}
+	colIdx := map[string]int{
+		"银行名称":    0,
+		"交易方账户":   1,
+		"交易方户名":   2,
+		"交易方身份证号": 3,
+		"对手银行":    4,
+		"交易对手账卡号": 5,
+		"对手户名":    6,
+		"对手身份证号":  7,
+		"交易金额":    8,
+		"交易时间":    9,
+		"收付标志":    10,
+	}
+	mapping := flowColumnMapping{
+		SourceCol:     "银行名称",
+		SourceAccount: "交易方账户",
+		SourceName:    "交易方户名",
+		SourceID:      "交易方身份证号",
+		TargetCol:     "对手银行",
+		TargetCard:    "交易对手账卡号",
+		TargetName:    "对手户名",
+		TargetID:      "对手身份证号",
+		Amount:        "交易金额",
+		Time:          "交易时间",
+		Direction:     "收付标志",
+	}
+
+	txn := transactionFromMappedRow(row, colIdx, mapping, nil)
+	if txn["交易户名"] != "张三" {
+		t.Fatalf("交易户名 = %q, want 张三", txn["交易户名"])
+	}
+	if txn["对手户名"] != "李四" {
+		t.Fatalf("对手户名 = %q, want 李四", txn["对手户名"])
+	}
+	if txn["交易户名"] == "中国工商银行" || txn["对手户名"] == "对手银行" {
+		t.Fatalf("account names should not come from source/target entity columns: %#v", txn)
+	}
+
+	graph := etl.BuildFlowGraph([]model.TransactionRow{txn}, 10)
+	node := findAPITestFlowNode(graph.Nodes, "40000253115008797")
+	if node == nil {
+		t.Fatalf("expected source account node")
+	}
+	if node.AccountName != "张三" {
+		t.Fatalf("node AccountName = %q, want 张三", node.AccountName)
+	}
+
+	mappingWithoutExplicitName := mapping
+	mappingWithoutExplicitName.SourceName = ""
+	mappingWithoutExplicitName.TargetName = ""
+	txn = transactionFromMappedRow(row, colIdx, mappingWithoutExplicitName, nil)
+	if txn["交易户名"] != "" || txn["对手户名"] != "" {
+		t.Fatalf("bank entity columns should not be used as account names without explicit name mapping: %#v", txn)
+	}
+}
+
 func TestFlowEdgeLimitUsesAuditLimitForActiveEntityFilters(t *testing.T) {
 	limit := flowEdgeLimit(map[string]interface{}{
 		"source_filters": []interface{}{
@@ -437,6 +499,15 @@ func auditFlowMapping() flowColumnMapping {
 		Summary:       "摘要说明",
 		Remark:        "备注",
 	}
+}
+
+func findAPITestFlowNode(nodes []model.FlowNode, id string) *model.FlowNode {
+	for i := range nodes {
+		if nodes[i].ID == id {
+			return &nodes[i]
+		}
+	}
+	return nil
 }
 
 func filterPayload(column string, values ...string) map[string]interface{} {
