@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -593,6 +594,33 @@ func (s *Service) StartTask(ctx context.Context, id string) (ImportTask, error) 
 	}
 	task.Columns = headers
 	task.Files = []string{"database_import.csv"}
+	// Save original column name mapping for edge detail display
+	if len(task.Tables) > 0 {
+		sourceCols := make([]string, 0, len(FlowTargetFields))
+		targetToSource := make(map[string]string, len(FlowTargetFields))
+		seenSrc := make(map[string]bool)
+		for _, item := range task.Tables {
+			for _, m := range item.Mappings {
+				src := parser.NormalizeHeader(m.SourceColumn)
+				tgt := parser.NormalizeHeader(m.TargetField)
+				if src != "" && tgt != "" {
+					targetToSource[tgt] = src
+					if !seenSrc[src] {
+						sourceCols = append(sourceCols, src)
+						seenSrc[src] = true
+					}
+				}
+			}
+		}
+		if len(targetToSource) > 0 {
+			originsData, _ := json.Marshal(map[string]interface{}{
+				"source_columns":   sourceCols,
+				"target_to_source": targetToSource,
+			})
+			originsPath := filepath.Join(sessionDir, "column_origins.json")
+			os.WriteFile(originsPath, originsData, 0644)
+		}
+	}
 	task.Sample = sample
 	if task.Progress.TotalRows != task.Progress.ProcessedRows {
 		task.Progress.TotalRows = task.Progress.ProcessedRows

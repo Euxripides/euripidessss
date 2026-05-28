@@ -315,8 +315,6 @@
 .excel-cell-text {
   display: block;
   min-height: 20px;
-  overflow: hidden;
-  text-overflow: clip;
   white-space: nowrap;
 }
 .graph-empty {

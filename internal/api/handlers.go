@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -521,6 +522,49 @@ func HandleImportedFlowEdgeDetail(c *gin.Context) {
 			columns = append(columns, k)
 		}
 		sort.Strings(columns)
+	}
+	// Apply original source column names if available (database import)
+	originsPath := filepath.Join(sessionDir, "column_origins.json")
+	if data, err := os.ReadFile(originsPath); err == nil && len(rows) > 0 {
+		var origins struct {
+			SourceColumns   []string          `json:"source_columns"`
+			TargetToSource  map[string]string `json:"target_to_source"`
+		}
+		if json.Unmarshal(data, &origins) == nil && len(origins.TargetToSource) > 0 {
+			// Build set of target fields that have mapping
+			targetsWithMapping := make(map[string]bool, len(origins.TargetToSource))
+			for tgt := range origins.TargetToSource {
+				targetsWithMapping[tgt] = true
+			}
+			// Determine display columns: mapped source columns first, then unmapped standard columns
+			displayCols := make([]string, 0, len(columns))
+			seen := make(map[string]bool)
+			for _, sc := range origins.SourceColumns {
+				if !seen[sc] {
+					displayCols = append(displayCols, sc)
+					seen[sc] = true
+				}
+			}
+			for _, col := range columns {
+				if !targetsWithMapping[col] && !seen[col] {
+					displayCols = append(displayCols, col)
+					seen[col] = true
+				}
+			}
+			// Transform row map keys from target names to source names
+			for i, row := range rows {
+				newRow := make(map[string]interface{}, len(row))
+				for k, v := range row {
+					if src, ok := origins.TargetToSource[k]; ok {
+						newRow[src] = v
+					} else {
+						newRow[k] = v
+					}
+				}
+				rows[i] = newRow
+			}
+			columns = displayCols
+		}
 	}
 	// Calculate total amount
 	var totalAmount float64

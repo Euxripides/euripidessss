@@ -1,4 +1,44 @@
-## 2026-05-28 修复 run.bat 被其它进程调用时无限卡死
+## 2026-05-28 修复边缘详情显示问题: 交易时间截断 + 数据库导入列名显示来源字段
+
+### Task
+- 用户反馈两个问题：
+  1. 边缘详情弹窗中表格单元格文本（如交易时间）被截断，`white-space: nowrap` 导致长文本不换行
+  2. 数据库导入的流水查看线条详情时，表格字段显示的是标准映射列名（如"交易时间"）而不是来源数据库列名（如"交易日期"）；要求字段名称和排列顺序与来源一致
+
+### Changes
+- `frontend/src/features/flow/flow-canvas.css`:
+  - `.excel-cell-text` 保持 `white-space: nowrap` 单行显示，移除 `overflow: hidden` 不截断
+- `frontend/src/features/flow/EdgeDetailModal.tsx`:
+  - 新增 `estimateTextWidth` 按中/英文字符估算像素宽度，动态计算每列最长值设定列宽
+  - 过滤 `HIDDEN_FIELDS`（含 `ly_path`），所有来源中该字段不显示
+- `internal/dbimport/service.go`:
+  - 添加 `encoding/json` 导入
+  - `StartTask` 中在写入 `database_import.csv` 后，额外保存 `column_origins.json` 到会话目录，记录 `source_columns`（来源列有序列表）和 `target_to_source`（标准列名→来源列名反向映射）
+- `internal/api/handlers.go`:
+  - 添加 `encoding/json` 导入
+  - `HandleImportedFlowEdgeDetail` 中在确定 `columns` 后检查 `column_origins.json`：
+    - 若存在，用 `source_columns` 作为显示列（保持数据库查询顺序）
+    - 追加未映射的标准列（如摘要说明、备注等）
+    - 将每行数据 map key 从标准名替换为来源原始列名
+
+### New Functionality
+- 数据库导入会话的边缘详情现在显示原始数据库列名，而非标准映射列名
+- 单元格文本单行完整显示，列宽根据最长字段值动态计算
+- `ly_path` 字段在所有来源中自动隐藏
+
+### Verified Commands
+- `go test ./internal/... -count=1 -timeout 300s` — 全部通过
+- `go vet ./internal/...` — 无警告
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- 已重启 etl-server.exe
+
+### Notes
+- `column_origins.json` 仅在数据库导入时生成，文件上传会话行为不变
+- 多表导入同一会话时列名映射取并集
+- 未映射的标准列仍以标准列名显示在末尾
 
 ### Task
 - 另一个进程（AI 工具）调用 `.\run.bat` 时总是卡死不返回。

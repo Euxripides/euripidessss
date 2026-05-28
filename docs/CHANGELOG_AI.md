@@ -1,3 +1,53 @@
+### 2026-05-28 (修复边缘详情显示问题: 交易时间截断 + 数据库导入列名显示来源字段)
+
+#### 本次任务
+- 用户反馈两个问题：
+  1. 边缘详情弹窗中"交易时间"框段落显示不完整，文本被截断
+  2. 数据库导入的流水查看详情时，表格字段显示的是标准映射列名而不是来源数据库列名；字段排列顺序要求与来源一致
+
+#### 新增功能
+- 数据库导入的边缘详情现在显示原始来源列名（如"交易日期"映射到标准"交易时间"时，显示"交易日期"），而非标准映射列名
+- 列顺序保持来源数据库查询的字段顺序
+
+#### 修改文件
+- `frontend/src/features/flow/flow-canvas.css` — `.excel-cell-text` 恢复 `white-space: nowrap` 保持单行显示
+- `frontend/src/features/flow/EdgeDetailModal.tsx` — 新增 `estimateTextWidth` 按中/英文字符估算像素宽度，动态计算每列最宽值设定列宽；过滤 `HIDDEN_FIELDS`（含 `ly_path`）不显示
+- `internal/dbimport/service.go` — 添加 `encoding/json` 导入；在 `StartTask` 中保存 `column_origins.json`（原始列名到标准列名的反向映射）
+- `internal/api/handlers.go` — 添加 `encoding/json` 导入；在 `HandleImportedFlowEdgeDetail` 中读取 `column_origins.json`，将行列名从标准映射名转换为来源原始列名
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名接口路径
+- `/api/flow/edge-detail/imported` 响应中，数据库导入会话的 `columns` 和 `rows` 键名现在使用原始来源列名（命中 `column_origins.json` 时）；文件上传会话行为不变
+
+#### 数据库变化
+- 无
+
+#### 前端变化
+- `.excel-cell-text` 单元格样式改为 `white-space: pre-wrap; word-break: break-all`，长文本自动换行
+
+#### 后端变化
+- `StartTask` 在写入 CSV 完成后，额外在会话目录写入 `column_origins.json`
+- `HandleImportedFlowEdgeDetail` 在返回数据前检查 `column_origins.json`，若存在则：
+  - 使用 `source_columns` 作为显示列（按数据库查询顺序）
+  - 追加未在映射中的标准列（如摘要说明、备注等）
+  - 将每行数据的 map key 从标准映射名替换为来源原始列名
+
+#### 验证结果
+- `go test ./internal/... -count=1 -timeout 300s` — 全部通过
+- `go vet ./internal/...` — 无警告
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过（仍有既有大 chunk warning）
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- 已重启 etl-server.exe
+
+#### 注意事项
+- `column_origins.json` 仅在数据库导入时生成；文件上传（CSV/Excel）不生成此文件，边缘详情继续使用原始文件列名（表现不变）
+- 若多表导入同一会话，列名映射取各表的并集，按首次出现顺序排列
+- 未映射的标准列（如所有表都未映射"备注"字段）仍以标准列名显示在末尾
+
 ### 2026-05-28 (修复 run.bat 被其它进程调用时无限卡死 — 重写 run.ps1 + run.bat 委托)
 
 #### 本次任务

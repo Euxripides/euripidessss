@@ -1,3 +1,5 @@
+const HIDDEN_FIELDS = ['ly_path'];
+
 import { Input, Modal, Table } from 'antd';
 import { useMemo, type Key } from 'react';
 import type { EdgeDetailPayload } from './flowTypes';
@@ -22,7 +24,8 @@ export function EdgeDetailModal(props: {
     [keyword, props.detail],
   );
   const columns = useMemo(() => {
-    const sourceColumns = props.detail?.columns ?? [];
+    const sourceColumns = (props.detail?.columns ?? []).filter((col) => !HIDDEN_FIELDS.includes(col));
+    const allRows = props.detail?.rows ?? [];
     return [
       {
         title: '序号',
@@ -32,12 +35,18 @@ export function EdgeDetailModal(props: {
         fixed: 'left' as const,
       },
       ...sourceColumns.map((column) => {
-        const filters = buildColumnFilters(props.detail?.rows ?? [], column);
+        const filters = buildColumnFilters(allRows, column);
+        const headerWidth = estimateTextWidth(column) + 16;
+        const maxValueWidth = allRows.reduce((max, row) => {
+          const text = formatPreviewCell(row[column]);
+          return Math.max(max, estimateTextWidth(text) + 16);
+        }, 0);
+        const width = Math.max(70, Math.min(600, Math.max(headerWidth, maxValueWidth)));
         return {
           title: column,
           dataIndex: column,
           key: column,
-          width: Math.max(96, Math.min(180, column.length * 14 + 42)),
+          width,
           ellipsis: false,
           filters,
           filterSearch: true,
@@ -108,6 +117,14 @@ function formatPreviewCell(value: unknown) {
   if (typeof value === 'boolean') return value ? '是' : '否';
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+function estimateTextWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    width += ch.charCodeAt(0) > 127 ? 14 : 7.5;
+  }
+  return width;
 }
 
 function formatMoney(value: number) {
