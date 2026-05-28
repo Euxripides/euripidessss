@@ -19,9 +19,10 @@ type cachedFile struct {
 }
 
 type sessionRowCache struct {
-	mu        sync.RWMutex
-	files     []cachedFile
-	totalRows int
+	mu          sync.RWMutex
+	files       []cachedFile
+	totalRows   int
+	ColumnOrder []string
 }
 
 var (
@@ -96,6 +97,13 @@ func readSessionDataWithCache(sessionDir, sessionID string, mapping flowColumnMa
 
 		if totalRows+len(dataRows) <= maxCacheRowsPerSession {
 			cache.files = append(cache.files, cachedFile{Headers: headers, Rows: dataRows})
+			if len(cache.ColumnOrder) == 0 {
+				normHeaders := make([]string, len(headers))
+				for i, h := range headers {
+					normHeaders[i] = parser.NormalizeHeader(h)
+				}
+				cache.ColumnOrder = normHeaders
+			}
 			totalRows += len(dataRows)
 		}
 
@@ -115,6 +123,15 @@ func getCachedFiles(sessionID string) *sessionRowCache {
 	rowCacheMu.RLock()
 	defer rowCacheMu.RUnlock()
 	return rowCache[sessionID]
+}
+
+func getCachedColumnOrder(sessionID string) []string {
+	rowCacheMu.RLock()
+	defer rowCacheMu.RUnlock()
+	if cache, ok := rowCache[sessionID]; ok {
+		return cache.ColumnOrder
+	}
+	return nil
 }
 
 func processCachedRows(cache *sessionRowCache, p EdgeDetailPayload) []map[string]interface{} {

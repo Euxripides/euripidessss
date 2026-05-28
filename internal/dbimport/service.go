@@ -1,6 +1,7 @@
 package dbimport
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha1"
 	"database/sql"
@@ -20,6 +21,15 @@ import (
 
 	"github.com/etl/backend/internal/model"
 	"github.com/etl/backend/internal/parser"
+)
+
+const (
+	importProgressSaveRows     int64 = 200000
+	importCancelCheckRows      int64 = 10000
+	importProgressSaveInterval       = 5 * time.Second
+	maxStoredImportErrors            = 200
+	importCSVBufferSize              = 16 * 1024 * 1024
+	copySplitFieldsLimit             = 100
 )
 
 var FlowTargetFields = []FieldMapping{
@@ -58,8 +68,8 @@ func (s *Service) Open(ctx context.Context, conn Connection, database string) (*
 	if err != nil {
 		return nil, sanitizeDBError(err)
 	}
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(2)
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	pingCtx, cancel := context.WithTimeout(ctx, time.Duration(conn.TimeoutSeconds)*time.Second)
 	defer cancel()
@@ -401,99 +411,212 @@ func (s *Service) StartTask(ctx context.Context, id string) (ImportTask, error) 
 	task.UpdatedAt = time.Now()
 	start := time.Now()
 	sessionID := "db-" + uuid.NewString()[:12]
+	task.SessionID = sessionID
+	_ = s.store.SaveTask(task)
 	sessionDir := filepath.Join(s.uploadDir, "flow_sessions", sessionID)
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		task.Status = "failed"
+		task.Errors = append(task.Errors, ImportError{Table: "", Reason: fmt.Sprintf("创建会话目录失败: %v", err), CreatedAt: time.Now()})
+		task.UpdatedAt = time.Now()
+		_ = s.store.SaveTask(task)
 		return task, err
 	}
 	outputPath := filepath.Join(sessionDir, "database_import.csv")
 	file, err := os.Create(outputPath)
 	if err != nil {
+		task.Status = "failed"
+		task.Errors = append(task.Errors, ImportError{Table: "", Reason: fmt.Sprintf("创建CSV文件失败: %v", err), CreatedAt: time.Now()})
+		task.UpdatedAt = time.Now()
+		_ = s.store.SaveTask(task)
 		return task, err
 	}
 	defer file.Close()
-	writer := csv.NewWriter(file)
+	bufferedWriter := bufio.NewWriterSize(file, importCSVBufferSize)
+	writer := csv.NewWriter(bufferedWriter)
 	defer writer.Flush()
 	headers := flowCSVHeaders()
 	if err := writer.Write(headers); err != nil {
+		task.Status = "failed"
+		task.Errors = append(task.Errors, ImportError{Table: "", Reason: fmt.Sprintf("写入CSV表头失败: %v", err), CreatedAt: time.Now()})
+		task.UpdatedAt = time.Now()
+		_ = s.store.SaveTask(task)
 		return task, err
 	}
+	task.Progress.TotalRows = 0
 	sample := []map[string]interface{}{}
 	var rowNumber int64
+	headerIndex := buildHeaderIndex(headers)
+	lastSaveRows := task.Progress.ProcessedRows
+	lastSaveTime := time.Now()
+	saveProgress := func(force bool) {
+		if !force &&
+			task.Progress.ProcessedRows-lastSaveRows < importProgressSaveRows &&
+			time.Since(lastSaveTime) < importProgressSaveInterval {
+			return
+		}
+		elapsed := math.Max(time.Since(start).Seconds(), 0.001)
+		task.Progress.SpeedRowsPerSecond = float64(task.Progress.ProcessedRows) / elapsed
+		task.UpdatedAt = time.Now()
+		_ = s.store.SaveTask(task)
+		if force {
+			writer.Flush()
+			_ = bufferedWriter.Flush()
+		}
+		lastSaveRows = task.Progress.ProcessedRows
+		lastSaveTime = time.Now()
+	}
 	for _, item := range task.Tables {
 		if err := validateMappings(item.Mappings); err != nil {
 			task.Status = "failed"
-			task.Errors = append(task.Errors, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
+			appendImportError(&task, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
 			_ = s.store.SaveTask(task)
 			return task, err
 		}
-		req := TableDataRequest{TableRef: item.TableRef, Page: 1, PageSize: MaxPageSize}
 		limit := item.Limit
 		if limit <= 0 || limit > MaxImportRows {
 			limit = MaxImportRows
 		}
-		for task.Progress.ProcessedRows < int64(MaxImportRows) {
+		conn, err := s.store.GetConnection(item.ConnectionID)
+		if err != nil {
+			task.Progress.FailedRows++
+			appendImportError(&task, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
+			saveProgress(true)
+			continue
+		}
+		db, err := s.Open(ctx, conn, item.Database)
+		if err != nil {
+			task.Progress.FailedRows++
+			appendImportError(&task, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
+			saveProgress(true)
+			continue
+		}
+		estimatedRows, err := estimateImportRows(ctx, db, conn.Type, item.TableRef)
+		if err == nil && estimatedRows > 0 {
+			if estimatedRows > int64(limit) {
+				estimatedRows = int64(limit)
+			}
+			task.Progress.TotalRows += estimatedRows
+		} else {
+			task.Progress.TotalRows += int64(limit)
+		}
+		saveProgress(true)
+
+		query, err := buildImportSelect(conn.Type, item.TableRef, item.Mappings, limit)
+		if err != nil {
+			db.Close()
+			task.Progress.FailedRows++
+			appendImportError(&task, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
+			saveProgress(true)
+			continue
+		}
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			db.Close()
+			task.Progress.FailedRows++
+			appendImportError(&task, ImportError{Table: item.Table, Reason: sanitizeDBError(err).Error(), CreatedAt: time.Now()})
+			saveProgress(true)
+			continue
+		}
+		sourceCols := extractSelectColumns(query)
+		mapper, err := newImportRowMapper(sourceCols, item.Mappings, headers, headerIndex)
+		if err != nil {
+			rows.Close()
+			db.Close()
+			task.Progress.FailedRows++
+			appendImportError(&task, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
+			saveProgress(true)
+			continue
+		}
+		values, scanTargets := newScanBuffers(len(sourceCols))
+		record := make([]string, len(headers))
+		var tableProcessed int64
+		var lastCancelCheckRows int64
+		for rows.Next() {
 			if ctx.Err() != nil {
+				rows.Close()
+				db.Close()
 				task.Status = "canceled"
 				task.UpdatedAt = time.Now()
 				_ = s.store.SaveTask(task)
 				return task, ctx.Err()
 			}
-			if latest, err := s.store.GetTask(id); err == nil && latest.Status == "canceled" {
-				task.Status = "canceled"
-				task.UpdatedAt = time.Now()
-				_ = s.store.SaveTask(task)
-				return task, nil
-			}
-			resp, err := s.Preview(ctx, req)
+			err := scanCurrentValues(rows, values, scanTargets)
+			rowNumber++
+			tableProcessed++
+			task.Progress.ProcessedRows++
 			if err != nil {
-				task.Errors = append(task.Errors, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
+				task.Progress.FailedRows++
+				appendImportError(&task, ImportError{Table: item.Table, Row: rowNumber, Reason: err.Error(), CreatedAt: time.Now()})
+				saveProgress(false)
+				continue
+			}
+			snapshot, err := mapper.mapValuesInto(values, record)
+			if err != nil {
+				task.Progress.FailedRows++
+				appendImportError(&task, ImportError{Table: item.Table, Row: rowNumber, Reason: err.Error(), Snapshot: snapshot, CreatedAt: time.Now()})
+				saveProgress(false)
+				continue
+			}
+			if err := writer.Write(record); err != nil {
+				task.Progress.FailedRows++
+				appendImportError(&task, ImportError{Table: item.Table, Row: rowNumber, Reason: err.Error(), CreatedAt: time.Now()})
+				saveProgress(false)
+				continue
+			}
+			task.Progress.SuccessRows++
+			if len(sample) < 20 {
+				sample = append(sample, recordToMap(headers, record))
+			}
+			if task.Progress.ProcessedRows-lastCancelCheckRows >= importCancelCheckRows {
+				if latest, err := s.store.GetTask(id); err == nil && latest.Status == "canceled" {
+					rows.Close()
+					db.Close()
+					task.Status = "canceled"
+					task.UpdatedAt = time.Now()
+					_ = s.store.SaveTask(task)
+					return task, nil
+				}
+				lastCancelCheckRows = task.Progress.ProcessedRows
+			}
+			saveProgress(false)
+			if tableProcessed >= int64(limit) {
 				break
 			}
-			if len(resp.Rows) == 0 {
-				break
-			}
-			for _, row := range resp.Rows {
-				rowNumber++
-				task.Progress.ProcessedRows++
-				record, snapshot, err := mapImportRow(row, item.Mappings, headers)
-				if err != nil {
-					task.Progress.FailedRows++
-					task.Errors = append(task.Errors, ImportError{Table: item.Table, Row: rowNumber, Reason: err.Error(), Snapshot: snapshot, CreatedAt: time.Now()})
-					continue
-				}
-				if err := writer.Write(record); err != nil {
-					task.Progress.FailedRows++
-					task.Errors = append(task.Errors, ImportError{Table: item.Table, Row: rowNumber, Reason: err.Error(), CreatedAt: time.Now()})
-					continue
-				}
-				task.Progress.SuccessRows++
-				if len(sample) < 20 {
-					sample = append(sample, recordToMap(headers, record))
-				}
-				if task.Progress.ProcessedRows >= int64(limit) {
-					break
-				}
-			}
-			if len(resp.Rows) < req.PageSize || task.Progress.ProcessedRows >= int64(limit) {
-				break
-			}
-			req.Page++
-			elapsed := math.Max(time.Since(start).Seconds(), 0.001)
-			task.Progress.SpeedRowsPerSecond = float64(task.Progress.ProcessedRows) / elapsed
-			task.UpdatedAt = time.Now()
-			_ = s.store.SaveTask(task)
 		}
+		if err := rows.Err(); err != nil {
+			task.Progress.FailedRows++
+			appendImportError(&task, ImportError{Table: item.Table, Reason: err.Error(), CreatedAt: time.Now()})
+		}
+		rows.Close()
+		db.Close()
+		saveProgress(true)
 	}
-	task.SessionID = sessionID
 	task.Columns = headers
 	task.Files = []string{"database_import.csv"}
 	task.Sample = sample
-	task.Progress.TotalRows = task.Progress.ProcessedRows
+	if task.Progress.TotalRows != task.Progress.ProcessedRows {
+		task.Progress.TotalRows = task.Progress.ProcessedRows
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		task.Status = "failed"
+		appendImportError(&task, ImportError{Table: "", Reason: fmt.Sprintf("写入CSV失败: %v", err), CreatedAt: time.Now()})
+		task.UpdatedAt = time.Now()
+		_ = s.store.SaveTask(task)
+		return task, err
+	}
 	task.Status = "completed"
 	if task.Progress.FailedRows > 0 {
 		task.Status = "completed_with_errors"
 	}
 	task.UpdatedAt = time.Now()
+	if err := bufferedWriter.Flush(); err != nil {
+		task.Status = "failed"
+		appendImportError(&task, ImportError{Table: "", Reason: fmt.Sprintf("写入CSV失败: %v", err), CreatedAt: time.Now()})
+		task.UpdatedAt = time.Now()
+		_ = s.store.SaveTask(task)
+		return task, err
+	}
 	if err := s.store.SaveTask(task); err != nil {
 		return task, err
 	}
@@ -575,7 +698,7 @@ func (conn Connection) driverAndDSN(database string) (string, string) {
 	if database == "" {
 		database = "postgres"
 	}
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d",
+	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s connect_timeout=%d fallback_application_name=etl_import",
 		conn.Host, conn.Port, conn.Username, conn.Password, database, sslMode, conn.TimeoutSeconds)
 	return "postgres", dsn
 }
@@ -715,6 +838,91 @@ func buildFilterClause(dbType DBType, columns []ColumnInfo, filter AdvancedFilte
 	default:
 		return "", nil
 	}
+}
+
+func estimateImportRows(ctx context.Context, db *sql.DB, dbType DBType, ref TableRef) (int64, error) {
+	if dbType == DBTypeMySQL {
+		var rows sql.NullInt64
+		err := db.QueryRowContext(ctx, `select table_rows from information_schema.tables where table_schema=? and table_name=?`, ref.Database, ref.Table).Scan(&rows)
+		if err != nil || !rows.Valid {
+			return 0, err
+		}
+		return rows.Int64, nil
+	}
+	schema := ref.Schema
+	if schema == "" {
+		schema = "public"
+	}
+	var rows sql.NullFloat64
+	err := db.QueryRowContext(ctx, `select c.reltuples from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname=$1 and c.relname=$2`, schema, ref.Table).Scan(&rows)
+	if err != nil || !rows.Valid {
+		return 0, err
+	}
+	if rows.Float64 < 0 {
+		return 0, nil
+	}
+	return int64(rows.Float64), nil
+}
+
+func buildImportSelect(dbType DBType, ref TableRef, mappings []FieldMapping, limit int) (string, error) {
+	seen := map[string]bool{}
+	columns := []string{}
+	for _, mapping := range mappings {
+		source := strings.TrimSpace(mapping.SourceColumn)
+		if source == "" || seen[source] {
+			continue
+		}
+		seen[source] = true
+		columns = append(columns, quoteIdent(dbType, source))
+	}
+	if len(columns) == 0 {
+		return "", fmt.Errorf("没有可导入的源字段")
+	}
+	if limit <= 0 || limit > MaxImportRows {
+		limit = MaxImportRows
+	}
+	return fmt.Sprintf("select %s from %s limit %d", strings.Join(columns, ","), qualifiedTable(dbType, ref), limit), nil
+}
+
+func scanCurrentRow(rows *sql.Rows, names []string) (map[string]interface{}, error) {
+	values := make([]interface{}, len(names))
+	ptrs := make([]interface{}, len(names))
+	for i := range values {
+		ptrs[i] = &values[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		return nil, err
+	}
+	item := make(map[string]interface{}, len(names))
+	for i, name := range names {
+		switch v := values[i].(type) {
+		case nil:
+			item[name] = nil
+		case []byte:
+			item[name] = string(v)
+		case time.Time:
+			item[name] = v.Format("2006-01-02 15:04:05")
+		default:
+			item[name] = v
+		}
+	}
+	return item, nil
+}
+
+func newScanBuffers(size int) ([]interface{}, []interface{}) {
+	values := make([]interface{}, size)
+	targets := make([]interface{}, size)
+	for i := range values {
+		targets[i] = &values[i]
+	}
+	return values, targets
+}
+
+func scanCurrentValues(rows *sql.Rows, values, targets []interface{}) error {
+	for i := range values {
+		values[i] = nil
+	}
+	return rows.Scan(targets...)
 }
 
 func scanRows(rows *sql.Rows) ([]ColumnInfo, []map[string]interface{}, error) {
@@ -869,18 +1077,116 @@ func validateMappings(mappings []FieldMapping) error {
 	return nil
 }
 
-func mapImportRow(row map[string]interface{}, mappings []FieldMapping, headers []string) ([]string, string, error) {
-	record := make([]string, len(headers))
+func buildHeaderIndex(headers []string) map[string]int {
 	headerIndex := map[string]int{}
 	for i, header := range headers {
 		headerIndex[header] = i
 	}
+	return headerIndex
+}
+
+func appendImportError(task *ImportTask, item ImportError) {
+	if len(task.Errors) < maxStoredImportErrors {
+		task.Errors = append(task.Errors, item)
+	}
+}
+
+type importColumnMapping struct {
+	sourceIndex int
+	targetIndex int
+	targetType  string
+}
+
+type importTargetRule struct {
+	index       int
+	targetField string
+	targetType  string
+	required    bool
+}
+
+type importRowMapper struct {
+	sourceColumns   []string
+	columnMappings  []importColumnMapping
+	targetRules     []importTargetRule
+	datetimeTargets []int
+	datetimeReady   []bool
+	decimalTargets  []int
+	decimalReady    []bool
+}
+
+func newImportRowMapper(sourceColumns []string, mappings []FieldMapping, headers []string, headerIndex map[string]int) (*importRowMapper, error) {
+	sourceIndex := make(map[string]int, len(sourceColumns))
+	for i, column := range sourceColumns {
+		sourceIndex[column] = i
+	}
+	targetTypes := make(map[string]string, len(FlowTargetFields))
+	for _, target := range FlowTargetFields {
+		targetTypes[target.TargetField] = target.TargetType
+	}
+	mapper := &importRowMapper{
+		sourceColumns:  sourceColumns,
+		columnMappings: make([]importColumnMapping, 0, len(mappings)),
+		targetRules:    make([]importTargetRule, 0, len(FlowTargetFields)),
+		datetimeReady:  make([]bool, len(headers)),
+		decimalReady:   make([]bool, len(headers)),
+	}
+	for _, mapping := range mappings {
+		if mapping.SourceColumn == "" || mapping.TargetField == "" {
+			continue
+		}
+		targetIndex, ok := headerIndex[mapping.TargetField]
+		if !ok {
+			continue
+		}
+		idx, ok := sourceIndex[mapping.SourceColumn]
+		if !ok {
+			return nil, fmt.Errorf("导入查询未返回映射字段：%s", mapping.SourceColumn)
+		}
+		targetType := mapping.TargetType
+		if targetType == "" {
+			targetType = targetTypes[mapping.TargetField]
+		}
+		mapper.columnMappings = append(mapper.columnMappings, importColumnMapping{
+			sourceIndex: idx,
+			targetIndex: targetIndex,
+			targetType:  targetType,
+		})
+	}
+	for _, target := range FlowTargetFields {
+		idx, ok := headerIndex[target.TargetField]
+		if !ok {
+			continue
+		}
+		if target.TargetType == "datetime" {
+			mapper.datetimeTargets = append(mapper.datetimeTargets, idx)
+		}
+		if target.TargetType == "decimal" {
+			mapper.decimalTargets = append(mapper.decimalTargets, idx)
+		}
+		mapper.targetRules = append(mapper.targetRules, importTargetRule{
+			index:       idx,
+			targetField: target.TargetField,
+			targetType:  target.TargetType,
+			required:    target.Required,
+		})
+	}
+	return mapper, nil
+}
+
+func mapImportRow(row map[string]interface{}, mappings []FieldMapping, headers []string) ([]string, string, error) {
+	return mapImportRowWithIndex(row, mappings, headers, buildHeaderIndex(headers))
+}
+
+func mapImportRowWithIndex(row map[string]interface{}, mappings []FieldMapping, headers []string, headerIndex map[string]int) ([]string, string, error) {
+	record := make([]string, len(headers))
 	for _, mapping := range mappings {
 		idx, ok := headerIndex[mapping.TargetField]
 		if !ok || mapping.SourceColumn == "" {
 			continue
 		}
-		record[idx] = fmt.Sprint(row[mapping.SourceColumn])
+		if v := row[mapping.SourceColumn]; v != nil {
+			record[idx] = fmt.Sprint(v)
+		}
 	}
 	for _, target := range FlowTargetFields {
 		idx := headerIndex[target.TargetField]
@@ -901,6 +1207,395 @@ func mapImportRow(row map[string]interface{}, mappings []FieldMapping, headers [
 		}
 	}
 	return record, "", nil
+}
+
+func (m *importRowMapper) mapValuesInto(values []interface{}, record []string) (string, error) {
+	for i := range record {
+		record[i] = ""
+	}
+	for _, idx := range m.datetimeTargets {
+		m.datetimeReady[idx] = false
+	}
+	for _, idx := range m.decimalTargets {
+		m.decimalReady[idx] = false
+	}
+	for _, mapping := range m.columnMappings {
+		raw := values[mapping.sourceIndex]
+		if raw == nil {
+			continue
+		}
+		switch mapping.targetType {
+		case "datetime":
+			record[mapping.targetIndex] = normalizeImportDatetime(raw)
+			m.datetimeReady[mapping.targetIndex] = true
+		case "decimal":
+			if text, ok := formatImportDecimal(raw); ok {
+				record[mapping.targetIndex] = text
+				m.decimalReady[mapping.targetIndex] = true
+			} else {
+				record[mapping.targetIndex] = dbValueToString(raw)
+			}
+		default:
+			record[mapping.targetIndex] = dbValueToString(raw)
+		}
+	}
+	for _, target := range m.targetRules {
+		if target.required && strings.TrimSpace(record[target.index]) == "" {
+			return snapshotValues(m.sourceColumns, values), fmt.Errorf("必填字段为空：%s", target.targetField)
+		}
+		if target.targetType == "datetime" && !m.datetimeReady[target.index] {
+			record[target.index] = parser.NormalizeDatetime(record[target.index])
+			if strings.TrimSpace(record[target.index]) == "" {
+				return snapshotValues(m.sourceColumns, values), fmt.Errorf("时间字段无法转换：%s", target.targetField)
+			}
+		}
+		if target.targetType == "decimal" && !m.decimalReady[target.index] {
+			record[target.index] = strconv.FormatFloat(parser.ToNumber(record[target.index]), 'f', 2, 64)
+		}
+		if target.targetType == "direction" && record[target.index] != "" {
+			record[target.index] = parser.NormalizeDirection(record[target.index])
+		}
+	}
+	return "", nil
+}
+
+// fastSplitCopyCSVLine splits a single CSV row from PostgreSQL COPY TO STDOUT WITH CSV.
+// PostgreSQL properly quotes fields containing commas/ quotes; this handles the common cases
+// without a full csv.Reader allocation per row.
+func fastSplitCopyCSVLine(line []byte) []string {
+	if len(line) == 0 {
+		return nil
+	}
+	// strip trailing newline
+	if line[len(line)-1] == '\n' {
+		line = line[:len(line)-1]
+	}
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	result := make([]string, 0, copySplitFieldsLimit)
+	i := 0
+	for i < len(line) {
+		if line[i] == '"' {
+			i++ // skip opening quote
+			start := i
+			for i < len(line) {
+				if line[i] == '"' {
+					if i+1 < len(line) && line[i+1] == '"' {
+						i += 2
+						continue
+					}
+					result = append(result, strings.ReplaceAll(string(line[start:i]), `""`, `"`))
+					i++ // skip closing quote
+					break
+				}
+				i++
+			}
+			if i < len(line) && line[i] == ',' {
+				i++
+			}
+		} else {
+			start := i
+			for i < len(line) && line[i] != ',' {
+				i++
+			}
+			result = append(result, string(line[start:i]))
+			if i < len(line) {
+				i++ // skip ','
+			}
+		}
+	}
+	return result
+}
+
+// importPGWithCopy uses PostgreSQL COPY protocol to stream source data at maximum throughput,
+// bypassing the database/sql row scanning overhead.
+func (s *Service) importPGWithCopy(
+	ctx context.Context, db *sql.DB, task *ImportTask, item ImportTable,
+	selectQuery string, headers []string, headerIndex map[string]int,
+	rowNumber *int64, sample *[]map[string]interface{},
+	writer *csv.Writer, start *time.Time,
+	saveProgress func(bool), limit int,
+) error {
+	copySQL := fmt.Sprintf("COPY (%s) TO STDOUT WITH (FORMAT CSV, HEADER false, DELIMITER ',')", selectQuery)
+	rows, err := db.QueryContext(ctx, copySQL)
+	if err != nil {
+		return sanitizeDBError(err)
+	}
+	defer rows.Close()
+
+	// Build column mapper from the SELECT column order
+	sourceCols := extractSelectColumns(selectQuery)
+	mapper, err := newImportRowMapper(sourceCols, item.Mappings, headers, headerIndex)
+	if err != nil {
+		return fmt.Errorf("列映射失败: %w", err)
+	}
+
+	record := make([]string, len(headers))
+	var tableProcessed int64
+	var lastCancelCheck int64
+	var lineBuf []byte
+
+	for rows.Next() {
+		if ctx.Err() != nil {
+			task.Status = "canceled"
+			task.UpdatedAt = time.Now()
+			_ = s.store.SaveTask(*task)
+			return ctx.Err()
+		}
+		if err := rows.Scan(&lineBuf); err != nil {
+			*rowNumber++
+			task.Progress.ProcessedRows++
+			task.Progress.FailedRows++
+			appendImportError(task, ImportError{Table: item.Table, Row: *rowNumber, Reason: fmt.Sprintf("COPY读取行失败: %v", err), CreatedAt: time.Now()})
+			saveProgress(false)
+			continue
+		}
+		*rowNumber++
+		task.Progress.ProcessedRows++
+		tableProcessed++
+
+		fields := fastSplitCopyCSVLine(lineBuf)
+		if len(fields) == 0 {
+			task.Progress.FailedRows++
+			appendImportError(task, ImportError{Table: item.Table, Row: *rowNumber, Reason: "COPY行解析为空", CreatedAt: time.Now()})
+			saveProgress(false)
+			continue
+		}
+		if snapshot, err := mapper.mapCopyValuesInto(fields, record); err != nil {
+			task.Progress.FailedRows++
+			appendImportError(task, ImportError{Table: item.Table, Row: *rowNumber, Reason: err.Error(), Snapshot: snapshot, CreatedAt: time.Now()})
+			saveProgress(false)
+			continue
+		}
+		if err := writer.Write(record); err != nil {
+			task.Progress.FailedRows++
+			appendImportError(task, ImportError{Table: item.Table, Row: *rowNumber, Reason: fmt.Sprintf("CSV写入失败: %v", err), CreatedAt: time.Now()})
+			saveProgress(false)
+			continue
+		}
+		task.Progress.SuccessRows++
+		if len(*sample) < 20 {
+			*sample = append(*sample, recordToMap(headers, record))
+		}
+		if task.Progress.ProcessedRows-lastCancelCheck >= importCancelCheckRows {
+			if latest, err := s.store.GetTask(task.ID); err == nil && latest.Status == "canceled" {
+				task.Status = "canceled"
+				task.UpdatedAt = time.Now()
+				_ = s.store.SaveTask(*task)
+				return nil
+			}
+			lastCancelCheck = task.Progress.ProcessedRows
+		}
+		saveProgress(false)
+		if tableProcessed >= int64(limit) {
+			break
+		}
+	}
+	return rows.Err()
+}
+
+// extractSelectColumns parses column names from a "select col1, col2 from ..." query.
+func extractSelectColumns(query string) []string {
+	q := strings.TrimSpace(query)
+	lower := strings.ToLower(q)
+	// Find "select" and "from"
+	selIdx := strings.Index(lower, "select")
+	if selIdx < 0 {
+		return nil
+	}
+	fromIdx := strings.Index(lower[selIdx:], " from ")
+	if fromIdx < 0 {
+		return nil
+	}
+	colsPart := q[selIdx+6 : selIdx+fromIdx]
+	colsPart = strings.TrimSpace(colsPart)
+	// Remove quoted identifiers and split by comma
+	cols := make([]string, 0, 16)
+	i := 0
+	for i < len(colsPart) {
+		// skip leading whitespace
+		for i < len(colsPart) && (colsPart[i] == ' ' || colsPart[i] == '\t') {
+			i++
+		}
+		if i >= len(colsPart) {
+			break
+		}
+		var col string
+		if colsPart[i] == '"' {
+			i++ // skip opening quote
+			start := i
+			for i < len(colsPart) {
+				if colsPart[i] == '"' {
+					if i+1 < len(colsPart) && colsPart[i+1] == '"' {
+						i += 2
+						continue
+					}
+					col = strings.ReplaceAll(colsPart[start:i], `""`, `"`)
+					i++ // skip closing quote
+					break
+				}
+				i++
+			}
+		} else {
+			start := i
+			for i < len(colsPart) && colsPart[i] != ',' {
+				i++
+			}
+			col = strings.TrimSpace(colsPart[start:i])
+		}
+		if col != "" {
+			cols = append(cols, col)
+		}
+		if i < len(colsPart) && colsPart[i] == ',' {
+			i++ // skip ','
+		}
+	}
+	return cols
+}
+
+func (m *importRowMapper) mapCopyValuesInto(fields []string, record []string) (string, error) {
+	for i := range record {
+		record[i] = ""
+	}
+	for _, mapping := range m.columnMappings {
+		if mapping.sourceIndex >= len(fields) {
+			continue
+		}
+		raw := fields[mapping.sourceIndex]
+		switch mapping.targetType {
+		case "datetime":
+			record[mapping.targetIndex] = parser.NormalizeDatetime(raw)
+		case "decimal":
+			if raw == "" {
+				record[mapping.targetIndex] = ""
+			} else {
+				record[mapping.targetIndex] = strconv.FormatFloat(parser.ToNumber(raw), 'f', 2, 64)
+			}
+		default:
+			record[mapping.targetIndex] = raw
+		}
+	}
+	for _, target := range m.targetRules {
+		if target.required && strings.TrimSpace(record[target.index]) == "" {
+			return snapshotCopyValues(m.sourceColumns, fields), fmt.Errorf("必填字段为空：%s", target.targetField)
+		}
+		if target.targetType == "datetime" && record[target.index] != "" {
+			normalized := parser.NormalizeDatetime(record[target.index])
+			if strings.TrimSpace(normalized) == "" {
+				return snapshotCopyValues(m.sourceColumns, fields), fmt.Errorf("时间字段无法转换：%s", target.targetField)
+			}
+			record[target.index] = normalized
+		}
+		if target.targetType == "decimal" && record[target.index] != "" {
+			record[target.index] = strconv.FormatFloat(parser.ToNumber(record[target.index]), 'f', 2, 64)
+		}
+		if target.targetType == "direction" && record[target.index] != "" {
+			record[target.index] = parser.NormalizeDirection(record[target.index])
+		}
+	}
+	return "", nil
+}
+
+func snapshotCopyValues(columns []string, fields []string) string {
+	parts := make([]string, 0, 8)
+	for i, col := range columns {
+		if i >= len(fields) {
+			break
+		}
+		if i >= 8 {
+			break
+		}
+		parts = append(parts, col+"="+fields[i])
+	}
+	return strings.Join(parts, "; ")
+}
+
+func normalizeImportDatetime(value interface{}) string {
+	if t, ok := value.(time.Time); ok {
+		return t.Format("2006-01-02 15:04:05")
+	}
+	return parser.NormalizeDatetime(dbValueToString(value))
+}
+
+func formatImportDecimal(value interface{}) (string, bool) {
+	number, ok := dbValueToNumber(value)
+	if !ok {
+		return "", false
+	}
+	return strconv.FormatFloat(number, 'f', 2, 64), true
+}
+
+func dbValueToNumber(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	default:
+		return 0, false
+	}
+}
+
+func dbValueToString(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case time.Time:
+		return v.Format("2006-01-02 15:04:05")
+	case int:
+		return strconv.Itoa(v)
+	case int8:
+		return strconv.FormatInt(int64(v), 10)
+	case int16:
+		return strconv.FormatInt(int64(v), 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 32)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 func flowCSVHeaders() []string {
@@ -925,6 +1620,20 @@ func snapshot(row map[string]interface{}) string {
 		parts = append(parts, key+"="+fmt.Sprint(value))
 	}
 	sort.Strings(parts)
+	if len(parts) > 8 {
+		parts = parts[:8]
+	}
+	return strings.Join(parts, "; ")
+}
+
+func snapshotValues(columns []string, values []interface{}) string {
+	parts := make([]string, 0, len(columns))
+	for i, column := range columns {
+		if i >= len(values) {
+			break
+		}
+		parts = append(parts, column+"="+dbValueToString(values[i]))
+	}
 	if len(parts) > 8 {
 		parts = parts[:8]
 	}
@@ -1012,7 +1721,9 @@ func TransactionRowsFromTask(task ImportTask) []model.TransactionRow {
 	for _, item := range task.Sample {
 		row := model.TransactionRow{}
 		for key, value := range item {
-			row[key] = fmt.Sprint(value)
+			if value != nil {
+				row[key] = fmt.Sprint(value)
+			}
 		}
 		rows = append(rows, row)
 	}

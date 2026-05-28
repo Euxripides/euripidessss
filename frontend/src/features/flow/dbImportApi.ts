@@ -212,3 +212,9 @@ export async function startDBImportTask(id: string) {
   if (!response.ok) throw new Error(payload.detail || '启动数据库导入任务失败');
   return payload;
 }
+
+export async function getDBImportTask(id: string) {
+  const { response, payload } = await getJson<DBImportTask & { detail?: string }>(`/api/db/import/tasks/${encodeURIComponent(id)}`, '获取导入任务状态失败');
+  if (!response.ok) throw new Error(payload.detail || '获取导入任务状态失败');
+  return payload;
+}

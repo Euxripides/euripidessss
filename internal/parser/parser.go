@@ -27,6 +27,20 @@ var ExcelSuffixes = map[string]bool{
 	".xlsx": true, ".xlsm": true, ".xls": true,
 }
 
+var (
+	cleanTextPipePrefixRe = regexp.MustCompile(`^\s*\|\s*`)
+	numberCleanupRe       = regexp.MustCompile(`[^\d.\-+]`)
+	digitsOnlyRe          = regexp.MustCompile(`^\d+$`)
+	excelSerialDatetimeRe = regexp.MustCompile(`^\d+(\.\d+)?$`)
+	directionAliases      = map[string]string{
+		"D": "出", "借": "出", "借方": "出", "支出": "出",
+		"转出": "出", "取": "出", "支": "出", "出账": "出", "O": "出",
+		"C": "进", "贷": "进", "贷方": "进", "收入": "进",
+		"转入": "进", "存": "进", "入": "进", "入账": "进",
+		"收": "进", "+": "进", "-": "出", "进": "进", "出": "出",
+	}
+)
+
 // NormalizeHeader cleans a header cell value
 func NormalizeHeader(v interface{}) string {
 	if v == nil {
@@ -55,8 +69,7 @@ func CleanText(v interface{}) interface{} {
 		return nil
 	}
 	s := strings.TrimSpace(fmt.Sprint(v))
-	re := regexp.MustCompile(`^\s*\|\s*`)
-	s = re.ReplaceAllString(s, "")
+	s = cleanTextPipePrefixRe.ReplaceAllString(s, "")
 	if s == "" || s == "nan" || s == "None" || s == "NaT" {
 		return nil
 	}
@@ -74,8 +87,7 @@ func ToNumber(s interface{}) float64 {
 	text = strings.ReplaceAll(text, "¥", "")
 	text = strings.ReplaceAll(text, "元", "")
 	// Remove non-numeric chars except . - +
-	re := regexp.MustCompile(`[^\d.\-+]`)
-	text = re.ReplaceAllString(text, "")
+	text = numberCleanupRe.ReplaceAllString(text, "")
 	val, err := strconv.ParseFloat(text, 64)
 	if err != nil {
 		return 0
@@ -93,12 +105,14 @@ func NormalizeDatetime(s interface{}) string {
 		return ""
 	}
 	text = strings.Trim(text, `"'`)
+	if isCanonicalDatetime(text) {
+		return text
+	}
 	if normalized := normalizeExcelSerialDatetime(text); normalized != "" {
 		return normalized
 	}
 
-	digits := regexp.MustCompile(`^\d+$`)
-	if digits.MatchString(text) {
+	if digitsOnlyRe.MatchString(text) {
 		switch len(text) {
 		case 8:
 			return fmt.Sprintf("%s-%s-%s 00:00:00", text[:4], text[4:6], text[6:8])
@@ -177,8 +191,28 @@ func NormalizeDatetime(s interface{}) string {
 	return text
 }
 
+func isCanonicalDatetime(text string) bool {
+	if len(text) != len("2006-01-02 15:04:05") {
+		return false
+	}
+	if text[4] != '-' || text[7] != '-' || text[10] != ' ' || text[13] != ':' || text[16] != ':' {
+		return false
+	}
+	for idx := 0; idx < len(text); idx++ {
+		switch idx {
+		case 4, 7, 10, 13, 16:
+			continue
+		}
+		if text[idx] < '0' || text[idx] > '9' {
+			return false
+		}
+	}
+	_, err := time.ParseInLocation("2006-01-02 15:04:05", text, time.Local)
+	return err == nil
+}
+
 func normalizeExcelSerialDatetime(text string) string {
-	if !regexp.MustCompile(`^\d+(\.\d+)?$`).MatchString(text) || len(strings.Split(text, ".")[0]) > 5 {
+	if !excelSerialDatetimeRe.MatchString(text) || len(strings.Split(text, ".")[0]) > 5 {
 		return ""
 	}
 	serial, err := strconv.ParseFloat(text, 64)
@@ -237,14 +271,7 @@ func NormalizeDirection(s interface{}) string {
 		return ""
 	}
 	text := strings.TrimSpace(fmt.Sprint(s))
-	mapping := map[string]string{
-		"D": "出", "借": "出", "借方": "出", "支出": "出",
-		"转出": "出", "取": "出", "支": "出", "出账": "出", "O": "出",
-		"C": "进", "贷": "进", "贷方": "进", "收入": "进",
-		"转入": "进", "存": "进", "入": "进", "入账": "进",
-		"收": "进", "+": "进", "-": "出", "进": "进", "出": "出",
-	}
-	if v, ok := mapping[text]; ok {
+	if v, ok := directionAliases[text]; ok {
 		return v
 	}
 	return text

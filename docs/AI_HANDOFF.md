@@ -1,3 +1,295 @@
+## 2026-05-28 修复 run.bat 被其它进程调用时无限卡死
+
+### Task
+- 另一个进程（AI 工具）调用 `.\run.bat` 时总是卡死不返回。
+- 根因: `run.bat` 的 `start /B` + `tasklist | find` + 混合 PowerShell/cmd 上下文导致跨进程行为不可靠：
+  - `tasklist | find` 管道在 PowerShell 调用 cmd.exe 时报 "Input redirection is not supported"
+  - `start /B` 启动的服务进程可能被调用者进程组持有，导致调用者无限等待
+  - 端口检查依赖 `curl`，跨进程环境无可靠超时机制
+
+### Changes
+- `run.bat` — 重写为单行委托入口：`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1"`
+- `run.ps1` — 新建，纯 PowerShell 实现：
+  - 旧进程清理：`Get-Process` + `Stop-Process` + 3 次重试（2 秒间隔）
+  - 端口释放检查：`curl.exe` 轮询 15 次（1 秒间隔），忽略 TIME_WAIT
+  - 后台启动：`Start-Process -WindowStyle Hidden -PassThru`，非阻塞
+  - 健康检查：`curl.exe` 轮询 15 次，匹配 JSON 响应 `"status":"ok"`
+
+### Verified Commands
+- `.\run.ps1` — 4.82 秒返回，健康检查通过
+- `.\run.bat` — 5.02 秒返回，委托成功
+- `curl http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- `go test ./internal/... -count=1 -timeout 300s` — 全部通过
+- `go vet ./...` — 无警告
+
+### Notes
+- `run.bat` 现在是 `run.ps1` 的委托入口，跨进程调用优先使用 `.run.ps1` 或 `.run.bat`（最终走相同逻辑）
+- 不再依赖 `start /B`，改用 `Start-Process -WindowStyle Hidden` + 健康检查确认
+
+## 2026-05-28 修复计划任务进程卡死 (RunPipeline goroutine 死锁 + 启动增强)
+
+### Task
+- 每次计划任务运行时，经常在某个进程处卡死，且卡死的进程不固定，需等很久才能超时或人工干预。
+- 根因 1 (核心): `internal/etl/etl.go:118` — `errChan` 缓冲大小固定 `3`，但 `categorizeByProvider` 最多返回 **4 个分组**（支付宝/微信/银行/unknown）。当 4 个 goroutine 全部报错时，第 4 个无法写入 `errChan` → 永久阻塞 → `wg.Done()` 不执行 → `wg.Wait()` 永远不返回 → API handler 挂死 → 计划任务挂死。
+- 根因 2: `run.ps1` 清理旧进程只做一次 `Stop-Process`，无重试；旧进程句柄未完全释放时端口 8000 仍被占用，新实例启动失败静默挂死。
+- 根因 3: `main.go` 信号处理只做 `logger.Close()` + `os.Exit(0)`，不等待 in-flight 请求完成，旧进程被 `Stop-Process -Force` 直接终止时可能导致端口状态不一致。
+
+### Changes
+- `internal/etl/etl.go`:
+  - `errChan` 缓冲从固定 `3` 改为 `len(providerGroups)`，确保所有 goroutine 可并发写入而不阻塞。
+- `run.ps1`:
+  - 旧进程清理增加 **3 次重试 + 2 秒间隔**，确认进程完全终止才继续。
+  - 新进程启动后增加 **健康检查轮询**（最多 15 秒），确认 `/api/health` 返回 `200` 才标记就绪。
+- `cmd/server/main.go`:
+  - 从 `router.Run(addr)` 改为 `http.Server` + `srv.ListenAndServe()`。
+  - 信号处理改为 **Graceful Shutdown**：收到 SIGINT/SIGTERM 后，给 in-flight 请求最多 **10 秒** 完成再退出。
+
+### Verified Commands
+- `go test ./internal/... -count=1 -timeout 300s` — 全部通过
+- `go vet ./internal/...` — 无警告
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+
+### Notes
+- `errChan` 死锁是经典的 goroutine 泄漏模式：有缓冲 channel + 生产者多于缓冲容量 → 阻塞永不解除。
+- 由于只有遇到 error 才会写入 `errChan`，死锁是**非确定性的**（取决于哪些 provider 出错、出错顺序），所以每次卡死的进程不一样。
+- 若仍有个别计划任务卡死，可能是网络/文件 I/O 超时导致 `processProviderFiles` 本身挂住，不属于 goroutine 泄漏范畴；可增加 `context.WithTimeout` 进一步保护。
+
+## 2026-05-28 修复服务启动卡死 (端口检查 + graceful shutdown 时序)
+
+### Task
+- 计划任务重启服务时经常卡死，健康检查 15 秒全部失败但脚本不报错
+- 根因 1 (核心): `run.bat` 中 `netstat | findstr` 管道在 PowerShell 下输出 "Input redirection is not supported" 错误，端口检查循环持续 15 次全部失败 → 脚本 abort → 服务未启动
+- 根因 2: 端口检查匹配了 TIME_WAIT 状态的连接（来自之前的 curl），误判端口仍被占用
+- 根因 3: `run.bat` 健康检查失败只打 WARNING，不返回错误退出码 → 调用者（计划任务）以为启动成功
+- 根因 4: `main.go` graceful shutdown 超时 10 秒，`taskkill /F` 后服务需等 10 秒才释放端口
+
+### Changes
+- `run.bat` → 删除（PowerShell 下管道重定向不兼容）
+- `run.ps1` → 重写，恢复为 PowerShell 脚本：
+  - 旧进程清理：3 次重试 + 2 秒间隔
+  - 端口释放检查：只匹配 `0.0.0.0:8000` 或 `[::]:8000` 的 LISTENING 状态，忽略 TIME_WAIT
+  - 启动后健康检查：15 秒轮询，失败时 `exit 1`
+- `cmd/server/main.go`: Graceful shutdown 超时从 10 秒缩短到 3 秒
+
+### Verified Commands
+- `go test ./internal/... -count=1 -timeout 300s` — 全部通过
+- `go vet ./internal/...` — 无警告
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+- `.\run.ps1` — 首次启动成功（PID 18312）
+- `.\run.ps1` — 重启成功（旧 PID 18312 → 新 PID 32336，端口释放检测正确）
+- `curl http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+
+### Notes
+- `run.bat` 在纯 cmd.exe 环境可正常运行，但被 PowerShell 调用时 `netstat ... | findstr ...` 管道报 "Input redirection is not supported" 错误，导致 15 次端口检查全部失败。
+- `netstat -ano` 输出中 TIME_WAIT 状态的连接包含 `:8000`，但不会阻止新进程绑定端口。必须只匹配 LISTENING 状态。
+- `Stop-Process -Force` 发送 SIGTERM → Go 信号处理器执行 `srv.Shutdown()`（3 秒超时）→ 关闭 listener → `os.Exit(0)`。从 kill 到端口释放约 3 秒。
+
+## 2026-05-28 修复 run.ps1 重启服务无限卡死问题
+
+### Task
+- 每次执行 `.\run.ps1` 重启服务就会无限卡死，导致后续计划任务无法执行。
+- 根因: `run.ps1` 第 43 行使用 `& $binPath` 前台阻塞调用，PowerShell 等待 `etl-server.exe` 进程退出才返回。服务永不退出，脚本永不返回。
+- 同时修复：旧进程未清理时端口 8000 冲突导致新实例启动失败。
+
+### Changes
+- `run.ps1`: 
+  - 启动前先通过 `Get-Process -Name "etl-server"` 查找并 `Stop-Process` 旧进程。
+  - `& $binPath` 前台阻塞调用 → `Start-Process -WindowStyle Hidden -PassThru` 后台非阻塞调用，脚本立即返回。
+  - 移除不必要的 stdout/stderr 重定向（服务内部已通过 zerolog 写 `backend/data/logs/app.log`）。
+
+### Verified Commands
+- `.\run.ps1` — 1.21 秒返回（修复前：卡死不返回）
+- `curl.exe -s http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- `Get-Process -Name "etl-server"` — PID 3056 后台运行
+- `go test ./internal/... -count=1 -timeout 300s` — 全部通过
+
+### Notes
+- 后台启动后，服务日志继续写 `backend/data/logs/app.log`，不受 stdout/stderr 重定向影响。
+- 若要停止服务，使用 `Stop-Process -Name "etl-server" -Force`。
+
+## 2026-05-28 数据库导入: PostgreSQL 全表导入压测确认
+
+### Task
+- 继续执行上一轮未完成事项：对真实 PostgreSQL 表 `mz.ls_0709.交易明细信息` 执行全量数据库导入压测，确认 6,737,400 行完整导入耗时和结果。
+
+### Changes
+- 无业务代码变更。
+- 仅更新 `docs/AI_HANDOFF.md` 和 `docs/CHANGELOG_AI.md` 记录本次压测结果。
+
+### Test Setup
+- 使用已有保存密码的本地 PostgreSQL 连接 `test`：`localhost:5432`，连接 ID `1b9c7c95-8dbc-4594-9a44-1cf4002ac9c2`。
+- 目标数据库/表：`mz.ls_0709.交易明细信息`。
+- `count(*)` 确认源表行数：`6,737,400`。
+- 自动映射确认：33 列源表，11 个字段映射，4 个必填目标字段全部映射成功。
+
+### Results
+- 导入任务 ID：`3bd991d9-4a08-4d6c-8d32-471ff730fc28`
+- 导入会话 ID：`db-101f858a-3c4`
+- 状态：`completed_with_errors`
+- `processedRows`: `6,737,400`
+- `successRows`: `5,670,886`
+- `failedRows`: `1,066,514`
+- `speedRowsPerSecond`: `141,692.2`
+- 任务时间：`2026-05-28T18:26:24.8348282+08:00` 到 `2026-05-28T18:27:12.5761221+08:00`，约 47.7 秒。
+- 导出 CSV：`backend/data/uploads/flow_sessions/db-101f858a-3c4/database_import.csv`
+- CSV 大小：`905,085,129 bytes`，约 `863.16 MB`。
+- 任务状态文件：`backend/data/db_import/db_import_config.enc` 约 `1,477,364 bytes`，没有再次膨胀。
+
+### Findings
+- 全表导入速度从此前 100 万行实测约 `40,848 行/秒` 提升到本轮全量压测约 `141,692 行/秒`。
+- 失败样本主要为源数据业务字段缺失：
+  - `必填字段为空：对手户名`
+  - `必填字段为空：交易方户名`
+- 这是数据质量/业务规则问题，不是导入吞吐瓶颈。
+
+### API Changes
+- 无。
+
+### Database Changes
+- 无数据库结构变更；只读 PostgreSQL 源表，写入本地导入会话 CSV。
+
+### Frontend Changes
+- 无。
+
+### Verified Commands
+- `GET /api/db/connections` — 找到本地 PostgreSQL 连接 `test`
+- `Test-NetConnection -ComputerName 127.0.0.1 -Port 5432` — `TcpTestSucceeded=True`
+- `POST /api/db/query` — `select count(*) as total from "ls_0709"."交易明细信息"` 返回 `6,737,400`
+- `POST /api/db/mappings/auto` — 自动映射 11 项，必填字段映射完整
+- `POST /api/db/import/tasks` — 创建全量压测任务
+- `POST /api/db/import/tasks/:id/start` — 启动任务，返回 `running`
+- `GET /api/db/import/tasks/:id` — 轮询至 `completed_with_errors`
+- `GET /api/health` — `{"status":"ok"}`
+
+### Open Items
+- 本轮未对 5,670,886 行成功导入会话执行 `/api/flow/build` 全量建图，避免一次性读取 863MB CSV 造成不必要内存压力；如需要验证全量建图，应单独作为性能任务执行并监控内存。
+- 如果业务允许空 `对手户名` 或空 `交易方户名`，需要单独调整必填字段策略或增加映射兜底规则。
+
+### Notes
+- 本次完成了上一轮文档中“未跑完整 6,737,400 行全表导入”的待确认项。
+- 本轮无后端代码变更，因此未执行 `.\run.ps1` 重启。
+
+## 2026-05-28 数据库导入: 极致性能优化
+
+### Task
+- 对数据库数据导入速度做进一步极致优化，目标是压低百万行导入时 Go 端 CPU/GC、CSV 写入、状态持久化开销。
+
+### Changes
+- `internal/dbimport/service.go`
+  - 导入循环从“每行构造 `map[string]interface{}` + map lookup”改为“预编译列索引映射 + 复用 `database/sql` 扫描缓冲 + 复用 CSV record”。
+  - 新增 `importRowMapper`，按 `rows.Columns()` 一次性建立源列索引到 Flow 目标列索引的映射；保留旧 `mapImportRow` 用于兼容测试。
+  - 数据库原生 `time.Time` 直接格式化为 `yyyy-MM-dd HH:mm:ss`；原生数值类型直接格式化为两位小数，避免再次走字符串清洗正则。
+  - CSV 写入增加 4MB `bufio.Writer` 缓冲。
+  - 进度持久化从每 1 万行调整为每 5 万行或 2 秒一次；取消检查仍保持每 1 万行一次。
+- `internal/parser/parser.go`
+  - `CleanText`、`ToNumber`、`NormalizeDatetime` 使用包级预编译正则，避免每行重复 `regexp.MustCompile`。
+  - `NormalizeDirection` 使用包级方向别名 map，避免每次调用重新分配 map。
+  - `NormalizeDatetime` 新增标准 `yyyy-MM-dd HH:mm:ss` 快路径，标准日期字符串直接返回。
+- `internal/dbimport/service_test.go`
+  - 新增索引映射与旧 map 映射输出一致性测试。
+  - 新增缺失返回列保护测试。
+  - 新增 `BenchmarkImportRowMapping` 对比旧 map 映射与新索引映射。
+
+### Performance
+- `BenchmarkImportRowMapping/map`: `2752 ns/op`, `557 B/op`, `20 allocs/op`
+- `BenchmarkImportRowMapping/indexed`: `1318 ns/op`, `130 B/op`, `12 allocs/op`
+- 单行映射耗时约下降 52%，分配字节约下降 77%，分配次数约下降 40%。
+
+### API Changes
+- 无新增、删除或重命名 API。
+
+### Database Changes
+- 无数据库结构变更；仍仅读取源数据库并写入本地导入会话 CSV。
+
+### Frontend Changes
+- 无前端代码变更。
+
+### Verified Commands
+- `go test ./internal/dbimport -count=1 -v` — 通过
+- `go test ./internal/parser -count=1` — 通过
+- `go test ./internal/dbimport -run '^$' -bench BenchmarkImportRowMapping -benchmem` — 通过，见性能数据
+- `go test ./internal/... -count=1 -timeout 300s` — 通过
+- `go vet ./internal/...` — 通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过，仍有既有大 chunk warning
+- 已执行 `.\run.ps1` 重启；首次因旧 `etl-server.exe` 占用 8000 端口失败，确认 PID 28496 为 `E:\codex\etl\bin\etl-server.exe` 后结束旧进程并重新启动
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`，当前监听 PID 25856
+
+### Open Items
+- 本轮未重新连接真实 PostgreSQL 跑完整 6,737,400 行全量导入压测；当前验证覆盖代码路径、自动化测试和单行映射微基准。
+
+### Notes
+- 本次未修改 `/api/flow/*`、手工文件导入流程或前端交互。
+- 进度总行数仍使用数据库统计估算值，任务完成时校正为实际处理行数。
+
+## 2026-05-28 数据库导入: 修复"导入无反应"（按钮转圈无结果）
+
+### Task
+- 数据库导入点击"导入向导"后按钮转圈但无结果反馈
+- 根因: `StartTask` 中 `sessionID` 直到函数末尾(515行)才赋给 `task.SessionID`，但中间多个失败路径提前返回时 sessionID 未赋值；同时早期文件/CSV 错误不保存 task 状态，前端轮询永远等不到完成状态 → 按钮无限转圈
+
+### Changes
+- `internal/dbimport/service.go`: `StartTask` — `task.SessionID = sessionID` 提前到 sessionID 生成后立即赋值；早期文件/CSV 创建失败时保存 "failed" 状态到 store；`Preview` 错误也计入 `FailedRows` 并保存
+- `frontend/src/features/flow/DBImportModal.tsx`: `startImport` — 轮询增加 10 分钟超时，超时后弹出错误提示并停止轮询；当 status=failed/canceled 且无 session_id 时弹出错误消息并切换到"导入任务"标签页；轮询 catch 也弹出错误消息
+
+### New Functionality
+- 数据库导入任务失败时前端现在会显示错误消息而非无反馈
+- 轮询 10 分钟超时自动停止，避免无限转圈
+
+### Verified Commands
+- `go test ./internal/... -count=1` — 全部通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+- `cd frontend; npm run build` — 通过
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- 已重启 etl-server.exe
+
+## 2026-05-28 数据库导入: 修复 NULL 值显示 `<nil>` 问题
+
+### Task
+- 主体详情身份证号显示 `<nil>`
+
+### Root Cause
+`internal/dbimport/service.go:883`:
+```go
+record[idx] = fmt.Sprint(row[mapping.SourceColumn])
+```
+当数据库列为 NULL 时，`row[key]` 返回 Go `nil`，`fmt.Sprint(nil)` 生成字符串 `"<nil>"`。该字符串写入 CSV → 被 `readSessionDataWithCache` 读回 → 进入 `TransactionRow` → 进入 `FlowNode.IDNumber` → 传给前端 → 用户看到 `<nil>`。
+
+### Changes
+- `internal/dbimport/service.go:883`: `mapImportRow` — `fmt.Sprint(row[key])` 先判 `nil`，NULL 值留空
+- `internal/dbimport/service.go:1017`: `TransactionRowsFromTask` — 同样修复 `fmt.Sprint(value)` nil 问题
+- `internal/api/edge_cache.go`: 新增 `sessionRowCache.ColumnOrder` 字段，在读取文件时存储归一化后的列名顺序；新增 `getCachedColumnOrder(sessionID)` 函数
+- `internal/api/handlers.go`: `HandleImportedFlowEdgeDetail` 用 `getCachedColumnOrder` 获取有序列名，不再用随机 map 迭代；缓存未命中时按 key 名排序保确定性
+
+### Verified Commands
+- `go test ./internal/... -count=1` — 全部通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- 已重启 etl-server.exe
+
+## 2026-05-28 性能优化: getNodeGeometry O(n) 数组扫描 → O(1) Map 查询
+
+### Task
+- 修复选择交易账户后生成流向图时前端卡死
+- 根因: `getNodeGeometry` 使用 `nodes.find()` (O(n))，在 `visibleGraph` useMemo + `buildOptimizedHandleMap` 中每边调用 4 次
+
+### Changes
+- `frontend/src/features/flow/flowGeometry.ts`:
+  - `getNodeGeometry(nodeId, nodes, positions)` → `getNodeGeometry(nodeId, nodesMap, positions)`，参数从 `Node[]` 改为 `Map<string, Node>`，查找从 O(n) 变为 O(1)
+  - 新增 `buildNodesMap(nodes)` 工具函数
+  - `buildOptimizedHandleMap` 内部预构建 `nodesMap`，避免每边重复扫描
+- `frontend/src/features/flow/useFlowGraph.ts`:
+  - `visibleGraph` useMemo 内预构建 `nodesMap = new Map(nodes.map(...))`，传入 `getNodeGeometry` 替代 `nodes` 数组
+
+### Verified Commands
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过
+- `go test ./internal/... -count=1` — 全部通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- 已重启 etl-server.exe
+
 ## 2026-05-28 数据库导入: 移除"打开连接"按钮 + 修复连接交互 + 测试反馈
 
 ### Task
@@ -1723,3 +2015,106 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 
 ### Notes
 - 工作区已有多处先前未提交改动，本次未回退任何既有改动。
+## 2026-05-28 数据库导入百万级性能优化
+
+### Task
+- 用户反馈数据库导入百万级数据时速度极慢、一直转圈。
+- 根因：数据库导入仍复用 `Preview()` 分页读取，每 10000 行重新打开连接、加载列信息，并执行 `LIMIT/OFFSET`。百万级数据越往后 OFFSET 越慢。
+
+### Changes
+- `internal/dbimport/service.go`
+  - `StartTask` 改为流式导入：单表只打开一次连接，一条 SQL 顺序读取。
+  - 导入 SQL 只选择已映射源字段，不再 `select *`，减少数据库传输量。
+  - 移除导入过程中的 `LIMIT/OFFSET` 翻页循环，避免百万级后段扫描变慢。
+  - 进度行数改用 PostgreSQL `pg_class.reltuples` / MySQL `information_schema.tables.table_rows` 快速估算，避免导入前 `count(*)` 全表扫描。
+  - 进度保存和 CSV flush 按 10000 行或 2 秒节流。
+  - 单任务仅保留前 200 条错误详情，避免大量坏数据导致任务 JSON 膨胀。
+- `internal/dbimport/service_test.go`
+  - 新增导入 SQL 测试，确认导入查询只包含映射列、无 `OFFSET`、无 `select *`。
+- `frontend/src/features/flow/DBImportModal.tsx`
+  - 启动导入后自动切换到“导入任务”页显示进度。
+  - 导入轮询超时从 10 分钟调整为 60 分钟，适配百万级导入。
+
+### New Functionality
+- 数据库导入百万级数据时使用流式读取和写入，避免分页 OFFSET 性能退化。
+- 导入任务页会主动显示处理进度、处理速度和预计剩余时间。
+
+### API Changes
+- 无新增、删除或重命名 API。
+- `/api/db/import/tasks/:id/start` 响应结构保持不变。
+
+### Database Changes
+- 无数据库结构变更。
+
+### Frontend Changes
+- 数据库导入启动后自动进入“导入任务”标签页。
+- 长导入任务最多轮询 60 分钟，超时提示文案同步更新。
+
+### Verified Commands
+- `go test ./internal/dbimport -count=1 -v` 通过。
+- `go test ./internal/... -count=1 -timeout 300s` 通过。
+- `cd frontend; npx tsc --noEmit` 通过。
+- `cd frontend; npm run build` 通过，仍有既有的大 chunk warning。
+- `go build -o bin\etl-server.exe .\cmd\server\` 通过。
+- `go vet ./internal/...` 通过。
+- 已执行 `.\run.ps1` 重启后端；`http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+
+### Open Items
+- 本次未连接真实生产库执行百万级全量导入压测；已通过代码路径和自动化测试验证分页瓶颈已移除。
+- 如果仍慢，下一步应检查数据库网络、磁盘写入速度，以及映射字段中是否存在复杂类型转换或大量必填字段失败。
+
+### Notes
+- 导入进度中的总行数运行中为数据库统计估算值，任务完成时会校正为实际处理行数。
+- 本次未修改 `/api/flow/*` 流图接口和现有文件导入路径。
+## 2026-05-28 PostgreSQL 数据库导入实测 + 任务持久化压缩修复
+
+### Task
+- 使用用户提供的 PostgreSQL 配置测试数据库导入功能：`127.0.0.1:5432`，数据库 `mz`，schema `ls_0709`。
+- 目标表按现有测试计划和实际元数据选用 `ls_0709.交易明细信息`。
+
+### Findings
+- 连接测试、schema 读取、表读取、列读取、预览、自动映射均通过。
+- 首次 100 万行任务启动后后端退出，进一步定位到 `backend/data/db_import/db_import_config.enc` 已膨胀到 176MB。
+- 根因：历史导入任务把大量错误明细/样本持久化到同一个加密 JSON 文件里，导致每次 `GetTask` / `SaveTask` 都要解密、反序列化、重写巨大文件，拖慢轮询并可能压垮进程。
+
+### Changes
+- `internal/dbimport/store.go`
+  - 新增任务持久化压缩：每个任务最多保存 200 条错误、20 行样本。
+  - `SaveTask` 和 `saveUnlocked` 保存前统一压缩任务 payload。
+  - `loadUnlocked` 读取到历史大任务后自动压缩并回写配置文件。
+- `internal/dbimport/service_test.go`
+  - 新增 `TestStoreCompactsLargeImportTaskPayloads`，验证大任务错误/样本会被压缩。
+
+### Test Results
+- 临时连接创建后已删除，避免保留测试账号密码。
+- `db_import_config.enc` 从 176,532,464 bytes 压缩到约 1.27MB。
+- 10 万行导入：`processed=100000`，`success=96701`，`failed=3299`，耗时约 5.1 秒，速度约 38,796 行/秒，CSV 约 16.69MB。
+- 100 万行导入：`processed=1000000`，`success=920102`，`failed=79898`，耗时约 25.3 秒，速度约 40,848 行/秒，CSV 约 190.82MB。
+- 失败主要原因是源数据中必填字段为空：`交易方户名` 或 `对手户名`。
+- 基于 10 万行导入会话执行 `/api/flow/build` 通过：`rows=96701`，耗时 1690ms，渲染节点 584、渲染边 600，总节点 1469、总边 1575，按 600 边截断。
+
+### API Changes
+- 无新增、删除或重命名 API。
+
+### Database Changes
+- 无数据库结构变更。
+- 本次只读 PostgreSQL 源表并写入本地导入会话 CSV。
+
+### Frontend Changes
+- 无前端代码变更。
+
+### Verified Commands
+- `go test ./internal/dbimport -count=1 -v` 通过。
+- `go test ./internal/... -count=1 -timeout 300s` 通过。
+- `go build -o bin\etl-server.exe .\cmd\server\` 通过。
+- `go vet ./internal/...` 通过。
+- 已执行 `.\run.ps1` 重启后端；`http://127.0.0.1:8000/api/health` 返回 `{"status":"ok"}`。
+- API 实测链路：`/api/db/connections/test`、`/api/db/connections`、`/api/db/connections/:id/schemas`、`/api/db/connections/:id/tables`、`/api/db/connections/:id/columns`、`/api/db/preview`、`/api/db/mappings/auto`、`/api/db/import/tasks`、`/api/db/import/tasks/:id/start`、`/api/flow/build`。
+
+### Open Items
+- 本次没有跑全表 6,737,400 行完整导入；按 100 万行实测速度估算，全表导入约 3 分钟以内，但还需单独执行确认。
+- 失败行来自源数据必填字段为空；如果业务允许空对手户名/交易方户名，需要调整必填字段策略或映射兜底。
+
+### Notes
+- 生成的导入会话保留在 `backend/data/uploads/flow_sessions/` 下，便于复查；临时数据库连接已删除。
+- 任务状态文件压缩后，后续轮询和启动请求不应再被历史任务体积拖慢。

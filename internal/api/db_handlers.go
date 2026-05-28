@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 
 	"github.com/etl/backend/internal/dbimport"
 )
@@ -361,13 +362,28 @@ func HandleDBGetImportTask(c *gin.Context) {
 }
 
 func HandleDBStartImportTask(c *gin.Context) {
-	ctx, cancel := dbContext(c)
-	defer cancel()
-	task, err := dbService.StartTask(ctx, c.Param("id"))
+	id := c.Param("id")
+	task, err := dbStore.GetTask(id)
 	if err != nil {
-		dbError(c, http.StatusBadRequest, err)
+		dbError(c, http.StatusNotFound, err)
 		return
 	}
+	if task.Status != "pending" {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "task is not in pending state"})
+		return
+	}
+	task.Status = "running"
+	task.UpdatedAt = time.Now()
+	if err := dbStore.SaveTask(task); err != nil {
+		dbError(c, http.StatusInternalServerError, err)
+		return
+	}
+	go func() {
+		_, err := dbService.StartTask(context.Background(), id)
+		if err != nil {
+			log.Warn().Err(err).Str("task_id", id).Msg("background import task failed")
+		}
+	}()
 	c.JSON(http.StatusOK, task)
 }
 

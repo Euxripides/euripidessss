@@ -115,10 +115,14 @@ func RunPipeline(uploadDir string, outputDir string, jobID string) (*model.Pipel
 	var allTransactions []model.TransactionRow
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	errChan := make(chan error, 3)
+
+	providerGroups := categorizeByProvider(scan)
+	// errChan must have buffer >= number of goroutines to prevent deadlock
+	// when all provider goroutines error simultaneously
+	errChan := make(chan error, len(providerGroups))
 
 	// Process in parallel by provider category
-	for _, pfItem := range categorizeByProvider(scan) {
+	for _, pfItem := range providerGroups {
 		wg.Add(1)
 		go func(pf ProviderFiles) {
 			defer wg.Done()

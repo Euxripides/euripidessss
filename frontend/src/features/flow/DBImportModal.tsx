@@ -14,7 +14,7 @@ import {
 import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Tree, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { DataNode } from 'antd/es/tree';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ImportedDataset } from './flowTypes';
 import {
   autoDBMapping,
@@ -23,6 +23,7 @@ import {
   deleteDBConnection,
   editDBTable,
   executeDBQuery,
+  getDBImportTask,
   listDBConnections,
   loadDBColumns,
   loadDBDatabases,
@@ -89,6 +90,7 @@ export function DBImportModal(props: {
   const [mappingRule, setMappingRule] = useState<DBMappingRule | null>(null);
   const [mappingConfirmed, setMappingConfirmed] = useState(false);
   const [task, setTask] = useState<DBImportTask | null>(null);
+const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [querySql, setQuerySql] = useState('select * from ');
   const [queryRows, setQueryRows] = useState<Record<string, unknown>[]>([]);
   const [queryColumns, setQueryColumns] = useState<DBColumn[]>([]);
@@ -101,6 +103,12 @@ export function DBImportModal(props: {
 
   useEffect(() => {
     if (props.open) refreshConnections();
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
   }, [props.open]);
 
   const tableRef = useMemo<DBTableRef | null>(() => {
@@ -352,21 +360,48 @@ export function DBImportModal(props: {
     try {
       const created = await createDBImportTask(`数据库导入_${tableRef.table}`, tableRef, mappingRule.mappings);
       setTask(created);
-      const completed = await startDBImportTask(created.id);
-      setTask(completed);
-      if (!completed.session_id) throw new Error('导入任务未返回会话 ID');
-      props.onImported({
-        session_id: completed.session_id,
-        rows: completed.progress?.successRows ?? completed.sample?.length ?? 0,
-        columns: completed.columns ?? [],
-        files: completed.files ?? [],
-        sample: completed.sample ?? [],
-      });
-      message.success('数据库数据已导入，请确认字段后生成图谱');
-      props.onClose();
+      const running = await startDBImportTask(created.id);
+      setTask(running);
+      setActiveTab('task');
+      const pollStartTime = Date.now();
+      const pollTimeout = 60 * 60 * 1000; // 60 minutes max for million-row imports
+      pollRef.current = setInterval(async () => {
+        try {
+          if (Date.now() - pollStartTime > pollTimeout) {
+            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+            setLoading(false);
+            message.error('数据库导入超过 60 分钟，请检查数据库连接和查询性能');
+            return;
+          }
+          const updated = await getDBImportTask(created.id);
+          setTask(updated);
+          if (updated.status === 'completed' || updated.status === 'completed_with_errors' || updated.status === 'failed' || updated.status === 'canceled') {
+            if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+            setLoading(false);
+            if (updated.session_id) {
+              props.onImported({
+                session_id: updated.session_id,
+                rows: updated.progress?.successRows ?? updated.sample?.length ?? 0,
+                columns: updated.columns ?? [],
+                files: updated.files ?? [],
+                sample: updated.sample ?? [],
+              });
+              message.success('数据库数据已导入，请确认字段后生成图谱');
+              props.onClose();
+            } else {
+              const errorMsg = (updated.errors?.length ? String(updated.errors[0].reason ?? '') : '') || '数据库导入失败';
+              message.error(errorMsg);
+              setActiveTab('task');
+            }
+          }
+        } catch {
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+          setLoading(false);
+          message.error('获取导入任务状态失败');
+        }
+      }, 1000);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '数据库导入失败');
-    } finally {
       setLoading(false);
     }
   }
@@ -698,8 +733,28 @@ export function DBImportModal(props: {
                   <div className="db-task-panel">
                     <strong>{task.name}</strong>
                     <Tag>{task.status}</Tag>
-                    <Progress percent={task.progress?.processedRows ? Math.min(100, Math.round((task.progress.successRows / Math.max(task.progress.processedRows, 1)) * 100)) : 0} />
-                    <span>已处理 {task.progress?.processedRows ?? 0} 行，成功 {task.progress?.successRows ?? 0} 行，失败 {task.progress?.failedRows ?? 0} 行</span>
+                    {task.status === 'running' || task.status === 'pending' ? (
+                      <>
+                        <Progress
+                          percent={task.progress?.totalRows ? Math.min(100, Math.round((task.progress.processedRows / task.progress.totalRows) * 100)) : 0}
+                          style={{ marginBottom: 8 }}
+                        />
+                        <span>已处理 {task.progress?.processedRows ?? 0} / {task.progress?.totalRows ?? 0} 行</span>
+                        {task.progress?.speedRowsPerSecond && task.progress.speedRowsPerSecond > 0 && task.progress.totalRows > 0 ? (
+                          <span style={{ marginLeft: 12 }}>
+                            约剩余 {Math.ceil((task.progress.totalRows - task.progress.processedRows) / task.progress.speedRowsPerSecond)} 秒
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <Progress
+                          percent={task.progress?.totalRows ? Math.min(100, Math.round((task.progress.processedRows / task.progress.totalRows) * 100)) : 0}
+                          style={{ marginBottom: 8 }}
+                        />
+                        <span>已处理 {task.progress?.processedRows ?? 0} 行，成功 {task.progress?.successRows ?? 0} 行，失败 {task.progress?.failedRows ?? 0} 行</span>
+                      </>
+                    )}
                   </div>
                 ) : <Empty description="暂无导入任务" />,
               },

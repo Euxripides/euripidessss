@@ -513,12 +513,14 @@ func HandleImportedFlowEdgeDetail(c *gin.Context) {
 
 	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", payload.SessionID)
 	rows := queryEdgeRows(sessionDir, payload)
-	// Calculate columns from data
-	var columns []string
-	if len(rows) > 0 {
+	// Use cached column order (preserves source file ordering)
+	columns := getCachedColumnOrder(payload.SessionID)
+	if columns == nil && len(rows) > 0 {
+		// Fallback: deterministic sort by key name for non-cached data
 		for k := range rows[0] {
 			columns = append(columns, k)
 		}
+		sort.Strings(columns)
 	}
 	// Calculate total amount
 	var totalAmount float64

@@ -117,9 +117,9 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
 
 
-  const visibleGraph = useMemo(() => {
-
-    const chosen = new Set(subjectIds);
+  const visibleGraph = useMemo(() => {
+    const nodesMap = new Map(nodes.map((n) => [n.id, n]));
+    const chosen = new Set(subjectIds);
 
     const hasSubjectFilter = chosen.size > 0;
 
@@ -182,11 +182,13 @@ export function useFlowGraph(params: UseFlowGraphParams) {
 
         const handles = optimizeAnchors
 
-          ? chooseOptimizedEdgeHandles(
-
-              getNodeGeometry(edge.source, nodes, nodePositions),
-
-              getNodeGeometry(edge.target, nodes, nodePositions),
+          ? chooseOptimizedEdgeHandles(
+
+              getNodeGeometry(edge.source, nodesMap, nodePositions),
+
+
+
+              getNodeGeometry(edge.target, nodesMap, nodePositions),
 
               edge.source,
 

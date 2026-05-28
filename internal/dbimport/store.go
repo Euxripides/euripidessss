@@ -19,6 +19,11 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	maxPersistedTaskErrors = 200
+	maxPersistedTaskSample = 20
+)
+
 type Store struct {
 	baseDir string
 	mu      sync.Mutex
@@ -235,6 +240,7 @@ func (s *Store) SaveTask(task ImportTask) error {
 	if err != nil {
 		return err
 	}
+	compactTask(&task)
 	filtered := data.Tasks[:0]
 	for _, item := range data.Tasks {
 		if item.ID != task.ID {
@@ -338,6 +344,9 @@ func (s *Store) loadUnlocked() (*persistedData, error) {
 	if err := json.Unmarshal(plain, data); err != nil {
 		return nil, err
 	}
+	if compactPersistedData(data) {
+		_ = s.saveUnlocked(data)
+	}
 	return data, nil
 }
 
@@ -345,6 +354,7 @@ func (s *Store) saveUnlocked(data *persistedData) error {
 	if err := os.MkdirAll(s.baseDir, 0700); err != nil {
 		return err
 	}
+	compactPersistedData(data)
 	raw, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
@@ -354,6 +364,29 @@ func (s *Store) saveUnlocked(data *persistedData) error {
 		return err
 	}
 	return os.WriteFile(s.path(), encrypted, 0600)
+}
+
+func compactPersistedData(data *persistedData) bool {
+	changed := false
+	for i := range data.Tasks {
+		if compactTask(&data.Tasks[i]) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func compactTask(task *ImportTask) bool {
+	changed := false
+	if len(task.Errors) > maxPersistedTaskErrors {
+		task.Errors = task.Errors[:maxPersistedTaskErrors]
+		changed = true
+	}
+	if len(task.Sample) > maxPersistedTaskSample {
+		task.Sample = task.Sample[:maxPersistedTaskSample]
+		changed = true
+	}
+	return changed
 }
 
 func (s *Store) path() string {

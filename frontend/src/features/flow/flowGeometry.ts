@@ -8,6 +8,13 @@ import {
   type GeometryRect,
   type NodeGeometry,
 } from './flowTypes';
+
+function buildNodesMap(nodes: Node[]): Map<string, Node> {
+  const map = new Map<string, Node>();
+  for (const node of nodes) map.set(node.id, node);
+  return map;
+}
+
 export function chooseEdgeHandles(source?: { x: number; y: number }, target?: { x: number; y: number }) {
   if (!source || !target) return { sourceHandle: 'right-source', targetHandle: 'left-target' };
   const dx = target.x - source.x;
@@ -34,9 +41,10 @@ export function chooseOptimizedEdgeHandles(source?: NodeGeometry, target?: NodeG
 
 export function buildOptimizedHandleMap(edges: Edge[], nodes: Node[], positions: Map<string, { x: number; y: number }>) {
   const map = new Map<string, DynamicAnchor[]>();
+  const nodesMap = buildNodesMap(nodes);
   for (const edge of edges) {
-    const source = getNodeGeometry(edge.source, nodes, positions);
-    const target = getNodeGeometry(edge.target, nodes, positions);
+    const source = getNodeGeometry(edge.source, nodesMap, positions);
+    const target = getNodeGeometry(edge.target, nodesMap, positions);
     if (!source || !target) continue;
     const sourceAnchor = boundaryAnchorToward(source, centerOfGeometry(target), dynamicAnchorId(edge.source, edge.id, 'source'));
     const targetAnchor = boundaryAnchorToward(target, centerOfGeometry(source), dynamicAnchorId(edge.target, edge.id, 'target'));
@@ -58,8 +66,8 @@ function hashHandleId(value: string) {
   return Math.abs(hash).toString(36);
 }
 
-export function getNodeGeometry(nodeId: string, nodes: Node[], positions: Map<string, { x: number; y: number }>): NodeGeometry | undefined {
-  const node = nodes.find((item) => item.id === nodeId);
+export function getNodeGeometry(nodeId: string, nodesMap: Map<string, Node>, positions: Map<string, { x: number; y: number }>): NodeGeometry | undefined {
+  const node = nodesMap.get(nodeId);
   const position = positions.get(nodeId);
   if (!node || !position) return undefined;
   const label = String(node.data.entityLabel ?? node.id);

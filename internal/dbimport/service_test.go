@@ -3,6 +3,7 @@ package dbimport
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,104 @@ func TestBuildSelectUsesWhitelistedColumnsAndParameters(t *testing.T) {
 	}
 }
 
+func TestBuildImportSelectUsesMappedColumnsWithoutOffset(t *testing.T) {
+	query, err := buildImportSelect(DBTypePostgres, TableRef{Schema: "public", Table: "交易明细"}, []FieldMapping{
+		{SourceColumn: "交易户名", TargetField: "交易方户名"},
+		{SourceColumn: "交易金额", TargetField: "交易金额"},
+		{SourceColumn: "交易户名", TargetField: "对手户名"},
+		{TargetField: "备注"},
+	}, 5000)
+	if err != nil {
+		t.Fatalf("buildImportSelect failed: %v", err)
+	}
+	if strings.Contains(strings.ToLower(query), "offset") || strings.Contains(query, "*") {
+		t.Fatalf("import query should stream mapped columns without offset: %s", query)
+	}
+	if strings.Count(query, `"交易户名"`) != 1 {
+		t.Fatalf("duplicate mapped source column should be selected once: %s", query)
+	}
+	if !strings.Contains(query, `select "交易户名","交易金额" from "public"."交易明细" limit 5000`) {
+		t.Fatalf("unexpected import query: %s", query)
+	}
+}
+
+func TestImportRowMapperMatchesMapMapping(t *testing.T) {
+	headers := flowCSVHeaders()
+	mappings := []FieldMapping{
+		{SourceColumn: "交易户名", TargetField: "交易方户名"},
+		{SourceColumn: "交易时间", TargetField: "交易时间", TargetType: "datetime"},
+		{SourceColumn: "交易金额", TargetField: "交易金额", TargetType: "decimal"},
+		{SourceColumn: "方向", TargetField: "收付标志", TargetType: "direction"},
+		{SourceColumn: "对手户名", TargetField: "对手户名"},
+	}
+	row := map[string]interface{}{
+		"交易户名": "张三",
+		"交易时间": "2024/01/02 03:04:05",
+		"交易金额": "￥1,234.5",
+		"方向":   "O",
+		"对手户名": "李四",
+	}
+	expected, snapshot, err := mapImportRow(row, mappings, headers)
+	if err != nil {
+		t.Fatalf("mapImportRow failed: %v snapshot=%s", err, snapshot)
+	}
+
+	mapper, err := newImportRowMapper([]string{"交易户名", "交易时间", "交易金额", "方向", "对手户名"}, mappings, headers, buildHeaderIndex(headers))
+	if err != nil {
+		t.Fatalf("newImportRowMapper failed: %v", err)
+	}
+	record := make([]string, len(headers))
+	values := []interface{}{"张三", "2024/01/02 03:04:05", "￥1,234.5", "O", "李四"}
+	snapshot, err = mapper.mapValuesInto(values, record)
+	if err != nil {
+		t.Fatalf("mapValuesInto failed: %v snapshot=%s", err, snapshot)
+	}
+	if !reflect.DeepEqual(record, expected) {
+		t.Fatalf("indexed mapper mismatch\nexpected: %#v\nactual:   %#v", expected, record)
+	}
+}
+
+func TestImportRowMapperRejectsMissingReturnedColumns(t *testing.T) {
+	_, err := newImportRowMapper([]string{"交易户名"}, []FieldMapping{
+		{SourceColumn: "交易时间", TargetField: "交易时间"},
+	}, flowCSVHeaders(), buildHeaderIndex(flowCSVHeaders()))
+	if err == nil {
+		t.Fatalf("expected missing returned source column to fail")
+	}
+}
+
+func TestStoreCompactsLargeImportTaskPayloads(t *testing.T) {
+	store := NewStore(t.TempDir())
+	errors := make([]ImportError, maxPersistedTaskErrors+25)
+	for i := range errors {
+		errors[i] = ImportError{Reason: "bad row"}
+	}
+	sample := make([]map[string]any, maxPersistedTaskSample+5)
+	for i := range sample {
+		sample[i] = map[string]any{"row": i}
+	}
+	task := ImportTask{
+		ID:     "task-large",
+		Name:   "large task",
+		Status: "completed_with_errors",
+		Errors: errors,
+		Sample: sample,
+	}
+	if err := store.SaveTask(task); err != nil {
+		t.Fatalf("SaveTask failed: %v", err)
+	}
+	loaded, err := store.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("GetTask failed: %v", err)
+	}
+	if len(loaded.Errors) != maxPersistedTaskErrors {
+		t.Fatalf("expected %d persisted errors, got %d", maxPersistedTaskErrors, len(loaded.Errors))
+	}
+	if len(loaded.Sample) != maxPersistedTaskSample {
+		t.Fatalf("expected %d sample rows, got %d", maxPersistedTaskSample, len(loaded.Sample))
+	}
+}
+
 func TestDangerousWriteDetection(t *testing.T) {
 	if !isDangerousWrite("update accounts set amount = 0") {
 		t.Fatalf("unconditional update must be rejected")
@@ -97,4 +196,44 @@ func TestDangerousWriteDetection(t *testing.T) {
 	if isDangerousWrite("update accounts set amount = 0 where id = 1") {
 		t.Fatalf("conditional update should be allowed by the guard")
 	}
+}
+
+func BenchmarkImportRowMapping(b *testing.B) {
+	headers := flowCSVHeaders()
+	mappings := []FieldMapping{
+		{SourceColumn: "交易户名", TargetField: "交易方户名"},
+		{SourceColumn: "交易时间", TargetField: "交易时间", TargetType: "datetime"},
+		{SourceColumn: "交易金额", TargetField: "交易金额", TargetType: "decimal"},
+		{SourceColumn: "方向", TargetField: "收付标志", TargetType: "direction"},
+		{SourceColumn: "对手户名", TargetField: "对手户名"},
+	}
+	row := map[string]interface{}{
+		"交易户名": "张三",
+		"交易时间": "2024-01-02 03:04:05",
+		"交易金额": "1234.5",
+		"方向":   "O",
+		"对手户名": "李四",
+	}
+	b.Run("map", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, _, err := mapImportRow(row, mappings, headers); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("indexed", func(b *testing.B) {
+		b.ReportAllocs()
+		mapper, err := newImportRowMapper([]string{"交易户名", "交易时间", "交易金额", "方向", "对手户名"}, mappings, headers, buildHeaderIndex(headers))
+		if err != nil {
+			b.Fatal(err)
+		}
+		values := []interface{}{"张三", "2024-01-02 03:04:05", "1234.5", "O", "李四"}
+		record := make([]string, len(headers))
+		for i := 0; i < b.N; i++ {
+			if _, err := mapper.mapValuesInto(values, record); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
