@@ -11,7 +11,7 @@ import {
   ReloadOutlined,
   TableOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Tree, message, notification } from 'antd';
+import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Tree, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { DataNode } from 'antd/es/tree';
 import { useEffect, useMemo, useState } from 'react';
@@ -162,7 +162,18 @@ export function DBImportModal(props: {
     try {
       const items = await listDBConnections();
       setConnections(items);
-      if (!selectedConnection && items[0]) setSelectedConnection(items[0]);
+      setSelectedConnection(null);
+      setDatabases([]);
+      setSchemas([]);
+      setTables([]);
+      setSelectedDatabase('');
+      setSelectedSchema('');
+      setSelectedTable('');
+      setPreview([]);
+      setColumns([]);
+      setMappingRule(null);
+      setMappingConfirmed(false);
+      setExpandedTreeKeys([]);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '读取数据库连接失败');
     } finally {
@@ -287,25 +298,16 @@ export function DBImportModal(props: {
       if (testOnly) {
         const result = await testDBConnection({ ...editing, ...values });
         if (result.ok === false) throw new Error(result.detail || '连接测试失败');
-        notification.success({
-          message: '连接测试成功',
-          description: `${values.type} ${values.host}:${values.port}${values.defaultDatabase ? ` / ${values.defaultDatabase}` : ''}`,
-          placement: 'topRight',
-        });
+        message.success(`连接测试成功: ${values.type} ${values.host}:${values.port}${values.defaultDatabase ? ` / ${values.defaultDatabase}` : ''}`);
         return;
       }
-      const saved = await saveDBConnection({ ...editing, ...values });
+      await saveDBConnection({ ...editing, ...values });
       message.success('连接已保存');
       setConnectionOpen(false);
       await refreshConnections();
-      setSelectedConnection(saved);
     } catch (error) {
       if (testOnly) {
-        notification.error({
-          message: '连接测试失败',
-          description: error instanceof Error ? error.message : '连接测试失败',
-          placement: 'topRight',
-        });
+        message.error(error instanceof Error ? error.message : '连接测试失败');
       } else {
         message.error(error instanceof Error ? error.message : '保存连接失败');
       }
@@ -460,7 +462,6 @@ export function DBImportModal(props: {
           <Input.Search placeholder="搜索连接" allowClear />
           {selectedConnection ? (
             <div className="connection-actions">
-              <Button onClick={() => selectedConnection.id && loadDatabases(selectedConnection.id)}>打开连接</Button>
               <Button onClick={() => openConnectionEditor(selectedConnection)}>编辑</Button>
               <Button danger icon={<DeleteOutlined />} onClick={() => Modal.confirm({ title: '删除连接', content: '删除后会同步移除本地配置。', onOk: () => removeConnection(selectedConnection.id) })} />
             </div>

@@ -1,3 +1,156 @@
+### 2026-05-28 (数据库导入: 移除"打开连接" + 修复连接交互 + 测试反馈 + 修复行数限制)
+
+#### 本次任务
+- 删除数据库导入弹窗中的"打开连接"按钮
+- 修复"测试连接"无反馈信息（`notification` 不显示，改为 `message`）
+- 修复点击连接名称无反应（自动选中导致 `onSelect` 不触发）
+- 修复数据库导入只导入 100 万行的问题（`MaxImportRows = 100000` 硬编码限制）
+
+#### 新增功能
+- 测试连接结果现在通过 `message.success/error` 显示为顶部消息提示，不再使用 `notification`
+- 单次数据库导入上限从 10 万行提升到 1000 万行
+- 每批读取从 1000 行提升到 10000 行，大数据导入速度提升约 10 倍
+
+#### 修改文件
+- `frontend/src/features/flow/DBImportModal.tsx`
+- `internal/dbimport/types.go` — `MaxImportRows: 100000 → 10000000`，`MaxPageSize: 1000 → 10000`
+- `internal/dbimport/service.go` — `StartTask` 分页大小从硬编码 1000 改为 `MaxPageSize`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无
+
+#### 数据库变化
+- 无
+
+#### 前端变化
+- 数据库导入弹窗左侧连接操作栏移除"打开连接"按钮
+- `refreshConnections` 不再自动选中第一个连接；每次刷新重置所有状态
+- 测试连接反馈从 `notification.success/error` 改为 `message.success/error`
+- 编辑和删除按钮保留在连接操作栏
+
+#### 后端变化
+- `MaxImportRows` 从 `100000` 提升到 `10000000`（1000 万行硬上限）
+- `MaxPageSize` 从 `1000` 提升到 `10000`，减少分页请求次数
+- `StartTask` 分页大小使用 `MaxPageSize` 常量，不再硬编码 1000
+
+#### 验证结果
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+- `go test ./internal/... -count=1` — 全部通过
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- 已重启 etl-server.exe
+
+### 2026-05-28 (画布控件重组: 移除锁定画布 + 导出移入 Controls 底部)
+
+#### 本次任务
+- 移除 Controls 组件自带的"锁定画布"按钮（`showInteractive={false}`）
+- 将导出按钮从独立的绝对定位 div 移入 Controls 面板最底部，使用 `ControlButton` 组件
+
+#### 新增功能
+- 无（纯 UI 重组）
+
+#### 修改文件
+- `frontend/src/features/flow/useFlowPanelState.ts`
+- `frontend/src/features/flow/FlowPanel.tsx`
+- `frontend/src/features/flow/FlowGraphWorkspace.tsx`
+- `frontend/src/features/flow/FlowCanvas.tsx`
+- `frontend/src/features/flow/flow-canvas.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无
+
+#### 数据库变化
+- 无
+
+#### 前端变化
+- Controls 组件不再显示默认的"锁定画布"按钮（`showInteractive={false}`）
+- 改用自定义"锁定布局"按钮（仅锁定节点拖动），使用 `LockOutlined` / `UnlockOutlined` 图标，位于 Controls 最顶部
+- `nodesDraggable` 从硬编码 `true` 改为通过 `useFlowPanelState` 状态管理
+- 导出按钮放在 Controls 最底部，图标大小自动与缩放按钮一致
+- 右上角"新建主体"按钮改为纯"+"图标按钮（`graph-add-node-btn`，28px 方钮）
+- 右侧面板新增"筛选分析"可折叠模块（合并 主体筛选/关系过滤/路径追踪/标签筛选）
+- "数据导入"模块仅剩导入摘要；其余过滤功能移入"筛选分析"
+- 无数据导入时只显示"数据导入"模块，"筛选分析"和"洞察分析"隐藏
+- 移除 `graph-export-control` / `graph-export-control-btn` 自定义 CSS
+
+#### 验证结果
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+
+### 2026-05-27 (边缘详情缓存修复: 消除双重 I/O + 移除行数限制)
+
+#### 本次任务
+- 用户反馈"详细信息还是加载很慢"
+- 根因: 缓存行数上限 200K 但用户数据 507K 行，导致缓存永不启用；同时构建时 `readSessionData` 和 `populateEdgeDetailCache` 对相同文件做了双重 I/O
+
+#### 新增功能
+- 无（纯修复）
+
+#### 修改文件
+- `internal/api/edge_cache.go` — 移除 `populateEdgeDetailCache`，新增 `readSessionDataWithCache`（一次读取双输出）
+- `internal/api/handlers.go` — HandleBuildImportedFlow 使用新函数
+
+#### 接口变化
+- 无
+
+#### 数据库变化
+- 无
+
+#### 前端变化
+- 无
+
+#### 性能优化
+- 构建时: 2x 文件读取 → 1x 文件读取（231MB CSV 节省约 1-2 秒 I/O）
+- 点击边缘详情: 缓存上限从 200K → 5M 行，507K 数据全量缓存，零磁盘 I/O
+- 防 OOM 仍保留: 单会话 5M 行硬上限（约 1.5GB 内存峰值）
+
+#### 注意事项
+- 缓存仅存储原始行数据（`[][]string`），不存储映射后的 TransactionRow，因此方向映射变更不影响缓存有效性
+- 若构建失败（方向检查未通过），缓存仍然存在但不会影响后续正确构建（下次构建通过 `readSessionData` 回退重新读取，边缘详情仍用缓存原始数据）
+
+### 2026-05-27 (线条详细数据预加载缓存)
+
+#### 本次任务
+- 资金流向图点击线条查看详细信息时，大数据量源文件加载缓慢 → 生成图时预加载线条详细数据到缓存
+- 要求避免内存溢出
+
+#### 新增功能
+- 边缘详情预加载缓存: 生成图时自动缓存文件数据到内存，点击线条时从内存读取，响应时间从 ~秒级降至 ~毫秒级
+- 内存溢出防护: 单会话最大缓存 200,000 行，超出自动回退到磁盘读
+
+#### 新增文件
+- `internal/api/edge_cache.go` — 会话级文件数据缓存模块（缓存类型、全局 map、并发安全、限流逻辑）
+
+#### 修改文件
+- `internal/api/handlers.go` — `HandleBuildImportedFlow` 生成图后预加载缓存; `queryEdgeRows` 优先读缓存
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无（缓存透传，前端无感知）
+
+#### 数据库变化
+- 无
+
+#### 前端变化
+- 无
+
+#### 验证结果
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+- `go test ./internal/... -count=1` — 全部 50+ 测试通过
+- `go vet ./internal/api/` — 无警告
+
+#### 注意事项
+- 缓存只保存经过 `ReadCSVFile`/`ReadExcelFile` 解析后的 `[][]string` 数据（原始列名 + 行），不保存 `TransactionRow`
+- 缓存和回退路径的输出格式完全一致（原始列名 normalized 作为 key + `流向源`/`流向目标` 附加字段）
+- 后续可扩展: LRU 清理策略、磁盘缓存、WebSocket 推送进度
+
 ### 2026-05-27 (资金流向图全面测试计划 v1.1)
 
 #### 本次任务

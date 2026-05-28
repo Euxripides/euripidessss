@@ -710,8 +710,8 @@ func HandleBuildImportedFlow(c *gin.Context) {
 		}
 	}
 
-	// Read source files and build transaction rows
-	txns := readSessionData(sessionDir, mapping, dirMap)
+	// Read source files and build transaction rows (also preloads edge detail cache)
+	txns := readSessionDataWithCache(sessionDir, sessionID, mapping, dirMap)
 
 	// Check for unknown direction values
 	unknownDirs := checkUnknownDirections(txns)
@@ -1434,6 +1434,11 @@ func extractColumnValues(sessionDir string, column string, limit int) []string {
 
 // queryEdgeRows queries transaction rows matching source/target
 func queryEdgeRows(sessionDir string, p EdgeDetailPayload) []map[string]interface{} {
+	// Fast path: use cached session file data (populated during graph build)
+	if cache := getCachedFiles(p.SessionID); cache != nil {
+		return processCachedRows(cache, p)
+	}
+
 	var result []map[string]interface{}
 	mapping := normalizeFlowColumnMapping(flowColumnMapping{
 		SourceCol:     p.SourceColumn,

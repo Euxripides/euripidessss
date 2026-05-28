@@ -1,15 +1,18 @@
 ﻿import type { MenuProps } from "antd";
 import {
-  Button,
   Dropdown,
+  Tooltip,
 } from "antd";
 
 import {
   DownloadOutlined,
+  LockOutlined,
   PlusOutlined,
+  UnlockOutlined,
 } from "@ant-design/icons";
 
 import {
+  ControlButton,
   Controls,
   MiniMap,
   ReactFlow,
@@ -65,6 +68,8 @@ export interface FlowCanvasProps {
   renderLimit: number;
   onRenderLimitChange: (l: number) => void;
   subjectMultiSelect: boolean;
+  nodesDraggable: boolean;
+  onNodesDraggableChange: (v: boolean) => void;
   toolbarCollapsed: boolean;
   onToolbarCollapsedChange: (c: boolean) => void;
   miniMapCollapsed: boolean;
@@ -118,22 +123,11 @@ export function FlowCanvas(props: FlowCanvasProps) {
   return (
     <div className="flow-canvas" ref={props.flowCanvasRef}>
       <div className="graph-canvas-actions">
-        <Button type="primary" icon={<PlusOutlined />} onClick={props.onAddNode}>
-          新建主体
-        </Button>
-        <Dropdown
-          trigger={["click"]}
-          menu={{
-            items: props.exportMenuItems,
-            onClick: ({ key }) => {
-              void props.onExportGraph(key as GraphExportFormat);
-            },
-          }}
-        >
-          <Button icon={<DownloadOutlined />} disabled={!props.visibleGraph.nodes.length}>
-            导出图谱
-          </Button>
-        </Dropdown>
+        <Tooltip title="新建主体">
+          <button className="graph-add-node-btn" type="button" onClick={props.onAddNode}>
+            <PlusOutlined />
+          </button>
+        </Tooltip>
       </div>
       <ReactFlow
         fitView
@@ -146,7 +140,7 @@ export function FlowCanvas(props: FlowCanvasProps) {
         selectionOnDrag={props.subjectMultiSelect}
         selectionMode={SelectionMode.Partial}
         panOnDrag={props.subjectMultiSelect ? [1, 2] : true}
-        nodesDraggable
+        nodesDraggable={props.nodesDraggable}
         selectNodesOnDrag={false}
         elevateEdgesOnSelect
         onInit={props.onReactFlowInit}
@@ -162,7 +156,30 @@ export function FlowCanvas(props: FlowCanvasProps) {
         onEdgeClick={props.onEdgeClick}
         onPaneClick={() => props.onSelectedEdgeIdsChange([])}
       >
-        <Controls />
+        <Controls showInteractive={false}>
+          <ControlButton
+            title={props.nodesDraggable ? "锁定布局" : "解锁布局"}
+            onClick={() => props.onNodesDraggableChange(!props.nodesDraggable)}
+          >
+            {props.nodesDraggable ? <LockOutlined /> : <UnlockOutlined />}
+          </ControlButton>
+          <Dropdown
+            trigger={["click"]}
+            menu={{
+              items: props.exportMenuItems,
+              onClick: ({ key }) => {
+                void props.onExportGraph(key as GraphExportFormat);
+              },
+            }}
+          >
+            <ControlButton
+              title="导出图谱"
+              disabled={!props.visibleGraph.nodes.length}
+            >
+              <DownloadOutlined />
+            </ControlButton>
+          </Dropdown>
+        </Controls>
         {!!props.visibleGraph.nodes.length && (
           <>
             {!props.miniMapCollapsed && (

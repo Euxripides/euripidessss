@@ -426,7 +426,7 @@ func (s *Service) StartTask(ctx context.Context, id string) (ImportTask, error) 
 			_ = s.store.SaveTask(task)
 			return task, err
 		}
-		req := TableDataRequest{TableRef: item.TableRef, Page: 1, PageSize: 1000}
+		req := TableDataRequest{TableRef: item.TableRef, Page: 1, PageSize: MaxPageSize}
 		limit := item.Limit
 		if limit <= 0 || limit > MaxImportRows {
 			limit = MaxImportRows

@@ -288,6 +288,10 @@ export function FlowPanel(props: {
 
     setSubjectMultiSelect,
 
+    nodesDraggable,
+
+    setNodesDraggable,
+
     dataPenetrationEnabled,
 
     setDataPenetrationEnabled,
@@ -439,6 +443,8 @@ export function FlowPanel(props: {
         renderLimit={renderLimit}
         onRenderLimitChange={setRenderLimit}
         subjectMultiSelect={subjectMultiSelect}
+        nodesDraggable={nodesDraggable}
+        onNodesDraggableChange={setNodesDraggable}
         toolbarCollapsed={toolbarCollapsed}
         onToolbarCollapsedChange={setToolbarCollapsed}
         miniMapCollapsed={miniMapCollapsed}

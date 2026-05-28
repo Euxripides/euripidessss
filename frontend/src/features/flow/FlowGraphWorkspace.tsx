@@ -51,6 +51,8 @@ export function FlowGraphWorkspace(props: FlowGraphWorkspaceProps) {
             renderLimit={props.renderLimit}
             onRenderLimitChange={props.onRenderLimitChange}
             subjectMultiSelect={props.subjectMultiSelect}
+            nodesDraggable={props.nodesDraggable}
+            onNodesDraggableChange={props.onNodesDraggableChange}
             toolbarCollapsed={props.toolbarCollapsed}
             onToolbarCollapsedChange={props.onToolbarCollapsedChange}
             miniMapCollapsed={props.miniMapCollapsed}

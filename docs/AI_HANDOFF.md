@@ -1,3 +1,154 @@
+## 2026-05-28 数据库导入: 移除"打开连接"按钮 + 修复连接交互 + 测试反馈
+
+### Task
+- 删除数据库导入弹窗中的"打开连接"按钮
+- 修复"测试连接"无反馈信息的问题
+- 修复点击连接名称无反应的问题
+
+### Changes
+- `frontend/src/features/flow/DBImportModal.tsx`:
+  - 移除 `connection-actions` 中的"打开连接"按钮
+  - 修复测试连接反馈：`notification.success/error` 替换为 `message.success/error`（全项目统一用 `message`）
+  - 移除 `antd` 的 `notification` 导入
+  - 修复点击连接无反应：`refreshConnections` 不再自动选中第一个连接，改为 `selectedConnection=null` + 重置所有子状态；用户必须点击连接名称才能触发 `handleConnectionSelect`
+
+### New Functionality
+- 测试连接结果现在显示为顶部消息提示（`message.success`/`message.error`），更明显
+
+### Verified Commands
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+
+## 2026-05-28 数据库导入: 修复 176 万行只导入 100 万行 (MaxImportRows 限制)
+
+### Task
+- 数据库表 176 万行导入只得到 100 万行，缺失大量数据
+- 根因: `MaxImportRows = 100000`（10万）硬编码限制导出行数
+
+### Changes
+- `internal/dbimport/types.go`: `MaxImportRows` 从 `100000` 提升到 `10000000`（1000万）；`MaxPageSize` 从 `1000` 提升到 `10000`
+- `internal/dbimport/service.go`: `StartTask` 中的分页大小从硬编码 `1000` 改为使用 `MaxPageSize`
+
+### New Functionality
+- 单次数据库导入上限提升到 1000 万行
+- 每批读取从 1000 行提升到 10000 行，大数据导入速度提升约 10 倍
+
+### Verified Commands
+- `go test ./internal/... -count=1` — 全部通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+- `http://127.0.0.1:8000/api/health` — `{"status":"ok"}`
+- 已重启 etl-server.exe
+
+## 2026-05-28 右侧面板重构: 筛选分析合并 + 无数据时隐藏 + 画布控件调整
+
+### Task
+- 锁定画布按钮已在放大/缩小一列（Controls 组件自带），删除它，替换为自定义锁定布局按钮
+- 将导出按钮放入 Controls 最底部，图标大小与 Controls 内部按钮一致
+- 右上角"新建主体"按钮改为纯"+"图标
+- 右侧功能栏合并"主体筛选""关系过滤""路径追踪"为"筛选分析"可折叠模块
+- 无数据导入时，右侧只显示"数据导入"模块，其他模块隐藏
+
+### Changes
+- `frontend/src/features/flow/FlowInspectorPanel.tsx`:
+  - 新增"筛选分析"可折叠模块，合并 主体筛选/关系过滤/路径追踪/标签筛选
+  - "数据导入"模块仅保留 `FlowImportSummary`，其余过滤组件移到"筛选分析"
+  - 无数据时只显示"数据导入"模块，"筛选分析"和"洞察分析"均隐藏
+  - `defaultActiveKey` 有数据时默认展开"数据导入"+"筛选分析"
+- `frontend/src/features/flow/useFlowPanelState.ts`:
+  - 新增 `nodesDraggable` / `setNodesDraggable` 状态（默认 `true`）
+- `frontend/src/features/flow/FlowPanel.tsx`:
+  - 透传 `nodesDraggable` / `onNodesDraggableChange` 给 `FlowGraphWorkspace`
+- `frontend/src/features/flow/FlowGraphWorkspace.tsx`:
+  - 透传 `nodesDraggable` / `onNodesDraggableChange` 给 `FlowCanvas`
+- `frontend/src/features/flow/FlowCanvas.tsx`:
+  - 导入 `ControlButton`、`LockOutlined`、`UnlockOutlined`
+  - `<Controls showInteractive={false}>` 移除默认锁定画布按钮
+  - `nodesDraggable` 从硬编码 `true` 改为 prop 控制
+  - Controls 内顶部新增锁定布局按钮（LockOutlined / UnlockOutlined 切换）
+  - 导出 Dropdown 以 `<ControlButton>` 为触发元素，放在 Controls 子元素末尾
+  - 移除 `Button` 导入，右上角"新建主体"改为纯"+"图标按钮（`graph-add-node-btn`）
+- `frontend/src/features/flow/flow-canvas.css`:
+  - 移除 `.graph-export-control` 和 `.graph-export-control-btn` 样式
+  - `.graph-canvas-actions` 简化为纯定位容器
+  - 新增 `.graph-add-node-btn` 样式（28px 方形按钮，匹配 minimap-toggle 风格）
+
+### New Functionality
+- 锁定布局按钮: 仅控制节点可拖动性，不影响缩放/平移/选中
+- 右上角"+"图标按钮创建新主体（原为带文字按钮）
+- 右侧面板"筛选分析"模块合并过滤/路径分析功能
+- 无数据导入时右侧面板简洁只显示导入入口
+
+### API Changes
+- 无
+
+### Frontend Changes
+- Controls 组件不再显示"锁定画布"（interactive toggle）按钮
+- 导出按钮从独立的绝对定位 div 移入 Controls 面板最底部，与缩放按钮同列
+
+### Verified Commands
+- `cd frontend; npx tsc --noEmit` — 通过
+- `cd frontend; npm run build` — 通过
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过
+
+## 2026-05-27 边缘详情缓存修复: 消除双重 I/O + 移除行数限制
+
+### Task
+- 用户反馈"详细信息还是加载很慢"
+- 诊断发现两个问题:
+  1. 缓存行数上限 200K，用户数据 507K 行 → 缓存永远不启用，始终回退磁盘读
+  2. 构建时双重 I/O: `readSessionData` + `populateEdgeDetailCache` 分别读取相同文件
+
+### Changes
+- `internal/api/edge_cache.go`:
+  - 移除 `populateEdgeDetailCache`（不再单独调用）
+  - 新增 `readSessionDataWithCache(sessionDir, sessionID, mapping, dirMap)`: 一次文件读取同时构建 TransactionRows 和缓存
+  - 缓存上限提升到 5,000,000 行（覆盖 507K 数据）
+- `internal/api/handlers.go`:
+  - `HandleBuildImportedFlow`: 用 `readSessionDataWithCache` 替代 `readSessionData` + `populateEdgeDetailCache`
+
+### Performance
+- 构建时: 1x 文件读取（原为 2x），对 231MB CSV 约节省 1-2 秒 I/O
+- 点击边缘详情: 507K 行以内从内存缓存读取，零磁盘 I/O，响应 ~毫秒级
+- 防 OOM: 保留 5M 行硬上限（约 1.5GB 内存阈值）
+
+### Verified Commands
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+- `go test ./internal/... -count=1` — 全部 50+ 测试通过 (api 15.1s)
+- `go vet ./internal/api/` — 无警告
+
+## 2026-05-27 线条详细数据预加载缓存 (边缘详情性能优化)
+
+### Task
+- 资金流向图点击线条查看详细信息时，大数据量源文件加载缓慢
+- 要求在生成图时将线条详细数据预加载到缓存，点击时瞬时响应
+- 避免内存溢出
+
+### Changes
+- 新增 `internal/api/edge_cache.go` — 会话级文件数据缓存模块
+- `internal/api/handlers.go`:
+  - `HandleBuildImportedFlow`: 生成图后调用 `populateEdgeDetailCache` 预加载文件数据到缓存
+  - `queryEdgeRows`: 优先读取缓存（`getCachedFiles` + `processCachedRows`），缓存未命中时回退到磁盘读
+
+### New Functionality
+- 线条详细数据预加载: 生成流向图时自动将上传文件数据（表头+行）缓存到内存
+- 点击线条时从内存读取，避免重复磁盘 I/O，响应时间从 ~秒级降至 ~毫秒级
+- 缓存限流: 单会话最大缓存 200,000 行（约 300MB 内存在 32 列场景下），超出则自动回退到实时磁盘读，防止内存溢出
+- 缓存生命周期: 与会话绑定；同一会话再次生成图不会重复读盘（缓存命中），上传新文件生成新会话独立创建缓存
+- 无前端改动: API 路径、请求格式、响应格式完全不变
+
+### Verified Commands
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+- `go test ./internal/... -count=1` — 全部 50+ 测试通过
+- `go vet ./internal/api/` — 无警告
+
+### Notes
+- 缓存策略: 文件级缓存（headers[][]string + rows[][]string），非 TransactionRow 级，保留原始列名用于边缘详情展示
+- 内存溢出防护: 累加每个文件的行数，一旦超过 200K 阈值立即中止并 `filepath.SkipAll`，本次会话不缓存
+- 并发安全: `rowCacheMu` (读写锁) 保护全局 map, `sessionRowCache.mu` (读写锁) 保护每个会话的缓存数据
+- 边缘详情返回的数据格式不变（原始列名经过 `NormalizeHeader` 归一化后作为 key）
+- 清理策略: 暂未实现 LRU 清理；缓存随会话数量线性增长，每个会话 200K 行上限。如果活跃会话过多，可以考虑在 server 空闲时扫描并清理不存在于磁盘的会话缓存
+
 ## 2026-05-27 资金流向图全面测试计划 v1.1
 
 ### Task

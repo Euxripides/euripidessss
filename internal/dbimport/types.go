@@ -8,8 +8,8 @@ const (
 	DBTypeMySQL     DBType = "mysql"
 	DBTypePostgres  DBType = "postgresql"
 	DefaultPageSize        = 100
-	MaxPageSize            = 1000
-	MaxImportRows          = 100000
+	MaxPageSize            = 10000
+	MaxImportRows          = 10000000
 )
 
 type Connection struct {

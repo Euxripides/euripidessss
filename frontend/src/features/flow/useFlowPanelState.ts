@@ -76,6 +76,7 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
   const [toolbarCollapsed, setToolbarCollapsed] = useState(true);
   const [miniMapCollapsed, setMiniMapCollapsed] = useState(false);
   const [subjectMultiSelect, setSubjectMultiSelect] = useState(false);
+  const [nodesDraggable, setNodesDraggable] = useState(true);
   const [dataPenetrationEnabled, setDataPenetrationEnabled] = useState(false);
   const [expandedPenetrationNodeIds, setExpandedPenetrationNodeIds] = useState<string[]>([]);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
@@ -467,6 +468,8 @@ export function useFlowPanelState(props: UseFlowPanelStateProps) {
     setMiniMapCollapsed,
     subjectMultiSelect,
     setSubjectMultiSelect,
+    nodesDraggable,
+    setNodesDraggable,
     dataPenetrationEnabled,
     setDataPenetrationEnabled: updateDataPenetrationEnabled,
     expandedPenetrationNodeIds,

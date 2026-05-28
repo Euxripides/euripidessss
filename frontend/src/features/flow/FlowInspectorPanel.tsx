@@ -381,205 +381,401 @@ export function FlowInspectorPanel(props: FlowInspectorPanelProps) {
 
           )}
 
-          <Collapse
-
-            className="inspector-collapse"
-
-            defaultActiveKey={['data']}
-
-            items={[
-
-              {
-
-                key: 'data',
-
-                label: '数据导入',
-
-                children: (
-
-                  <Space direction="vertical" size="middle" className="full">
-
-                    <FlowImportSummary
-
-                      importedDataset={importedDataset}
-
-                      visibleNodes={visibleNodeCount}
-
-                      totalNodes={totalNodes}
-
-                      onSelectSource={onSelectSource}
-
-                      onOpenMapping={onOpenMapping}
-
-                    />
-
-                    <FlowFieldFilters
-
-                      datasetSessionId={datasetSessionId}
-
-                      columns={importedDataset?.columns ?? []}
-
-                      effectiveMapping={effectiveMapping}
-
-                      sourceFilters={sourceFilters}
-
-                      sourceValueOptionsByField={sourceValueOptionsByField}
-
-                      onAddSourceFilter={onAddSourceFilter}
-
-                      onLoadSourceFilterValues={onLoadSourceFilterValues}
-
-                      onUpdateSourceFilterValues={onUpdateSourceFilterValues}
-
-                      onRemoveSourceFilter={onRemoveSourceFilter}
-
-                      targetFilters={targetFilters}
-
-                      targetValueOptionsByField={targetValueOptionsByField}
-
-                      onAddTargetFilter={onAddTargetFilter}
-
-                      onLoadTargetFilterValues={onLoadTargetFilterValues}
-
+          <Collapse
+
+            className="inspector-collapse"
+
+
+
+            defaultActiveKey={importedDataset ? ['data', 'filter'] : ['data']}
+
+
+
+            items={[
+
+
+
+              {
+
+
+
+                key: 'data',
+
+
+
+                label: '数据导入',
+
+
+
+                children: (
+
+
+
+                  <Space direction="vertical" size="middle" className="full">
+
+
+
+                    <FlowImportSummary
+
+
+
+                      importedDataset={importedDataset}
+
+
+
+                      visibleNodes={visibleNodeCount}
+
+
+
+                      totalNodes={totalNodes}
+
+
+
+                      onSelectSource={onSelectSource}
+
+
+
+                      onOpenMapping={onOpenMapping}
+
+
+
+                    />
+
+
+
+                  </Space>
+
+
+
+                ),
+
+
+
+              },
+
+
+
+              ...(importedDataset ? [{
+
+                key: 'filter',
+
+
+
+                label: '筛选分析',
+
+
+
+                children: (
+
+
+
+                  <Space direction="vertical" size="middle" className="full">
+
+
+
+                    <FlowFieldFilters
+
+
+
+                      datasetSessionId={datasetSessionId}
+
+
+
+                      columns={importedDataset?.columns ?? []}
+
+
+
+                      effectiveMapping={effectiveMapping}
+
+
+
+                      sourceFilters={sourceFilters}
+
+
+
+                      sourceValueOptionsByField={sourceValueOptionsByField}
+
+
+
+                      onAddSourceFilter={onAddSourceFilter}
+
+
+
+                      onLoadSourceFilterValues={onLoadSourceFilterValues}
+
+
+
+                      onUpdateSourceFilterValues={onUpdateSourceFilterValues}
+
+
+
+                      onRemoveSourceFilter={onRemoveSourceFilter}
+
+
+
+                      targetFilters={targetFilters}
+
+
+
+                      targetValueOptionsByField={targetValueOptionsByField}
+
+
+
+                      onAddTargetFilter={onAddTargetFilter}
+
+
+
+                      onLoadTargetFilterValues={onLoadTargetFilterValues}
+
+
+
                       onUpdateTargetFilterValues={onUpdateTargetFilterValues}
+
+
 
                       onRemoveTargetFilter={onRemoveTargetFilter}
 
+
+
                       detailFilters={detailFilters}
+
+
 
                       detailValueOptionsByField={detailValueOptionsByField}
 
+
+
                       onAddDetailFilter={onAddDetailFilter}
+
+
 
                       onLoadDetailFilterValues={onLoadDetailFilterValues}
 
+
+
                       onUpdateDetailFilterValues={onUpdateDetailFilterValues}
+
+
 
                       onRemoveDetailFilter={onRemoveDetailFilter}
 
+
+
                     />
+
+
+
+                    <FlowBuildControls
+
+
+
+                      directionValues={directionValues}
+
+
+
+                      onDirectionValuesChange={onDirectionValuesChange}
+
+
+
+                      dateRange={dateRange}
+
+
+
+                      onDateRangeChange={onDateRangeChange}
+
+
+
+                      appendGraph={appendGraph}
+
+
+
+                      onAppendGraphChange={onAppendGraphChange}
+
+
+
+                      canAppend={Boolean(0)}
+
+
+
+                      loading={loading}
+
+
+
+                      filterPayload={filterPayload}
+
+
+
+                      buildStatus={buildStatus}
+
+
+
+                      onBuildFilteredGraph={onBuildFilteredGraph}
+
+
+
+                    />
+
+
+
+                    <FlowLabelFilters
+
+
+
+                      sourceLabelColumn={sourceLabelColumn}
+
+
+
+                      sourceLabelValues={sourceLabelValues}
+
+
+
+                      sourceLabelOptions={sourceLabelOptions}
+
+
+
+                      onLoadSourceLabelValues={onLoadSourceLabelValues}
+
+
+
+                      onSourceLabelValuesChange={onSourceLabelValuesChange}
+
+
+
+                      targetLabelColumn={targetLabelColumn}
+
+
+
+                      targetLabelValues={targetLabelValues}
+
+
+
+                      targetLabelOptions={targetLabelOptions}
+
+
+
+                      onLoadTargetLabelValues={onLoadTargetLabelValues}
+
+
+
+                      onTargetLabelValuesChange={onTargetLabelValuesChange}
+
+
+
+                    />
+
+
+
+                    <FlowGraphFilters
+
+
+
+                      subjectIds={subjectIds}
+
+
+
+                      subjectOptions={subjectOptions}
+
+
+
+                      onSubjectIdsChange={onSubjectIdsChange}
+
+
+
+                      minAmount={minAmount}
+
+
+
+                      maxAmount={maxAmount}
+
+
+
+                      onMinAmountChange={onMinAmountChange}
+
+
+
+                      pathSource={pathSource}
+
+
+
+                      pathTarget={pathTarget}
+
+
+
+                      pathResult={pathResult}
+
+
+
+                      nodeLabels={nodeLabels}
+
+
+
+                      onPathSourceChange={onPathSourceChange}
+
+
+
+                      onPathTargetChange={onPathTargetChange}
+
+
+
+                      graphLayers={graphLayers}
+
+
+
+                      onCenterGraphLayer={onCenterGraphLayer}
+
+
+
+                      formatMoney={formatMoney}
+
+
+
+                    />
+
+
+
+                  </Space>
+
+
+
+                ),
+
+
+
+              }] : [])]}
+
+
+
+          />
 
-                    <FlowBuildControls
-
-                      directionValues={directionValues}
-
-                      onDirectionValuesChange={onDirectionValuesChange}
-
-                      dateRange={dateRange}
-
-                      onDateRangeChange={onDateRangeChange}
-
-                      appendGraph={appendGraph}
-
-                      onAppendGraphChange={onAppendGraphChange}
-
-                      canAppend={Boolean(0)}
-
-                      loading={loading}
-
-                      filterPayload={filterPayload}
-
-                      buildStatus={buildStatus}
-
-                      onBuildFilteredGraph={onBuildFilteredGraph}
-
-                    />
-
-                    <FlowLabelFilters
-
-                      sourceLabelColumn={sourceLabelColumn}
-
-                      sourceLabelValues={sourceLabelValues}
-
-                      sourceLabelOptions={sourceLabelOptions}
-
-                      onLoadSourceLabelValues={onLoadSourceLabelValues}
-
-                      onSourceLabelValuesChange={onSourceLabelValuesChange}
-
-                      targetLabelColumn={targetLabelColumn}
-
-                      targetLabelValues={targetLabelValues}
-
-                      targetLabelOptions={targetLabelOptions}
-
-                      onLoadTargetLabelValues={onLoadTargetLabelValues}
-
-                      onTargetLabelValuesChange={onTargetLabelValuesChange}
-
-                    />
-
-                    <FlowGraphFilters
-
-                      subjectIds={subjectIds}
-
-                      subjectOptions={subjectOptions}
-
-                      onSubjectIdsChange={onSubjectIdsChange}
-
-                      minAmount={minAmount}
-
-                      maxAmount={maxAmount}
-
-                      onMinAmountChange={onMinAmountChange}
-
-                      pathSource={pathSource}
-
-                      pathTarget={pathTarget}
-
-                      pathResult={pathResult}
-
-                      nodeLabels={nodeLabels}
-
-                      onPathSourceChange={onPathSourceChange}
-
-                      onPathTargetChange={onPathTargetChange}
-
-                      graphLayers={graphLayers}
-
-                      onCenterGraphLayer={onCenterGraphLayer}
-
-                      formatMoney={formatMoney}
-
-                    />
-
-                  </Space>
-
-                ),
-
-              },
-
-            ]}
-
-          />
-
-          <FlowAnalysisPanel
-
-            prompt={prompt}
-
-            onPromptChange={onPromptChange}
-
-            loading={loading}
-
-            filterPayload={filterPayload}
-
-            onSmartAnalyze={onSmartAnalyze}
-
-            analysisReport={analysisReport}
-
-            visibleTotal={visibleTotal}
-
-            strongest={strongest}
-
-            relationshipRows={relationshipRows}
-
-            insightItems={insightItems}
-
-            subjectStats={subjectStats}
-
-            onSubjectIdsChange={onSubjectIdsChange}
-
-          />        </aside>
+          {importedDataset && (
+            <FlowAnalysisPanel
+
+              prompt={prompt}
+
+              onPromptChange={onPromptChange}
+
+              loading={loading}
+
+              filterPayload={filterPayload}
+
+              onSmartAnalyze={onSmartAnalyze}
+
+              analysisReport={analysisReport}
+
+              visibleTotal={visibleTotal}
+
+              strongest={strongest}
+
+              relationshipRows={relationshipRows}
+
+              insightItems={insightItems}
+
+              subjectStats={subjectStats}
+
+              onSubjectIdsChange={onSubjectIdsChange}
+
+            />
+          )}        </aside>
 
   );
 
