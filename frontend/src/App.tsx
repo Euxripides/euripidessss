@@ -402,6 +402,7 @@ export function App() {
                 onAddNode={flowOps.addManualNode}
                 onUploadGraph={flowOps.uploadFlowGraph}
                 onImportData={flowOps.handleImportData}
+                onImportPaths={flowOps.importFlowByPaths}
                 onDatabaseImported={flowOps.acceptDatabaseImportedDataset}
                 onOpenMapping={() => modals.setMappingModalOpen(true)}
                 onBuildFilteredGraph={flowOps.buildFilteredGraph}

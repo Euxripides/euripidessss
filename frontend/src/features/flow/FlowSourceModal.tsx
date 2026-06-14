@@ -1,5 +1,6 @@
-import { DatabaseOutlined, UploadOutlined } from '@ant-design/icons';
-import { Button, Modal, Select, Upload } from 'antd';
+import { DatabaseOutlined, FolderOpenOutlined, UploadOutlined } from '@ant-design/icons';
+import { Button, Input, Modal, Select, Upload, message } from 'antd';
+import { useState } from 'react';
 import type { UploadFile } from 'antd';
 import type { HistoryItem } from './flowTypes';
 import { filterImportFiles } from './flowImportFiles';
@@ -11,6 +12,7 @@ export function FlowSourceModal(props: {
   onUploadFilesChange: (files: UploadFile[]) => void;
   onOpenDatabaseImport: () => void;
   onImportData: (files: UploadFile[]) => Promise<boolean>;
+  onImportPaths: (paths: string[]) => Promise<boolean>;
   historyItems: HistoryItem[];
   selectedHistory?: string;
   onSelectedHistoryChange: (jobId?: string) => void;
@@ -18,6 +20,7 @@ export function FlowSourceModal(props: {
   onLoadHistory: (jobId: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const [pathText, setPathText] = useState('');
   return (
     <Modal
       title="选择来源数据"
@@ -76,6 +79,33 @@ export function FlowSourceModal(props: {
                 打开数据库导入
               </Button>
             </div>
+          </div>
+        </div>
+        <div className="source-card">
+          <strong>本地路径导入</strong>
+          <span>直接输入本地文件路径，无需上传。</span>
+          <div className="source-actions">
+            <Input.TextArea
+              rows={2}
+              placeholder='E:\项目\数据\交易明细信息.xlsx'
+              value={pathText}
+              onChange={(e) => setPathText(e.target.value)}
+            />
+            <Button
+              type="primary"
+              icon={<FolderOpenOutlined />}
+              loading={props.loading}
+              disabled={!pathText.trim()}
+              onClick={async () => {
+                const paths = pathText.split('\n').map((p) => p.trim()).filter(Boolean);
+                if (!paths.length) { message.warning('请输入文件路径'); return; }
+                setPathText('');
+                props.onClose();
+                await props.onImportPaths(paths);
+              }}
+            >
+              导入本地文件
+            </Button>
           </div>
         </div>
         <div className="source-card">

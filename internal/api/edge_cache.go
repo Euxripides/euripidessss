@@ -98,11 +98,7 @@ func readSessionDataWithCache(sessionDir, sessionID string, mapping flowColumnMa
 		if totalRows+len(dataRows) <= maxCacheRowsPerSession {
 			cache.files = append(cache.files, cachedFile{Headers: headers, Rows: dataRows})
 			if len(cache.ColumnOrder) == 0 {
-				normHeaders := make([]string, len(headers))
-				for i, h := range headers {
-					normHeaders[i] = parser.NormalizeHeader(h)
-				}
-				cache.ColumnOrder = normHeaders
+				cache.ColumnOrder = headers
 			}
 			totalRows += len(dataRows)
 		}
@@ -181,7 +177,7 @@ func processCachedRows(cache *sessionRowCache, p EdgeDetailPayload) []map[string
 			m := make(map[string]interface{})
 			for j, h := range cf.Headers {
 				if j < len(row) {
-					m[parser.NormalizeHeader(h)] = row[j]
+					m[h] = row[j]
 				}
 			}
 			m["流向源"] = source

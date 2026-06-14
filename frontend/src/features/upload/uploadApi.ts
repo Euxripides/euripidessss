@@ -141,11 +141,10 @@ export function uploadFlowImport(
 
     request.upload.onload = () => {
       updateTransfer(onTransfer, mode, 'processing', '后端解析导入数据', 1, 1, 0);
-      onProgress({ visible: true, percent: 90, status: 'active', text: '上传完成，正在解析数据...' });
+      onProgress({ visible: true, percent: 90, status: 'active', text: '上传完成，后端正在解析...' });
     };
 
-    request.onload = () => {
-      onProgress({ visible: true, percent: 95, status: 'active', text: '上传完成，正在解析数据...' });
+    request.onload = async () => {
       let payload: any = {};
       try {
         payload = request.responseText ? JSON.parse(request.responseText) : {};
@@ -153,12 +152,49 @@ export function uploadFlowImport(
         reject(new Error('导入数据失败：后端返回内容无法解析'));
         return;
       }
-      if (request.status >= 200 && request.status < 300) {
-        doneTransfer(onTransfer, mode, '导入完成');
-        resolve(payload as ImportedDataset);
+      if (!(request.status >= 200 && request.status < 300)) {
+        reject(new Error(payload.detail || `导入数据失败（HTTP ${request.status}）`));
         return;
       }
-      reject(new Error(payload.detail || `导入数据失败（HTTP ${request.status}）`));
+
+      const sessionId = payload.session_id;
+      if (!sessionId) {
+        reject(new Error('导入数据失败：未获取到 session_id'));
+        return;
+      }
+
+      // Poll for async import completion
+      const maxWait = 5 * 60 * 1000; // 5 minutes max
+      const interval = 500;
+      const startPoll = Date.now();
+      onProgress({ visible: true, percent: 90, status: 'active', text: '正在解析数据文件...' });
+
+      while (Date.now() - startPoll < maxWait) {
+        await new Promise((r) => setTimeout(r, interval));
+        try {
+          const resp = await fetch(`/api/flow/import-status/${sessionId}`);
+          const status: any = await resp.json();
+
+          if (status.status === 'done') {
+            doneTransfer(onTransfer, mode, '导入完成');
+            onProgress({ visible: true, percent: 100, status: 'success', text: '解析完成' });
+            setTimeout(() => onProgress({ visible: false, percent: 0, status: 'active', text: '' }), 1500);
+            resolve(status as ImportedDataset);
+            return;
+          }
+          if (status.status === 'error') {
+            reject(new Error(status.error || '数据解析失败'));
+            return;
+          }
+          // Show parsing progress
+          const elapsed = Date.now() - startPoll;
+          const pct = Math.min(99, Math.round(90 + (elapsed / maxWait) * 9));
+          onProgress({ visible: true, percent: pct, status: 'active', text: `正在解析数据文件 ${status.status === 'loading' ? '(DuckDB加载中)' : ''}` });
+        } catch {
+          // Network error during poll, keep trying
+        }
+      }
+      reject(new Error('导入数据超时：解析数据文件时间过长'));
     };
 
     request.onerror = () => reject(new Error('导入数据失败：无法连接后端服务'));

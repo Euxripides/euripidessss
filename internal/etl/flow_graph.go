@@ -43,7 +43,7 @@ func BuildFlowGraph(txns []model.TransactionRow, maxEdges int) model.FlowGraph {
 		}
 		counter := firstTransactionValue(txn, "交易对手账卡号", "对手户名")
 		if counter == "" {
-			counter = "对手未知"
+			counter = "未知主体"
 		}
 		dir := txn["收付标志"]
 		timeVal := txn["交易时间"]

@@ -1690,7 +1690,7 @@ func expectedFlowEndpointsV2(row model.TransactionRow) (string, string) {
 		counter = row["对手户名"]
 	}
 	if counter == "" {
-		counter = "对手未知"
+		counter = "未知主体"
 	}
 	switch row["收付标志"] {
 	case "出":

@@ -1,3 +1,126 @@
+### 2026-06-14 SQLite-DuckDB 优化升级: 最终交付
+
+#### 本次任务
+- 完成 `离线版SQLite-DuckDB优化升级对比.md` 的迁移，修复依赖分类，验证全链路
+
+#### 修改文件
+- `go.mod` — `modernc.org/sqlite v1.52.0` 从 indirect → direct require
+- `go.sum` — 更新校验和
+- `docs/AI_HANDOFF.md` — 最终交付记录
+- `docs/CHANGELOG_AI.md` — 最终交付记录
+
+#### 验证结果
+- `go build` — BUILD_OK
+- `go test ./internal/...` — 全部通过
+- `go vet ./internal/...` — 无警告
+- `.\run.ps1` — 重启成功 (PID 14788)
+- `curl http://127.0.0.1:8000/api/health` — control_plane=ok, analysis_plane=unavailable
+
+#### 未完成 / 待确认
+- 需放置 `duckdb.exe` 到 `tools/duckdb/` 激活分析面
+- 未做真实数据 DuckDB 端到端验证
+- 未做 DuckDB vs Go 原逻辑结果一致性对比
+
+#### 注意事项
+- 5 个迁移阶段代码全部完成，DuckDB 不可用时自动回退原逻辑
+
+### 2026-06-08 SQLite-DuckDB 优化升级 (代码编写)
+
+#### 本次任务
+- 阅读 `离线版SQLite-DuckDB优化升级对比.md`，按最小可行性方案将 SQLite 控制面和 DuckDB 分析面接入项目
+- 实现: DuckDB Engine → SQLite Control Store → 导入后建 DuckDB 表 → 建图/边详情/字段值优先 DuckDB 回退原逻辑
+
+#### 新增功能
+- DuckDB CLI 引擎 (ExecSQL/JSON, CSV/XLSX 直读建表, 行数统计)
+- SQLite 控制面 (WAL 模式, flow_sessions + analysis_table 追踪)
+- 健康检查展示 control_plane 和 analysis_plane 状态
+- 图谱生成优先 DuckDB SQL 聚合 (方向归一化 + 筛选 + 聚合一条龙)
+- 边详情优先 DuckDB SQL 查询 (支持过滤/分页/汇总)
+- 字段候选项优先 DuckDB DISTINCT 查询 (支持搜索)
+- 所有 DuckDB 路径失败回退原文件扫描路径
+
+#### 新增文件
+- `internal/analysis/duckdb/engine.go` — DuckDB CLI 引擎 (303 行)
+- `internal/api/duckdb_flow.go` — 会话 DuckDB 表加载/清理
+- `internal/api/duckdb_graph.go` — DuckDB 图查询引擎 (建图/边详情/字段值)
+- `internal/storage/control/store.go` — SQLite 控制面存储
+
+#### 修改文件
+- `internal/config/config.go` — 新增 AnalyticsConfig (DuckDBPath, DuckDBDatabase)
+- `internal/api/handlers.go` — Setup 初始化 DuckDB+SQLite; HandleHealth 返回双平面; 三个 handler 优先 DuckDB
+- `cmd/server/main.go` — 优雅关闭调用 api.Shutdown() 关闭 control store
+- `go.mod` — 新增 modernc.org/sqlite v1.52.0
+
+#### 接口变化
+- `/api/health` 新增 `control_plane` 和 `analysis_plane` 字段
+- DuckDB 路径响应新增 `duckdb: true` 调试标记
+
+#### 前端变化
+- 无
+
+#### 验证结果
+- `go build` — 通过
+- `go test ./internal/...` — 全部通过
+- `go vet ./internal/...` — 无警告
+- `.\run.ps1` — 重启成功
+- health 返回 control_plane=ok, analysis_plane=unavailable (缺少 duckdb.exe)
+
+#### 未完成 / 待确认
+- 需放置 `duckdb.exe` 到 `tools/duckdb/` 激活分析面
+- 未做真实数据 DuckDB 端到端验证
+- 未做 DuckDB vs Go 原逻辑结果一致性对比
+
+#### 注意事项
+- 纯回退策略: DuckDB 任何失败都静默回退原逻辑
+- 首次构建触发异步 DuckDB 建表，后续构建走 SQL 聚合
+- 未引入 etl_exe 的 license/激活/离线打包代码
+
+
+
+#### 本次任务
+- 在 `E:\codex\etl_exe\frontend` 创建完整的独立 React 前端项目，用于资金流向图可视化
+- 项目与原始 `E:\codex\etl` 项目独立部署，共享相同 API 后端
+
+#### 新增功能
+- 完整的 Ant Design Layout 布局（Sider + Content），与原始项目相同品牌标识（"资" mark + "资金数据智能分析平台"）
+- 软件激活页面（LicenseActivationModal）- 支持激活码输入和 .act 文件导入
+- 数据导入页面（ImportPage）- 文件上传（拖拽）、自动字段映射、数据预览、构建流向图
+- 资金流向图页面（FlowGraphPage）- ReactFlow 画布渲染、主体筛选、路径追踪（BFS 最短路径）、关系清单、异常线索检测、重点主体排名
+- 节点详情抽屉（Drawer）- 显示主体身份信息、交易概要
+- 边详情弹窗（Modal）- 显示流水明细表格
+- 8 种图导出支持（PNG/CSV）
+
+#### 修改文件
+- `E:\codex\etl_exe\frontend\package.json` — 依赖配置
+- `E:\codex\etl_exe\frontend\tsconfig.json` — TypeScript 配置
+- `E:\codex\etl_exe\frontend\vite.config.ts` — Vite 配置（proxy /api → 127.0.0.1:15978）
+- `E:\codex\etl_exe\frontend\index.html` — SPA 入口
+- `E:\codex\etl_exe\frontend\src\main.tsx` — React 入口
+- `E:\codex\etl_exe\frontend\src\App.tsx` — 主应用组件（布局 + 激活 + 路由）
+- `E:\codex\etl_exe\frontend\src\types.ts` — 类型定义
+- `E:\codex\etl_exe\frontend\src\api\client.ts` — HTTP 客户端
+- `E:\codex\etl_exe\frontend\src\pages\ImportPage\index.tsx` — 导入页面
+- `E:\codex\etl_exe\frontend\src\pages\FlowGraphPage\index.tsx` — 流向图页面
+- `E:\codex\etl_exe\frontend\src\styles\layout.css` — 布局样式
+- `E:\codex\etl_exe\frontend\src\styles\shared.css` — 共享样式
+- `E:\codex\etl_exe\frontend\src\vite-env.d.ts` — Vite 类型声明
+
+#### 接口变化
+- 无新增或删除 API 接口
+- 依赖已有接口：`/api/license/status`, `/api/license/activate`, `/api/license/import-activation`, `/api/flow/import`, `/api/flow/build`, `/api/flow/edge-detail/imported`, `/api/flow/mapping-rules`
+
+#### 已验证命令
+- `cd E:\codex\etl_exe\frontend; npm install` — 130 packages installed
+- `cd E:\codex\etl_exe\frontend; npm run build` — 构建成功（dist 1.3MB JS + 27KB CSS）
+
+#### 未完成事项
+- 无
+
+#### 注意事项
+- 独立项目，与原始 `E:\codex\etl` 项目无依赖
+- Vite proxy 目标端口为 15978，需确保后端在该端口运行
+- 流向图页面使用 ReactFlow 默认节点类型（非自定义 FlowEntityNode），功能较原始项目简化
+
 ### 2026-05-28 (修复边缘详情显示问题: 交易时间截断 + 数据库导入列名显示来源字段)
 
 #### 本次任务
@@ -1787,3 +1910,30 @@ ormalizeFilterBoundary 精确时间边界处理。
 #### 注意事项
 - 本次实测暴露的主要瓶颈不是数据库读取，而是历史导入任务状态文件过大导致状态读写非常慢。
 - 任务压缩后，`/start` 和任务轮询恢复到毫秒级。
+### 2026-06-06 Startup verification
+
+#### Task
+- Started the local ETL project from `E:\codex\etl`.
+
+#### Changes
+- No business code changes.
+- Updated `docs/AI_HANDOFF.md` and `docs/CHANGELOG_AI.md` for this operational startup record.
+
+#### API Changes
+- None.
+
+#### Database Changes
+- None.
+
+#### Frontend Changes
+- None.
+
+#### Verified Commands
+- `.\run.ps1` completed successfully and reported server ready with PID 15420.
+- `curl.exe -s http://127.0.0.1:8000/api/health` returned `{"status":"ok"}`.
+
+#### Open Items
+- None.
+
+#### Notes
+- Service is running on `http://127.0.0.1:8000`.

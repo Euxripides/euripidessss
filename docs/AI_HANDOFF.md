@@ -1,3 +1,126 @@
+## 2026-06-14 SQLite-DuckDB 优化升级: 最终交付
+
+### Task
+- 阅读 `docs/离线版SQLite-DuckDB优化升级对比.md`，完成 SQLite + DuckDB 迁移的全部代码工作
+- 修复 `go.mod` 依赖分类 (modernc.org/sqlite 从 indirect → direct)
+- 验证编译、测试、健康检查全部通过
+- 提交全部代码
+
+### Changes
+- `go.mod` — `modernc.org/sqlite v1.52.0` 从 indirect 移至 direct require 块
+- `go.sum` — 更新校验和
+- `docs/AI_HANDOFF.md` — 记录最终交付状态
+- `docs/CHANGELOG_AI.md` — 记录最终交付状态
+
+### Verified Commands
+- `go build -o bin\etl-server.exe .\cmd\server\` — BUILD_OK
+- `go test ./internal/... -count=1 -timeout 120s` — 全部通过 (api 9.5s, etl 30s, others < 1s)
+- `go vet ./internal/...` — 无警告
+- `.\run.ps1` — 重启成功 (PID 14788)
+- `curl http://127.0.0.1:8000/api/health` — status=ok, control_plane=ok, analysis_plane=unavailable (expected)
+
+### Open Items
+- 需放置 `duckdb.exe` 到 `tools/duckdb/` 激活分析面
+- 未做真实数据 DuckDB 端到端验证
+- 未做 DuckDB vs Go 原逻辑结果一致性对比
+
+### Notes
+- 所有 5 个迁移阶段代码已完成，全部文件在工作树中 (待 commit)
+- DuckDB 不可用时不影响原有功能，全部回退原文件扫描路径
+
+## 2026-06-08 SQLite-DuckDB 优化升级: 接入基础设施 (代码编写)
+
+### Task
+- 阅读 `docs/离线版SQLite-DuckDB优化升级对比.md`，将 SQLite 控制面和 DuckDB 分析面接入项目
+- 实现最小可行性方案：DuckDB Engine + SQLite Control Store + 导入后建表 + 图建/边详情/字段值优先走 DuckDB
+
+### Changes
+- **新增** `internal/analysis/duckdb/engine.go` — DuckDB CLI 引擎，支持 ExecSQL/ExecSQLJSON/CreateTableFromCSV/CreateTableFromXLSX/DropTable/TableRowCount
+- **新增** `internal/api/duckdb_flow.go` — 会话级 DuckDB 表加载 (ensureSessionDuckDBTable) + 清理 (cleanupOldDuckDBTable)
+- **新增** `internal/api/duckdb_graph.go` — DuckDB 图查询引擎: buildFlowFromDuckDB (SQL 聚合建图), queryEdgeDetailFromDuckDB (SQL 边详情), queryColumnValuesFromDuckDB (DISTINCT 字段值)
+- **新增** `internal/storage/control/store.go` — SQLite 控制面，存储 flow_sessions 元数据和 analysis_table 映射
+- **修改** `internal/config/config.go` — 新增 AnalyticsConfig (DuckDBPath, DuckDBDatabase)
+- **修改** `internal/api/handlers.go` — Setup 初始化 DuckDB+SQLite; HandleHealth 返回 control_plane/analysis_plane; HandleBuildImportedFlow/HandleImportedFlowEdgeDetail/HandleFlowFieldValues 优先 DuckDB 回退原逻辑
+- **修改** `cmd/server/main.go` — 优雅关闭时调用 api.Shutdown() 关闭 control store
+- **修改** `go.mod` — 新增 modernc.org/sqlite v1.52.0 及其传递依赖
+
+### New Functionality
+- SQLite 控制面: 启动时自动初始化 `backend/data/control/etl_control.sqlite`，WAL 模式
+- DuckDB 分析面: 启动时自动检测 `tools/duckdb/duckdb.exe`，不可用时不崩溃
+- 健康检查: `/api/health` 返回 `control_plane` 和 `analysis_plane` 状态
+- 导入后自动异步加载 DuckDB 表 (首次构建触发，后续构建走 SQL 聚合)
+- 图谱生成: 有 DuckDB 表时走 SQL 聚合 (direction 归一化、筛选、聚合一气呵成)，无表时回退原逻辑
+- 边详情: 有 DuckDB 表时走 SQL 查询 (支持过滤、分页、总金额/总笔数)，无表时回退原逻辑
+- 字段候选项: 有 DuckDB 表时走 DISTINCT 查询 (支持搜索)，无表时回退原逻辑
+- 所有 DuckDB 路径失败均回退到原有文件扫描路径，不影响用户正常使用
+
+### API Changes
+- `/api/health` 响应新增 `control_plane` 和 `analysis_plane` 字段
+- `/api/flow/build` 响应在 DuckDB 路径下 meta 新增 `duckdb: true` 标记
+- `/api/flow/edge-detail/imported` 响应在 DuckDB 路径下新增 `duckdb: true` 标记
+- `/api/flow/values` 响应在 DuckDB 路径下新增 `duckdb: true` 标记
+
+### Frontend Changes
+- 无
+
+### Verified Commands
+- `go build -o bin\etl-server.exe .\cmd\server\` — 编译通过
+- `go test ./internal/... -count=1 -timeout 300s` — 全部通过
+- `go vet ./internal/...` — 无警告
+- `.\run.ps1` — 重启成功
+- `curl http://127.0.0.1:8000/api/health` — 返回 control_plane (ok) + analysis_plane (unavailable, 缺少 duckdb.exe)
+
+### Open Items
+- 需将 `duckdb.exe` 放到 `tools/duckdb/` 目录激活分析面
+- 未做真实数据 DuckDB 路径端到端验证 (缺少 duckdb.exe)
+- 未做 DuckDB vs Go 图建结果一致性对比
+- 未做 DuckDB 边详情 vs 原逻辑一致性对比
+
+### Notes
+- 采用纯回退策略: DuckDB 路径任何失败都静默回退到原有逻辑
+- DuckDB 表创建在 goroutine 中异步执行，首次构建不走 DuckDB
+- 所有 SQL 生成均使用参数化 quote (quoteIdentifier/quoteSQLString)
+- 未迁移 etl_exe 的授权/license/激活/离线打包逻辑
+
+## 2026-05-29 创建 E:\codex\etl_exe\frontend 独立前端项目
+
+### Task
+- 在 `E:\codex\etl_exe\frontend` 创建独立的 React 前端项目
+- 与原始项目相同品牌布局（Ant Design Sider + Content）
+- 包含：License 激活、数据导入（文件上传+字段映射）、资金流向图可视化（ReactFlow）
+- 所有文件由 AI 直接生成（write 工具）
+
+### Changes
+- `E:\codex\etl_exe\frontend\package.json` — 依赖：react 19, antd 5, @xyflow/react 12, html-to-image, jszip
+- `E:\codex\etl_exe\frontend\tsconfig.json` — strict 模式
+- `E:\codex\etl_exe\frontend\vite.config.ts` — proxy /api → 127.0.0.1:15978
+- `E:\codex\etl_exe\frontend\index.html` — 中文 lang
+- `E:\codex\etl_exe\frontend\src\main.tsx` — 导入 CSS + 渲染 App
+- `E:\codex\etl_exe\frontend\src\App.tsx` — 整体布局、License 激活逻辑、选项卡切换
+- `E:\codex\etl_exe\frontend\src\types.ts` — FlowNode, FlowEdge, FlowGraph, ImportResult, LicenseStatus, FlowFilter
+- `E:\codex\etl_exe\frontend\src\api\client.ts` — getJson, postJson, postForm
+- `E:\codex\etl_exe\frontend\src\pages\ImportPage\index.tsx` — 文件拖拽上传、字段映射（14 个映射）、数据预览、构建流向图
+- `E:\codex\etl_exe\frontend\src\pages\FlowGraphPage\index.tsx` — ReactFlow 画布、主体筛选、路径追踪（BFS）、关系/异常/主体分析、CSV/PNG 导出、节点抽屉、边详情感窗
+- `E:\codex\etl_exe\frontend\src\styles\layout.css` — 完整布局样式（sidebar, brand, canvas, inspector, mapping, filters 等）
+- `E:\codex\etl_exe\frontend\src\styles\shared.css` — 基础样式
+- `E:\codex\etl_exe\frontend\src\vite-env.d.ts` — Vite client types
+
+### New Functionality
+- 完整的前端项目，可独立构建部署
+- 支持软件激活流程（激活码 + .act 文件导入）
+- 数据导入流程（上传 → 解析 → 字段映射 → 构建流向图）
+- 流向图可视化（ReactFlow 渲染、筛选、路径分析、异常检测、导出）
+
+### Verified Commands
+- `npm install` — 130 packages
+- `npm run build` — 构建成功
+
+### Architecture Notes
+- 项目独立于原始 `E:\codex\etl`，共享相同 API 契约
+- 使用 Vite proxy 代理 /api 到后端 15978 端口
+- 使用 ReactFlow 默认节点类型（非自定义 FlowEntityNode）
+- 所有状态管理在页面组件内，无外部复杂 hooks
+
 ## 2026-05-28 修复边缘详情显示问题: 交易时间截断 + 数据库导入列名显示来源字段
 
 ### Task
@@ -2158,3 +2281,33 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 ### Notes
 - 生成的导入会话保留在 `backend/data/uploads/flow_sessions/` 下，便于复查；临时数据库连接已删除。
 - 任务状态文件压缩后，后续轮询和启动请求不应再被历史任务体积拖慢。
+## 2026-06-06 Startup verification
+
+### Task
+- Started the local ETL project from `E:\codex\etl`.
+
+### Changes
+- No business code changes.
+- Updated `docs/AI_HANDOFF.md` and `docs/CHANGELOG_AI.md` for this operational handoff note.
+
+### New Functionality
+- None.
+
+### API Changes
+- None.
+
+### Database Changes
+- None.
+
+### Frontend Changes
+- None.
+
+### Verified Commands
+- `.\run.ps1` completed successfully and reported server ready with PID 15420.
+- `curl.exe -s http://127.0.0.1:8000/api/health` returned `{"status":"ok"}`.
+
+### Open Items
+- None.
+
+### Notes
+- Service is running on `http://127.0.0.1:8000`.

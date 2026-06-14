@@ -76,6 +76,7 @@ export function FlowPanel(props: {
   onUploadGraph: (files: UploadFile[]) => Promise<void>;
 
   onImportData: (files: UploadFile[]) => Promise<boolean>;
+  onImportPaths: (paths: string[]) => Promise<boolean>;
 
   onDatabaseImported: (dataset: ImportedDataset) => void;
 
@@ -556,6 +557,7 @@ export function FlowPanel(props: {
         onUploadFilesChange={setUploadFiles}
         onOpenDatabaseImport={() => setDbImportOpen(true)}
         onImportData={props.onImportData}
+        onImportPaths={props.onImportPaths}
         historyItems={historyItems}
         selectedHistory={selectedHistory}
         onSelectedHistoryChange={setSelectedHistory}

@@ -50,13 +50,12 @@ func main() {
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		<-quit
 		logger.Log.Info().Msg("shutting_down")
-		// Give in-flight requests up to 3 seconds to complete
-		// Short timeout because taskkill /F expects fast exit; port must be released quickly for restart
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			logger.Log.Error().Err(err).Msg("shutdown_error")
 		}
+		api.Shutdown()
 		logger.Close()
 		os.Exit(0)
 	}()

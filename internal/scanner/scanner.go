@@ -141,33 +141,41 @@ func inspectFile(path string) []SheetCandidate {
 }
 
 func inspectExcel(path string) []SheetCandidate {
-	sheets, err := parser.ReadExcelFile(path)
-	if err != nil {
-		log.Warn().Err(err).Str("path", path).Msg("failed to read excel")
+	fi, err := os.Stat(path)
+	sizeBytes := int64(0)
+	if err == nil {
+		sizeBytes = fi.Size()
+	}
+	// For large files, limit rows read to avoid OOM; for classification only header+sample needed
+	maxRows := 30
+	if sizeBytes > 50*1024*1024 {
+		maxRows = 10
+	}
+	sheets, err := parser.ReadExcelSheetLimited(path, "", maxRows)
+	if err != nil || len(sheets) == 0 {
+		log.Warn().Err(err).Str("path", path).Msg("failed to read excel headers")
 		return nil
 	}
-	var candidates []SheetCandidate
-	for sheetName, rows := range sheets {
-		columns := sampleExcelColumns(rows)
-		c := classifyCandidate(path, sheetName, columns)
-		candidates = append(candidates, c)
+	// ReadExcelSheetLimited returns rows from first sheet with empty name,
+	// For multi-sheet detection, try reading all sheet names
+	candidates := []SheetCandidate{
+		classifyCandidate(path, "", sampleExcelColumns(sheets)),
 	}
 	return candidates
 }
 
 func inspectDelimited(path string) SheetCandidate {
-	rows, err := parser.ReadCSVFile(path)
-	if err != nil {
-		log.Warn().Err(err).Str("path", path).Msg("failed to read csv")
-		return SheetCandidate{
-			Path: path, Kind: "unknown", Confidence: 0,
-			Provider: "未知", SizeBytes: fileSize(path),
-		}
+	sizeBytes := fileSize(path)
+	maxRows := 30
+	if sizeBytes > 50*1024*1024 {
+		maxRows = 10
 	}
-	if len(rows) == 0 {
+	rows, err := parser.ReadCSVRowsLimited(path, maxRows)
+	if err != nil || len(rows) == 0 {
+		log.Warn().Err(err).Str("path", path).Msg("failed to read csv headers")
 		return SheetCandidate{
 			Path: path, Kind: "unknown", Confidence: 0,
-			Provider: "未知", SizeBytes: fileSize(path),
+			Provider: "未知", SizeBytes: sizeBytes,
 		}
 	}
 	columns := make([]string, len(rows[0]))

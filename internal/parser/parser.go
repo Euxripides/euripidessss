@@ -404,14 +404,35 @@ func ReadCSVFile(path string) ([][]string, error) {
 }
 
 func readCSVWithEncoding(r io.Reader, sep rune, encoding string) ([][]string, error) {
-	// For simplicity, we read raw bytes as-is (assumes UTF-8 or compatible)
-	// In production, use golang.org/x/text for GB18030 conversion
 	reader := csv.NewReader(r)
 	reader.Comma = sep
 	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
 	reader.FieldsPerRecord = -1
 	return reader.ReadAll()
+}
+
+func readCSVRowsLimitedWithEncoding(r io.Reader, sep rune, encoding string, maxRows int) ([][]string, error) {
+	reader := csv.NewReader(r)
+	reader.Comma = sep
+	reader.LazyQuotes = true
+	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
+	var result [][]string
+	for {
+		row, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		result = append(result, row)
+		if len(result) >= maxRows {
+			break
+		}
+	}
+	return result, nil
 }
 
 // ReadExcelFile reads all sheets from an Excel file
@@ -629,4 +650,102 @@ func SourceLocations(path string, count int, headerRow int) []string {
 		locs[i] = SourceLocation(path, i, headerRow)
 	}
 	return locs
+}
+
+// CountExcelRows returns the total number of rows in an Excel sheet without loading all data.
+func CountExcelRows(path, sheet string) int {
+	f, err := excelize.OpenFile(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	if sheet != "" {
+		dim, _ := f.GetSheetDimension(sheet)
+		return parseDimRows(dim)
+	}
+	total := 0
+	for _, name := range f.GetSheetList() {
+		dim, _ := f.GetSheetDimension(name)
+		total += parseDimRows(dim)
+	}
+	return total
+}
+
+func parseDimRows(dim string) int {
+	if dim == "" {
+		return 0
+	}
+	idx := strings.LastIndexByte(dim, ':')
+	if idx < 0 {
+		return 0
+	}
+	var n int
+	for _, c := range dim[idx+1:] {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		} else {
+			n = 0
+		}
+	}
+	return n
+}
+
+// ReadExcelSheetLimited reads up to maxRows rows (header + sample) from an Excel sheet.
+// If sheet is empty, reads from the first sheet.
+func ReadExcelSheetLimited(path, sheet string, maxRows int) ([][]string, error) {
+	f, err := excelize.OpenFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("open excel: %w", err)
+	}
+	defer f.Close()
+	if sheet == "" {
+		sheets := f.GetSheetList()
+		if len(sheets) == 0 {
+			return nil, fmt.Errorf("no sheets")
+		}
+		sheet = sheets[0]
+	}
+	iter, err := f.Rows(sheet)
+	if err != nil {
+		return nil, fmt.Errorf("rows iterator: %w", err)
+	}
+	defer iter.Close()
+	var result [][]string
+	for iter.Next() {
+		row, err := iter.Columns()
+		if err != nil {
+			break
+		}
+		result = append(result, row)
+		if len(result) >= maxRows {
+			break
+		}
+	}
+	return result, nil
+}
+
+// ReadCSVRowsLimited reads up to maxRows rows from a CSV file (including header).
+func ReadCSVRowsLimited(path string, maxRows int) ([][]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	sep := ','
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".tsv" {
+		sep = '\t'
+	}
+
+	// Read only a limited number of rows, trying encodings
+	encodings := []string{"utf-8-sig", "gb18030", "utf-8"}
+	for _, enc := range encodings {
+		f.Seek(0, 0)
+		rows, err := readCSVRowsLimitedWithEncoding(f, sep, enc, maxRows)
+		if err == nil && len(rows) > 0 {
+			return rows, nil
+		}
+	}
+	return nil, fmt.Errorf("read csv limited: all encodings failed")
 }

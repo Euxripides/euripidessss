@@ -6,6 +6,11 @@ import (
 	"runtime"
 )
 
+type AnalyticsConfig struct {
+	DuckDBPath     string
+	DuckDBDatabase string
+}
+
 type Config struct {
 	RootDir          string
 	BackendDir       string
@@ -21,6 +26,7 @@ type Config struct {
 	ConcurrencyLevel int
 	MaxFileSize      int64 // bytes
 	Debug            bool
+	Analytics        AnalyticsConfig
 }
 
 func Load() *Config {
@@ -40,6 +46,10 @@ func Load() *Config {
 		ConcurrencyLevel: runtime.NumCPU() * 2,
 		MaxFileSize:      500 * 1024 * 1024, // 500MB
 		Debug:            os.Getenv("DEBUG") == "1",
+		Analytics: AnalyticsConfig{
+			DuckDBPath:     getEnv("DUCKDB_PATH", ""),
+			DuckDBDatabase: getEnv("DUCKDB_DATABASE", ""),
+		},
 	}
 	return cfg
 }

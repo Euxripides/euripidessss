@@ -457,6 +457,7 @@ import {
 
 
   loadUnknownDirectionValues,
+  importFlowPaths,
 
 
 
@@ -2092,6 +2093,26 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
+
+  async function importFlowByPaths(paths: string[]): Promise<boolean> {
+    if (!paths.length) { message.warning("请输入文件路径"); return false; }
+    setFlowLoading(true);
+    setFlowImportProgress({ visible: true, percent: 0, status: "active", text: "正在读取本地文件..." });
+    try {
+      const { response, payload } = await importFlowPaths(paths);
+      if (!response.ok) throw new Error((payload as any).detail || "本地路径导入失败");
+      const dataset = payload as ImportedDataset;
+      setImportedDataset(dataset);
+      setFieldMapping(autoFlowMapping(dataset.columns ?? []));
+      setFlowImportProgress({ visible: true, percent: 100, status: "success", text: "导入完成" });
+      setTimeout(() => setFlowImportProgress({ visible: false, percent: 0, status: "active", text: "" }), 1500);
+      return true;
+    } catch (error) {
+      setFlowImportProgress({ visible: true, percent: 100, status: "exception", text: error instanceof Error ? error.message : "导入失败" });
+      message.error(error instanceof Error ? error.message : "导入失败");
+      return false;
+    } finally { setFlowLoading(false); }
+  }
 
   function acceptDatabaseImportedDataset(dataset: ImportedDataset) {
     setImportedDataset(dataset);
@@ -4275,7 +4296,7 @@ export function useFlowOperations(options: UseFlowOperationsOptions) {
 
 
 
-    handleImportData, handleConfirmDirectionRules, handleSaveFlowMappingRule,
+    handleImportData, importFlowByPaths, handleConfirmDirectionRules, handleSaveFlowMappingRule,
 
 
 

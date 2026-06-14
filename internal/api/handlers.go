@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/xuri/excelize/v2"
 
+	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/config"
 	"github.com/etl/backend/internal/dbimport"
 	"github.com/etl/backend/internal/etl"
@@ -22,13 +24,16 @@ import (
 	"github.com/etl/backend/internal/rules"
 	"github.com/etl/backend/internal/scanner"
 	"github.com/etl/backend/internal/storage"
+	"github.com/etl/backend/internal/storage/control"
 )
 
 var (
-	cfg       *config.Config
-	store     *storage.FileStorage
-	dbStore   *dbimport.Store
-	dbService *dbimport.Service
+	cfg             *config.Config
+	store           *storage.FileStorage
+	dbStore         *dbimport.Store
+	dbService       *dbimport.Service
+	controlStore    *control.Store
+	analysisEngine  *duckdb.Engine
 )
 
 const (
@@ -118,6 +123,37 @@ func Setup(c *config.Config) {
 	store = storage.NewFileStorage(c.UploadDir, c.OutputDir)
 	dbStore = dbimport.NewStore(filepath.Join(c.RootDir, "backend", "data", "db_import"))
 	dbService = dbimport.NewService(dbStore, c.UploadDir)
+
+	// Initialize SQLite control store
+	dataDir := filepath.Join(c.RootDir, "backend", "data")
+	cs, err := control.Open(dataDir)
+	if err != nil {
+		log.Warn().Err(err).Msg("control_store_open_failed")
+	} else {
+		controlStore = cs
+		log.Info().Str("path", cs.Path()).Msg("control_store_opened")
+	}
+
+	// Initialize DuckDB analysis engine
+	analysisEngine = duckdb.Open(c.RootDir, dataDir, duckdb.AnalyticsConfig{
+		DuckDBPath:     c.Analytics.DuckDBPath,
+		DuckDBDatabase: c.Analytics.DuckDBDatabase,
+	})
+	if analysisEngine.Available() {
+		st := analysisEngine.Status()
+		log.Info().Str("version", st.Version).Str("db", st.Database).Msg("duckdb_engine_ready")
+	} else {
+		log.Warn().Str("error", analysisEngine.Status().Error).Msg("duckdb_engine_unavailable")
+	}
+}
+
+// Shutdown closes the control store
+func Shutdown() {
+	if controlStore != nil {
+		if err := controlStore.Close(); err != nil {
+			log.Warn().Err(err).Msg("control_store_close_error")
+		}
+	}
 }
 
 // RegisterRoutes registers all API routes on the Gin router
@@ -132,6 +168,8 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/flow/edge-detail/imported", HandleImportedFlowEdgeDetail)
 		api.POST("/flow/upload", HandleUploadFlowData)
 		api.POST("/flow/import", HandleImportFlowData)
+		api.POST("/flow/import-paths", HandleImportFlowPaths)
+		api.GET("/flow/import-status/:session_id", HandleImportStatus)
 		api.POST("/flow/mapping-rules", HandleSaveFlowMapping)
 		api.GET("/flow/template", HandleDownloadFlowTemplate)
 		api.POST("/flow/build", HandleBuildImportedFlow)
@@ -462,7 +500,7 @@ func HandleFlowEdgeDetail(c *gin.Context) {
 		m := make(map[string]interface{})
 		for j, h := range headers {
 			if j < len(row) {
-				m[parser.NormalizeHeader(h)] = row[j]
+				m[h] = row[j]
 			}
 		}
 		result = append(result, m)
@@ -497,6 +535,55 @@ func HandleFlowEdgeDetail(c *gin.Context) {
 	})
 }
 
+// applyColumnOriginsRemap applies column_origins.json remapping for database import sessions
+func applyColumnOriginsRemap(uploadDir, sessionID string, rows []map[string]interface{}, columns []string) ([]map[string]interface{}, []string) {
+	originsPath := filepath.Join(uploadDir, "flow_sessions", sessionID, "column_origins.json")
+	data, err := os.ReadFile(originsPath)
+	if err != nil || len(rows) == 0 {
+		return rows, columns
+	}
+	var origins struct {
+		SourceColumns  []string          `json:"source_columns"`
+		TargetToSource map[string]string `json:"target_to_source"`
+	}
+	if json.Unmarshal(data, &origins) != nil || len(origins.TargetToSource) == 0 {
+		return rows, columns
+	}
+
+	targetsWithMapping := make(map[string]bool, len(origins.TargetToSource))
+	for tgt := range origins.TargetToSource {
+		targetsWithMapping[tgt] = true
+	}
+
+	displayCols := make([]string, 0, len(columns))
+	seen := make(map[string]bool)
+	for _, sc := range origins.SourceColumns {
+		if !seen[sc] {
+			displayCols = append(displayCols, sc)
+			seen[sc] = true
+		}
+	}
+	for _, col := range columns {
+		if !targetsWithMapping[col] && !seen[col] {
+			displayCols = append(displayCols, col)
+			seen[col] = true
+		}
+	}
+
+	for i, row := range rows {
+		newRow := make(map[string]interface{}, len(row))
+		for k, v := range row {
+			if src, ok := origins.TargetToSource[k]; ok {
+				newRow[src] = v
+			} else {
+				newRow[k] = v
+			}
+		}
+		rows[i] = newRow
+	}
+	return rows, displayCols
+}
+
 // HandleImportedFlowEdgeDetail handles edge detail for imported data
 func HandleImportedFlowEdgeDetail(c *gin.Context) {
 	var payload EdgeDetailPayload
@@ -512,6 +599,43 @@ func HandleImportedFlowEdgeDetail(c *gin.Context) {
 		payload.Limit = 10000
 	}
 
+	// Try DuckDB first if analysis table exists
+	mapping := flowColumnMappingFromPayload(map[string]interface{}{
+		"source_column":   payload.SourceColumn,
+		"target_column":   payload.TargetColumn,
+		"amount_column":   payload.AmountColumn,
+		"time_column":     payload.TimeColumn,
+		"direction_column": payload.DirectionColumn,
+	})
+	if rows, totalRows, totalAmount, columns, err := queryEdgeDetailFromDuckDB(payload.SessionID, mapping, payload); err == nil && rows != nil {
+		// Apply column_origins.json remapping for database import sessions
+		rows, columns = applyColumnOriginsRemap(cfg.UploadDir, payload.SessionID, rows, columns)
+
+		resultRows := rows
+		returnedRows := len(rows)
+		truncated := false
+		if payload.Limit > 0 && totalRows > payload.Limit {
+			returnedRows = payload.Limit
+			truncated = true
+			if len(rows) > payload.Limit {
+				resultRows = rows[:payload.Limit]
+			}
+		}
+		c.JSON(200, gin.H{
+			"job_id":        payload.SessionID,
+			"source":        payload.Source,
+			"target":        payload.Target,
+			"total_rows":    totalRows,
+			"returned_rows": returnedRows,
+			"amount":        totalAmount,
+			"columns":       columns,
+			"rows":          resultRows,
+			"truncated":     truncated,
+			"duckdb":        true,
+		})
+		return
+	}
+
 	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", payload.SessionID)
 	rows := queryEdgeRows(sessionDir, payload)
 	// Use cached column order (preserves source file ordering)
@@ -524,53 +648,17 @@ func HandleImportedFlowEdgeDetail(c *gin.Context) {
 		sort.Strings(columns)
 	}
 	// Apply original source column names if available (database import)
-	originsPath := filepath.Join(sessionDir, "column_origins.json")
-	if data, err := os.ReadFile(originsPath); err == nil && len(rows) > 0 {
-		var origins struct {
-			SourceColumns   []string          `json:"source_columns"`
-			TargetToSource  map[string]string `json:"target_to_source"`
-		}
-		if json.Unmarshal(data, &origins) == nil && len(origins.TargetToSource) > 0 {
-			// Build set of target fields that have mapping
-			targetsWithMapping := make(map[string]bool, len(origins.TargetToSource))
-			for tgt := range origins.TargetToSource {
-				targetsWithMapping[tgt] = true
-			}
-			// Determine display columns: mapped source columns first, then unmapped standard columns
-			displayCols := make([]string, 0, len(columns))
-			seen := make(map[string]bool)
-			for _, sc := range origins.SourceColumns {
-				if !seen[sc] {
-					displayCols = append(displayCols, sc)
-					seen[sc] = true
-				}
-			}
-			for _, col := range columns {
-				if !targetsWithMapping[col] && !seen[col] {
-					displayCols = append(displayCols, col)
-					seen[col] = true
-				}
-			}
-			// Transform row map keys from target names to source names
-			for i, row := range rows {
-				newRow := make(map[string]interface{}, len(row))
-				for k, v := range row {
-					if src, ok := origins.TargetToSource[k]; ok {
-						newRow[src] = v
-					} else {
-						newRow[k] = v
-					}
-				}
-				rows[i] = newRow
-			}
-			columns = displayCols
-		}
-	}
-	// Calculate total amount
+	rows, columns = applyColumnOriginsRemap(cfg.UploadDir, payload.SessionID, rows, columns)
+	// Calculate total amount (try raw column name first, then normalized)
 	var totalAmount float64
-	amountColumn := parser.NormalizeHeader(payload.AmountColumn)
+	amountRaw := payload.AmountColumn
+	amountNorm := parser.NormalizeHeader(payload.AmountColumn)
 	for _, row := range rows {
-		if v, ok := row[amountColumn]; ok {
+		if v, ok := row[amountRaw]; ok {
+			if s, ok := v.(string); ok {
+				totalAmount += parser.ToNumber(s)
+			}
+		} else if v, ok := row[amountNorm]; ok {
 			if s, ok := v.(string); ok {
 				totalAmount += parser.ToNumber(s)
 			}
@@ -618,10 +706,8 @@ func HandleUploadFlowData(c *gin.Context) {
 	c.JSON(200, gin.H{"session_id": sessionID, "files": len(files)})
 }
 
-// HandleImportFlowData imports flow data
-// HandleImportFlowData accepts file uploads and returns ImportedDataset
+// HandleImportFlowData imports flow data asynchronously (etl_exe pattern)
 func HandleImportFlowData(c *gin.Context) {
-	// Accept multipart FormData with files
 	form, err := c.MultipartForm()
 	if err != nil {
 		c.JSON(400, gin.H{"detail": err.Error()})
@@ -636,21 +722,138 @@ func HandleImportFlowData(c *gin.Context) {
 	// Create session and save files
 	sessionID := uuid.New().String()[:12]
 	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", sessionID)
+	os.MkdirAll(sessionDir, 0755)
 	var fileNames []string
 	for _, f := range files {
 		path := filepath.Join(sessionDir, safeName(f.Filename))
-		os.MkdirAll(filepath.Dir(path), 0755)
 		if err := c.SaveUploadedFile(f, path); err != nil {
 			continue
 		}
 		fileNames = append(fileNames, f.Filename)
 	}
 
-	// Extract columns and sample data from uploaded files
+	// Start async import — respond immediately with session_id
+	prog := &AsyncImportProgress{
+		Status:    "parsing",
+		SessionID: sessionID,
+		Files:     fileNames,
+	}
+	setImportProgress(sessionID, prog)
+
+	go runAsyncImport(sessionID, sessionDir, fileNames, prog)
+
+	c.JSON(200, gin.H{
+		"session_id": sessionID,
+		"status":     "parsing",
+		"files":      fileNames,
+	})
+}
+
+// runAsyncImport inspects files and extracts columns/sample in background
+func runAsyncImport(sessionID, sessionDir string, fileNames []string, prog *AsyncImportProgress) {
+	// Inspect files (sample only)
 	columns, sample, totalRows := extractFileColumns(sessionDir)
-	if len(columns) == 0 && len(files) > 0 {
-		firstPath := filepath.Join(sessionDir, safeName(files[0].Filename))
+	if len(columns) == 0 && len(fileNames) > 0 {
+		firstPath := filepath.Join(sessionDir, safeName(fileNames[0]))
 		columns, sample, totalRows = readFileColumns(firstPath)
+	}
+
+	if len(columns) == 0 {
+		prog.mu.Lock()
+		prog.Status = "error"
+		prog.Error = "未能读取到有效数据行"
+		prog.mu.Unlock()
+		return
+	}
+
+	// Check for existing mapping rules
+	var mappingRule map[string]interface{}
+	signature := rules.GenerateColumnSignature(columns)
+	mappingRule = rules.FlowMappingRule(signature)
+
+	prog.mu.Lock()
+	prog.Status = "done"
+	prog.Columns = columns
+	prog.Sample = sample
+	prog.Rows = totalRows
+	prog.MappingRule = mappingRule
+	prog.mu.Unlock()
+
+	// Record in SQLite control store
+	if controlStore != nil {
+		_ = controlStore.UpsertSession(sessionID, fileNames[0], totalRows, 0, 0, "", "created")
+	}
+
+	// Try to load into DuckDB in background
+	go ensureSessionDuckDBTable(sessionID, sessionDir)
+}
+
+// HandleImportStatus returns async import progress
+func HandleImportStatus(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	prog := getImportProgress(sessionID)
+	if prog == nil {
+		c.JSON(404, gin.H{"detail": "session not found"})
+		return
+	}
+	prog.mu.Lock()
+	defer prog.mu.Unlock()
+	c.JSON(200, prog)
+}
+
+// HandleImportFlowPaths imports flow data from local file paths (no upload)
+func HandleImportFlowPaths(c *gin.Context) {
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"detail": "invalid json"})
+		return
+	}
+	if len(req.Paths) == 0 {
+		c.JSON(400, gin.H{"detail": "请提供文件路径"})
+		return
+	}
+
+	// Validate and filter paths
+	var validPaths []string
+	var fileNames []string
+	for _, p := range req.Paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		info, err := os.Stat(p)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(p))
+		if !parser.SupportedSuffixes[ext] {
+			continue
+		}
+		validPaths = append(validPaths, p)
+		fileNames = append(fileNames, filepath.Base(p))
+	}
+	if len(validPaths) == 0 {
+		c.JSON(400, gin.H{"detail": "没有找到有效的数据文件"})
+		return
+	}
+
+	// Create session and copy/link files
+	sessionID := uuid.New().String()[:12]
+	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", sessionID)
+	os.MkdirAll(sessionDir, 0755)
+	for i, src := range validPaths {
+		name := fileNames[i]
+		// Create symlink or copy
+		dst := filepath.Join(sessionDir, safeName(name))
+		_ = copyFileToSession(src, dst)
+	}
+
+	// Extract columns and sample from files
+	columns, sample, totalRows := extractFileColumns(sessionDir)
+	if len(columns) == 0 {
+		columns, sample, totalRows = readFileColumns(validPaths[0])
 	}
 
 	// Check for existing mapping rules
@@ -668,6 +871,21 @@ func HandleImportFlowData(c *gin.Context) {
 		"sample":       sample,
 		"mapping_rule": mappingRule,
 	})
+}
+
+func copyFileToSession(src, dst string) error {
+	s, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+	d, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	_, err = io.Copy(d, s)
+	return err
 }
 func HandleSaveFlowMapping(c *gin.Context) {
 	var payload struct {
@@ -754,6 +972,24 @@ func HandleBuildImportedFlow(c *gin.Context) {
 				dirMap[src] = dst
 			}
 		}
+	}
+
+	// Attempt to load session files into DuckDB for faster subsequent queries
+	go ensureSessionDuckDBTable(sessionID, sessionDir)
+
+	// Try DuckDB first if analysis table exists
+	if graph, summary, err := buildFlowFromDuckDB(sessionID, mapping, payload); err == nil && graph != nil {
+		c.JSON(200, gin.H{
+			"nodes":      graph.Nodes,
+			"edges":      graph.Edges,
+			"meta":       graph.Meta,
+			"columns":    nil,
+			"preview":    nil,
+			"rows":       summary["total_rows"],
+			"session_id": sessionID,
+			"summary":    summary,
+		})
+		return
 	}
 
 	// Read source files and build transaction rows (also preloads edge detail cache)
@@ -881,6 +1117,16 @@ func HandleFlowFieldValues(c *gin.Context) {
 		payload.Limit = 300
 	}
 
+	// Try DuckDB first if analysis table exists
+	if values, err := queryColumnValuesFromDuckDB(payload.SessionID, payload.Column, payload.Search, payload.Limit); err == nil && values != nil {
+		c.JSON(200, gin.H{
+			"values":     values,
+			"session_id": payload.SessionID,
+			"duckdb":     true,
+		})
+		return
+	}
+
 	sessionDir := filepath.Join(cfg.UploadDir, "flow_sessions", payload.SessionID)
 	values := extractColumnValues(sessionDir, payload.Column, payload.Limit)
 	c.JSON(200, gin.H{
@@ -891,7 +1137,14 @@ func HandleFlowFieldValues(c *gin.Context) {
 
 // HandleHealth returns health status
 func HandleHealth(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "ok"})
+	resp := gin.H{"status": "ok"}
+	if controlStore != nil {
+		resp["control_plane"] = controlStore.Status()
+	}
+	if analysisEngine != nil {
+		resp["analysis_plane"] = analysisEngine.Status()
+	}
+	c.JSON(200, resp)
 }
 
 // HandleCurrentFiles lists current uploads and rule samples
@@ -989,20 +1242,54 @@ func extractFileColumns(sessionDir string) ([]string, []map[string]interface{}, 
 		return nil, nil, 0
 	}
 
-	// Read data rows
-	var rows [][]string
-	if cand.SheetName != "" {
-		rows, _ = parser.ReadExcelSheet(cand.Path, cand.SheetName)
-	} else {
-		rows, _ = parser.ReadCSVFile(cand.Path)
-	}
-	if len(rows) < 2 {
-		return columns, nil, 0
-	}
-
-	totalRows := len(rows) - 1
+	// Read only limited rows (header + sample) to avoid OOM on large files
+	rows, totalEst := readFileColumnsLimited(cand.Path, cand.SheetName, 50)
 	sample := rowsToSample(rows, columns, 20)
+	totalRows := totalEst
+	if totalRows == 0 {
+		totalRows = cand.RowsSampled
+	}
 	return columns, sample, totalRows
+}
+
+// readFileColumnsLimited reads up to maxRows data rows (+ header) from a file
+// Returns the rows (including header) and an estimated total row count
+func readFileColumnsLimited(path, sheetName string, maxRows int) ([][]string, int) {
+	ext := strings.ToLower(filepath.Ext(path))
+	if parser.ExcelSuffixes[ext] {
+		totalEst := parser.CountExcelRows(path, sheetName)
+		var allRows [][]string
+		if sheetName != "" {
+			allRows, _ = parser.ReadExcelSheetLimited(path, sheetName, maxRows+1)
+		} else {
+			sheets, _ := parser.ReadExcelFile(path)
+			for _, rows := range sheets {
+				if len(rows) > 0 {
+					limit := maxRows + 1
+					if len(rows) > limit {
+						rows = rows[:limit]
+					}
+					allRows = rows
+					break
+				}
+			}
+		}
+		return allRows, totalEst
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, 0
+	}
+	rows, err := parser.ReadCSVRowsLimited(path, maxRows+1)
+	if err != nil {
+		return nil, 0
+	}
+	totalEst := 0
+	if len(rows) >= 2 && info.Size() > 0 {
+		avgRowBytes := float64(info.Size()) / float64(len(rows))
+		totalEst = int(float64(info.Size()) / avgRowBytes) - 1
+	}
+	return rows, totalEst
 }
 
 // readFileColumns directly reads a file and extracts columns/sample
@@ -1600,7 +1887,7 @@ func flowEndpointsForTransaction(txn model.TransactionRow) (string, string) {
 		counter = txn["对手户名"]
 	}
 	if counter == "" {
-		counter = "对手未知"
+		counter = "未知主体"
 	}
 	switch txn["收付标志"] {
 	case "出":

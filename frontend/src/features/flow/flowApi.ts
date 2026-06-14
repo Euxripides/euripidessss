@@ -1,5 +1,5 @@
 import { getJson, postJson } from '../../api/client';
-import type { EdgeDetailPayload, FlowFieldMapping, GraphDetailContext, HistoryItem } from './flowTypes';
+import type { EdgeDetailPayload, FlowFieldMapping, GraphDetailContext, HistoryItem, ImportedDataset } from './flowTypes';
 
 type ErrorDetail = {
   detail?: string;
@@ -39,6 +39,10 @@ export function loadHistoryGraph(jobId: string) {
 
 export function loadHistoryItems() {
   return getJson<{ items?: HistoryItem[] }>('/api/flow/history', '读取历史记录失败');
+}
+
+export function importFlowPaths(paths: string[]) {
+  return postJson<ImportedDataset>('/api/flow/import-paths', { paths }, '本地路径导入失败');
 }
 
 export function loadFlowValues(sessionId: string, column: string, search = '') {
