@@ -100,3 +100,85 @@
 .empty {
   color: #64748b;
 }
+.download-shell {
+  max-width: 1120px;
+}
+.dune-shell {
+  max-width: none;
+}
+.download-alert {
+  margin-bottom: 16px;
+}
+.download-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) repeat(3, minmax(140px, 0.6fr));
+  gap: 12px;
+}
+.dune-sql-input {
+  font-family: Consolas, "JetBrains Mono", "Cascadia Mono", monospace;
+}
+.dune-control-grid {
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+}
+.dune-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.dune-inline-check {
+  margin-bottom: 0;
+}
+.dune-result-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 12px;
+}
+.dune-result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: #4b5563;
+}
+.dune-result-meta strong {
+  color: #172033;
+}
+.dune-column-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dune-column-title span,
+.dune-column-title small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dune-column-title small {
+  color: #8b95a5;
+  font-weight: 400;
+}
+.muted {
+  color: #9ca3af;
+}
+@media (max-width: 980px) {
+  .download-grid {
+    grid-template-columns: 1fr;
+  }
+  .dune-action-row,
+  .dune-result-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+@media (max-width: 640px) {
+  .dune-shell .panel-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

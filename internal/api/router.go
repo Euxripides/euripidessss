@@ -1,9 +1,10 @@
-﻿package api
+package api
 
 import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,10 @@ func NewRouter() *gin.Engine {
 	}
 	if _, err := os.Stat(staticDir); err == nil {
 		r.NoRoute(func(c *gin.Context) {
+			if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
+				c.JSON(http.StatusNotFound, gin.H{"detail": "api route not found"})
+				return
+			}
 			path := filepath.Join(staticDir, c.Request.URL.Path)
 			if _, err := os.Stat(path); err == nil {
 				c.File(path)

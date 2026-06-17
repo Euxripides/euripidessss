@@ -28,12 +28,12 @@ import (
 )
 
 var (
-	cfg             *config.Config
-	store           *storage.FileStorage
-	dbStore         *dbimport.Store
-	dbService       *dbimport.Service
-	controlStore    *control.Store
-	analysisEngine  *duckdb.Engine
+	cfg            *config.Config
+	store          *storage.FileStorage
+	dbStore        *dbimport.Store
+	dbService      *dbimport.Service
+	controlStore   *control.Store
+	analysisEngine *duckdb.Engine
 )
 
 const (
@@ -162,6 +162,12 @@ func RegisterRoutes(r *gin.Engine) {
 	{
 		api.POST("/process", HandleProcess)
 		api.GET("/download/:job_id", HandleDownload)
+		api.POST("/dune/download", HandleDuneSQLDownload)
+		api.GET("/dune/auth", HandleDuneAuthStatus)
+		api.POST("/dune/auth", HandleSaveDuneAuth)
+		api.POST("/dune/query", HandleDuneSQLQuery)
+		api.POST("/dune/results", HandleDuneResultPage)
+		api.POST("/dune/export", HandleDuneExportExcel)
 		api.GET("/flow/history", HandleFlowHistory)
 		api.GET("/flow/history/:job_id", HandleLoadHistoryFlow)
 		api.GET("/flow/edge-detail", HandleFlowEdgeDetail)
@@ -601,10 +607,10 @@ func HandleImportedFlowEdgeDetail(c *gin.Context) {
 
 	// Try DuckDB first if analysis table exists
 	mapping := flowColumnMappingFromPayload(map[string]interface{}{
-		"source_column":   payload.SourceColumn,
-		"target_column":   payload.TargetColumn,
-		"amount_column":   payload.AmountColumn,
-		"time_column":     payload.TimeColumn,
+		"source_column":    payload.SourceColumn,
+		"target_column":    payload.TargetColumn,
+		"amount_column":    payload.AmountColumn,
+		"time_column":      payload.TimeColumn,
 		"direction_column": payload.DirectionColumn,
 	})
 	if rows, totalRows, totalAmount, columns, err := queryEdgeDetailFromDuckDB(payload.SessionID, mapping, payload); err == nil && rows != nil {
@@ -1287,7 +1293,7 @@ func readFileColumnsLimited(path, sheetName string, maxRows int) ([][]string, in
 	totalEst := 0
 	if len(rows) >= 2 && info.Size() > 0 {
 		avgRowBytes := float64(info.Size()) / float64(len(rows))
-		totalEst = int(float64(info.Size()) / avgRowBytes) - 1
+		totalEst = int(float64(info.Size())/avgRowBytes) - 1
 	}
 	return rows, totalEst
 }

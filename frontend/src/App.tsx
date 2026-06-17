@@ -1,6 +1,7 @@
 ﻿import { FlowPanel } from "./features/flow/FlowPanel";
 import {
   ApartmentOutlined,
+  DatabaseOutlined,
   DownloadOutlined,
   PlusOutlined,
   RightOutlined,
@@ -44,6 +45,7 @@ import {
 } from "@xyflow/react";
 import type { ProcessResponse, RuleAnalysis } from "./types";
 import { CleanPanel } from "./features/clean/CleanPanel";
+import { DuneDownloadPanel } from "./features/download/DuneDownloadPanel";
 import { RuleExpansionDrawer } from "./features/clean/RuleExpansionDrawer";
 import { EdgeDetailModal } from "./features/flow/EdgeDetailModal";
 import { EdgeStylePanel } from "./features/flow/EdgeStylePanel";
@@ -192,6 +194,14 @@ dayjs.locale("zh-cn");
 const menuItems = [
   { key: "clean", icon: <UploadOutlined />, label: "数据清洗" },
   { key: "graph", icon: <ApartmentOutlined />, label: "资金流向图" },
+  {
+    key: "download",
+    icon: <DownloadOutlined />,
+    label: "下载",
+    children: [
+      { key: "download-dune", icon: <DatabaseOutlined />, label: "dune" },
+    ],
+  },
 ];
 
 export function App() {
@@ -342,6 +352,7 @@ export function App() {
           <Menu
             mode="inline"
             selectedKeys={[active]}
+            defaultOpenKeys={["download"]}
             items={menuItems}
             onClick={handleMenuClick}
           />
@@ -410,6 +421,7 @@ export function App() {
                 onLoadHistory={flowOps.loadHistoryGraph}
               />
             )}
+            {active === "download-dune" && <DuneDownloadPanel />}
           </Content>
         </Layout>
       </Layout>
@@ -487,6 +499,7 @@ export function App() {
     return {
       clean: "数据清洗",
       graph: "资金流向图",
+      "download-dune": "Dune 下载",
     }[key];
   }
 }

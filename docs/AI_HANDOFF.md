@@ -1,3 +1,58 @@
+## 2026-06-16 Dune 查询错误处理增强 + 过期凭据提示
+
+### Task
+- 使用真实 SQL 测试 Dune web_query，记录并修复所有错误
+- 发现凭据过期 + 错误信息误导 + 错误链路断裂 + 响应体丢弃 四个问题
+
+### Changes
+- **修改** `internal/api/dune_web_query.go` — `doDuneWebGraphQL` 记录完整 HTTP 响应体到日志; `fetchDuneWebDefaultTeam` 追踪认证错误链不再丢弃; `resolveDuneWebQueryIDs` 明确返回"Cookie/Token 可能已过期"提示
+- **修改** `internal/api/dune_query_handlers.go` — `writeDuneAPIError` 认证错误携带上下文时直接透传，不再统一替换为泛泛信息
+
+### New Functionality
+- Dune 查询401/403时可区分"无凭据"与"凭据已过期/无效"，并显示 Dune 原始错误摘要
+
+### API Changes
+- `POST /api/dune/query` 认证类错误 detail 更具体
+
+### Verified Commands
+- `go build` — BUILD_OK
+- `go test ./internal/...` — 全部通过
+- `.\run.ps1` — 重启成功 (PID 12936)
+- `curl POST /api/dune/query` — 401，消息: "Cookie/Token 可能已过期，请在左侧面板重新保存"
+
+### Notes
+- Dune GraphQL 受 Cloudflare 保护，HTTP 403 挑战页需要浏览器自动化 (Playwright) 绕过
+- 当前凭据已过期，需刷新 Cookie + Authorization + AccessToken 后保存
+
+## 2026-06-16 Dune 查询: 模式切换 + 自动获取 ID
+
+### Task
+- 用户要求: API/爬取两种模式分开，爬取模式全部 ID 参数自动获取
+
+### Changes
+- **修改** `internal/api/dune_web_query.go` — 新增 `resolveDuneWebQueryIDs` / `fetchDuneWebDefaultTeam` / `createDuneWebQuery` / 响应类型; `executeDuneWebQueryWithRetry` 改为先自动解析 ID; 自动创建查询后跳过 UpdateQuery
+- **修改** `frontend/src/features/download/DuneDownloadPanel.tsx` — 新增 mode 状态 (api/crawl); Collapse 设置面板; 模式切换 Select; 模式条件字段渲染; 移除手动 ID 输入框和 webQuery checkbox
+- **回退** `internal/api/dune_query_handlers.go` / `frontend/src/features/download/duneApi.ts` 上一版 URL 解析代码
+
+### New Functionality
+- 爬取模式: 输入 SQL → 点查询 → 后端自动 CreateQuery → 自动 GetTeams 获取 team_id → 默认 dataset_id=11 → 自动 Execute → 返回结果
+- 前端: API/爬取 下拉切换, 设置折叠面板, 模式对应参数动态显隐
+
+### API Changes
+- `POST /api/dune/query` 爬取模式下 ID 缺失不再报硬错误，自动补全
+
+### Verified Commands
+- `go build` — BUILD_OK
+- `go test ./internal/...` — 全部通过
+- `cd frontend && npm run build` — 通过
+- `.\run.ps1` — 重启成功 (PID 14688)
+- `curl http://127.0.0.1:8000/api/health` — status=ok
+
+### Notes
+- 爬取模式需 Cookie + Authorization + AccessToken 有效
+- 自动创建查询为临时私有 (isTemp=true, isPrivate=true)
+- 团队获取失败时回退提示手动填 team_id
+
 ## 2026-06-14 SQLite-DuckDB 优化升级: 最终交付
 
 ### Task
@@ -2311,3 +2366,404 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 
 ### Notes
 - Service is running on `http://127.0.0.1:8000`.
+## 2026-06-15 Dune SQL download page
+
+### Task
+- Add a sidebar download entry with a `dune` child page.
+- Let users enter Dune SQL, request execution automatically, and download the result table as CSV.
+
+### Changes
+- Added `internal/api/dune_handlers.go` for Dune SQL execution, status polling, and CSV streaming.
+- Added `internal/api/dune_handlers_test.go` for the Dune download handler.
+- Updated `internal/api/handlers.go` with `POST /api/dune/download`.
+- Added `frontend/src/features/download/DuneDownloadPanel.tsx`.
+- Added `frontend/src/features/download/duneApi.ts`.
+- Updated `frontend/src/App.tsx` with sidebar `下载 -> dune`.
+- Updated `frontend/src/styles/layout.css` for the Dune download form layout.
+
+### New Functionality
+- New `下载 -> dune` page in the left navigation.
+- Dune page contains a `dune` collapse panel with SQL input, optional Dune API Key, execution size, timeout, polling interval, and partial-result toggle.
+- The browser downloads a CSV after the backend executes SQL through Dune, waits for completion, and streams `/results/csv`.
+- API key can be provided per request from the UI or via server env var `DUNE_API_KEY`; it is not persisted by the frontend.
+
+### API Changes
+- Added `POST /api/dune/download`.
+- Request JSON: `sql`, optional `api_key`, `performance`, `timeout_seconds`, `poll_interval_seconds`, `allow_partial_results`.
+- Response: CSV file attachment with `X-Dune-Execution-Id` header on success.
+
+### Database Changes
+- None.
+
+### Frontend Changes
+- Added a nested sidebar menu item `下载 -> dune`.
+- Added the Dune SQL download page and CSV download client.
+
+### Verified Commands
+- `go test ./internal/api -run Dune -count=1 -v` passed.
+- `npx tsc --noEmit` passed in `frontend`.
+- `go test ./internal/... -count=1 -timeout 300s` passed.
+- `npm run build` passed in `frontend` with the existing large chunk warning.
+- `go vet ./internal/...` passed.
+- `go build -o bin\etl-server.exe .\cmd\server\` passed.
+- `.\run.ps1` restarted the backend successfully, new PID 22816.
+- `curl.exe -s http://127.0.0.1:8000/api/health` returned `status=ok`.
+- Local `POST /api/dune/download` without key returned expected HTTP 400 missing-key message.
+
+### Open Items
+- A real Dune SQL download was not executed because no Dune API Key was provided in this session.
+
+### Notes
+- This implementation uses Dune official SQL execution endpoints and therefore requires credits/API access.
+- The earlier browser/public-execution notes remain useful for keyless existing-query downloads, but arbitrary SQL execution cannot be done with only `/public/execution`.
+- Existing untracked files under `backend/data/test_*.xlsx` and `tmp_*.json` were left untouched.
+
+## 2026-06-15 Dune query preview, auth, pagination, and Excel export
+
+### Task
+- Replace the one-shot Dune CSV flow with an on-page SQL query console.
+- Show query results below the SQL box in a paginated table.
+- Retry transient Dune query failures, handle missing/invalid keys with a login/key modal, save local key/cookie, export current page or all pages, merge results into Excel, and localize headers through DeepSeek when configured.
+
+### Changes
+- Added `internal/api/dune_auth_handlers.go` for local Dune auth status and key/cookie persistence under `backend/data/dune/auth.json`.
+- Added `internal/api/dune_query_handlers.go` for SQL execution with up to 3 attempts and paginated JSON result retrieval.
+- Added `internal/api/dune_export_handlers.go` for page/all Excel export from Dune result pages.
+- Added `internal/api/dune_deepseek.go` for DeepSeek-backed header localization with deterministic fallback labels.
+- Updated `internal/api/dune_handlers_test.go` with query retry and Excel export coverage.
+- Updated `internal/api/handlers.go` with new `/api/dune/*` routes.
+- Rebuilt `frontend/src/features/download/DuneDownloadPanel.tsx` as a SQL console + paginated table + auth modal.
+- Rebuilt `frontend/src/features/download/duneApi.ts` around typed query/page/export/auth APIs.
+- Updated `frontend/src/styles/layout.css` for the Dune table layout.
+
+### New Functionality
+- `下载 -> dune` now shows a top SQL editor and a result table below it.
+- Query execution retries transient failures twice after the first attempt.
+- Missing or invalid Dune API Key returns `auth_required=true`; the frontend opens a Dune login/API Key modal.
+- The modal can open a small Dune settings window and save API Key/Cookie locally on the backend.
+- Result table supports server-side Dune pagination using `limit` and `offset`.
+- Export supports current page or all pages, and writes a merged `.xlsx` workbook.
+- Header labels use DeepSeek when `DEEPSEEK_API_KEY` is set; otherwise known Dune fields use local Chinese fallbacks and unknown fields keep readable names.
+
+### API Changes
+- Added `GET /api/dune/auth`.
+- Added `POST /api/dune/auth` with `api_key`, optional `cookie`.
+- Added `POST /api/dune/query` with `sql`, optional `api_key`, `performance`, `timeout_seconds`, `poll_interval_seconds`, `allow_partial_results`, `limit`.
+- Added `POST /api/dune/results` with `execution_id`, `offset`, `limit`, optional `api_key`, `allow_partial_results`.
+- Added `POST /api/dune/export` with `execution_id`, `scope` (`page` or `all`), `offset`, `limit`, optional `api_key`, `allow_partial_results`; response is `.xlsx`.
+- Existing `POST /api/dune/download` remains for CSV compatibility.
+
+### Database Changes
+- None.
+- New local runtime secret file: `backend/data/dune/auth.json` for saved Dune API Key/Cookie.
+
+### Frontend Changes
+- Dune page now has SQL input, execution controls, key/login modal, result metadata, paginated table, current-page export, and full export.
+- Table headers display localized label plus original Dune field name.
+
+### Verified Commands
+- `go test ./internal/api -run Dune -count=1 -v` passed.
+- `.\node_modules\.bin\tsc.cmd --noEmit` passed in `frontend`.
+- `go test ./internal/... -count=1 -timeout 300s` passed.
+- `go vet ./internal/...` passed.
+- `go build -o bin\etl-server.exe .\cmd\server\` passed.
+- `.\node_modules\.bin\tsc.cmd -b` passed in `frontend`.
+- `.\node_modules\.bin\vite.cmd build` passed in `frontend` with the existing large chunk warning.
+- `.\run.ps1` executed and reported server ready.
+- Foreground `.\bin\etl-server.exe` smoke run stayed up after the hidden run process was not reachable in this sandboxed shell.
+- `Invoke-WebRequest http://127.0.0.1:8000/api/health` returned HTTP 200 with `status=ok`.
+- `GET /api/dune/auth` returned HTTP 200 with no saved key in this session.
+- Local `POST /api/dune/query` without key returned HTTP 401 with `auth_required=true`.
+- Playwright desktop visual smoke opened `http://127.0.0.1:8000`, clicked `下载 -> dune`, and saved `dune-query-page-latest.png`.
+
+### Open Items
+- A real Dune execution/export was not run because this session does not have a valid Dune API Key.
+- The in-app modal opens Dune in a small browser popup and saves pasted key/cookie. It does not extract cross-origin Dune cookies automatically.
+- `npm run build` could not run because the global npm installation is missing `npm-cli.js`; local project binaries were used for the equivalent build.
+- Mobile Playwright click on the existing zero-width sider could not open the sidebar reliably; desktop visual smoke passed and Dune page CSS includes a mobile header breakpoint.
+
+### Notes
+- Dune result pagination follows the official `limit`/`offset` result API.
+- DeepSeek uses `https://api.deepseek.com/chat/completions` and `deepseek-v4-flash`; if `DEEPSEEK_API_KEY` is absent or the call fails, exports continue with fallback headers.
+
+## 2026-06-15 Dune Playwright auth capture
+
+### Task
+- Replace the Dune auth popup fallback with a real backend-started Playwright browser flow for capturing Dune cookies after the user logs in.
+
+### Changes
+- Added `tools/dune-playwright/capture-dune-auth.mjs`, a local Playwright helper that launches a persistent Dune browser profile, waits for a capture signal, reads Dune cookies/storage, and writes captured auth JSON.
+- Added `internal/api/dune_playwright_handlers.go` for Playwright auth task start/status/capture handling and persistence into `backend/data/dune/auth.json`.
+- Updated `internal/api/handlers.go` with Playwright auth routes.
+- Updated `internal/api/dune_handlers_test.go` with Playwright cookie/API-key extraction helper coverage.
+- Updated `frontend/src/features/download/duneApi.ts` with typed Playwright auth task APIs.
+- Updated `frontend/src/features/download/DuneDownloadPanel.tsx` so the login modal can start Playwright, poll task status, and trigger cookie capture after manual login.
+
+### New Functionality
+- The Dune auth modal now has `启动 Playwright 登录窗口` and `我已登录，抓取 Cookie` controls.
+- The backend starts a visible Playwright Chromium session with a persistent profile at `backend/data/dune/playwright-profile`.
+- After the user logs into Dune and clicks capture, the helper saves captured cookies to `backend/data/dune/auth.json`.
+- The helper also attempts to preserve an existing saved API Key and only overwrites it when an API-key-like storage value is explicitly captured.
+- The frontend shows saved Cookie status in the Dune page header.
+
+### API Changes
+- Added `POST /api/dune/auth/playwright/start`.
+- Added `GET /api/dune/auth/playwright/:task_id`.
+- Added `POST /api/dune/auth/playwright/:task_id/capture`.
+
+### Database Changes
+- None.
+- New runtime directories/files under `backend/data/dune/playwright-profile` and `backend/data/dune/playwright_tasks/<task_id>/`.
+
+### Frontend Changes
+- Dune auth modal now prefers Playwright cookie capture and keeps manual API Key/Cookie save as fallback.
+- Query/table/export UI is unchanged outside the auth status tags and modal controls.
+
+### Verified Commands
+- `node --check tools/dune-playwright/capture-dune-auth.mjs` passed.
+- Playwright module resolution was verified against the bundled Codex runtime pnpm layout.
+- `go test ./internal/api -run Dune -count=1 -v` passed.
+- `./node_modules/.bin/tsc --noEmit` passed in `frontend`.
+- `go test ./internal/... -count=1 -timeout 300s` passed.
+- `go vet ./internal/...` passed.
+- `go build -o bin/etl-server.exe ./cmd/server/` passed.
+- `./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build` passed in `frontend` with the existing large chunk warning.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File ./run.ps1` restarted the backend successfully, new PID 45460.
+- `curl.exe -s http://127.0.0.1:8000/api/health` returned `status=ok`.
+- `curl.exe -s http://127.0.0.1:8000/api/dune/auth` returned HTTP 200 with no saved key/cookie in this session.
+
+### Open Items
+- A real Dune login/cookie capture was not completed because it requires the user to interactively log in to Dune in the opened Playwright window.
+- Official arbitrary SQL execution still needs a valid Dune API Key unless later code is changed to replay Dune website private/public execution calls with captured cookies.
+
+### Notes
+- Set `DUNE_PLAYWRIGHT_NODE` or `DUNE_PLAYWRIGHT_NODE_MODULES` if running outside the Codex desktop runtime and Node/Playwright cannot be auto-detected.
+- The helper understands pnpm-style Playwright installs such as the Codex runtime layout.
+
+## 2026-06-16 Dune Playwright UX and verification-loop fixes
+
+### Task
+- Fix slow/no-feedback Playwright startup, hide the Dune result table before a query is run, and reduce repeated Dune human-verification loops.
+
+### Changes
+- Updated `tools/dune-playwright/capture-dune-auth.mjs` so auth login now prefers launching the user's installed Chrome/Edge with a persistent profile and CDP port; Playwright connects only when cookies are captured. It falls back to Playwright Chrome/Chromium when no system browser is found.
+- Changed the default Playwright login entry from `https://dune.com/settings/api` to `https://dune.com/`.
+- Updated `internal/api/dune_auth_handlers.go` so `/api/dune/auth` returns `https://dune.com/` as the login URL.
+- Split Playwright backend code into:
+  - `internal/api/dune_playwright_handlers.go`
+  - `internal/api/dune_playwright_auth_output.go`
+  - `internal/api/dune_playwright_runtime.go`
+  - `internal/api/dune_playwright_tasks.go`
+- Split frontend Dune UI into:
+  - `frontend/src/features/download/DuneDownloadPanel.tsx`
+  - `frontend/src/features/download/DuneAuthModal.tsx`
+  - `frontend/src/features/download/DuneResultTable.tsx`
+- Updated the auth modal so clicking start immediately shows a startup status message before the backend responds.
+
+### New Functionality
+- Dune auth startup now opens a normal installed Chrome/Edge profile first, reducing the chance of Dune treating the session as a fresh automated browser.
+- The result panel is hidden until a query response exists.
+- The auth modal now uses `启动 Chrome 登录窗口` and shows immediate `正在启动本机 Chrome 登录窗口` feedback.
+
+### API Changes
+- Existing Playwright auth routes are unchanged.
+- `GET /api/dune/auth` now returns `login_url=https://dune.com/`.
+
+### Database Changes
+- None.
+- Runtime profile remains under `backend/data/dune/playwright-profile`.
+
+### Frontend Changes
+- Dune results are no longer shown as an empty `No data` table before the first query.
+- Dune auth modal is extracted and shows immediate startup/capture progress.
+
+### Verified Commands
+- `node --check tools/dune-playwright/capture-dune-auth.mjs` passed.
+- `./node_modules/.bin/tsc --noEmit` passed in `frontend`.
+- `go test ./internal/api -run Dune -count=1 -v` passed.
+- `go test ./internal/... -count=1 -timeout 300s` passed.
+- `go vet ./internal/...` passed.
+- `go build -o bin/etl-server.exe ./cmd/server/` passed.
+- `./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build` passed in `frontend` with the existing large chunk warning.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File ./run.ps1` restarted the backend successfully, new PID 39984.
+- `curl.exe -s http://127.0.0.1:8000/api/health` returned `status=ok`.
+- `curl.exe -s http://127.0.0.1:8000/api/dune/auth` returned `login_url=https://dune.com/`.
+- Playwright browser QA with a mocked slow start endpoint verified: result panel count before query is `0`, immediate startup text appears, final task status shows PID, and modal layout is not clipped.
+
+### Open Items
+- A real Dune login was not completed in this session because it requires the user to solve the Dune interactive login/check in the opened browser.
+- If Dune still challenges the dedicated profile, log in once in the opened Chrome window and keep that profile; repeated attempts should reuse `backend/data/dune/playwright-profile`.
+
+### Notes
+- This does not bypass Dune human verification. It reduces false triggers by using the user's installed browser and a persistent profile instead of starting from bundled Playwright Chromium every time.
+- If Chrome auto-detection fails, set `DUNE_CHROME_PATH` to the browser executable.
+
+## 2026-06-16 Dune Playwright auth capture reliability fix
+
+### Task
+- Fix Dune Playwright login capture failures where manual login could complete but no auth data was saved, and where the login browser could be disrupted during capture.
+
+### Changes
+- Updated `tools/dune-playwright/capture-dune-auth.mjs` to retry auth capture for up to 10 seconds after the user clicks capture.
+- Added `tools/dune-playwright/dune-cookie-snapshot.mjs` for Dune-only cookie collection and safe URL diagnostics.
+- Updated `internal/api/dune_playwright_auth_output.go` to parse capture diagnostics and include them in empty-capture errors.
+- Added `internal/api/dune_playwright_auth_output_test.go` for Playwright auth output helpers and empty-capture diagnostics.
+- Moved Playwright-specific auth tests out of `internal/api/dune_handlers_test.go`.
+
+### New Functionality
+- CDP capture now connects with Playwright `noDefaults: true` to reduce interference with the opened Chrome profile.
+- CDP mode no longer actively closes the user's Chrome window after capture; the helper exits while leaving the login browser open.
+- Empty captures now report safe diagnostics: capture mode, cookie count, Dune page URLs without query strings, capture attempts, duration, and close policy.
+- Cookie collection saves only `dune.com` domain cookies.
+
+### API Changes
+- No route changes.
+- Failed Playwright auth task details can now include safe diagnostics when no key or cookie was captured.
+
+### Database Changes
+- None.
+
+### Frontend Changes
+- None.
+
+### Verified Commands
+- `go test ./internal/api -run TestPersistDunePlaywrightOutputExplainsEmptyCaptureDiagnostics -count=1 -v`
+- `node --check tools/dune-playwright/capture-dune-auth.mjs`
+- `node --check tools/dune-playwright/dune-cookie-snapshot.mjs`
+- `go test ./internal/api -run Dune -count=1 -v`
+- `go test ./internal/... -count=1 -timeout 300s`
+- `go vet ./internal/...`
+- `go build -o bin\etl-server.exe .\cmd\server\`
+- `cd frontend; .\node_modules\.bin\tsc.cmd --noEmit`
+- `cd frontend; .\node_modules\.bin\tsc.cmd -b`
+- `cd frontend; .\node_modules\.bin\vite.cmd build`
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1`
+- `curl.exe -s http://127.0.0.1:8000/api/health`
+- `curl.exe -s http://127.0.0.1:8000/api/dune/auth`
+
+### Open Items
+- A real Dune login/capture still requires the user to complete Dune's interactive login or verification in the opened Chrome window.
+- This fix does not bypass Dune human verification; it avoids disrupting the browser and makes empty captures diagnosable.
+
+### Notes
+- The previous one-shot capture could read cookies too early immediately after login. The retry loop addresses that timing window.
+- The previous CDP close path could interfere with the opened browser session. CDP mode now uses `keep_browser_open`.
+
+## 2026-06-16 Dune auth simplified to manual input only
+
+### Task
+- Remove the Dune browser/Playwright automatic login capture feature and keep only manual API Key/Cookie input.
+
+### Changes
+- Removed Playwright auth task routes from `internal/api/handlers.go`.
+- Deleted Playwright-only backend implementation files:
+  - `internal/api/dune_playwright_handlers.go`
+  - `internal/api/dune_playwright_auth_output.go`
+  - `internal/api/dune_playwright_runtime.go`
+  - `internal/api/dune_playwright_tasks.go`
+  - `internal/api/dune_playwright_auth_output_test.go`
+- Deleted Playwright-only helper scripts under `tools/dune-playwright/`.
+- Simplified `frontend/src/features/download/DuneAuthModal.tsx` to manual API Key/Cookie inputs only.
+- Removed Playwright polling and capture calls from `frontend/src/features/download/DuneDownloadPanel.tsx` and `frontend/src/features/download/duneApi.ts`.
+- Updated `internal/api/router.go` so unknown `/api/*` routes return JSON 404 instead of the SPA index page.
+- Added `internal/api/router_test.go` to lock the unknown API 404 behavior.
+
+### New Functionality
+- None. This is a feature removal/simplification.
+- Unknown API paths now return `{"detail":"api route not found"}` with HTTP 404.
+
+### API Changes
+- Removed:
+  - `POST /api/dune/auth/playwright/start`
+  - `GET /api/dune/auth/playwright/:task_id`
+  - `POST /api/dune/auth/playwright/:task_id/capture`
+- Kept:
+  - `GET /api/dune/auth`
+  - `POST /api/dune/auth`
+  - Dune query/results/export endpoints.
+
+### Database Changes
+- None.
+- Existing runtime auth data under `backend/data/dune/` was not modified.
+
+### Frontend Changes
+- The Dune auth modal now only shows manual fields for `Dune API Key` and optional `Dune Cookie`, plus a save button.
+- Removed all UI text and actions for starting Chrome, Playwright login, and automatic Cookie capture.
+- The pre-query result table remains hidden until a query response exists.
+
+### Verified Commands
+- `rg -n "Playwright|playwright|DunePlaywright|auth/playwright|captureDunePlaywright|startDunePlaywright|loadDunePlaywright" frontend/src internal/api tools` returned no matches.
+- `npm run build` passed in `frontend` with the existing large chunk warning.
+- `go test ./internal/...` passed.
+- `go vet ./...` passed.
+- `go build -o bin\etl-server.exe .\cmd\server\` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1` restarted the backend successfully, new PID 25620.
+- `curl.exe -s http://127.0.0.1:8000/api/health` returned `status=ok`.
+- `curl.exe -s http://127.0.0.1:8000/api/dune/auth` returned HTTP 200.
+- `curl.exe -s -i -X POST http://127.0.0.1:8000/api/dune/auth/playwright/start` returned HTTP 404 JSON.
+- Playwright page QA confirmed `下载 > dune` opens the Dune page, the result table is hidden before query, and the auth modal has only manual API Key/Cookie fields on desktop and mobile widths.
+
+### Open Items
+- Arbitrary Dune SQL execution still needs a valid Dune API Key for the official Dune API flow.
+- Manual Cookie is stored as fallback auth metadata, but no automatic browser extraction remains.
+
+### Notes
+- Screenshots from this QA are saved at:
+  - `E:\codex\etl\dune-manual-auth-modal.png`
+  - `E:\codex\etl\dune-manual-auth-modal-mobile.png`
+
+## 2026-06-16 Dune public execution preview download
+
+### Task
+- Wire the documented Dune table-download API into the SQL query preview path because the query metadata API does not contain table rows.
+
+### Changes
+- Added `internal/api/dune_public_execution.go` for signed `POST https://dune.com/public/execution` result-page downloads.
+- Updated `internal/api/dune_query_handlers.go` so query execution waits for completion, then uses the public execution download API for preview rows when `query_id` and Cookie are available.
+- Updated `internal/api/dune_export_handlers.go` so Excel export reuses the same preview/download page fetch path.
+- Updated `internal/api/dune_auth_handlers.go` with Cookie resolution from request or saved auth.
+- Updated `frontend/src/features/download/duneApi.ts` and `DuneDownloadPanel.tsx` to send optional `query_id` through query, pagination, and export requests.
+- Added `internal/api/dune_public_execution_test.go` for the captured HMAC signature sample and the execute -> public execution preview flow.
+
+### New Functionality
+- Optional `query_id` field on the Dune page.
+- When `query_id > 0` and a Cookie is available, backend downloads preview rows through Dune website public execution API:
+  - signs `ts + execution_id + query_id + limit + offset`
+  - posts to `/public/execution`
+  - converts `execution_succeeded.columns/data/total_row_count` into the existing table response shape.
+- If public execution download fails or `query_id` is missing, backend falls back to official `/execution/{id}/results` behavior.
+
+### API Changes
+- Existing local routes are unchanged.
+- Request bodies for `/api/dune/query`, `/api/dune/results`, and `/api/dune/export` now accept optional:
+  - `query_id`
+  - `cookie`
+- Responses from `/api/dune/query` and `/api/dune/results` include `query_id`.
+
+### Database Changes
+- None.
+
+### Frontend Changes
+- Dune query form now includes optional `query_id（官网下载可选）`.
+- Pagination and Excel export preserve `query_id` from the query response.
+
+### Verified Commands
+- `go test ./internal/api -run "Dune|PublicExecution" -count=1 -v` passed.
+- `npm run build` passed in `frontend` with the existing large chunk warning.
+- `go test ./internal/...` passed.
+- `go vet ./...` passed.
+- `go build -o bin\etl-server.exe .\cmd\server\` passed.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\run.ps1` restarted the backend successfully, new PID 16700.
+- `curl.exe -s http://127.0.0.1:8000/api/health` returned `status=ok`.
+- `curl.exe -s http://127.0.0.1:8000/api/dune/auth` returned `has_cookie=true`.
+- Playwright page QA confirmed the optional `query_id` field renders on desktop and mobile, and the result table remains hidden before query.
+
+### Open Items
+- `POST /public/execution` is a result-page download API, not a SQL execution API. It still needs an `execution_id` from a completed execution and a Dune `query_id`.
+- Current SQL execution still relies on the official Dune SQL execute API. The public download API is used after execution for preview/download when the required IDs and Cookie are available.
+
+### Notes
+- The HMAC key and signature rule came from the supplied `dune_download_implementation_notes.md`.
+- QA screenshots:
+  - `E:\codex\etl\dune-query-id-field.png`
+  - `E:\codex\etl\dune-query-id-field-mobile.png`
