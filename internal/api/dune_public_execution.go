@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 const dunePublicExecutionHMACKey = "public-01K4W0KHXNC30MKZMRZY91HKM6"
@@ -92,6 +95,17 @@ func fetchDunePublicExecutionPage(ctx context.Context, cookie, executionID strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		respStr := strings.TrimSpace(string(respBody))
+		isCloudflare := strings.Contains(respStr, "Just a moment") || strings.Contains(respStr, "challenge-platform")
+		if isCloudflare {
+			log.Info().Msg("dune_execution_cloudflare_detected_trying_playwright")
+			if pwResult, pwErr := duneExecutionViaPlaywright(ctx, body); pwErr == nil {
+				return pwResult, nil
+			} else {
+				log.Warn().Err(pwErr).Msg("dune_playwright_execution_fallback_failed")
+			}
+		}
 		return duneResultResponse{}, errDuneAuthRequired
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

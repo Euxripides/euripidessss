@@ -35,6 +35,7 @@ func NewRouter() *gin.Engine {
 
 	// Register API routes
 	RegisterRoutes(r)
+	registerDuneBatchRoutes(r.Group("/api"))
 
 	// Serve frontend static files
 	staticDir := cfg.FrontendDistDir
