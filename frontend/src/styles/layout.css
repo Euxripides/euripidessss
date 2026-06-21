@@ -120,6 +120,12 @@
 .dune-control-grid {
   grid-template-columns: repeat(4, minmax(140px, 1fr));
 }
+.dune-tabs .ant-tabs-nav {
+  margin-bottom: 18px;
+}
+.dune-batch-grid {
+  grid-template-columns: minmax(180px, 0.8fr) minmax(240px, 1fr) minmax(240px, 1fr) minmax(180px, 0.8fr) repeat(2, minmax(120px, 0.5fr));
+}
 .dune-action-row {
   display: flex;
   align-items: center;

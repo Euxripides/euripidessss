@@ -38,6 +38,10 @@ export type DuneAuthStatus = {
   readonly hasWebAuth: boolean;
   readonly source: string;
   readonly loginUrl: string;
+  readonly cookie?: string;
+  readonly authorization?: string;
+  readonly access_token?: string;
+  readonly team_id?: number;
 };
 
 export type DuneQueryResponse = {
@@ -174,6 +178,10 @@ function parseDuneAuthStatus(value: unknown): DuneAuthStatus {
     hasWebAuth: value.has_web_auth === true,
     source: typeof value.source === 'string' ? value.source : 'missing',
     loginUrl: typeof value.login_url === 'string' ? value.login_url : 'https://dune.com/settings/api',
+    cookie: typeof value.cookie === 'string' ? value.cookie : undefined,
+    authorization: typeof value.authorization === 'string' ? value.authorization : undefined,
+    access_token: typeof value.access_token === 'string' ? value.access_token : undefined,
+    team_id: typeof value.team_id === 'number' ? value.team_id : undefined,
   };
 }
 

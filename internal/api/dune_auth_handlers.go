@@ -31,11 +31,15 @@ type duneStoredAuth struct {
 func HandleDuneAuthStatus(c *gin.Context) {
 	auth, _ := loadDuneStoredAuth()
 	c.JSON(http.StatusOK, gin.H{
-		"has_api_key":  auth.APIKey != "" || strings.TrimSpace(os.Getenv("DUNE_API_KEY")) != "",
-		"has_cookie":   auth.Cookie != "",
-		"has_web_auth": auth.AccessToken != "" && (auth.Authorization != "" || duneCookieValue(auth.Cookie, "auth-id-token") != ""),
-		"source":       duneAuthSource(auth),
-		"login_url":    "https://dune.com/",
+		"has_api_key":   auth.APIKey != "" || strings.TrimSpace(os.Getenv("DUNE_API_KEY")) != "",
+		"has_cookie":    auth.Cookie != "",
+		"has_web_auth":  auth.AccessToken != "" && (auth.Authorization != "" || duneCookieValue(auth.Cookie, "auth-id-token") != ""),
+		"source":        duneAuthSource(auth),
+		"login_url":     "https://dune.com/",
+		"cookie":        auth.Cookie,
+		"authorization": auth.Authorization,
+		"access_token":  auth.AccessToken,
+		"team_id":       auth.TeamID,
 	})
 }
 
@@ -51,6 +55,10 @@ func HandleSaveDuneAuth(c *gin.Context) {
 		Authorization: normalizeDuneAuthorization(payload.Authorization),
 		AccessToken:   strings.TrimSpace(payload.AccessToken),
 		UpdatedAt:     time.Now().UTC(),
+	}
+	// Preserve existing team_id from stored auth
+	if existing, err := loadDuneStoredAuth(); err == nil && existing.TeamID > 0 {
+		auth.TeamID = existing.TeamID
 	}
 	if auth.APIKey == "" && auth.Cookie == "" && auth.AccessToken == "" && auth.Authorization == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "请填写 Dune API Key、Cookie 或官网 Token"})

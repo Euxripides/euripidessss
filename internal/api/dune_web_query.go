@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,6 +58,15 @@ func executeDuneWebQueryWithRetry(ctx context.Context, payload duneQueryRequest)
 	if err != nil {
 		return duneResultResponse{}, "", err
 	}
+
+	// Auto-refresh tokens if expired (using Playwright browser session)
+	// TODO: re-enable after profile is populated with user's login session
+	// if refreshed, err := ensureDuneTokensFresh(ctx); err == nil && refreshed {
+	// 	if refreshedAuth, reErr := resolveDuneWebAuth(payload.Cookie, payload.Authorization, payload.AccessToken); reErr == nil {
+	// 		webAuth = refreshedAuth
+	// 	}
+	// }
+
 	autoCreated := payload.QueryID <= 0
 	if err := resolveDuneWebQueryIDs(ctx, webAuth, &payload); err != nil {
 		return duneResultResponse{}, "", err
@@ -93,6 +103,111 @@ func executeDuneWebQueryWithRetry(ctx context.Context, payload duneQueryRequest)
 		}
 	}
 	return lastResult, executionID, fmt.Errorf("Dune 官网查询失败，已重试 2 次：%w", lastErr)
+}
+
+// ensureDuneTokensFresh checks if stored Dune tokens are expired and refreshes them via Playwright.
+func ensureDuneTokensFresh(ctx context.Context) (bool, error) {
+	stored, err := loadDuneStoredAuth()
+	if err != nil || stored.Cookie == "" {
+		return false, nil // no stored tokens, skip
+	}
+
+	// Extract auth-id-token from cookie and check expiry
+	idToken := duneCookieValue(stored.Cookie, "auth-id-token")
+	if idToken == "" {
+		return false, nil
+	}
+
+	// Parse JWT payload to check expiry
+	parts := strings.Split(idToken, ".")
+	if len(parts) < 2 {
+		return false, nil
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false, nil
+	}
+	var jwtPayload struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payloadBytes, &jwtPayload); err != nil {
+		return false, nil
+	}
+
+	// Refresh if expired or expiring within 60 seconds
+	remaining := time.Until(time.Unix(jwtPayload.Exp, 0))
+	if remaining > 60*time.Second {
+		return false, nil
+	}
+
+	log.Info().Int64("remaining_sec", int64(remaining.Seconds())).Msg("dune_token_expiring_refreshing")
+	return true, refreshDuneTokens(ctx)
+}
+
+func refreshDuneTokens(ctx context.Context) error {
+	scriptPath := dunePlaywrightBridgePath()
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		return fmt.Errorf("Playwright bridge not found at %s", scriptPath)
+	}
+
+	stored, _ := loadDuneStoredAuth()
+
+	input := map[string]interface{}{
+		"mode":      "refresh",
+		"timeoutMs": 60000,
+	}
+	if stored.Cookie != "" {
+		input["cookie"] = stored.Cookie
+	}
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.CommandContext(ctx, "node", scriptPath)
+	cmd.Stdin = bytes.NewReader(inputJSON)
+	cmd.Dir = filepath.Dir(scriptPath)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		stderrStr := strings.TrimSpace(stderr.String())
+		log.Warn().Str("stderr", truncateStr(stderrStr, 200)).Msg("dune_token_refresh_failed")
+		return fmt.Errorf("token refresh failed: %s", truncateStr(stderrStr, 200))
+	}
+
+	var fresh struct {
+		Cookie        string `json:"cookie"`
+		Authorization string `json:"authorization"`
+		AccessToken   string `json:"access_token"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &fresh); err != nil {
+		return fmt.Errorf("token refresh parse failed: %w", err)
+	}
+	if fresh.Cookie == "" {
+		return fmt.Errorf("token refresh returned empty cookie — not logged in to Dune?")
+	}
+
+	// Update auth.json
+	auth := duneStoredAuth{
+		Cookie:        fresh.Cookie,
+		Authorization: fresh.Authorization,
+		AccessToken:   fresh.AccessToken,
+		UpdatedAt:     time.Now().UTC(),
+	}
+	// Preserve existing team_id and api_key
+	if stored, err := loadDuneStoredAuth(); err == nil {
+		auth.TeamID = stored.TeamID
+		auth.APIKey = stored.APIKey
+	}
+	if err := saveDuneStoredAuth(auth); err != nil {
+		return fmt.Errorf("token refresh save failed: %w", err)
+	}
+
+	log.Info().Int("cookie_len", len(auth.Cookie)).Int("token_len", len(auth.AccessToken)).Msg("dune_token_refreshed")
+	return nil
 }
 
 func resolveDuneWebQueryIDs(ctx context.Context, auth duneWebAuth, payload *duneQueryRequest) error {
@@ -206,21 +321,11 @@ func createDuneWebQuery(ctx context.Context, auth duneWebAuth, payload *duneQuer
 			"query": queryInput,
 		},
 		Extensions: duneApolloExtensions(),
-		Query:      "mutation CreateQuery($query: CreateQueryInput!) {\n  createQuery(input: $query) {\n    id\n    __typename\n  }\n}",
+		Query:      "mutation CreateQuery($query: CreateQueryInput!) {\n  createQuery(query: $query) {\n    id\n    __typename\n  }\n}",
 	}
 	var result duneWebCreateResponse
 	if err := doDuneWebGraphQL(ctx, "CreateQuery", auth, body, &result); err != nil {
-		// Retry without datasetId — Dune may auto-infer it
-		delete(queryInput, "datasetId")
-		body2 := duneGraphQLRequest{
-			OperationName: "CreateQuery",
-			Variables:     map[string]interface{}{"query": queryInput},
-			Extensions:    duneApolloExtensions(),
-			Query:         "mutation CreateQuery($query: CreateQueryInput!) {\n  createQuery(input: $query) {\n    id\n    __typename\n  }\n}",
-		}
-		if err2 := doDuneWebGraphQL(ctx, "CreateQuery", auth, body2, &result); err2 != nil {
-			return fmt.Errorf("Dune 自动创建查询失败：%w", err2)
-		}
+		return fmt.Errorf("Dune 自动创建查询失败：%w", err)
 	}
 	if result.Data.CreateQuery.ID <= 0 {
 		return fmt.Errorf("Dune CreateQuery 未返回有效 id")
@@ -378,17 +483,75 @@ func truncateStr(s string, maxLen int) string {
 }
 
 func doDuneWebGraphQLViaPlaywright(ctx context.Context, operation string, auth duneWebAuth, body duneGraphQLRequest, out interface{}) error {
+	return doDuneViaPlaywright(ctx, "graphql", operation, auth, body, out)
+}
+
+func doDuneExecutionViaPlaywright(ctx context.Context, execBody interface{}, out interface{}) error {
+	return doDuneViaPlaywright(ctx, "execution", "", duneWebAuth{}, execBody, out)
+}
+
+// duneExecutionViaPlaywright polls execution via Playwright and returns parsed result
+func duneExecutionViaPlaywright(ctx context.Context, reqBody dunePublicExecutionRequest) (duneResultResponse, error) {
+	data, _ := json.Marshal(reqBody)
+	input := map[string]interface{}{
+		"mode":      "execution",
+		"body":      json.RawMessage(data),
+		"timeoutMs": 60000,
+	}
+
+	scriptPath := dunePlaywrightBridgePath()
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		return duneResultResponse{}, fmt.Errorf("Playwright bridge script not found at %s", scriptPath)
+	}
+
+	inputJSON, err := json.Marshal(input)
+	if err != nil {
+		return duneResultResponse{}, err
+	}
+
+	cmd := exec.CommandContext(ctx, "node", scriptPath)
+	cmd.Stdin = bytes.NewReader(inputJSON)
+	cmd.Dir = filepath.Dir(scriptPath)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err != nil {
+		stderrStr := strings.TrimSpace(stderr.String())
+		if stderrStr != "" {
+			var pwErr struct{ Error string `json:"error"` }
+			if json.Unmarshal([]byte(stderrStr), &pwErr) == nil && pwErr.Error != "" {
+				return duneResultResponse{}, fmt.Errorf("Dune Playwright 请求失败：%s", pwErr.Error)
+			}
+			return duneResultResponse{}, fmt.Errorf("Dune Playwright 请求失败：%s", truncateStr(stderrStr, 500))
+		}
+		return duneResultResponse{}, fmt.Errorf("Dune Playwright 请求失败：%w", err)
+	}
+
+	var payload dunePublicExecutionResponse
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		return duneResultResponse{}, fmt.Errorf("Dune Playwright 响应解析失败：%w", err)
+	}
+	if payload.ExecutionFailed != nil {
+		return duneResultResponse{}, fmt.Errorf("Dune public execution failed")
+	}
+	if payload.ExecutionSucceeded == nil {
+		return duneResultResponse{}, errDunePublicExecutionPending
+	}
+	return dunePublicExecutionToResult(*payload.ExecutionSucceeded, reqBody.ExecutionID, reqBody.Pagination.Offset, reqBody.Pagination.Limit), nil
+}
+
+func doDuneViaPlaywright(ctx context.Context, mode string, operation string, auth duneWebAuth, body interface{}, out interface{}) error {
 	scriptPath := dunePlaywrightBridgePath()
 	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
 		return fmt.Errorf("Playwright bridge script not found at %s", scriptPath)
 	}
 
 	input := map[string]interface{}{
-		"operationName": operation,
-		"query":         body.Query,
-		"variables":     body.Variables,
-		"extensions":    body.Extensions,
-		"timeoutMs":     60000,
+		"mode":      mode,
+		"timeoutMs": 60000,
 	}
 	if auth.Cookie != "" {
 		input["cookie"] = auth.Cookie
@@ -398,6 +561,18 @@ func doDuneWebGraphQLViaPlaywright(ctx context.Context, operation string, auth d
 	}
 	if auth.AccessToken != "" {
 		input["accessToken"] = auth.AccessToken
+	}
+	if mode == "graphql" {
+		gqlBody, ok := body.(duneGraphQLRequest)
+		if !ok {
+			return fmt.Errorf("invalid graphql body type")
+		}
+		input["operationName"] = operation
+		input["query"] = gqlBody.Query
+		input["variables"] = gqlBody.Variables
+		input["extensions"] = gqlBody.Extensions
+	} else if mode == "execution" {
+		input["body"] = body
 	}
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
@@ -429,6 +604,10 @@ func doDuneWebGraphQLViaPlaywright(ctx context.Context, operation string, auth d
 		return fmt.Errorf("Dune Playwright 响应解析失败：%w，body=%s", err, truncateStr(stdout.String(), 500))
 	}
 	return nil
+}
+
+func DoDuneWebGraphQLViaPlaywright(ctx context.Context, operation string, auth duneWebAuth, body duneGraphQLRequest, out interface{}) error {
+	return doDuneWebGraphQLViaPlaywright(ctx, operation, auth, body, out)
 }
 
 func dunePlaywrightBridgePath() string {
