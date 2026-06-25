@@ -21,6 +21,9 @@ type Manager struct {
 	cancel        context.CancelFunc
 	runConfig     RunConfig
 	task          TaskSnapshot
+	pendingCfg    *RunConfig
+	pendingTotal  int
+	pendingMode   string
 }
 
 func NewManager(opts ManagerOptions) *Manager {
@@ -39,6 +42,33 @@ func NewManager(opts ManagerOptions) *Manager {
 }
 
 func (m *Manager) Start(ctx context.Context, req StartRequest) (TaskSnapshot, error) {
+	mode := req.Mode
+	if mode == "" {
+		mode = ModeFull
+	}
+
+	// Pre-check: full mode requires auth.json (for CF clearance during login step)
+	// If auth.json is missing, automatically redirect to capture mode
+	// Note: register-only mode does NOT require auth.json — registration works without it
+	redirectedFrom := ""
+	if mode == ModeFull {
+		if pb, ok := m.browser.(PlaywrightBrowser); ok && !pb.HasValidAuth() {
+			log.Info().Str("requested_mode", mode).Msg("dune_auth_missing_redirecting_to_capture")
+			redirectedFrom = mode
+			// Save original request so capture can auto-restart after success
+			origReq := req
+			origReq.Mode = mode
+			origCfg, origErr := ResolveRunConfig(origReq)
+			if origErr == nil {
+				m.pendingCfg = &origCfg
+				m.pendingTotal = req.Total
+				m.pendingMode = mode
+			}
+			req.Mode = ModeCapture
+			mode = ModeCapture
+		}
+	}
+
 	cfg, err := ResolveRunConfig(req)
 	if err != nil {
 		return TaskSnapshot{}, err
@@ -48,13 +78,51 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (TaskSnapshot, er
 	}
 	taskCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	now := m.now().UTC()
+	total := req.Total
+	var verifyLoginAccounts []Account
+	if mode == ModeVerifyLogin {
+		// verify_login mode: process existing wait_verify accounts
+		m.mu.Lock()
+		for _, a := range m.task.Accounts {
+			if a.Status == AccountStatusWaitVerify {
+				verifyLoginAccounts = append(verifyLoginAccounts, a)
+			}
+		}
+		m.mu.Unlock()
+		if len(verifyLoginAccounts) == 0 {
+			cancel()
+			return TaskSnapshot{}, fmt.Errorf("no accounts waiting for verification")
+		}
+		total = len(verifyLoginAccounts)
+	}
+	if mode == ModeLogin {
+		if req.LoginEmail == "" || req.LoginPassword == "" {
+			cancel()
+			return TaskSnapshot{}, fmt.Errorf("login_email and login_password required for login mode")
+		}
+		total = 1
+	}
+	if mode == ModeCapture {
+		total = 1
+	}
 	task := TaskSnapshot{
-		ID:        uuid.NewString(),
-		Total:     req.Total,
-		Status:    TaskStatusRunning,
-		Accounts:  []Account{},
-		StartedAt: now.Format(time.RFC3339),
-		UpdatedAt: now.Format(time.RFC3339),
+		ID:             uuid.NewString(),
+		Total:          total,
+		Status:         TaskStatusRunning,
+		Accounts:       []Account{},
+		StartedAt:      now.Format(time.RFC3339),
+		UpdatedAt:      now.Format(time.RFC3339),
+		RedirectedFrom: redirectedFrom,
+	}
+	if mode == ModeLogin {
+		task.Accounts = []Account{{
+			Email:    req.LoginEmail,
+			Password: req.LoginPassword,
+			Status:   AccountStatusLogin,
+		}}
+	}
+	if mode == ModeVerifyLogin {
+		task.Accounts = verifyLoginAccounts
 	}
 	m.mu.Lock()
 	if m.task.Status == TaskStatusRunning {
@@ -66,7 +134,13 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (TaskSnapshot, er
 	m.runConfig = cfg
 	m.task = task
 	m.mu.Unlock()
-	go m.runTask(taskCtx, cfg, req.Total)
+	if mode == ModeLogin {
+		go m.runLogin(taskCtx, task.Accounts[0])
+	} else if mode == ModeCapture {
+		go m.runCapture(taskCtx)
+	} else {
+		go m.runTask(taskCtx, cfg, total, mode)
+	}
 	return task, nil
 }
 
@@ -95,7 +169,30 @@ func (m *Manager) Accounts() []Account {
 	return m.Status().Accounts
 }
 
-func (m *Manager) runTask(ctx context.Context, cfg RunConfig, total int) {
+// RemoveAccounts removes accounts from the current task by email
+func (m *Manager) RemoveAccounts(emails []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	emailSet := make(map[string]bool, len(emails))
+	for _, e := range emails {
+		emailSet[e] = true
+	}
+	var kept []Account
+	for _, a := range m.task.Accounts {
+		if !emailSet[a.Email] {
+			kept = append(kept, a)
+		}
+	}
+	m.task.Accounts = kept
+	m.touchLocked()
+}
+
+func (m *Manager) runTask(ctx context.Context, cfg RunConfig, total int, mode string) {
+	if mode == ModeVerifyLogin {
+		m.runVerifyLogin(ctx, cfg)
+		return
+	}
+	// full or register mode: generate + register accounts
 	for i := 0; i < total; i++ {
 		select {
 		case <-ctx.Done():
@@ -114,7 +211,7 @@ func (m *Manager) runTask(ctx context.Context, cfg RunConfig, total int) {
 			account.Email = localPart + "+" + account.Email
 		}
 		m.upsertAccount(account)
-		done := m.runAccount(ctx, cfg, account)
+		done := m.runAccount(ctx, cfg, account, mode)
 		if done && m.onAccountDone != nil {
 			m.onAccountDone(ctx, m.accountByEmail(account.Email))
 		}
@@ -126,7 +223,7 @@ func (m *Manager) runTask(ctx context.Context, cfg RunConfig, total int) {
 	m.setTaskStatus(TaskStatusDone)
 }
 
-func (m *Manager) runAccount(ctx context.Context, cfg RunConfig, account Account) bool {
+func (m *Manager) runAccount(ctx context.Context, cfg RunConfig, account Account, mode string) bool {
 	account.Status = AccountStatusRegister
 	m.upsertAccount(account)
 	registerResult, err := m.browser.Register(ctx, account)
@@ -143,6 +240,10 @@ func (m *Manager) runAccount(ctx context.Context, cfg RunConfig, account Account
 		return false
 	}
 	if !registerResult.OK {
+		if registerResult.Banned {
+			m.banAccount(account, registerResult.Error)
+			return false
+		}
 		m.failAccount(account, fmt.Errorf("register failed: %s", registerResult.Error))
 		return false
 	}
@@ -153,6 +254,19 @@ func (m *Manager) runAccount(ctx context.Context, cfg RunConfig, account Account
 		m.failAccount(account, fmt.Errorf("wait verification email: %w", err))
 		return false
 	}
+	// Register-only mode: save verification link, stop here
+	if mode == ModeRegister {
+		account.Status = AccountStatusWaitVerify
+		account.VerifyLink = link
+		account.Error = ""
+		m.upsertAccount(account)
+		m.incrementCompleted()
+		return true
+	}
+	return m.verifyAndLoginAccount(ctx, account, link)
+}
+
+func (m *Manager) verifyAndLoginAccount(ctx context.Context, account Account, link string) bool {
 	// Use Playwright browser to verify email AND login in same session (avoids CF re-detection)
 	verifyResult, err := m.browser.VerifyEmail(ctx, link, account)
 	if err != nil || !verifyResult.OK {
@@ -216,6 +330,110 @@ func (m *Manager) runAccount(ctx context.Context, cfg RunConfig, account Account
 	return true
 }
 
+func (m *Manager) runCapture(ctx context.Context) {
+	// Directly call the Playwright bridge with "capture" mode
+	// The browser opens and waits for the user to manually log in
+	pb, ok := m.browser.(PlaywrightBrowser)
+	if !ok {
+		m.failAccount(Account{Email: "capture"}, fmt.Errorf("capture requires Playwright browser"))
+		m.setTaskStatus(TaskStatusDone)
+		return
+	}
+	result, err := pb.Run(ctx, "capture", Account{})
+	if err != nil {
+		m.failAccount(Account{Email: "capture"}, fmt.Errorf("capture: %w", err))
+		m.setTaskStatus(TaskStatusDone)
+		return
+	}
+	if !result.OK {
+		m.failAccount(Account{Email: "capture"}, fmt.Errorf("capture failed: %s", result.Error))
+		m.setTaskStatus(TaskStatusDone)
+		return
+	}
+	account := Account{
+		Email:         "capture",
+		Cookie:        result.Cookie,
+		Authorization: result.Authorization,
+		AccessToken:   result.AccessToken,
+		TeamID:        result.TeamID,
+		Status:        AccountStatusDone,
+	}
+	m.upsertAccount(account)
+	m.incrementCompleted()
+	if m.onAccountDone != nil {
+		m.onAccountDone(ctx, account)
+	}
+
+	// Restart original task if capture was auto-redirected from full mode
+	if m.pendingCfg != nil && m.pendingMode != "" {
+		cfg := *m.pendingCfg
+		total := m.pendingTotal
+		mode := m.pendingMode
+		m.pendingCfg = nil
+		m.pendingMode = ""
+		log.Info().Str("mode", mode).Int("total", total).Msg("dune_auth_captured_restarting_task")
+		go m.runTask(ctx, cfg, total, mode)
+		return
+	}
+	m.setTaskStatus(TaskStatusDone)
+}
+
+func (m *Manager) runLogin(ctx context.Context, account Account) {
+	loginResult, err := m.browser.LoginAndExtract(ctx, account)
+	if err != nil {
+		m.failAccount(account, fmt.Errorf("login: %w", err))
+		m.setTaskStatus(TaskStatusDone)
+		return
+	}
+	if !loginResult.OK {
+		m.failAccount(account, fmt.Errorf("login failed: %s", loginResult.Error))
+		m.setTaskStatus(TaskStatusDone)
+		return
+	}
+	account.Cookie = loginResult.Cookie
+	account.Authorization = loginResult.Authorization
+	account.AccessToken = loginResult.AccessToken
+	account.TeamID = loginResult.TeamID
+	account.Status = AccountStatusDone
+	m.upsertAccount(account)
+	m.incrementCompleted()
+	if m.onAccountDone != nil {
+		m.onAccountDone(ctx, account)
+	}
+	m.setTaskStatus(TaskStatusDone)
+}
+
+func (m *Manager) runVerifyLogin(ctx context.Context, cfg RunConfig) {
+	m.mu.Lock()
+	var waiting []Account
+	for _, a := range m.task.Accounts {
+		if a.Status == AccountStatusWaitVerify && a.VerifyLink != "" {
+			waiting = append(waiting, a)
+		}
+	}
+	m.mu.Unlock()
+
+	for i, account := range waiting {
+		select {
+		case <-ctx.Done():
+			m.setTaskStatus(TaskStatusStopped)
+			return
+		default:
+		}
+		account.Status = AccountStatusLogin
+		m.upsertAccount(account)
+		done := m.verifyAndLoginAccount(ctx, account, account.VerifyLink)
+		if done && m.onAccountDone != nil {
+			m.onAccountDone(ctx, m.accountByEmail(account.Email))
+		}
+		if i < len(waiting)-1 && !m.waitInterval(ctx, cfg.Interval) {
+			m.setTaskStatus(TaskStatusStopped)
+			return
+		}
+	}
+	m.setTaskStatus(TaskStatusDone)
+}
+
 func (m *Manager) waitInterval(ctx context.Context, interval time.Duration) bool {
 	if interval <= 0 {
 		return true
@@ -233,6 +451,13 @@ func (m *Manager) waitInterval(ctx context.Context, interval time.Duration) bool
 func (m *Manager) addFailedAccount(account Account, err error) {
 	account.Status = AccountStatusFailed
 	account.Error = err.Error()
+	m.upsertAccount(account)
+	m.incrementFailed()
+}
+
+func (m *Manager) banAccount(account Account, reason string) {
+	account.Status = AccountStatusBanned
+	account.Error = reason
 	m.upsertAccount(account)
 	m.incrementFailed()
 }
