@@ -21,6 +21,7 @@ type PlaywrightBrowser struct {
 	Channel     string
 	AuthFile    string
 	Timeout     time.Duration
+	Headless    bool
 }
 
 func NewDefaultManager(root string, onAccountDone ...func(context.Context, Account)) *Manager {
@@ -119,9 +120,10 @@ func (p PlaywrightBrowser) run(ctx context.Context, mode string, account Account
 		"mode":       mode,
 		"email":      account.Email,
 		"username":   account.Username,
-		"password":    account.Password,
+		"password":   account.Password,
 		"profileDir": profileDir,
 		"timeoutMs":  int(timeout.Milliseconds()),
+		"headless":   p.Headless,
 	}
 	if len(verifyLink) > 0 && verifyLink[0] != "" {
 		input["verifyLink"] = verifyLink[0]

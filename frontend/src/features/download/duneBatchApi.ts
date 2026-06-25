@@ -62,6 +62,12 @@ export async function loadDuneBatchStatus(): Promise<DuneBatchTask> {
   return parseTask(payload);
 }
 
+export async function loadDuneBatchAccounts(): Promise<readonly DuneBatchAccount[]> {
+  const payload = await requestJson('/api/dune/batch/accounts', { method: 'GET' });
+  if (!isRecord(payload)) return [];
+  return Array.isArray(payload.accounts) ? payload.accounts.filter(isRecord).map(parseAccount) : [];
+}
+
 export async function exportDuneBatchCSV(): Promise<string> {
   const response = await fetch('/api/dune/batch/export');
   if (!response.ok) throw await buildError(response);

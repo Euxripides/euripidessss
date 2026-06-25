@@ -44,41 +44,27 @@ func HandleDuneBatchStart(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, snapshot)
+	c.JSON(http.StatusOK, snapshotWithSavedAccounts(snapshot))
 }
 
 func HandleDuneBatchStop(c *gin.Context) {
-	c.JSON(http.StatusOK, currentDuneBatchManager().Stop())
+	c.JSON(http.StatusOK, snapshotWithSavedAccounts(currentDuneBatchManager().Stop()))
 }
 
 func HandleDuneBatchStatus(c *gin.Context) {
-	c.JSON(http.StatusOK, currentDuneBatchManager().Status())
+	c.JSON(http.StatusOK, snapshotWithSavedAccounts(currentDuneBatchManager().Status()))
 }
 
 func HandleDuneBatchAccounts(c *gin.Context) {
+	manager := currentDuneBatchManager()
 	allAccountsMu.Lock()
 	accs := make([]dunetools.Account, len(allAccounts))
 	copy(accs, allAccounts)
 	allAccountsMu.Unlock()
 	// Merge with current batch accounts
-	batch := currentDuneBatchManager().Accounts()
+	batch := manager.Accounts()
 	merged := mergeAccounts(accs, batch)
 	c.JSON(http.StatusOK, gin.H{"accounts": merged})
-}
-
-func mergeAccounts(saved, batch []dunetools.Account) []dunetools.Account {
-	seen := make(map[string]bool)
-	var result []dunetools.Account
-	for _, a := range saved {
-		seen[a.Email] = true
-		result = append(result, a)
-	}
-	for _, a := range batch {
-		if !seen[a.Email] {
-			result = append(result, a)
-		}
-	}
-	return result
 }
 
 func HandleDuneBatchCaptchaResume(c *gin.Context) {
@@ -106,11 +92,12 @@ func HandleDuneBatchCaptchaResume(c *gin.Context) {
 }
 
 func HandleDuneBatchExport(c *gin.Context) {
+	manager := currentDuneBatchManager()
 	allAccountsMu.Lock()
 	accs := make([]dunetools.Account, len(allAccounts))
 	copy(accs, allAccounts)
 	allAccountsMu.Unlock()
-	batch := currentDuneBatchManager().Accounts()
+	batch := manager.Accounts()
 	accounts := mergeAccounts(accs, batch)
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="dune_accounts.csv"`)

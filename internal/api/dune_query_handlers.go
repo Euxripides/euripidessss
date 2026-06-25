@@ -21,6 +21,7 @@ type duneQueryRequest struct {
 	Cookie              string `json:"cookie"`
 	Authorization       string `json:"authorization"`
 	AccessToken         string `json:"access_token"`
+	AccountEmail        string `json:"account_email"`
 	WebQuery            bool   `json:"web_query"`
 	QueryID             int64  `json:"query_id"`
 	TeamID              int64  `json:"team_id"`
@@ -72,8 +73,12 @@ func HandleDuneSQLQuery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "请输入 Dune SQL"})
 		return
 	}
+	if err := applyDuneAccountAuth(c.Request.Context(), &payload); err != nil {
+		writeDuneAPIError(c, err)
+		return
+	}
 	if payload.WebQuery {
-		result, executionID, err := executeDuneWebQueryWithRetry(c.Request.Context(), payload)
+		result, executionID, err := executeDuneWebQueryWithRetry(c.Request.Context(), &payload)
 		if err != nil {
 			writeDuneAPIError(c, err)
 			return
@@ -159,6 +164,9 @@ func fetchDunePreviewPage(ctx context.Context, apiKey, cookie, executionID strin
 			}
 			log.Warn().Err(publicErr).Str("execution_id", executionID).Int64("query_id", queryID).Msg("dune_public_execution_preview_failed")
 		}
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		return duneResultResponse{}, fmt.Errorf("%w: Cookie 不可用且未配置 API Key，无法获取 Dune 查询结果", errDuneAuthRequired)
 	}
 	return fetchDuneResultPage(ctx, apiKey, executionID, offset, limit, allowPartial)
 }

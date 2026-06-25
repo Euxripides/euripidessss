@@ -1,9 +1,10 @@
-import { DownloadOutlined, LoginOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
+import { DownloadOutlined, LoginOutlined, PlayCircleOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
 import { Button, Checkbox, Collapse, Form, Input, InputNumber, Select, Space, Tag, message } from 'antd';
 import type { TablePaginationConfig } from 'antd/es/table';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DuneAuthModal, type DuneAuthFormValues } from './DuneAuthModal';
 import { DuneResultTable } from './DuneResultTable';
+import { loadDuneBatchAccounts, type DuneBatchAccount } from './duneBatchApi';
 import {
   DuneAuthRequiredError,
   exportDuneExcel,
@@ -31,16 +32,31 @@ export function DuneQueryPanel() {
   const [exporting, setExporting] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [mode, setMode] = useState<DuneMode>('api');
+  const [accounts, setAccounts] = useState<readonly DuneBatchAccount[]>([]);
 
   useEffect(() => {
     void refreshAuthStatus();
+    void refreshAccounts();
   }, []);
+
+  const readyAccounts = useMemo(
+    () => accounts.filter((account) => account.status === 'done' && !account.error),
+    [accounts],
+  );
 
   async function refreshAuthStatus() {
     try {
       setAuth(await loadDuneAuthStatus());
     } catch (error) {
       message.warning(error instanceof Error ? error.message : '读取 Dune 鉴权状态失败');
+    }
+  }
+
+  async function refreshAccounts() {
+    try {
+      setAccounts(await loadDuneBatchAccounts());
+    } catch (error) {
+      message.warning(error instanceof Error ? error.message : '读取 Dune 账号列表失败');
     }
   }
 
@@ -53,6 +69,7 @@ export function DuneQueryPanel() {
       setPageSize(values.limit ?? 100);
       message.success(`查询完成，execution_id=${data.executionId}`);
       await refreshAuthStatus();
+      await refreshAccounts();
     } catch (error) {
       handleDuneError(error);
     } finally {
@@ -66,6 +83,7 @@ export function DuneQueryPanel() {
     try {
       const data = await loadDunePage({
         executionId: result.executionId,
+        cookie: auth?.cookie,
         queryId: result.queryId || queryForm.getFieldValue('queryId') || 0,
         offset: (next.current - 1) * next.pageSize,
         limit: next.pageSize,
@@ -87,6 +105,7 @@ export function DuneQueryPanel() {
     try {
       const filename = await exportDuneExcel({
         executionId: result.executionId,
+        cookie: auth?.cookie,
         queryId: result.queryId || queryForm.getFieldValue('queryId') || 0,
         scope,
         offset: scope === 'page' ? (page - 1) * pageSize : 0,
@@ -128,10 +147,11 @@ export function DuneQueryPanel() {
           <h2>Dune 数据查询</h2>
           <p>输入 SQL 后查询，结果在下方分页预览，并可导出当前页或全量 Excel。</p>
         </div>
-        <Space>
+        <Space wrap>
           <Tag color={auth?.hasApiKey ? 'green' : 'orange'}>{auth?.hasApiKey ? `Key: ${auth.source}` : '未保存 Key'}</Tag>
           <Tag color={auth?.hasCookie ? 'green' : 'default'}>{auth?.hasCookie ? 'Cookie: 已保存' : 'Cookie: 未保存'}</Tag>
           <Tag color={auth?.hasWebAuth ? 'green' : 'default'}>{auth?.hasWebAuth ? '官网Token: 已保存' : '官网Token: 未保存'}</Tag>
+          <Tag color={readyAccounts.length > 0 ? 'green' : 'default'}>可用账号: {readyAccounts.length}</Tag>
           <Button icon={<LoginOutlined />} onClick={() => setAuthOpen(true)}>
             Key / Cookie / Token
           </Button>
@@ -163,13 +183,30 @@ export function DuneQueryPanel() {
                 onClick={(e) => e.stopPropagation()}
                 options={[
                   { value: 'api', label: 'API（需 Key）' },
-                  { value: 'crawl', label: '爬取（需 Cookie）' },
+                  { value: 'crawl', label: '官网（Cookie/账号）' },
                 ]}
               />
             ),
             children: (
               <>
                 <div className="download-grid dune-control-grid">
+                  <Form.Item name="accountEmail" label="查询账号（自动登录）">
+                    <Select
+                      allowClear
+                      showSearch
+                      className="full"
+                      placeholder="选择已验证登录且状态正常的账号"
+                      optionFilterProp="label"
+                      onChange={(value) => {
+                        if (value) setMode('crawl');
+                      }}
+                      options={readyAccounts.map((account) => ({
+                        value: account.email,
+                        label: account.teamId ? `${account.email} · team ${account.teamId}` : account.email,
+                      }))}
+                      suffixIcon={<UserOutlined />}
+                    />
+                  </Form.Item>
                   <Form.Item name="limit" label="每页行数">
                     <InputNumber min={10} max={1000} className="full" />
                   </Form.Item>

@@ -120,6 +120,9 @@
 .dune-control-grid {
   grid-template-columns: repeat(4, minmax(140px, 1fr));
 }
+.dune-control-grid > .ant-form-item {
+  min-width: 0;
+}
 .dune-tabs .ant-tabs-nav {
   margin-bottom: 18px;
 }
