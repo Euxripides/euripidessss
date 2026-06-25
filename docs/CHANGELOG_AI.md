@@ -1,3 +1,234 @@
+### 2026-06-21 Dune verify_login 修复 + 端到端实测
+
+#### 本次任务
+- 使用用户提供的 Gmail IMAP 配置继续实测 Dune 注册流程，覆盖注册、邮箱验证、登录凭据提取。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| `verify_login` 启动后立刻 `done`，但账号列表为空、完成数为 0 | `Start()` 先从旧 task 统计到 `wait_verify` 账号，随后创建新 task 时把 `Accounts` 初始化为空，`runVerifyLogin()` 只能读到空列表 | `ModeVerifyLogin` 启动时把待验证账号复制进新 task |
+
+#### 修改文件
+- `internal/dunetools/manager.go`
+- `internal/dunetools/manager_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+- 运行态数据 `backend/data/dune/accounts.json` 新增真实测试账号记录。
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+- 修复既有 `POST /api/dune/batch/start` 的 `mode=verify_login` 行为：任务启动后保留待验证账号，不再空跑。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- 红灯测试：`go test ./internal/dunetools -run TestManager_VerifyLogin_completesWaitingAccount_whenVerificationLinkExists -count=1` 修复前失败，显示 `Completed=0, Accounts=[]`。
+- 修复后同一测试通过。
+- `go test ./internal/dunetools -count=1` — 通过。
+- `go test ./internal/api -run 'DuneBatch|Dune|PublicExecution' -count=1` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server/` — 通过。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File ./run.ps1` — 服务重启成功。
+- 真实注册：`mode=register,total=1` 最终 `completed=1,failed=0,status=wait_verify,hasVerifyLink=true`。
+- 真实验证登录：`mode=verify_login` 最终 `completed=1,failed=0,account.status=done,hasCookie=true,hasAuthorization=true,error=""`。
+- `go test ./internal/... -count=1` — 全部通过。
+- `/api/health` — `status=ok`，`control_plane.ok=true`。
+
+#### 未完成事项
+- `run.ps1` 当前只有在 `bin/etl-server.exe` 不存在时才构建；源码修改后需要显式 `go build`，这和部分文档中“自动构建”的描述不一致。
+- `verify_login` 不会在服务重启后自动从 `accounts.json` 恢复 `wait_verify` 账号；需要当前内存 task 保留待验证账号。
+
+#### 注意事项
+- 本次未把 Gmail IMAP 应用密码写入文档。
+- 最终账号提取到了 Cookie 和 Authorization；`access_token` 字段为空，但当前 combined verify+login 成功路径仍判定完成。
+
+### 2026-06-21 Dune 注册流程实测
+
+#### 本次任务
+- 实测 Dune 注册流程；用户辅助处理浏览器人机验证。
+
+#### 处理结果
+- 使用 `mode=register,total=1` 启动真实注册任务。
+- 使用 Gmail IMAP 主机 `imap.gmail.com:993` 和用户提供的邮箱账号配置收信；未在文档中记录 IMAP 应用密码。
+- 任务完成：`status=done,completed=1,failed=0`。
+- 新账号进入 `wait_verify` 状态，并已抓取邮箱验证链接。
+
+#### 修改文件
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+- 运行态数据 `backend/data/dune/accounts.json` 新增 1 条注册账号记录。
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `curl.exe -s http://127.0.0.1:8000/api/health` — `status=ok`。
+- `POST /api/dune/batch/start` — `status=running,total=1`。
+- `GET /api/dune/batch/status` 轮询 — 最终 `status=done,completed=1,failed=0`。
+- 账号状态脱敏检查 — `username=u08091393,status=wait_verify,hasVerifyLink=true,error=""`。
+
+#### 未完成事项
+- 未继续执行邮箱验证链接后的登录/凭据提取阶段。
+
+#### 注意事项
+- 本次验证说明注册页跳转修复有效：未再直接落到 `/welcome` 阻断注册。
+- 本次未修改 Go 后端代码，未执行 `run.ps1` 重启。
+
+### 2026-06-21 Dune profile/cache 清理
+
+#### 本次任务
+- 解释 Dune profile/cache 的用途，并删除无用缓存。
+
+#### 处理结果
+- `profile` 是 Playwright/Chrome 持久浏览器用户目录，不全是缓存；其中 Cookies、Local Storage、IndexedDB 可能保存 Dune 登录态、Cloudflare clearance 和页面状态。
+- 已删除浏览器可自动重建的缓存目录：`Cache`、`Code Cache`、`GPUCache`、`GrShaderCache`、`ShaderCache`、`DawnWebGPUCache`、`DawnGraphiteCache`、`GPUPersistentCache`、`component_crx_cache`、`extensions_crx_cache`、`AutofillAiModelCache`、`optimization_guide_hint_cache_store`、`Shared Dictionary/cache`。
+- 已删除诊断输出：`backend/data/dune/api_captures`、`backend/data/dune/diag`、`backend/data/dune/screenshots`。
+- 已删除错误输出目录：`tools/backend`。
+- 已保留关键状态：`backend/data/dune/profiles/master`、Cookies/Local Storage/IndexedDB、`auth.json`、`accounts.json`。
+
+#### 修改文件
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+- 删除运行态缓存/诊断文件若干。
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- 清理前 `backend/data/dune/profiles` 约 846MB。
+- PowerShell 安全删除脚本删除 359 个缓存/诊断目录，约 892.14MB，无锁定残留。
+- 清理后 `backend/data/dune/profiles` 约 78MB。
+- `profiles/master` 和 `auth.json` 均保留。
+- 缓存目录抽样查找无输出。
+- `curl.exe -s http://127.0.0.1:8000/api/health` 返回 `status=ok`。
+
+#### 未完成事项
+- 无。
+
+#### 注意事项
+- 不要直接删除整个 `profiles/master`，否则可能丢失 Dune/Cloudflare 会话。
+- 删除缓存后浏览器会在下次运行时自动重建必要缓存，首次加载可能稍慢。
+
+### 2026-06-21 Dune 注册/登录: 修复 `/welcome` 乱跳转
+
+#### 本次任务
+- 修复 Dune 注册/登录自动化打开浏览器后直接跳到 `https://dune.com/welcome`，不是注册页面的问题。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 注册一打开就是 `/welcome` | 自动注册/登录模式从 `auth.json` 注入了旧账号 `auth-*` 登录态 Cookie | 自动注册/验证/登录模式清理并过滤 `auth-*` Cookie，只保留非登录态 Cookie |
+| 手动抓取模式不可靠 | `capture` 逻辑嵌在 register/login 分支里，`mode: "capture"` 会落到 unknown mode | 恢复独立 `capture` 分支 |
+| 手动抓取保存位置错误 | 脚本以 `tools/dune-playwright` 为 cwd，却用 `../backend` 拼路径 | 改为 `../../backend/data/dune/auth.json` |
+| welcome/onboarding 被当成异常跳转 | 登录后状态判断未识别 `/welcome` | 将 `/welcome` 作为已登录页面处理，优先提取凭据 |
+
+#### 修改文件
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `node --test tools/dune-playwright/register-login.test.mjs` — 修复前 3 项失败；修复后 3/3 通过。
+- `node --check tools/dune-playwright/register-login.mjs` — 通过。
+- `go test ./internal/dunetools -count=1` — 通过。
+- `go test ./internal/api -run 'DuneBatch|Dune|PublicExecution' -count=1` — 通过。
+
+#### 未完成事项
+- 未完成真实 Dune 端到端注册；第三方 Cloudflare/Turnstile 验证仍可能需要用户手动处理。
+
+#### 注意事项
+- 自动注册/登录不能再注入已有账号的 `auth-*` 登录态 Cookie；否则会复现 `/welcome` 跳转。
+- 本次未修改 Go 后端代码，未执行 `run.ps1` 重启。
+
+### 2026-06-21 Dune 注册/登录: auth.json 自动检测跳转
+
+#### 本次任务
+- 开始注册前先检查 `auth.json`，没有则自动切换到手动抓取模式
+
+#### 新增功能
+- `HasValidAuth()` — 检查 auth.json 是否存在且含有效 cookie
+- 自动重定向: full/register 模式启动时检测 auth.json，缺失时自动切换到 capture（打开浏览器让用户手动登录）
+- `TaskSnapshot.redirected_from` 字段标记重定向来源
+
+#### 修改文件
+- `internal/dunetools/playwright.go` — HasValidAuth()
+- `internal/dunetools/manager.go` — Start() 自动跳转逻辑
+- `internal/dunetools/types.go` — TaskSnapshot.RedirectedFrom
+- `frontend/src/features/download/DuneBatchReg.tsx` — 重定向提示
+- `frontend/src/features/download/duneBatchApi.ts` — redirected_from 字段
+
+#### 验证结果
+- 模拟缺失 auth.json → API 返回 `redirected_from: "register"` ✓
+- 全部测试通过
+
+### 2026-06-21 Dune 注册/登录: 人机验证优化 + 独立登录 + 手动抓取
+
+#### 本次任务
+- 解决 Dune 批量注册/登录时反复触发人机验证 (CF Turnstile) 的问题
+- 新增独立的"登录已有账号"模式（无需 IMAP）
+- 新增"手动抓取凭据"模式（浏览器手动登录 → 自动提取保存）
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 注册/登录反复人机验证 | `register` 模式不注入 cookie，且 `cf_clearance` 从 auth.json 注入可能过期反效果 | 全模式注入认证 cookie（排除 `cf_clearance`，由 profile 自行管理） |
+| 登录必须配 IMAP | `ResolveRunConfig` 无条件校验 IMAP | 仅 `full`/`register` 模式要求 IMAP |
+| 登录报 `username required` | `register-login.mjs` 对全模式强制要求 username | login/verify/capture 模式 username 可选 |
+| 账号列表空 | login 模式 task 快照在 upsert 前创建 | 直接在 task 初始化时包含 account |
+
+#### 新增功能
+- **独立登录模式** (`mode: "login"`): 输入邮箱+密码，Playwright 自动登录提取凭据
+- **手动抓取模式** (`mode: "capture"`): 打开浏览器，用户手动登录，系统 10 分钟内自动检测并保存 Cookie/JWT/TeamID
+- **Cookie 注入优化**: 排除 `cf_clearance` 避免过期反效果；认证 cookie 仍全模式注入
+
+#### 修改文件
+- `tools/dune-playwright/register-login.mjs` — cookie 注入重构 + capture 模式
+- `internal/dunetools/config.go` — IMAP 校验按需执行
+- `internal/dunetools/types.go` — 新增 LoginEmail/LoginPassword/ModeLogin/ModeCapture
+- `internal/dunetools/manager.go` — login/capture 模式分发 + runLogin/runCapture
+- `internal/dunetools/playwright.go` — 导出 Run() 方法
+- `frontend/src/features/download/DuneBatchReg.tsx` — UI: login/capture 模式
+- `frontend/src/features/download/duneBatchApi.ts` — API: login_email/login_password
+
+#### 接口变化
+- `POST /api/dune/batch/start` 新增 mode: `login`, `capture`
+- `StartRequest` 新增 `login_email`, `login_password` 字段
+- `login`/`verify_login`/`capture` 模式不再强制 IMAP
+
+#### 验证结果
+- `go test ./internal/...` — 全部通过
+- `go build` / `npm run build` — 通过
+- 服务重启成功
+
+#### 注意事项
+- `cf_clearance` 有时效限制，过期后需"手动抓取"刷新
+- Turnstile 图像验证无法自动化，headless:false 时用户可手动操作浏览器窗口
+
 ### 2026-06-21 Dune 批量注册: 全流程跑通
 
 #### 本次任务

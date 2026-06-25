@@ -30,6 +30,7 @@ func registerDuneBatchRoutes(api *gin.RouterGroup) {
 	api.GET("/dune/batch/accounts", HandleDuneBatchAccounts)
 	api.GET("/dune/batch/export", HandleDuneBatchExport)
 	api.POST("/dune/batch/captcha-resume", HandleDuneBatchCaptchaResume)
+	api.DELETE("/dune/batch/accounts", HandleDuneBatchDeleteAccounts)
 }
 
 func HandleDuneBatchStart(c *gin.Context) {
@@ -114,7 +115,7 @@ func HandleDuneBatchExport(c *gin.Context) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="dune_accounts.csv"`)
 	writer := csv.NewWriter(c.Writer)
-	if err := writer.Write([]string{"email", "username", "password", "status", "cookie", "authorization", "access_token", "team_id", "error"}); err != nil {
+	if err := writer.Write([]string{"email", "username", "password", "status", "created_at", "team_id", "cookie", "authorization", "access_token", "error"}); err != nil {
 		log.Warn().Err(err).Msg("dune_batch_export_header_failed")
 		return
 	}
@@ -124,10 +125,11 @@ func HandleDuneBatchExport(c *gin.Context) {
 			account.Username,
 			account.Password,
 			string(account.Status),
+			account.CreatedAt,
+			strconv.FormatInt(account.TeamID, 10),
 			account.Cookie,
 			account.Authorization,
 			account.AccessToken,
-			strconv.FormatInt(account.TeamID, 10),
 			account.Error,
 		}); err != nil {
 			log.Warn().Err(err).Msg("dune_batch_export_row_failed")
@@ -209,6 +211,55 @@ func persistAccount(root string, account dunetools.Account) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		log.Warn().Err(err).Msg("dune_batch_save_accounts_failed")
 	}
+}
+
+func HandleDuneBatchDeleteAccounts(c *gin.Context) {
+	var payload struct {
+		Emails []string `json:"emails"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil || len(payload.Emails) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "emails required"})
+		return
+	}
+	root := "."
+	if cfg != nil {
+		root = cfg.RootDir
+	}
+	emailSet := make(map[string]bool, len(payload.Emails))
+	for _, e := range payload.Emails {
+		emailSet[e] = true
+	}
+
+	// Delete from persisted accounts
+	allAccountsMu.Lock()
+	var kept []dunetools.Account
+	deleted := 0
+	for _, a := range allAccounts {
+		if emailSet[a.Email] {
+			deleted++
+		} else {
+			kept = append(kept, a)
+		}
+	}
+	allAccounts = kept
+	allAccountsMu.Unlock()
+
+	// Also remove from current batch task if running
+	mgr := currentDuneBatchManager()
+	mgr.RemoveAccounts(payload.Emails)
+
+	// Persist
+	path := accountsFilePath(root)
+	data, err := json.MarshalIndent(kept, "", "  ")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "marshal failed"})
+		return
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "save failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
 }
 
 func replaceDuneBatchManagerForTest(manager *dunetools.Manager) func() {

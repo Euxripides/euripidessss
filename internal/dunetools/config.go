@@ -24,18 +24,25 @@ const (
 
 func ResolveRunConfig(req StartRequest) (RunConfig, error) {
 	total := req.Total
-	if total <= 0 || total > maxBatchTotal {
+	mode := req.Mode
+	if mode == "" {
+		mode = ModeFull
+	}
+	needsIMAP := mode == ModeFull || mode == ModeRegister
+	if needsIMAP && (total <= 0 || total > maxBatchTotal) {
 		return RunConfig{}, fmt.Errorf("total must be between 1 and %d", maxBatchTotal)
 	}
 	domain := firstNonEmpty(req.Domain, os.Getenv(envDomain), defaultDomain)
 	imapHost := firstNonEmpty(req.IMAPHost, os.Getenv(envIMAPHost), defaultIMAPHost)
 	imapUser := firstNonEmpty(req.IMAPUser, os.Getenv(envIMAPUser))
 	imapPassword := firstNonEmpty(req.IMAPPassword, os.Getenv(envIMAPPassword))
-	if imapUser == "" {
-		return RunConfig{}, fmt.Errorf("IMAP user is required")
-	}
-	if imapPassword == "" {
-		return RunConfig{}, fmt.Errorf("IMAP password is required")
+	if needsIMAP {
+		if imapUser == "" {
+			return RunConfig{}, fmt.Errorf("IMAP user is required")
+		}
+		if imapPassword == "" {
+			return RunConfig{}, fmt.Errorf("IMAP password is required")
+		}
 	}
 	interval, err := resolveInterval(req.IntervalSecond)
 	if err != nil {

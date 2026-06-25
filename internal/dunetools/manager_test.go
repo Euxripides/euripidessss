@@ -7,7 +7,7 @@ import (
 )
 
 type fakeBrowser struct {
-	registerErr error
+	registerErr  error
 	verifyResult BrowserResult
 	verifyErr    error
 	loginResult  BrowserResult
@@ -112,6 +112,52 @@ func TestManager_rejectsStart_whenIMAPPasswordMissing(t *testing.T) {
 	// Then
 	if err == nil {
 		t.Fatalf("expected missing password error")
+	}
+}
+
+func TestManager_VerifyLogin_completesWaitingAccount_whenVerificationLinkExists(t *testing.T) {
+	// Given
+	manager := NewManager(ManagerOptions{
+		Browser:  fakeBrowser{},
+		Mailbox:  fakeMailbox{},
+		Verifier: fakeVerifier{},
+		Now:      func() time.Time { return time.Unix(100, 0).UTC() },
+	})
+	manager.task = TaskSnapshot{
+		Status: TaskStatusDone,
+		Accounts: []Account{{
+			Email:      "dune_waiting@aurore.online",
+			Username:   "u_waiting",
+			Password:   "AaBbCcDd1234!@#$",
+			Status:     AccountStatusWaitVerify,
+			VerifyLink: "https://dune.com/verify-email?token=abc",
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// When
+	if _, err := manager.Start(ctx, StartRequest{
+		Mode:           ModeVerifyLogin,
+		IntervalSecond: 1,
+	}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	// Then
+	snapshot := waitForTaskStatus(t, ctx, manager, TaskStatusDone)
+	if snapshot.Completed != 1 {
+		t.Fatalf("completed = %d, want 1; snapshot=%+v", snapshot.Completed, snapshot)
+	}
+	if len(snapshot.Accounts) != 1 {
+		t.Fatalf("accounts length = %d, want 1", len(snapshot.Accounts))
+	}
+	account := snapshot.Accounts[0]
+	if account.Status != AccountStatusDone {
+		t.Fatalf("account status = %q, error=%q", account.Status, account.Error)
+	}
+	if account.Cookie == "" || account.Authorization == "" || account.AccessToken == "" {
+		t.Fatalf("expected extracted credentials, got cookie=%q authorization=%q access=%q", account.Cookie, account.Authorization, account.AccessToken)
 	}
 }
 

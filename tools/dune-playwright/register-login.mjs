@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
-import { mkdirSync, readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 const DUNE_HOME = 'https://dune.com/';
 const AUTH_URL = 'https://dune.com/auth/login';
@@ -23,6 +23,33 @@ const STEALTH_ARGS = [
 function requiredString(v, name) { if (typeof v !== 'string' || !v.trim()) throw new Error(name + ' required'); return v.trim(); }
 function writeJSON(d) { process.stdout.write(JSON.stringify(d) + '\n'); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function shouldInjectCookie(name, mode) {
+  const lower = String(name || '').toLowerCase();
+  if (mode === 'capture') return true;
+  return !lower.startsWith('auth-');
+}
+
+function isLoggedInSurface(url, body) {
+  return url.includes('/welcome') || url.includes('/queries') || url.includes('/discover') || url.includes('/home')
+    || body.includes('Activity') || body.includes('My Queries') || body.includes('Discover') || body.includes('Dashboard');
+}
+
+function hasCapturedAuth(creds) {
+  return !!(creds && creds.cookie && (creds.authorization || creds.access_token));
+}
+
+function saveCapturedAuth(creds) {
+  const authFile = join(process.cwd(), '..', '..', 'backend', 'data', 'dune', 'auth.json');
+  mkdirSync(dirname(authFile), { recursive: true });
+  writeFileSync(authFile, JSON.stringify({
+    cookie: creds.cookie,
+    authorization: creds.authorization,
+    access_token: creds.access_token,
+    team_id: creds.team_id,
+    updated_at: new Date().toISOString(),
+  }, null, 2));
+}
 
 // ── DOM helpers ──
 
@@ -453,6 +480,15 @@ async function loginAndExtract(browser, page, account) {
       continue;
     }
 
+    // If Dune lands on welcome/home, extract credentials instead of chasing auth forms.
+    if (isLoggedInSurface(url, body)) {
+      const creds = await extractCredentials(browser, page);
+      if (hasCapturedAuth(creds)) {
+        console.error('LOGIN_SUCCESS_EXTRACTED url=' + url);
+        return creds;
+      }
+    }
+
     // Check for onboarding / team setup / interests pages
     if (body.includes('Skip') || body.includes('Get started') || body.includes('Maybe later')
         || body.includes('Create a team') || body.includes('Select your interests')
@@ -494,12 +530,12 @@ async function loginAndExtract(browser, page, account) {
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
     const url = page.url();
-    if (url.includes('/queries') || url.includes('/discover') || url.includes('/home')) {
+    if (url.includes('/welcome') || url.includes('/queries') || url.includes('/discover') || url.includes('/home')) {
       console.error('REACHED_DASHBOARD');
       break;
     }
     const body = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
-    if (body.includes('My Queries') || body.includes('Dashboard')) break;
+    if (isLoggedInSurface(url, body)) break;
     if (await clickFirstText(page, ['Skip', 'Next', 'Continue', 'Get started', 'Maybe later', 'Not now'], 800)) {
       console.error('SKIPPED');
       continue;
@@ -569,7 +605,7 @@ async function verifyAndLogin(browser, page, link, account) {
   await page.goto(DUNE_HOME, { waitUntil: 'networkidle', timeout: 20000 }).catch(() => {});
   await sleep(3000);
   let body = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
-  if (body.includes('Activity') || body.includes('My Queries') || body.includes('Dashboard')) {
+  if (isLoggedInSurface(page.url(), body)) {
     console.error('ALREADY_LOGGED_IN');
     return await extractCredentials(browser, page);
   }
@@ -587,7 +623,7 @@ async function verifyAndLogin(browser, page, link, account) {
   let pwInput = await firstVisible(page, ['input[type="password"]']);
   if (!emailInput || !pwInput) {
     body = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
-    if (body.includes('Activity') || body.includes('My Queries')) return await extractCredentials(browser, page);
+    if (isLoggedInSurface(page.url(), body)) return await extractCredentials(browser, page);
     // Fallback: go home, click login
     await page.goto(DUNE_HOME, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
     await sleep(2000);
@@ -607,8 +643,7 @@ async function verifyAndLogin(browser, page, link, account) {
     for (let i = 0; i < 15; i++) {
       await sleep(1000);
       const b2 = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
-      if (b2.includes('Activity') || b2.includes('My Queries') || b2.includes('Dashboard')) break;
-      if (page.url().includes('/queries') || page.url().includes('/home')) break;
+      if (isLoggedInSurface(page.url(), b2)) break;
       await clickFirstText(page, ['Skip', 'Next', 'Continue', 'Get started', 'Maybe later'], 800);
     }
   }
@@ -669,9 +704,9 @@ async function main() {
   const input = JSON.parse(readFileSync(0, 'utf8'));
   const mode = requiredString(input.mode, 'mode');
   const account = {
-    email: requiredString(input.email, 'email'),
-    username: requiredString(input.username, 'username'),
-    password: requiredString(input.password, 'password'),
+    email: (mode === 'capture') ? 'capture@dune.local' : requiredString(input.email, 'email'),
+    username: (mode === 'capture') ? '' : requiredString(input.username, 'username'),
+    password: (mode === 'capture') ? 'p' : requiredString(input.password, 'password'),
   };
   const profileDir = requiredString(input.profileDir, 'profileDir');
   const proxyServer = typeof input.proxyServer === 'string' ? input.proxyServer.trim() : '';
@@ -701,14 +736,28 @@ async function main() {
     const page = await browser.newPage();
     page.setDefaultTimeout(45000);
 
-    // Inject cookies if provided (same as playwright_bridge.js)
+    // For automated auth modes: clear existing Dune auth cookies from shared profile
+    // so we don't inherit a previous account's login session
+    if (mode === 'register' || mode === 'verify' || mode === 'login') {
+      try {
+        const existing = await browser.cookies();
+        for (const c of existing) {
+          if (c.domain && c.domain.includes('dune.com') && c.name.toLowerCase().startsWith('auth-')) {
+            await browser.clearCookies({ name: c.name, domain: c.domain, path: c.path || '/' });
+            console.error('CLEARED_COOKIE ' + c.name);
+          }
+        }
+      } catch (e) { console.error('CLEAR_COOKIE_ERR ' + e.message); }
+    }
+
+    // Inject cookies from auth.json (cf_clearance etc.)
     const injectCookie = typeof input.cookie === 'string' ? input.cookie.trim() : '';
     if (injectCookie) {
       const pairs = injectCookie.split(';').map(p => p.trim()).filter(p => p.includes('='));
       const duneCookies = pairs.map(p => {
         const eqIdx = p.indexOf('=');
         return { name: p.substring(0, eqIdx).trim(), value: p.substring(eqIdx + 1).trim(), domain: '.dune.com', path: '/' };
-      });
+      }).filter(c => shouldInjectCookie(c.name, mode));
       if (duneCookies.length > 0) {
         await browser.addCookies(duneCookies);
         console.error('COOKIES_INJECTED ' + duneCookies.length);
@@ -719,7 +768,7 @@ async function main() {
       const link = requiredString(input.verifyLink, 'verifyLink');
       writeJSON(await verifyAndLogin(browser, page, link, account));
     } else if (mode === 'register' || mode === 'login') {
-      // Navigate to dune.com homepage first
+      // Navigate to dune.com first (establishes session, passes CF), then click through to auth
       console.error('Loading homepage...');
       const homeOk = await navigateWithCFRetry(page, DUNE_HOME, 5);
       if (!homeOk) {
@@ -729,10 +778,31 @@ async function main() {
       console.error('Homepage loaded: ' + (await page.title()));
 
       if (mode === 'register') {
+        console.error('Registering account...');
         writeJSON(await registerAccount(page, account));
       } else {
         writeJSON(await loginAndExtract(browser, page, account));
       }
+      return;
+    } else if (mode === 'capture') {
+      // Capture: open browser, user manually logs in, extract + save to auth.json
+      console.error('CAPTURE: Open https://dune.com/home. Login manually. Waiting 10min...');
+      await page.goto('https://dune.com/home', { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
+      for (let i = 0; i < 120; i++) {
+        await sleep(5000);
+        const b = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
+        const u = page.url();
+        if (isLoggedInSurface(u, b)) {
+          const creds = await extractCredentials(browser, page);
+          if (hasCapturedAuth(creds)) {
+            saveCapturedAuth(creds);
+            writeJSON(creds);
+            return;
+          }
+          console.error('CAPTURE_AUTH_EMPTY url=' + u);
+        }
+      }
+      writeJSON({ ok: false, error: 'capture_timeout' });
     } else {
       throw new Error('unknown mode: ' + mode);
     }

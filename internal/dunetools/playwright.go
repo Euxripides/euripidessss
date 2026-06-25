@@ -29,12 +29,13 @@ func NewDefaultManager(root string, onAccountDone ...func(context.Context, Accou
 	if len(onAccountDone) > 0 {
 		sink = onAccountDone[0]
 	}
+	channel := os.Getenv("DUNE_BATCH_CHANNEL")
 	return NewManager(ManagerOptions{
 		Browser: PlaywrightBrowser{
 			ScriptPath:  scriptPath,
 			ProfileRoot: filepath.Join(root, "backend", "data", "dune"),
 			ProxyServer: os.Getenv("DUNE_BATCH_PROXY"),
-			Channel:     os.Getenv("DUNE_BATCH_CHANNEL"),
+			Channel:     channel,
 			AuthFile:    filepath.Join(root, "backend", "data", "dune", "auth.json"),
 			Timeout:     16 * time.Minute,
 		},
@@ -54,6 +55,27 @@ func (p PlaywrightBrowser) VerifyEmail(ctx context.Context, link string, account
 
 func (p PlaywrightBrowser) LoginAndExtract(ctx context.Context, account Account) (BrowserResult, error) {
 	return p.run(ctx, "login", account)
+}
+
+// Run executes the Playwright script with a custom mode (e.g., "capture")
+func (p PlaywrightBrowser) Run(ctx context.Context, mode string, account Account) (BrowserResult, error) {
+	return p.run(ctx, mode, account)
+}
+
+// HasValidAuth checks whether auth.json exists and contains usable credentials
+func (p PlaywrightBrowser) HasValidAuth() bool {
+	if p.AuthFile == "" {
+		return false
+	}
+	data, err := os.ReadFile(p.AuthFile)
+	if err != nil {
+		return false
+	}
+	var auth duneStoredAuth
+	if err := json.Unmarshal(data, &auth); err != nil {
+		return false
+	}
+	return auth.Cookie != ""
 }
 
 type duneStoredAuth struct {
@@ -92,7 +114,7 @@ func (p PlaywrightBrowser) run(ctx context.Context, mode string, account Account
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	profileDir := filepath.Join(p.ProfileRoot, "profiles", safeProfileName(account.Email))
+	profileDir := filepath.Join(p.ProfileRoot, "profiles", "master") // Shared master profile for CF clearance persistence
 	input := map[string]interface{}{
 		"mode":       mode,
 		"email":      account.Email,

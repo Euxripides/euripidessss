@@ -1,4 +1,4 @@
-type AccountStatus = 'pending' | 'registering' | 'verifying' | 'logging_in' | 'captcha' | 'done' | 'failed';
+type AccountStatus = 'pending' | 'registering' | 'verifying' | 'logging_in' | 'captcha' | 'done' | 'failed' | 'wait_verify' | 'banned';
 
 export type DuneBatchAccount = {
   readonly email: string;
@@ -16,6 +16,7 @@ export type DuneBatchTask = {
   readonly failed: number;
   readonly status: 'idle' | 'running' | 'stopped' | 'done';
   readonly accounts: readonly DuneBatchAccount[];
+  readonly redirected_from?: string;
 };
 
 export type DuneBatchStartValues = {
@@ -25,20 +26,28 @@ export type DuneBatchStartValues = {
   readonly imapHost: string;
   readonly imapUser: string;
   readonly imapPassword: string;
+  readonly mode: 'full' | 'register' | 'verify_login';
 };
 
 export async function startDuneBatch(values: DuneBatchStartValues): Promise<DuneBatchTask> {
+  const body: Record<string, unknown> = {
+    total: values.total,
+    domain: values.domain,
+    interval_seconds: values.intervalSeconds,
+    imap_host: values.imapHost,
+    imap_user: values.imapUser,
+    imap_password: values.imapPassword,
+    mode: values.mode,
+  };
+  // verify_login mode doesn't need total/domain
+  if (values.mode === 'verify_login') {
+    delete body.total;
+    delete body.domain;
+  }
   const payload = await requestJson('/api/dune/batch/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      total: values.total,
-      domain: values.domain,
-      interval_seconds: values.intervalSeconds,
-      imap_host: values.imapHost,
-      imap_user: values.imapUser,
-      imap_password: values.imapPassword,
-    }),
+    body: JSON.stringify(body),
   });
   return parseTask(payload);
 }
@@ -60,6 +69,15 @@ export async function exportDuneBatchCSV(): Promise<string> {
   const filename = parseDownloadFilename(response.headers.get('Content-Disposition')) || `dune_accounts_${Date.now()}.csv`;
   saveBlob(blob, filename);
   return filename;
+}
+
+export async function deleteDuneBatchAccounts(emails: readonly string[]): Promise<number> {
+  const payload = await requestJson('/api/dune/batch/accounts', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ emails }),
+  });
+  return isRecord(payload) && typeof payload.deleted === 'number' ? payload.deleted : 0;
 }
 
 async function requestJson(url: string, init: RequestInit): Promise<unknown> {
@@ -91,6 +109,7 @@ function parseTask(value: unknown): DuneBatchTask {
     failed: numberField(value, 'failed'),
     status: taskStatus(value.status),
     accounts: Array.isArray(value.accounts) ? value.accounts.filter(isRecord).map(parseAccount) : [],
+    redirected_from: typeof value.redirected_from === 'string' ? value.redirected_from : undefined,
   };
 }
 
@@ -124,6 +143,8 @@ function accountStatus(value: unknown): AccountStatus {
     case 'captcha':
     case 'done':
     case 'failed':
+    case 'wait_verify':
+    case 'banned':
       return value;
     default:
       return 'pending';

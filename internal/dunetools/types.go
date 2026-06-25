@@ -8,13 +8,15 @@ import (
 type AccountStatus string
 
 const (
-	AccountStatusPending    AccountStatus = "pending"
-	AccountStatusRegister   AccountStatus = "registering"
-	AccountStatusVerifyMail AccountStatus = "verifying"
-	AccountStatusLogin      AccountStatus = "logging_in"
-	AccountStatusCaptcha    AccountStatus = "captcha"
-	AccountStatusDone       AccountStatus = "done"
-	AccountStatusFailed     AccountStatus = "failed"
+	AccountStatusPending       AccountStatus = "pending"
+	AccountStatusRegister      AccountStatus = "registering"
+	AccountStatusVerifyMail    AccountStatus = "verifying"
+	AccountStatusLogin         AccountStatus = "logging_in"
+	AccountStatusCaptcha       AccountStatus = "captcha"
+	AccountStatusDone          AccountStatus = "done"
+	AccountStatusFailed        AccountStatus = "failed"
+	AccountStatusWaitVerify    AccountStatus = "wait_verify" // Registered, email received, waiting for verify+login
+	AccountStatusBanned        AccountStatus = "banned"      // Account blocked/suspended by Dune
 )
 
 type TaskStatus string
@@ -27,28 +29,30 @@ const (
 )
 
 type Account struct {
-	Email         string `json:"email"`
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	Cookie        string `json:"cookie,omitempty"`
-	Authorization string `json:"authorization,omitempty"`
-	AccessToken   string `json:"access_token,omitempty"`
-	TeamID        int64  `json:"team_id,omitempty"`
+	Email         string        `json:"email"`
+	Username      string        `json:"username"`
+	Password      string        `json:"password"`
+	Cookie        string        `json:"cookie,omitempty"`
+	Authorization string        `json:"authorization,omitempty"`
+	AccessToken   string        `json:"access_token,omitempty"`
+	TeamID        int64         `json:"team_id,omitempty"`
 	Status        AccountStatus `json:"status"`
-	Error         string `json:"error,omitempty"`
-	CreatedAt     string `json:"created_at,omitempty"`
-	CaptchaFile   string `json:"captcha_file,omitempty"`
+	Error         string        `json:"error,omitempty"`
+	CreatedAt     string        `json:"created_at,omitempty"`
+	CaptchaFile   string        `json:"captcha_file,omitempty"`
+	VerifyLink    string        `json:"verify_link,omitempty"`
 }
 
 type TaskSnapshot struct {
-	ID        string     `json:"id"`
-	Total     int        `json:"total"`
-	Completed int        `json:"completed"`
-	Failed    int        `json:"failed"`
-	Status    TaskStatus `json:"status"`
-	Accounts  []Account  `json:"accounts"`
-	StartedAt string     `json:"started_at,omitempty"`
-	UpdatedAt string     `json:"updated_at,omitempty"`
+	ID           string     `json:"id"`
+	Total        int        `json:"total"`
+	Completed    int        `json:"completed"`
+	Failed       int        `json:"failed"`
+	Status       TaskStatus `json:"status"`
+	Accounts     []Account  `json:"accounts"`
+	StartedAt    string     `json:"started_at,omitempty"`
+	UpdatedAt    string     `json:"updated_at,omitempty"`
+	RedirectedFrom string   `json:"redirected_from,omitempty"`
 }
 
 type StartRequest struct {
@@ -58,7 +62,18 @@ type StartRequest struct {
 	IMAPHost       string `json:"imap_host"`
 	IMAPUser       string `json:"imap_user"`
 	IMAPPassword   string `json:"imap_password"`
+	Mode           string `json:"mode"` // "full" (default), "register", "verify_login", "login"
+	LoginEmail     string `json:"login_email"`
+	LoginPassword  string `json:"login_password"`
 }
+
+const (
+	ModeFull        = "full"
+	ModeRegister    = "register"
+	ModeVerifyLogin = "verify_login"
+	ModeLogin       = "login"
+	ModeCapture     = "capture"
+)
 
 type MailConfig struct {
 	Host      string
@@ -84,6 +99,7 @@ type BrowserResult struct {
 	TeamID        int64  `json:"team_id"`
 	Error         string `json:"error"`
 	HTML          string `json:"html"`
+	Banned        bool   `json:"banned"`
 }
 
 type BrowserClient interface {

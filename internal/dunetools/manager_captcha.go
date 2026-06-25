@@ -22,7 +22,7 @@ func (m *Manager) RetryCaptcha(acct Account) {
 func (m *Manager) retryAccount(parentCtx context.Context, cfg RunConfig, account Account) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parentCtx), 10*time.Minute)
 	defer cancel()
-	if m.runAccount(ctx, cfg, account) && m.onAccountDone != nil {
+	if m.runAccount(ctx, cfg, account, ModeFull) && m.onAccountDone != nil {
 		m.onAccountDone(ctx, m.accountByEmail(account.Email))
 	}
 	m.mu.Lock()
