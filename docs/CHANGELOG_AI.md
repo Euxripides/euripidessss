@@ -1,3 +1,618 @@
+### 2026-06-25 Dune query chained parameter return fix
+
+#### Task
+- 按完整 Dune 查询链路修正账号查询：选择已注册账号登录，获取 Cookie/Authorization/team 参数，SQL 自动创建 query，执行得到 `execution_id`，再用 `/public/execution` 取表格。
+- 修复前面接口生成的 `query_id` 没有回传到最终响应，导致后续分页/导出参数断链的问题。
+
+#### New Functionality
+- `/api/dune/query` 的账号 web 查询会在最终响应中返回自动 `CreateQuery` 产生的 `query_id`。
+- 回归测试覆盖“只传 `sql + account_email`，后端自动完成登录、建 query、执行、取表格并返回 rows/query_id/execution_id”。
+
+#### Modified Files
+- `internal/api/dune_web_query.go`
+- `internal/api/dune_query_handlers.go`
+- `internal/api/dune_account_query_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### API Changes
+- 无接口路径或请求 schema 变更。
+- 修正响应行为：账号 web 查询返回自动创建的 `query_id`，不再返回 `0`。
+
+#### Database Changes
+- 无。
+
+#### Frontend Changes
+- 无。
+
+#### Verified Commands
+- `go test ./internal/api -run TestHandleDuneSQLQueryUsesSelectedAccountLoginForWebQuery -count=1`
+- `go test ./internal/api -count=1`
+- `go test ./internal/... -count=1`
+- `go build -o bin/etl-server.exe ./cmd/server`
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$env:DUNE_QUERY_CDP_PORT="9222"; & .\run.ps1'`
+- `curl.exe -s http://127.0.0.1:8000/api/health`
+
+#### Open Items
+- 真实 Dune smoke 仍被 Dune Cloudflare 登录 block 页面拦截；本地参数链路已由 HTTP handler 测试验证。
+
+#### Notes
+- 完整参数链：`account_email` -> 登录提取 `cookie/authorization/access_token/team_id` -> `CreateQuery` 得到 `query_id` -> `ExecuteQuery` 得到 `execution_id` -> `/public/execution` 用 `cookie + query_id + execution_id` 拉表格 rows。
+
+### 2026-06-25 Dune account JWT expiry handling
+
+#### Task
+- 解决已保存 Dune 账号 JWT 过期后 `/api/dune/query` 继续复用旧 token 的问题。
+- 补充服务重启后第一次账号查询不会加载 `accounts.json` 的回归修复。
+
+#### New Functionality
+- 账号查询现在会解析 `auth-id-token` / Bearer JWT 的 `exp`，过期或 60 秒内到期时自动跳过本地保存 auth 和短期登录缓存，进入后台登录刷新流程。
+- `/api/dune/query` 首次使用 `account_email` 时会先初始化并加载持久化账号，避免必须先访问 `/api/dune/batch/accounts`。
+
+#### Modified Files
+- `internal/api/dune_auth_jwt.go`
+- `internal/api/dune_account_query.go`
+- `internal/api/dune_account_auth_expiry_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### API Changes
+- 无本地接口路径或 JSON schema 变更。
+- `/api/dune/query` 的账号认证行为变更：过期 JWT 不再被视为可用凭证。
+
+#### Database Changes
+- 无。
+
+#### Frontend Changes
+- 无。
+
+#### Verified Commands
+- `go test ./internal/api -run TestHandleDuneSQLQueryReloginsWhenSavedAccountAuthExpired -count=1`
+- `go test ./internal/api -run TestFindDuneQueryAccountLoadsPersistedAccountsOnFirstQuery -count=1`
+- `go test ./internal/api -count=1`
+- `go test ./internal/... -count=1`
+- `go build -o bin/etl-server.exe ./cmd/server`
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$env:DUNE_QUERY_CDP_PORT="9222"; & .\run.ps1'`
+- `curl.exe -s http://127.0.0.1:8000/api/health`
+
+#### Open Items
+- 线上 Dune smoke 已进入后台重登阶段，但当前浏览器登录被 Dune Cloudflare block 页面拦截，用户提供的 Ray ID 为 `a11297b48898e389`。
+- 需要一个 Dune 接受的有效网页登录会话或 Dune API key，才能完成真实查询闭环。
+
+#### Notes
+- `stealth-config.cjs` 不能续期 Dune JWT；它只影响浏览器自动化表征和 Cloudflare 处理。
+- 正常 Chrome 能打开 Dune 首页，不代表 GraphQL query creation 所需的 `auth-id-token` 仍有效。
+
+### 2026-06-25 Dune stealth 自动 Cloudflare 处理修复
+
+#### 本次任务
+- 用户明确要求：`playwright-go-stealth-config` 的目的就是跳过 Cloudflare，不应再要求用户手动点击验证。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| shared stealth solver 看到 `cf_clearance` 就立即认为 Cloudflare 已通过 | `solveCloudflareWithStealth()` 没有同时确认页面已经离开 `Just a moment...` / challenge surface，可能被旧 cookie 误导 | solver 改为先检测页面是否仍是 Cloudflare；只有页面不再是 Cloudflare 且有 clearance，或页面已正常，才返回成功 |
+| query bridge 仍会退到人工点击 | `playwright_bridge.js` 的 Cloudflare 分支在 stealth 失败后调用 `waitForManualCloudflare()` | 查询 bridge 改为只使用 stealth 自动处理；失败返回 `cloudflare_stealth_timeout`，不再提示人工点击 |
+| shared solver 自动动作不完整 | 旧 shared solver 只尝试 iframe checkbox/label 点击 | 下沉更多自动策略：页面中心点击、可见表单/按钮提交、Cloudflare restart event、周期 reload |
+
+#### 修改文件
+- `tools/dune-playwright/stealth-config.cjs`
+- `backend/data/dune/playwright_bridge.js`
+- `tools/dune-playwright/register-login.test.mjs`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名本地 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- 新增回归测试先失败，确认旧实现存在两个问题：clearance cookie 误判、query bridge 人工点击 fallback。
+- `node --test tools/dune-playwright/register-login.test.mjs --test-name-pattern "shared stealth|query bridge relies"` — 修复后通过。
+- `node --test tools/dune-playwright/register-login.test.mjs` — 18/18 通过。
+- `node --check tools/dune-playwright/stealth-config.cjs && node --check tools/dune-playwright/register-login.mjs && node --check backend/data/dune/playwright_bridge.js` — 通过。
+- `git diff --check -- tools/dune-playwright/stealth-config.cjs backend/data/dune/playwright_bridge.js tools/dune-playwright/register-login.test.mjs` — 通过，仅有既有 CRLF 提示。
+- `go build -o bin/etl-server.exe ./cmd/server` — 通过。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$env:DUNE_QUERY_CDP_PORT="9222"; & .\run.ps1'` — 已重启后端，PID 20616。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`。
+- Bridge refresh smoke — `status=0`，脱敏长度 `cookie_len=5317`、`authorization_len=1192`、`access_token_len=0`，无人工点击提示。
+- `POST /api/dune/query`，SQL `select 1 as smoke_value` — 返回 HTTP 401；日志显示直连 GraphQL 先遇到 Cloudflare 403，Playwright fallback 不再提示人工点击，自动请求后返回 `Dune HTTP 401`。
+
+#### 未完成事项
+- 当前 Dune 登录态仍然过期，真实 SQL 还没有拿到 `execution_id/query_id/rows`；这需要 fresh Dune auth JWT，不是 Cloudflare 点击问题。
+
+#### 注意事项
+- 现在查询 bridge 不再要求用户手动点 Cloudflare。如果 stealth 自动处理失败，会明确返回 `cloudflare_stealth_timeout`。
+- 仍需区分两个层次：Cloudflare clearance 通过后，Dune GraphQL 还会校验账号 JWT；过期 JWT 会继续返回 401。
+
+### 2026-06-25 Dune query Chrome/CDP auth verification
+
+#### 本次任务
+- 继续跑通 Dune 查询流程；自动化显示 Cloudflare block，但用户反馈普通 Chrome 可以正常访问官网。
+
+#### 修复的问题
+| 问题 | 根因 | 修复/结论 |
+|------|------|-----------|
+| 后端直连 Dune GraphQL 返回 Cloudflare 403 | 普通 HTTP 请求未复用浏览器通过 Cloudflare 后的会话 | 查询 bridge 增加 CDP 复用能力，可接入用户可见 Chrome 会话 |
+| Playwright fallback 之前仍可能启动独立 Chromium/profile | 查询链路没有优先使用本机 Chrome 或用户指定 profile/CDP | 增加 `DUNE_QUERY_PROFILE_DIR`、`DUNE_QUERY_CHANNEL`、`DUNE_QUERY_CHROME_PATH`、`DUNE_QUERY_CDP_URL`/`DUNE_QUERY_CDP_PORT` 等入口 |
+| 官网首页可打开但查询仍 401 | CDP Chrome 中的 `auth-id-token` JWT 已过期，Dune `/api/auth/session` reload 后返回 401 | 当前不是有效登录态；需要在同一个 9222 Chrome 窗口重新登录 Dune 后继续验证 |
+| 已集成 stealth 但看起来“不起作用” | stealth 只解决浏览器指纹/Cloudflare clearance；不能刷新已经过期的 Dune 登录 JWT | 运行时证据显示有 `cf_clearance`，但 GraphQL 返回 `jwt expired` |
+
+#### 修改文件
+- `backend/data/dune/playwright_bridge.js`
+- `tools/dune-playwright/register-login.test.mjs`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名本地 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `node --check backend/data/dune/playwright_bridge.js` — 通过。
+- `node --test tools/dune-playwright/register-login.test.mjs --test-name-pattern "CDP|query bridge"` — 通过。
+- `go build -o bin\\etl-server.exe ./cmd/server` — 通过。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\run.ps1` — 已用 `DUNE_QUERY_CDP_PORT=9222` 重启后端。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`。
+- `curl.exe -s http://127.0.0.1:9222/json/list` — 可看到 Dune 页面 `https://dune.com/home`。
+- CDP refresh smoke — 可从 Chrome 会话读取 Dune cookie 和 `Authorization`，未输出明文。
+- `POST /api/dune/query` 使用 `select 1 as smoke_value` — 仍返回 HTTP 401；进一步探测确认 GraphQL 响应为 `jwt expired`。
+- 直接在 CDP 页面上下文请求 `POST https://dune.com/public/graphql?operationName=GetTeams` — 返回 HTTP 401 JSON `jwt expired`，说明已过 Cloudflare 但 Dune 登录 JWT 失效。
+
+#### 未完成事项
+- 需要用户在同一个远程调试 Chrome 窗口中重新登录 Dune；登录完成后重跑 refresh 和最小 SQL 查询。
+
+#### 注意事项
+- 本轮探测产生的临时 cookie/token 文件已删除。
+- “能打开 Dune 首页”不等于“查询 API 已登录”；当前 create-query GraphQL 需要未过期的 Dune JWT。
+- `playwright-go-stealth-config` 已按项目真实执行链路翻译为 Node Playwright 的 `tools/dune-playwright/stealth-config.cjs`；后续如果仍失败，应先区分 Cloudflare clearance 失败还是 Dune 账号 token 失败。
+
+### 2026-06-22 Dune Cloudflare stealth 配置集成
+
+#### 本次任务
+- 将 `D:/app/桌面/playwright-go-stealth-config.md` 中的 Dune Cloudflare/Turnstile stealth 配置集成进项目；出现验证时先使用该配置，测试通过后交付。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 现有 Cloudflare 流程只有常规点击和人工等待，缺少统一 stealth 指纹配置 | 文档里的启动参数、UA/header、webdriver/plugins/WebGL/Canvas/chrome runtime 修补没有接入实际 Dune 浏览器链路 | 新增 `tools/dune-playwright/stealth-config.cjs`，登录脚本和查询桥接共用同一套配置 |
+| 账号登录/查询桥接遇到 Turnstile 时没有先尝试基于配置自动处理 | `register-login.mjs` 与 `playwright_bridge.js` 各自处理 Cloudflare，逻辑分散 | 两处都在导航 Dune 前 `applyStealthConfig(page)`，Cloudflare 分支先调用 `solveCloudflareWithStealth()` |
+| 配置接入缺少回归约束 | 原测试只覆盖可见浏览器和欢迎页流程 | 新增测试锁定共享 stealth 配置、导航前注入、查询桥接复用和 `cf_clearance` 检测 |
+
+#### 修改文件
+- `tools/dune-playwright/stealth-config.cjs`
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `backend/data/dune/playwright_bridge.js`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `node --test tools/dune-playwright/register-login.test.mjs` — 先补测试后失败于缺少 `stealth-config.cjs`；实现后 13/13 通过。
+- `node --check tools/dune-playwright/stealth-config.cjs` — 通过。
+- `node --check tools/dune-playwright/register-login.mjs` — 通过。
+- `node --check backend/data/dune/playwright_bridge.js` — 通过。
+- Dune bridge refresh smoke：脱敏输出 `status=0`、`hasCookie=true`、`hasAuthorization=true`，stderr 记录 `STEALTH_CF_CLEARANCE_FOUND`。
+- `go test ./internal/...` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server` — 通过。
+- `npm run build` (frontend) — 通过，仅保留既有 Vite chunk size warning。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./run.ps1` — 已重启后端，PID 34968。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`。
+
+#### 未完成事项
+- 未引入 Go `playwright-go` 依赖；项目当前实际执行 Dune 浏览器的是 Node Playwright 脚本，本次按文档行为集成到现有链路。
+- 如 Dune 后续仍弹出 Cloudflare，浏览器会保持可见，用户点击后脚本继续自动提取 cookie/参数并执行查询。
+
+#### 注意事项
+- 真实 smoke 只记录脱敏状态，没有在文档中保存 cookie/token 明文。
+- 健康检查里的 `analysis_plane` 缺少 `tools/duckdb/duckdb.exe` 为既有问题，与 Dune stealth 集成无关。
+
+### 2026-06-22 Dune Cloudflare 人工点击接管
+
+#### 本次任务
+- 用户要求如果 Dune 自动登录/查询过程中出现 Cloudflare，就让用户点击验证。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| Dune SQL 选账号刷新认证遇到 Cloudflare 时用户无法点击 | 查询账号自动登录使用 `Headless: true`，浏览器不可见 | 改为 `Headless: false`，Cloudflare 出现时用户可直接在弹出的浏览器窗口点击 |
+| 首页 Cloudflare 会直接返回 `cloudflare_blocked_homepage` | `register-login.mjs` 在 `navigateWithCFRetry()` 失败后直接返回错误，未进入人工等待 | 新增 `waitForManualCloudflare()`，首页 Cloudflare 失败后等待用户点击，验证通过自动继续 |
+| 查询 fallback 浏览器窗口被藏到屏幕外 | `playwright_bridge.js` 使用 `--window-position=-32000,-32000` | 改为可见窗口位置，并在 Dune 首页检测到 Cloudflare 时等待用户点击 |
+
+#### 修改文件
+- `internal/api/dune_account_query.go`
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `backend/data/dune/playwright_bridge.js`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `node --test tools/dune-playwright/register-login.test.mjs --test-name-pattern "Cloudflare|visible"` — 修复前新增用例失败，修复后通过。
+- `node --test tools/dune-playwright/register-login.test.mjs` — 11/11 通过。
+- `node --check tools/dune-playwright/register-login.mjs && node --check backend/data/dune/playwright_bridge.js` — 通过。
+- `go test ./internal/api -run TestHandleDuneSQLQueryUsesSelectedAccountLoginForWebQuery -count=1` — 通过。
+- `go test ./internal/dunetools -count=1` — 通过。
+- `go test ./internal/...` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server/` — 通过。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./run.ps1` — 已重启后端，PID 20920。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`。
+
+#### 未完成事项
+- 未在无人值守状态下触发真实 Cloudflare 等待，因为新行为会停在可见浏览器等待用户点击；人工测试时看到 Cloudflare 直接在浏览器里点击即可。
+
+#### 注意事项
+- `tools/dune-playwright/register-login.mjs` 已超过 250 pure LOC，本次按最小修复原则未重构，只改 Cloudflare 人工接管路径。
+- `backend/data/dune/playwright_bridge.js` 虽在运行时数据目录，但当前是 Dune 查询 fallback 的实际执行脚本。
+
+### 2026-06-22 Dune SQL 查询真实测试与选账号认证复用
+
+#### 本次任务
+- 对 Dune SQL 查询账号选择链路进行真实测试，记录请求参数、失败点和外部响应，并修复选账号后无条件后台登录导致长时间卡住的问题。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 选择已保存 Cookie/Auth 的 done 账号后仍先后台登录，真实请求卡 4-5 分钟 | `applyDuneAccountAuth` 查到账号后无条件调用 `duneQueryAccountLogin`，没有先使用账号历史中已经保存的 Cookie/Authorization/access_token/team_id | 新增账号保存 auth 优先分支；完整参数存在时直接注入查询 payload，并同步保存 auth 文件；仅缺少完整参数时才走 Playwright 登录刷新 |
+| 修复后真实查询仍没有表格结果 | 当前所有 done 账号的 Authorization JWT 已过期，Dune CreateQuery 返回 Cloudflare 403，浏览器 fallback 返回 Dune HTTP 401 | 记录为外部认证状态阻塞；本地流程已从 286.8s 登录卡住变为 17.6s 内明确返回 `auth_required=true` |
+| `run.ps1` 重启后仍跑旧代码 | 脚本只在 `bin/etl-server.exe` 不存在时构建，源码修改后不会自动重建已有二进制 | 本次先 `go build -o bin/etl-server.exe ./cmd/server/` 再执行 `run.ps1`；已在注意事项记录 |
+
+#### 修改文件
+- `internal/api/dune_account_query.go`
+- `internal/api/dune_account_query_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+- `POST /api/dune/query` 的 `account_email` 行为优化：优先使用该账号保存的网页认证参数，缺失时才后台登录刷新。
+
+#### 数据库变化
+- 无数据库结构变更。
+- 本机 `backend/data/dune/auth.json` 会被更新为所选账号的网页认证参数，并保留原 API Key。
+
+#### 前端变化
+- 无前端代码变更。
+
+#### 真实测试记录
+| 项目 | 值 |
+|------|----|
+| SQL | `select 1 as smoke_value` |
+| account_email | `ldj1009538134+dune_2d685f01@gmail.com` |
+| 账号状态 | `done` |
+| team_id | `11` |
+| cookie_len | `4680` |
+| authorization_len | `1192` |
+| access_token_len | `0` |
+| 修复前结果 | 约 `286.8s` 后 502，后台登录 `cloudflare_blocked_homepage` |
+| 修复后结果 | 约 `17.6s` 后 401，`auth_required=true`，无 `execution_id/query_id/rows` |
+| Dune 直接响应 | CreateQuery HTTP 403，Cloudflare `Just a moment...` |
+| Dune 浏览器 fallback | HTTP 401 |
+| JWT 过期证据 | 首个账号 `exp_local=2026-06-21T16:13:58`；全部 done 账号 Authorization 均已过期，最新到 `2026-06-22T00:19:26` |
+
+#### 验证结果
+- `go test ./internal/api -run TestHandleDuneSQLQueryUsesSavedAccountAuthBeforeLogin -count=1` — 修复前失败，修复后通过。
+- `go test ./internal/api -count=1` — 通过。
+- `go test ./internal/...` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server/` — 通过。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./run.ps1` — 已重启后端，PID 41828。
+- `npm run build` (frontend) — 通过，仅有既有 Vite chunk size warning。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`；`analysis_plane` 仍提示缺少 `tools/duckdb/duckdb.exe`，与 Dune 查询无关。
+
+#### 未完成事项
+- 当前账号认证全部过期，无法完成真实 Dune 表格返回；需要刷新账号登录态后再复测，目标是返回 `execution_id/query_id/rows`。
+
+#### 注意事项
+- 本地强制重登卡住问题已修复；剩余 401/403 是 Dune 外部认证/Cloudflare 状态，不是前端账号选择字段丢失。
+- 后端源码改动后不要只运行 `run.ps1`，需先构建新 `bin/etl-server.exe`，否则会继续启动旧二进制。
+
+### 2026-06-22 Dune 查询 5 项 bug 修复
+
+#### 本次任务
+- 全链路代码审查 Dune SQL 查询功能，发现并修复 5 项 bug：登录缓存缺失、全局可变函数注入、超时遗漏、错误消息吞噬、前端导出/翻页缺 cookie。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 每次选账号查询都重开 Playwright 登录（无缓存） | `loginDuneQueryAccount` 直接调用无缓存层 | 新增 `loginDuneQueryAccountWithCache` 内存缓存，TTL 5min |
+| `duneQueryAccountLogin` 全局可变函数，并发测试竞态 | 测试覆盖 `var` 函数指针无锁保护 | 改为 `duneAccountLoginFunc` 类型 + `SetDuneAccountLoginForTest` 注入 |
+| 查询 HTTP handler 无 context deadline，Playwright 可能无限挂起 | `applyDuneAccountAuth` 未检查 ctx deadline | 在 ctx 无 deadline 时兜底 `context.WithTimeout(ctx, 10*time.Minute)` |
+| `fetchDunePreviewPage` 降级到 API 路径时吞掉原始错误 | Cookie 不可用 + apiKey 为空时直接调用 `fetchDuneResultPage`，返回无意义错误 | 在调用前检查 `apiKey` 是否为空，返回 `Cookie 不可用且未配置 API Key` |
+| 前端翻页/导出不传 cookie，仅依赖后端 auth 文件降级 | `DunePageValues` / `DuneExportValues` 类型缺失 `cookie` 字段 | 类型新增 `cookie` 字段；`loadDunePage` / `exportDuneExcel` / `DuneQueryPanel` 传参 |
+
+#### 修改的文件
+- `internal/api/dune_account_query.go` — 缓存 + 函数注入 + 超时兜底
+- `internal/api/dune_account_query_test.go` — 测试改用 SetDuneAccountLoginForTest
+- `internal/api/dune_query_handlers.go` — fetchDunePreviewPage 错误增强
+- `frontend/src/features/download/duneApi.ts` — 类型 + 请求体新增 cookie
+- `frontend/src/features/download/DuneQueryPanel.tsx` — 调用时传入 auth?.cookie
+
+#### 已验证
+- `go test ./internal/... -count=1` — 全量通过
+- `go build -o bin\etl-server.exe .\cmd\server` — 通过
+- `npx tsc --noEmit` (frontend) — 通过
+- `.\run.ps1` — 已自动重启，PID 40548
+
+### 2026-06-22 Dune SQL 查询账号自动登录提参
+
+#### 本次任务
+- Dune SQL 查询页新增账号选择，用户选择已注册验证登录且状态正常的账号后，后端后台静默登录该账号，自动获取 Cookie/Authorization/access_token/team_id，并继续调用官网查询链路返回表格结果。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| Dune 查询需要用户手动填 Cookie/Token 等参数 | 查询页只支持手填 API Key/Cookie 或使用已保存鉴权，未与批量注册账号状态、后台登录提参和官网查询 API 串联 | `POST /api/dune/query` 新增 `account_email`；后端校验账号状态后用 headless Playwright 登录提参，再执行 CreateQuery/ExecuteQuery/public execution 拉取结果 |
+| 长邮箱账号可能撑破移动端设置区 | 账号值作为 Select 内容进入 grid 子项，默认 min-content 宽度会撑开布局 | Dune 设置网格子项加 `min-width: 0`，页头状态区允许换行，长账号在输入框内省略 |
+
+#### 修改文件
+- `internal/api/dune_account_query.go`
+- `internal/api/dune_account_query_test.go`
+- `internal/api/dune_query_handlers.go`
+- `internal/dunetools/playwright.go`
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `frontend/src/features/download/DuneQueryPanel.tsx`
+- `frontend/src/features/download/duneApi.ts`
+- `frontend/src/features/download/duneBatchApi.ts`
+- `frontend/src/styles/layout.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- `POST /api/dune/query` 请求体新增可选字段 `account_email`。
+- 复用 `GET /api/dune/batch/accounts` 读取可选账号，无新增路由。
+
+#### 数据库变化
+- 无数据库结构变更。
+- 会更新本机文件存储中的 Dune 账号鉴权字段和 auth 文件网页鉴权参数；保存时保留原有 API Key。
+
+#### 前端变化
+- `下载 -> dune -> 数据查询` 新增“查询账号（自动登录）”下拉框。
+- 账号选中后自动切换到“官网（Cookie/账号）”查询模式。
+- 页头新增可用账号数量，并修复移动端状态标签与长邮箱显示。
+
+#### 验证结果
+- `go test ./internal/api -run TestHandleDuneSQLQueryUsesSelectedAccountLoginForWebQuery -count=1` — 通过。
+- `node --test tools/dune-playwright/register-login.test.mjs` — 9/9 通过。
+- `node --check tools/dune-playwright/register-login.mjs` — 通过。
+- `cd frontend && ./node_modules/.bin/tsc --noEmit` — 通过。
+- `go test ./internal/...` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server` — 通过。
+- `cd frontend && ./node_modules/.bin/vite build` — 通过，仅有既有 chunk size warning。
+- `.\run.ps1` — 已重启项目，后端 PID 42044。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`。
+- Playwright 页面 QA — 桌面和 390px 移动端确认账号选择、账号下拉、选账号自动切模式、长邮箱省略和按钮区域均可用。
+
+#### 未完成事项
+- 未发起真实 Dune 线上 SQL 执行，避免触发实际账号外部登录风控或 Cloudflare；查询链路用本地 httptest 端到端覆盖。
+
+#### 注意事项
+- 如果真实账号后台登录遇到 Cloudflare/风控，后端会返回账号登录失败；需要先确保批量注册账号仍处于可登录状态。
+- 自动登录刷新网页鉴权参数不会清空已保存 API Key。
+
+### 2026-06-22 Dune welcome/onboarding 流程顺序优化
+
+#### 本次任务
+- 继续优化 Dune 登录成功后的 welcome/onboarding 自动处理流程，减少输入、选项、跳过、下一步之间反复卡住的问题。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| welcome 流程仍可能卡住 | 自动处理顺序不够稳定：先尝试 Skip，再填输入，再点选项/Continue；同时 Continue/Next 可能处于 disabled 状态却仍被尝试点击 | 改为先填空输入框，再只点击启用态 Continue/Next；无输入可填时才尝试 Skip；最后才点安全选项并再次 Continue |
+
+#### 修改文件
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- 新增红灯测试修复前失败：缺少 `clickWelcomeAction()`。
+- `node --check tools/dune-playwright/register-login.mjs` — 通过。
+- `node --test tools/dune-playwright/register-login.test.mjs` — 8/8 通过。
+- Playwright 本地 Chromium DOM QA — 输入框场景先填 `longu` 后点 `Next`；disabled Next 场景点 `Skip`；选项场景点 `Analytics` 后点 `Next`。
+
+#### 未完成事项
+- 未进行真实 Dune 线上 welcome 端到端重跑；本次验证覆盖脚本状态机和本地 Chromium DOM 行为。
+
+#### 注意事项
+- 本次未修改 Go 后端代码，未执行 `run.ps1` 重启。
+
+### 2026-06-22 Dune welcome/onboarding 自动填入短文本
+
+#### 本次任务
+- 修复 Dune 登录成功后的 welcome 页面输入框自动填入字符串过长，导致“下一步”经常不可点击、流程卡住的问题。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| welcome 输入框填入值过长，下一步不可点击 | `fillWelcomeInputs()` 会写入 `Personal`、`Independent`、`Analyst` 或完整 username，可能超过当前 Dune welcome 表单长度限制 | username/handle 统一截断到 5 字符；team/company/role/name fallback 改为 `Solo`、`Indie`、`Data`、`User1` |
+
+#### 修改文件
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- 新增红灯测试修复前失败：`expected named short welcome input fallbacks`。
+- `node --check tools/dune-playwright/register-login.mjs` — 通过。
+- `node --test tools/dune-playwright/register-login.test.mjs` — 7/7 通过。
+- Playwright 本地 DOM QA — 抽取真实 `fillWelcomeInputs()` 在 Chromium 页面执行，结果为 `["veryl","Solo","Indie","Data","User1"]`，最大长度 `5`。
+
+#### 未完成事项
+- 未进行真实 Dune 线上 welcome 端到端重跑；本次验证覆盖脚本逻辑和本地 Chromium DOM 填写行为。
+
+#### 注意事项
+- 本次未修改 Go 后端代码，未执行 `run.ps1` 重启。
+
+### 2026-06-22 Dune welcome/onboarding 防误点返回按钮
+
+#### 本次任务
+- 修复 `https://dune.com/welcome` 自动选择待选项后，进入下一项又误点 `Back` 返回上一项的问题。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| welcome 自动流程进入下一项后又点 Back | 通用候选项选择器没有排除返回/上一步类按钮，页面进入下一步后把 `Back` 当成普通选项点击 | 在通用点击前统一过滤导航和动作按钮，包括 `back`、`previous`、`go back`、`返回`、`上一步`、`后退` 等 |
+
+#### 修改文件
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `node --check tools/dune-playwright/register-login.mjs` — 通过。
+- `node --test tools/dune-playwright/register-login.test.mjs` — 6/6 通过。
+
+#### 未完成事项
+- 未进行真实 Dune 浏览器端到端重跑；后续实际注册时如果 Dune 更换 welcome 文案，可继续补充过滤词或明确选项词。
+
+#### 注意事项
+- 本次未修改 Go 后端代码，未执行 `run.ps1` 重启。
+
+### 2026-06-21 Dune 批量注册历史账号显示修复
+
+#### 本次任务
+- 修复点击“开始注册”后，之前已经注册的邮箱从前端表格消失的问题。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 点击开始注册后历史邮箱不见 | 前端用 `POST /api/dune/batch/start` 返回的新 task 覆盖表格，而 start/status 只返回当前 task 账号，不合并 `accounts.json` 已保存账号 | `start/status/stop` 响应统一合并持久化账号和当前任务账号 |
+
+#### 修改文件
+- `internal/api/handler_dune_batch.go`
+- `internal/api/handler_dune_batch_accounts.go`
+- `internal/api/handler_dune_batch_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- `POST /api/dune/batch/start`、`POST /api/dune/batch/stop`、`GET /api/dune/batch/status` 的 `accounts` 字段现在返回持久化账号与当前任务账号的合并列表。
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端代码变更；现有表格继续读取 `task.accounts`。
+
+#### 验证结果
+- 新增红灯测试修复前失败：`accounts=[]`。
+- `go test ./internal/api -run TestHandleDuneBatchStart_keepsSavedAccountsVisible_whenStartingNewTask -count=1` — 修复后通过。
+- `go test ./internal/api -run 'DuneBatch|Dune|PublicExecution' -count=1` — 通过。
+- `go test ./internal/dunetools -count=1` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server/` — 通过。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File ./run.ps1` — 服务重启成功。
+- `/api/dune/batch/status` — `accounts=10`。
+- `/api/dune/batch/accounts` — `accounts=10`。
+- `go test ./internal/... -count=1` — 全部通过。
+
+#### 未完成事项
+- 本次按后端规则重启服务，当前内存批量任务会被清空；已保存账号不受影响，未完成批量任务需要重新开始。
+
+#### 注意事项
+- `mergeAccounts()` 仍保持已保存账号优先的顺序。
+
+### 2026-06-21 Dune welcome/onboarding 自动处理
+
+#### 本次任务
+- 注册/验证登录成功后，自动处理 `https://dune.com/welcome` 的选择、填写和可跳过步骤。
+
+#### 新增功能
+- 新增 `completeWelcomeOnboarding()`：
+  - 优先点 `Skip for now`、`Skip`、`Maybe later`、`Not now`、`No thanks`。
+  - 无法跳过时，自动选择个人使用、分析、研究、DeFi、Ethereum/Solana 等安全默认项。
+  - 自动填写 username、team/workspace、company、role/name 等可见输入框。
+  - 仍停留在 `/welcome` 时自动跳转 `https://dune.com/home`。
+- login、verify_login、capture 三条路径在提取凭据前都会先尝试处理 welcome/onboarding。
+
+#### 修改文件
+- `tools/dune-playwright/register-login.mjs`
+- `tools/dune-playwright/register-login.test.mjs`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `node --check tools/dune-playwright/register-login.mjs` — 通过。
+- `node --test tools/dune-playwright/register-login.test.mjs` — 5/5 通过。
+- 独立 Playwright 登录 QA — `ok=true,hasCookie=true,hasAuthorization=true,teamId=11`。
+- QA 日志出现 `WELCOME_CHOICES`、`WELCOME_FILLED`、`WELCOME_GOTO_HOME`，确认 welcome 页真实执行了自动选择、自动填写和跳转。
+- 已删除临时 QA profile：`backend/data/dune/profiles/welcome_qa`。
+
+#### 未完成事项
+- Dune welcome 页面如果更换文案/结构，可能需要继续补充默认选项关键词。
+
+#### 注意事项
+- 本次未修改 Go 后端代码，未执行 `run.ps1` 重启。
+- 没有停止当前正在运行的 `total=30` 批量注册任务。
+
 ### 2026-06-21 Dune verify_login 修复 + 端到端实测
 
 #### 本次任务
@@ -2866,3 +3481,133 @@ ormalizeFilterBoundary 精确时间边界处理。
 - QA screenshots:
   - `E:\codex\etl\dune-query-id-field.png`
   - `E:\codex\etl\dune-query-id-field-mobile.png`
+### 2026-06-25 Dune Rod NewUserMode account login flow
+
+#### Task
+- 使用 Rod `NewUserMode` 替换 Dune 查询账号的受阻自动登录路径：从 Dune 主页面进入登录页，自动填入所选账号密码，遇到验证页则等待用户点击，拿到参数后自动关闭浏览器。
+
+#### New Functionality
+- `/api/dune/query` 使用 `account_email` 时默认先走 Rod NewUserMode 实体浏览器登录。
+- Rod 登录从 `https://dune.com/` 开始，再点击或跳转到登录页。
+- 登录表单自动填入账号邮箱和密码。
+- 检测到 Cloudflare/验证/blocked 页面时保留真实浏览器，等待用户完成验证后继续。
+- 登录成功后自动提取 Cookie、Authorization、access token（如存在）和 team id，并关闭 Rod 浏览器。
+
+#### Modified Files
+- `internal/api/dune_account_query.go`
+- `internal/dunetools/rod_user_mode.go`
+- `internal/dunetools/rod_user_mode_session.go`
+- `internal/dunetools/rod_user_mode_scripts.go`
+- `internal/dunetools/rod_user_mode_test.go`
+- `go.mod`
+- `go.sum`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### API Changes
+- No route or request/response schema changes.
+- Behavior change: selected-account Dune query auth now tries Rod first, then falls back to Playwright unless `DUNE_QUERY_LOGIN_BROWSER=rod`.
+
+#### Runtime Config
+- `DUNE_QUERY_LOGIN_BROWSER=playwright` forces the previous Playwright path.
+- `DUNE_QUERY_LOGIN_BROWSER=rod` forces Rod only.
+- `DUNE_ROD_REMOTE_DEBUGGING_PORT` overrides the Rod debug port, default `37712`.
+- `DUNE_ROD_USER_DATA_DIR` sets a custom Chrome user-data directory.
+- `DUNE_ROD_USE_DEFAULT_PROFILE=1` attempts to use the system default Chrome profile.
+- `DUNE_CHROME_PATH` selects a Chrome executable.
+
+#### Database Changes
+- None.
+- Runtime Chrome profile data may be written under `backend/data/dune/profiles/rod_<account>`.
+
+#### Frontend Changes
+- None.
+
+#### Verified Commands
+- `gofmt -w internal/dunetools/rod_user_mode.go internal/dunetools/rod_user_mode_session.go internal/dunetools/rod_user_mode_scripts.go internal/dunetools/rod_user_mode_test.go internal/api/dune_account_query.go internal/api/dune_account_auth_expiry_test.go internal/api/dune_account_query_test.go internal/api/dune_auth_jwt.go internal/api/dune_web_query.go internal/api/dune_query_handlers.go`
+- `go test ./internal/dunetools ./internal/api -count=1`
+- `go test ./internal/... -count=1`
+- `go build -o bin/etl-server.exe ./cmd/server`
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '$env:DUNE_QUERY_CDP_PORT="9222"; & .\run.ps1'`
+- `curl.exe -s http://127.0.0.1:8000/api/health`
+
+#### Open Items
+- Real Dune SQL completion still requires Dune accepting the resulting browser session. If a verification page appears, the user must complete it in the opened browser.
+- `internal/api/dune_web_query.go` is still an existing oversized file and should be split during the next logic change in that area.
+
+#### Notes
+- This change does not add CapSolver or Cloudflare bypass logic. It uses a real browser and waits for user verification when Dune requires it.
+
+### 2026-06-25 Dune Rod manual test and Cloudflare block audit
+
+#### Task
+- Continue the selected-account Dune query test with user-assisted human verification.
+- Record all blocking issues and runtime parameters.
+
+#### New Functionality
+- Rod NewUserMode now avoids the `KeepUserDataDir()` panic path.
+- Dune batch account listing/export now loads persisted accounts before the first response after backend restart.
+- Rod login now accepts `DUNE_QUERY_CDP_PORT` as an alias for the remote debugging port.
+- Rod login now prefers Google Chrome via `DUNE_CHROME_PATH` or local Chrome install paths before Rod's default browser lookup.
+
+#### Modified Files
+- `internal/api/handler_dune_batch.go`
+- `internal/api/handler_dune_batch_test.go`
+- `internal/dunetools/rod_user_mode.go`
+- `internal/dunetools/rod_user_mode_session.go`
+- `internal/dunetools/rod_user_mode_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### API Changes
+- No route or request/response schema changes.
+- Behavior changes:
+  - `GET /api/dune/batch/accounts` now returns persisted accounts on the first request after restart.
+  - `GET /api/dune/batch/export` uses the same persisted-account load ordering.
+  - Rod account login honors `DUNE_QUERY_CDP_PORT=9222`.
+
+#### Database Changes
+- None.
+
+#### Frontend Changes
+- None.
+
+#### Test Parameters
+- Backend: `http://127.0.0.1:8000`
+- Browser mode: `DUNE_QUERY_LOGIN_BROWSER=rod`
+- CDP port: `DUNE_QUERY_CDP_PORT=9222`
+- Chrome path: `C:\Program Files\Google\Chrome\Application\chrome.exe`
+- Query endpoint: `POST /api/dune/query`
+- SQL: `select 1 as smoke_value`
+- Account: `ldj1009538134+dune_2d685f01@gmail.com`
+- Payload: `limit=10`, `timeout_seconds=600`, `poll_interval_seconds=2`
+- Account list after restart: `total=12`, `done=10`, `wait_verify=2`
+- Selected account sanitized state: `status=done`, `has_password=true`, `cookie_len=4680`, `authorization_len=1192`, `access_token_len=0`, `team_id=11`
+
+#### Verified Commands
+- `go test ./internal/dunetools -run TestRodUserModeBrowserNewUserModeLauncherDoesNotPanicWithProfileDir -count=1`
+- `go test ./internal/api -run TestHandleDuneBatchAccountsLoadsPersistedAccountsOnFirstRequest -count=1`
+- `go test ./internal/dunetools -run "TestRodUserModeBrowser(NewUserModeLauncherUsesDetectedChromePath|RemoteDebuggingPortUsesQueryEnv|NewUserModeLauncherDoesNotPanicWithProfileDir)" -count=1`
+- `go test ./internal/dunetools ./internal/api -count=1`
+- `go test ./internal/... -count=1`
+- `go vet ./...`
+- `go build -o bin/etl-server.exe ./cmd/server`
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command 'Get-Process etl-server -ErrorAction SilentlyContinue | Stop-Process -Force; $env:DUNE_QUERY_LOGIN_BROWSER="rod"; $env:DUNE_QUERY_CDP_PORT="9222"; $env:DUNE_CHROME_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe"; .\run.ps1'`
+- `curl.exe -s http://127.0.0.1:8000/api/health`
+- `curl.exe -s http://127.0.0.1:9222/json/version`
+- `curl.exe -s http://127.0.0.1:9222/json/list`
+
+#### Live Result
+- Rod originally launched Edge (`Edg/149.0.4022.80`), which was corrected to Chrome.
+- After the Chrome fix, CDP reported `Chrome/149.0.7827.115`.
+- Dune still returned `Attention Required! | Cloudflare` / `Sorry, you have been blocked` at `https://dune.com/`.
+- Latest live request started at `2026-06-25 20:24:25` and ended HTTP 502 at `2026-06-25 20:25:13`.
+- The flow did not reach login form submission, Cookie/JWT extraction, create-query, execution polling, or table data retrieval.
+
+#### Open Items
+- Remaining blocker is Dune/Cloudflare rejecting the automated Chrome session at the homepage.
+- Use a Dune-supported API key/session path or a normal accepted browser session for future compliant testing.
+
+#### Notes
+- The manual verification wait path is still useful for solvable verification pages, but the observed page is a hard Cloudflare block.
+- Do not log raw credentials, Cookie, Authorization, access tokens, or exported account secrets.

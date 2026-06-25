@@ -7,6 +7,7 @@ export type DuneRow = Record<string, DuneCellValue>;
 export type DuneQueryValues = {
   readonly sql: string;
   readonly apiKey?: string;
+  readonly accountEmail?: string;
   readonly queryId?: number;
   readonly webQuery?: boolean;
   readonly teamId?: number;
@@ -22,6 +23,7 @@ export type DuneQueryValues = {
 export type DunePageValues = {
   readonly executionId: string;
   readonly apiKey?: string;
+  readonly cookie?: string;
   readonly queryId?: number;
   readonly offset: number;
   readonly limit: number;
@@ -88,6 +90,7 @@ export async function queryDuneSQL(values: DuneQueryValues): Promise<DuneQueryRe
     body: JSON.stringify({
       sql: values.sql,
       api_key: values.apiKey,
+      account_email: values.accountEmail ?? '',
       query_id: values.queryId ?? 0,
       web_query: values.webQuery ?? false,
       team_id: values.teamId ?? 0,
@@ -110,6 +113,7 @@ export async function loadDunePage(values: DunePageValues): Promise<DuneQueryRes
     body: JSON.stringify({
       execution_id: values.executionId,
       api_key: values.apiKey,
+      cookie: values.cookie ?? '',
       query_id: values.queryId ?? 0,
       offset: values.offset,
       limit: values.limit,
@@ -126,6 +130,7 @@ export async function exportDuneExcel(values: DuneExportValues): Promise<string>
     body: JSON.stringify({
       execution_id: values.executionId,
       api_key: values.apiKey,
+      cookie: values.cookie ?? '',
       query_id: values.queryId ?? 0,
       scope: values.scope,
       offset: values.offset,

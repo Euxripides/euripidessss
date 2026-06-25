@@ -1,6 +1,17 @@
 import { chromium } from 'playwright';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const {
+  STEALTH_ARGS,
+  STEALTH_HEADERS,
+  STEALTH_USER_AGENT,
+  STEALTH_VIEWPORT,
+  applyStealthConfig,
+  solveCloudflareWithStealth,
+} = require('./stealth-config.cjs');
 
 const DUNE_HOME = 'https://dune.com/';
 const AUTH_URL = 'https://dune.com/auth/login';
@@ -8,17 +19,8 @@ const AUTH_URL = 'https://dune.com/auth/login';
 // Human-like random delays
 function rand(min, max) { return min + Math.floor(Math.random() * (max - min)); }
 function humanDelay() { return sleep(rand(800, 3000)); }
-function randWindowWidth() { return rand(950, 1150); }
-function randWindowHeight() { return rand(650, 820); }
-
-const STEALTH_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-blink-features=AutomationControlled',
-  '--disable-features=IsolateOrigins,site-per-process',
-  '--window-position=100,100',
-  '--window-size=1000,700',
-];
+function randWindowWidth() { return STEALTH_VIEWPORT.width; }
+function randWindowHeight() { return STEALTH_VIEWPORT.height; }
 
 function requiredString(v, name) { if (typeof v !== 'string' || !v.trim()) throw new Error(name + ' required'); return v.trim(); }
 function writeJSON(d) { process.stdout.write(JSON.stringify(d) + '\n'); }
@@ -33,6 +35,14 @@ function shouldInjectCookie(name, mode) {
 function isLoggedInSurface(url, body) {
   return url.includes('/welcome') || url.includes('/queries') || url.includes('/discover') || url.includes('/home')
     || body.includes('Activity') || body.includes('My Queries') || body.includes('Discover') || body.includes('Dashboard');
+}
+
+function isWelcomeOnboarding(url, body) {
+  const lower = String(body || '').toLowerCase();
+  return url.includes('/welcome') || lower.includes('welcome') || lower.includes('complete your profile')
+    || lower.includes('select your interests') || lower.includes('what best describes')
+    || lower.includes('what brings you') || lower.includes('create a team') || lower.includes('workspace')
+    || lower.includes('organization') || lower.includes('role');
 }
 
 function hasCapturedAuth(creds) {
@@ -98,6 +108,185 @@ async function detectionFailed(page, msg) {
   return { ok: false, error: 'detection_failed: ' + msg };
 }
 
+async function fillWelcomeInputs(page, account) {
+  return await page.evaluate(({ username }) => {
+    const normalizeWelcomeInputValue = (value) => {
+      const normalized = String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 5);
+      return normalized || 'dune1';
+    };
+    const shortUsername = normalizeWelcomeInputValue(username);
+    const welcomeInputValues = {
+      team: 'Solo',
+      company: 'Indie',
+      role: 'Data',
+      name: 'User1',
+    };
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"]):not([type="password"]), textarea'));
+    let filled = 0;
+    for (const input of inputs) {
+      if (!visible(input) || input.value) continue;
+      const meta = [
+        input.getAttribute('name'),
+        input.getAttribute('placeholder'),
+        input.getAttribute('aria-label'),
+        input.getAttribute('autocomplete'),
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (meta.includes('email') || meta.includes('password')) continue;
+      let value = '';
+      if (meta.includes('username') || meta.includes('handle')) value = shortUsername;
+      else if (meta.includes('team') || meta.includes('workspace') || meta.includes('organization')) value = welcomeInputValues.team;
+      else if (meta.includes('company')) value = welcomeInputValues.company;
+      else if (meta.includes('role') || meta.includes('title')) value = welcomeInputValues.role;
+      else if (meta.includes('name')) value = welcomeInputValues.name;
+      if (!value) continue;
+      input.focus();
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      filled++;
+    }
+    return filled;
+  }, { username: account.username || 'dune_user' }).catch(() => 0);
+}
+
+async function clickWelcomeChoices(page) {
+  const choices = [
+    'Personal', 'Individual', 'Just me', 'Solo', 'Analyst', 'Data analyst', 'Researcher',
+    'Crypto analyst', 'Investor', 'Developer', 'Builder', 'Research', 'Analytics',
+    'Explore data', 'Query data', 'Build dashboards', 'Create dashboards', 'DeFi',
+    'Ethereum', 'Solana', 'Bitcoin', 'NFTs',
+  ];
+  return await page.evaluate((choiceTexts) => {
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const blockedActionTexts = [
+      'continue', 'next', 'skip', 'back', 'previous', 'prev', 'go back', 'return',
+      'cancel', 'close', 'done', 'finish', 'save', 'log in', 'sign in', 'sign up',
+      'accept', 'cookie', '继续', '下一步', '跳过', '返回', '上一步', '后退',
+      '取消', '关闭', '完成', '保存',
+    ];
+    const isActionControl = (body) => {
+      const lower = body.toLowerCase().replace(/\s+/g, ' ').trim();
+      return blockedActionTexts.some((text) => lower.includes(text));
+    };
+    const candidates = Array.from(document.querySelectorAll('button, label, [role="button"], [role="radio"], [role="checkbox"]'));
+    let clicked = 0;
+    for (const text of choiceTexts) {
+      const match = candidates.find((el) => {
+        const body = (el.innerText || el.textContent || '').trim().toLowerCase();
+        const disabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+        const selected = el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true';
+        return !disabled && !selected && visible(el) && body.includes(text.toLowerCase());
+      });
+      if (!match) continue;
+      match.click();
+      clicked++;
+      if (clicked >= 3) break;
+    }
+    if (clicked > 0) return clicked;
+    const main = document.querySelector('main') || document.body;
+    const generic = Array.from(main.querySelectorAll('button, label, [role="button"], [role="radio"], [role="checkbox"]'));
+    for (const el of generic) {
+      const body = (el.innerText || el.textContent || '').trim();
+      const disabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+      const selected = el.getAttribute('aria-checked') === 'true' || el.getAttribute('aria-selected') === 'true';
+      if (disabled || selected || !visible(el) || body.length < 2) continue;
+      if (isActionControl(body)) continue;
+      el.click();
+      clicked++;
+      if (clicked >= 3) break;
+    }
+    return clicked;
+  }, choices).catch(() => 0);
+}
+
+async function clickWelcomeAction(page, actionTexts) {
+  const clicked = await page.evaluate((texts) => {
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const normalize = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const candidates = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"]'));
+    for (const text of texts) {
+      const target = normalize(text);
+      const match = candidates.find((el) => {
+        const body = normalize(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.getAttribute('title'));
+        const disabled = el.hasAttribute('disabled') || el.disabled === true || el.getAttribute('aria-disabled') === 'true';
+        return !disabled && visible(el) && (body === target || body.includes(target));
+      });
+      if (!match) continue;
+      match.click();
+      return text;
+    }
+    return '';
+  }, actionTexts).catch(() => '');
+  if (!clicked) return false;
+  await sleep(1000);
+  console.error('CLICKED_WELCOME_ACTION: ' + clicked);
+  return true;
+}
+
+async function completeWelcomeOnboarding(page, account, maxSteps = 12) {
+  const skipTexts = ['Skip for now', 'Skip', 'Maybe later', 'Not now', 'No thanks', 'I’ll do this later', "I'll do this later"];
+  const continueTexts = ['Continue', 'Next', 'Get started', 'Start exploring', 'Finish', 'Done', 'Complete', 'Save'];
+  for (let i = 0; i < maxSteps; i++) {
+    await sleep(800);
+    const url = page.url();
+    const body = await page.evaluate(() => document.body?.innerText?.substring(0, 1200) || '').catch(() => '');
+    if (!isWelcomeOnboarding(url, body)) return false;
+    if (await isBlocked(page)) {
+      await solveTurnstile(page);
+      continue;
+    }
+    const filled = await fillWelcomeInputs(page, account);
+    if (filled > 0) {
+      console.error('WELCOME_FILLED ' + filled);
+      if (await clickWelcomeAction(page, continueTexts)) {
+        console.error('WELCOME_CONTINUED');
+      }
+      continue;
+    }
+    if (await clickWelcomeAction(page, continueTexts)) {
+      console.error('WELCOME_CONTINUED');
+      continue;
+    }
+    if (await clickWelcomeAction(page, skipTexts)) {
+      console.error('WELCOME_SKIPPED');
+      continue;
+    }
+    const choices = await clickWelcomeChoices(page);
+    if (choices > 0) console.error('WELCOME_CHOICES ' + choices);
+    if (choices > 0) {
+      if (await clickWelcomeAction(page, continueTexts)) {
+        console.error('WELCOME_CONTINUED');
+      }
+      continue;
+    }
+    const close = page.locator('[aria-label="Close"], [data-testid="close"], button:has-text("×")').first();
+    if (await close.isVisible({ timeout: 500 }).catch(() => false)) {
+      await close.click();
+      console.error('WELCOME_CLOSED');
+      continue;
+    }
+    if (filled === 0 && choices === 0) break;
+  }
+  if (page.url().includes('/welcome')) {
+    await page.goto('https://dune.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    console.error('WELCOME_GOTO_HOME');
+  }
+  return true;
+}
+
 // ── CF detection ──
 
 function isBlocked(page) {
@@ -125,6 +314,7 @@ async function hasCaptcha(page) { return await isBlocked(page); }
 
 async function solveTurnstile(page) {
   console.error('SOLVING_CF...');
+  if (await solveCloudflareWithStealth(page, page.context(), 30000)) return true;
   
   // Strategy 1: Try clicking Turnstile checkbox in iframe
   try {
@@ -218,10 +408,55 @@ async function navigateWithCFRetry(page, url, maxAttempts = 5) {
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
     if (!(await isBlocked(page))) return true;
+    if (await solveCloudflareWithStealth(page, page.context(), 20000)) return true;
     const waitMs = Math.min(5000 * Math.pow(2, attempt), 60000);
     console.error('CF_RETRY ' + (attempt + 1) + '/' + maxAttempts + ' wait=' + waitMs + 'ms');
     await sleep(waitMs);
   }
+  return false;
+}
+
+async function waitForManualCloudflare(page, label, maxSeconds = 600) {
+  if (await solveCloudflareWithStealth(page, page.context(), Math.min(maxSeconds * 1000, 30000))) {
+    console.error('CF_STEALTH_PASSED ' + label);
+    return true;
+  }
+  console.error('========================================');
+  console.error('MANUAL_CF: Cloudflare detected on ' + label + '. Please click the challenge in the browser window.');
+  console.error('MANUAL_CF: The script will auto-continue once Cloudflare passes.');
+  console.error('========================================');
+  const rounds = Math.ceil(maxSeconds / 2);
+  for (let i = 0; i < rounds; i++) {
+    await sleep(2000);
+    if (!(await isBlocked(page))) {
+      console.error('CF_MANUAL_PASSED ' + label + ' at ' + ((i + 1) * 2) + 's');
+      return true;
+    }
+    if (i % 30 === 0 && i > 0) {
+      console.error('CF_WAITING ' + label + ': ' + (i * 2 / 60) + ' min elapsed. Please click the Cloudflare checkbox in the browser window.');
+    }
+  }
+  console.error('CF_MANUAL_TIMEOUT ' + label + ': ' + maxSeconds + 's passed without resolution.');
+  return false;
+}
+
+async function waitForManualCloudflareOnly(page, label, maxSeconds = 600) {
+  console.error('========================================');
+  console.error('MANUAL_CF: Cloudflare detected on ' + label + '. Please click the challenge in the browser window.');
+  console.error('MANUAL_CF: The script will auto-continue once Cloudflare passes.');
+  console.error('========================================');
+  const rounds = Math.ceil(maxSeconds / 2);
+  for (let i = 0; i < rounds; i++) {
+    await sleep(2000);
+    if (!(await isBlocked(page))) {
+      console.error('CF_MANUAL_PASSED ' + label + ' at ' + ((i + 1) * 2) + 's');
+      return true;
+    }
+    if (i % 30 === 0 && i > 0) {
+      console.error('CF_WAITING ' + label + ': ' + (i * 2 / 60) + ' min elapsed. Please click the Cloudflare checkbox in the browser window.');
+    }
+  }
+  console.error('CF_MANUAL_TIMEOUT ' + label + ': ' + maxSeconds + 's passed without resolution.');
   return false;
 }
 
@@ -482,6 +717,7 @@ async function loginAndExtract(browser, page, account) {
 
     // If Dune lands on welcome/home, extract credentials instead of chasing auth forms.
     if (isLoggedInSurface(url, body)) {
+      await completeWelcomeOnboarding(page, account, 10);
       const creds = await extractCredentials(browser, page);
       if (hasCapturedAuth(creds)) {
         console.error('LOGIN_SUCCESS_EXTRACTED url=' + url);
@@ -489,12 +725,9 @@ async function loginAndExtract(browser, page, account) {
       }
     }
 
-    // Check for onboarding / team setup / interests pages
-    if (body.includes('Skip') || body.includes('Get started') || body.includes('Maybe later')
-        || body.includes('Create a team') || body.includes('Select your interests')
-        || body.includes('Welcome') || body.includes('Complete your profile')) {
+    if (isWelcomeOnboarding(url, body)) {
       console.error('ONBOARD_STEP');
-      await clickFirstText(page, ['Skip', 'Next', 'Continue', 'Get started', 'Maybe later', 'Not now', 'Create', 'Save'], 1000);
+      await completeWelcomeOnboarding(page, account, 4);
       await sleep(2000);
       loginAttempts++;
       continue;
@@ -526,23 +759,7 @@ async function loginAndExtract(browser, page, account) {
     loginAttempts++;
   }
 
-  // Final onboarding skip — up to 30 iterations
-  for (let i = 0; i < 30; i++) {
-    await sleep(1000);
-    const url = page.url();
-    if (url.includes('/welcome') || url.includes('/queries') || url.includes('/discover') || url.includes('/home')) {
-      console.error('REACHED_DASHBOARD');
-      break;
-    }
-    const body = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
-    if (isLoggedInSurface(url, body)) break;
-    if (await clickFirstText(page, ['Skip', 'Next', 'Continue', 'Get started', 'Maybe later', 'Not now'], 800)) {
-      console.error('SKIPPED');
-      continue;
-    }
-    const close = page.locator('[aria-label="Close"], [data-testid="close"]').first();
-    if (await close.isVisible({ timeout: 500 }).catch(() => false)) { await close.click(); console.error('CLOSED_MODAL'); }
-  }
+  await completeWelcomeOnboarding(page, account, 30);
 
   let cookies = [];
   let cookieStr = '';
@@ -607,6 +824,7 @@ async function verifyAndLogin(browser, page, link, account) {
   let body = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
   if (isLoggedInSurface(page.url(), body)) {
     console.error('ALREADY_LOGGED_IN');
+    await completeWelcomeOnboarding(page, account, 10);
     return await extractCredentials(browser, page);
   }
 
@@ -623,7 +841,10 @@ async function verifyAndLogin(browser, page, link, account) {
   let pwInput = await firstVisible(page, ['input[type="password"]']);
   if (!emailInput || !pwInput) {
     body = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
-    if (isLoggedInSurface(page.url(), body)) return await extractCredentials(browser, page);
+    if (isLoggedInSurface(page.url(), body)) {
+      await completeWelcomeOnboarding(page, account, 10);
+      return await extractCredentials(browser, page);
+    }
     // Fallback: go home, click login
     await page.goto(DUNE_HOME, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
     await sleep(2000);
@@ -642,11 +863,16 @@ async function verifyAndLogin(browser, page, link, account) {
     await sleep(5000);
     for (let i = 0; i < 15; i++) {
       await sleep(1000);
-      const b2 = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
+      const b2 = await page.evaluate(() => document.body?.innerText?.substring(0, 1200) || '').catch(() => '');
+      if (isWelcomeOnboarding(page.url(), b2)) {
+        await completeWelcomeOnboarding(page, account, 4);
+        continue;
+      }
       if (isLoggedInSurface(page.url(), b2)) break;
       await clickFirstText(page, ['Skip', 'Next', 'Continue', 'Get started', 'Maybe later'], 800);
     }
   }
+  await completeWelcomeOnboarding(page, account, 10);
   return await extractCredentials(browser, page);
   } catch (e) {
     console.error('VERIFY_FATAL ' + (e.message || e));
@@ -710,22 +936,30 @@ async function main() {
   };
   const profileDir = requiredString(input.profileDir, 'profileDir');
   const proxyServer = typeof input.proxyServer === 'string' ? input.proxyServer.trim() : '';
+  const headless = input.headless === true;
   mkdirSync(dirname(profileDir), { recursive: true });
 
   const ww = randWindowWidth();
   const wh = randWindowHeight();
   const launchOpts = {
-    headless: false,
+    headless,
     args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
+      ...STEALTH_ARGS,
       '--window-position=' + rand(50, 300) + ',' + rand(50, 200),
       '--window-size=' + ww + ',' + wh,
     ],
     ignoreDefaultArgs: ['--enable-automation'],
+    userAgent: STEALTH_USER_AGENT,
     viewport: { width: ww, height: wh },
+    locale: 'zh-CN',
+    timezoneId: 'Asia/Shanghai',
+    permissions: ['geolocation'],
+    colorScheme: 'light',
+    deviceScaleFactor: 1,
+    javaScriptEnabled: true,
+    bypassCSP: true,
+    ignoreHTTPSErrors: true,
+    extraHTTPHeaders: STEALTH_HEADERS,
   };
   if (proxyServer) launchOpts.proxy = { server: proxyServer };
   const channel = typeof input.channel === 'string' ? input.channel.trim() : '';
@@ -735,6 +969,7 @@ async function main() {
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(45000);
+    await applyStealthConfig(page);
 
     // For automated auth modes: clear existing Dune auth cookies from shared profile
     // so we don't inherit a previous account's login session
@@ -770,7 +1005,11 @@ async function main() {
     } else if (mode === 'register' || mode === 'login') {
       // Navigate to dune.com first (establishes session, passes CF), then click through to auth
       console.error('Loading homepage...');
-      const homeOk = await navigateWithCFRetry(page, DUNE_HOME, 5);
+      await page.goto(DUNE_HOME, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+      let homeOk = !(await isBlocked(page));
+      if (!homeOk) {
+        homeOk = await waitForManualCloudflareOnly(page, 'homepage', 600);
+      }
       if (!homeOk) {
         console.error('CF_BLOCKED_HOMEPAGE');
         return writeJSON({ ok: false, error: 'cloudflare_blocked_homepage', html: (await page.content().catch(() => '')).substring(0, 500) });
@@ -793,6 +1032,7 @@ async function main() {
         const b = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || '').catch(() => '');
         const u = page.url();
         if (isLoggedInSurface(u, b)) {
+          await completeWelcomeOnboarding(page, account, 10);
           const creds = await extractCredentials(browser, page);
           if (hasCapturedAuth(creds)) {
             saveCapturedAuth(creds);

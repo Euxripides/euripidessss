@@ -53,7 +53,7 @@ type duneWebCreateResponse struct {
 
 const defaultDuneDatasetID = 11
 
-func executeDuneWebQueryWithRetry(ctx context.Context, payload duneQueryRequest) (duneResultResponse, string, error) {
+func executeDuneWebQueryWithRetry(ctx context.Context, payload *duneQueryRequest) (duneResultResponse, string, error) {
 	webAuth, err := resolveDuneWebAuth(payload.Cookie, payload.Authorization, payload.AccessToken)
 	if err != nil {
 		return duneResultResponse{}, "", err
@@ -68,10 +68,10 @@ func executeDuneWebQueryWithRetry(ctx context.Context, payload duneQueryRequest)
 	// }
 
 	autoCreated := payload.QueryID <= 0
-	if err := resolveDuneWebQueryIDs(ctx, webAuth, &payload); err != nil {
+	if err := resolveDuneWebQueryIDs(ctx, webAuth, payload); err != nil {
 		return duneResultResponse{}, "", err
 	}
-	if err := validateDuneWebQueryRequest(payload); err != nil {
+	if err := validateDuneWebQueryRequest(*payload); err != nil {
 		return duneResultResponse{}, "", err
 	}
 	var lastResult duneResultResponse
@@ -79,7 +79,7 @@ func executeDuneWebQueryWithRetry(ctx context.Context, payload duneQueryRequest)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if !autoCreated {
-			if attemptErr := updateDuneWebQuery(ctx, webAuth, payload); attemptErr != nil {
+			if attemptErr := updateDuneWebQuery(ctx, webAuth, *payload); attemptErr != nil {
 				lastErr = attemptErr
 				if isDuneAuthError(attemptErr) {
 					break
@@ -88,7 +88,7 @@ func executeDuneWebQueryWithRetry(ctx context.Context, payload duneQueryRequest)
 				continue
 			}
 		}
-		executionID, attemptErr := executeDuneWebQuery(ctx, webAuth, payload)
+		executionID, attemptErr := executeDuneWebQuery(ctx, webAuth, *payload)
 		if attemptErr == nil {
 			timeout := normalizeDurationSeconds(payload.TimeoutSeconds, 900, 30, 7200)
 			poll := normalizeDurationSeconds(payload.PollIntervalSeconds, 2, 1, 30)
@@ -521,7 +521,9 @@ func duneExecutionViaPlaywright(ctx context.Context, reqBody dunePublicExecution
 	if err != nil {
 		stderrStr := strings.TrimSpace(stderr.String())
 		if stderrStr != "" {
-			var pwErr struct{ Error string `json:"error"` }
+			var pwErr struct {
+				Error string `json:"error"`
+			}
 			if json.Unmarshal([]byte(stderrStr), &pwErr) == nil && pwErr.Error != "" {
 				return duneResultResponse{}, fmt.Errorf("Dune Playwright 请求失败：%s", pwErr.Error)
 			}
@@ -591,7 +593,9 @@ func doDuneViaPlaywright(ctx context.Context, mode string, operation string, aut
 	if err != nil {
 		stderrStr := strings.TrimSpace(stderr.String())
 		if stderrStr != "" {
-			var pwErr struct{ Error string `json:"error"` }
+			var pwErr struct {
+				Error string `json:"error"`
+			}
 			if json.Unmarshal([]byte(stderrStr), &pwErr) == nil && pwErr.Error != "" {
 				return fmt.Errorf("Dune Playwright 请求失败：%s", pwErr.Error)
 			}
