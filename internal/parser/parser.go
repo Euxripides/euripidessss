@@ -395,7 +395,7 @@ func ReadCSVFile(path string) ([][]string, error) {
 		// Reset file position
 		f.Seek(0, 0)
 		rows, err := readCSVWithEncoding(f, sep, enc)
-		if err == nil && len(rows) > 0 {
+		if err == nil && len(rows) > 0 && rowsAreDecodedText(rows) {
 			return rows, nil
 		}
 		lastErr = err
@@ -404,7 +404,7 @@ func ReadCSVFile(path string) ([][]string, error) {
 }
 
 func readCSVWithEncoding(r io.Reader, sep rune, encoding string) ([][]string, error) {
-	reader := csv.NewReader(r)
+	reader := csv.NewReader(csvReaderForEncoding(r, encoding))
 	reader.Comma = sep
 	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
@@ -413,7 +413,7 @@ func readCSVWithEncoding(r io.Reader, sep rune, encoding string) ([][]string, er
 }
 
 func readCSVRowsLimitedWithEncoding(r io.Reader, sep rune, encoding string, maxRows int) ([][]string, error) {
-	reader := csv.NewReader(r)
+	reader := csv.NewReader(csvReaderForEncoding(r, encoding))
 	reader.Comma = sep
 	reader.LazyQuotes = true
 	reader.TrimLeadingSpace = true
@@ -515,19 +515,17 @@ func NormalizeEmbeddedCSVRows(rows [][]string) [][]string {
 
 // TrimRows removes trailing empty cells
 func TrimRows(rows [][]string) [][]string {
-	result := make([][]string, len(rows))
 	for i, row := range rows {
-		cleaned := make([]string, len(row))
 		for j, cell := range row {
-			cleaned[j] = CellToText(cell)
+			row[j] = CellToText(cell)
 		}
 		// Remove trailing empties
-		for len(cleaned) > 0 && cleaned[len(cleaned)-1] == "" {
-			cleaned = cleaned[:len(cleaned)-1]
+		for len(row) > 0 && row[len(row)-1] == "" {
+			row = row[:len(row)-1]
 		}
-		result[i] = cleaned
+		rows[i] = row
 	}
-	return result
+	return rows
 }
 
 // DataFrameFromHeader creates data from header row onwards
@@ -743,7 +741,7 @@ func ReadCSVRowsLimited(path string, maxRows int) ([][]string, error) {
 	for _, enc := range encodings {
 		f.Seek(0, 0)
 		rows, err := readCSVRowsLimitedWithEncoding(f, sep, enc, maxRows)
-		if err == nil && len(rows) > 0 {
+		if err == nil && len(rows) > 0 && rowsAreDecodedText(rows) {
 			return rows, nil
 		}
 	}

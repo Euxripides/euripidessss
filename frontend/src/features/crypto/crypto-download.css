@@ -1,0 +1,104 @@
+.crypto-download-shell {
+  max-width: none;
+}
+
+.crypto-download-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.9fr) minmax(520px, 1.4fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.crypto-download-form-card,
+.crypto-download-status > .ant-card,
+.crypto-download-bottom > .ant-card {
+  border-radius: 8px;
+}
+
+.crypto-download-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.crypto-download-grid.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.crypto-download-grid > .ant-form-item,
+.crypto-download-checks .ant-form-item {
+  margin-bottom: 12px;
+}
+
+.crypto-download-checks {
+  margin-bottom: 14px;
+}
+
+.crypto-download-status {
+  display: grid;
+  gap: 16px;
+}
+
+.crypto-download-job-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.crypto-download-job-head h2 {
+  margin: 4px 0 0;
+  max-width: 420px;
+  overflow-wrap: anywhere;
+  font-size: 18px;
+}
+
+.crypto-download-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.crypto-download-address {
+  display: grid;
+  gap: 6px;
+}
+
+.crypto-download-address code {
+  display: block;
+  max-width: 280px;
+}
+
+.crypto-download-bottom {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.crypto-download-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.crypto-download-file .ant-typography {
+  max-width: calc(100% - 72px);
+}
+
+@media (max-width: 1180px) {
+  .crypto-download-layout,
+  .crypto-download-bottom {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .crypto-download-grid,
+  .crypto-download-grid.compact,
+  .crypto-download-stats {
+    grid-template-columns: 1fr;
+  }
+}

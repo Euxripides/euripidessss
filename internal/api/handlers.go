@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/config"
+	"github.com/etl/backend/internal/cryptodownload"
 	"github.com/etl/backend/internal/dbimport"
 	"github.com/etl/backend/internal/etl"
 	"github.com/etl/backend/internal/model"
@@ -34,6 +36,7 @@ var (
 	dbService      *dbimport.Service
 	controlStore   *control.Store
 	analysisEngine *duckdb.Engine
+	cryptoDownload http.Handler
 )
 
 const (
@@ -123,6 +126,11 @@ func Setup(c *config.Config) {
 	store = storage.NewFileStorage(c.UploadDir, c.OutputDir)
 	dbStore = dbimport.NewStore(filepath.Join(c.RootDir, "backend", "data", "db_import"))
 	dbService = dbimport.NewService(dbStore, c.UploadDir)
+	if handler, err := cryptodownload.NewAPIHandler(filepath.Join(c.RootDir, "backend", "data", "crypto_download")); err != nil {
+		log.Warn().Err(err).Msg("crypto_download_api_unavailable")
+	} else {
+		cryptoDownload = http.StripPrefix("/api/crypto/download", handler)
+	}
 
 	// Initialize SQLite control store
 	dataDir := filepath.Join(c.RootDir, "backend", "data")
@@ -183,6 +191,8 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/flow/direction-rules", HandleSaveFlowDirectionRules)
 		api.POST("/flow/direction-check", HandleCheckFlowDirectionValues)
 		api.POST("/flow/values", HandleFlowFieldValues)
+		api.POST("/crypto/address-classify", HandleCryptoAddressClassify)
+		api.Any("/crypto/download/*path", HandleCryptoDownload)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)
 		api.POST("/rules/analyze", HandleAnalyzeRules)

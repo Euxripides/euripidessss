@@ -1,4 +1,4 @@
-﻿package etl
+package etl
 
 import (
 	"archive/zip"
@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -42,26 +41,26 @@ var ALIASES = map[string][]string{
 	"交易卡号":     {"交易卡号", "交易卡", "卡号", "银行卡号", "本方卡号", "付款方账号", "收款方账号", "账户"},
 	"交易账号":     {"交易账号", "账号", "银行账号", "本方账号", "支付宝账号", "微信号", "商户号"},
 	"交易户名":     {"交易户名", "本方户名", "账户名称", "客户名称", "付款方姓名", "收款方姓名"},
-	"交易证件号码":  {"交易证件号码", "证件号码", "身份证号", "开户人证件号码"},
-	"交易方开户行":  {"交易方开户行", "开户银行", "账号开户银行", "开户行"},
+	"交易证件号码":   {"交易证件号码", "证件号码", "身份证号", "开户人证件号码"},
+	"交易方开户行":   {"交易方开户行", "开户银行", "账号开户银行", "开户行"},
 	"交易时间":     {"交易时间", "交易日期", "账务日期", "入账时间", "支付时间", "创建时间", "发生时间", "记账日期", "交易创建时间"},
 	"交易金额":     {"交易金额", "金额", "收入金额", "支出金额", "收/支", "收入（+元）", "支出（-元）", "交易额", "付款金额"},
 	"交易余额":     {"交易余额", "余额", "账户余额", "可用余额"},
 	"收付标志":     {"收付标志", "借贷标志", "借贷方向", "收支类型", "收/支", "收入/支出", "方向", "业务类型"},
-	"交易对手账卡号": {"交易对手账卡号", "对方账号", "对手账号", "对方卡号", "对手卡号", "交易对方账号", "对方账户"},
+	"交易对手账卡号":  {"交易对手账卡号", "对方账号", "对手账号", "对方卡号", "对手卡号", "交易对方账号", "对方账户"},
 	"现金标志":     {"现金标志", "现转标志", "现金/转账"},
 	"对手户名":     {"对手户名", "对方户名", "对方姓名", "交易对方", "对方名称", "商户名称", "交易对手"},
-	"对手身份证号":  {"对手身份证号", "对方证件号", "对手证件号"},
-	"对手开户银行":  {"对手开户银行", "对方开户行", "对手开户行", "对方银行"},
+	"对手身份证号":   {"对手身份证号", "对方证件号", "对手证件号"},
+	"对手开户银行":   {"对手开户银行", "对方开户行", "对手开户行", "对方银行"},
 	"摘要说明":     {"摘要说明", "摘要", "交易摘要", "商品说明", "交易说明", "备注说明", "用途", "交易类型"},
 	"交易币种":     {"交易币种", "币种", "货币"},
-	"交易网点名称":  {"交易网点名称", "交易网点", "网点名称"},
+	"交易网点名称":   {"交易网点名称", "交易网点", "网点名称"},
 	"交易发生地":    {"交易发生地", "发生地", "交易地点"},
-	"交易是否成功":  {"交易是否成功", "交易状态", "状态", "交易结果"},
+	"交易是否成功":   {"交易是否成功", "交易状态", "状态", "交易结果"},
 	"传票号":      {"传票号"},
 	"IP地址":     {"IP地址", "IP"},
 	"MAC地址":    {"MAC地址", "MAC"},
-	"对手交易余额":  {"对手交易余额", "对方余额"},
+	"对手交易余额":   {"对手交易余额", "对方余额"},
 	"交易流水号":    {"交易流水号", "流水号", "交易号", "商户订单号", "订单号", "微信支付订单号", "支付宝交易号"},
 	"日志号":      {"日志号"},
 	"凭证种类":     {"凭证种类", "凭证类型"},
@@ -181,7 +180,6 @@ func RunPipeline(uploadDir string, outputDir string, jobID string) (*model.Pipel
 	return result, nil
 }
 
-
 type ProviderFiles struct {
 	Provider string
 	Paths    []string
@@ -206,21 +204,13 @@ func categorizeByProvider(scan *scanner.DirectoryScan) []ProviderFiles {
 func processProviderFiles(pf ProviderFiles, baseDir string, outputDir string) ([]model.TransactionRow, error) {
 	switch pf.Provider {
 	case "支付宝":
-		alipayResult, err := parser.ProcessAlipayDirectory(baseDir, "", "strict")
+		alipayResult, err := parser.ProcessAlipayFiles(pf.Paths, outputDir, "strict")
 		if err != nil {
 			return nil, err
 		}
 		return convertAlipayToRows(alipayResult), nil
 	case "微信":
-		tempDir, err := os.MkdirTemp("", "wechat_*")
-		if err != nil {
-			return nil, fmt.Errorf("create temp dir for wechat: %w", err)
-		}
-		defer os.RemoveAll(tempDir)
-		for _, p := range pf.Paths {
-			copyFile(p, filepath.Join(tempDir, filepath.Base(p)))
-		}
-		wechatResult, err := parser.ProcessWechatDirectory(tempDir, outputDir)
+		wechatResult, err := parser.ProcessWechatFiles(pf.Paths, outputDir)
 		if err != nil {
 			return nil, err
 		}
@@ -249,6 +239,9 @@ func convertAlipayToRows(result *parser.AlipayResult) []model.TransactionRow {
 	// Output path contains the Excel file with unified data
 	// We need to read it back and convert to TransactionRows
 	rows := make([]model.TransactionRow, 0)
+	if len(result.UnifiedData) > 0 {
+		return unifiedRowsToTransactions(result.UnifiedData, parser.UnifiedColumns)
+	}
 	if result.OutputPath == "" {
 		return rows
 	}
@@ -281,6 +274,9 @@ func convertAlipayToRows(result *parser.AlipayResult) []model.TransactionRow {
 
 func convertWechatToRows(result *parser.WechatResult) []model.TransactionRow {
 	rows := make([]model.TransactionRow, 0)
+	if len(result.UnifiedData) > 0 {
+		return unifiedRowsToTransactions(result.UnifiedData, parser.UnifiedColumns)
+	}
 	if result.OutputPath == "" {
 		return rows
 	}
@@ -372,61 +368,6 @@ func processGenericFiles(paths []string) ([]model.TransactionRow, error) {
 	return result, nil
 }
 
-// CleanTransactions applies cleaning rules to transaction rows
-func CleanTransactions(txns []model.TransactionRow) []model.TransactionRow {
-	var cleaned []model.TransactionRow
-	for _, txn := range txns {
-		// Skip rows missing required fields
-		skip := false
-		for _, req := range RequiredTransactionColumns {
-			if val, ok := txn[req]; !ok || strings.TrimSpace(val) == "" {
-				skip = true
-				break
-			}
-		}
-		if skip {
-			continue
-		}
-		// Normalize direction
-		if dir, ok := txn["收付标志"]; ok {
-			txn["收付标志"] = parser.NormalizeDirection(dir)
-		}
-		// Normalize datetime
-		if dt, ok := txn["交易时间"]; ok {
-			txn["交易时间"] = parser.NormalizeDatetime(dt)
-		}
-		// Normalize amount
-		if amt, ok := txn["交易金额"]; ok {
-			txn["交易金额"] = parser.FloatToStr(parser.ToNumber(amt))
-		}
-		cleaned = append(cleaned, txn)
-	}
-	return cleaned
-}
-
-// DeduplicateTransactions removes duplicate rows
-func DeduplicateTransactions(txns []model.TransactionRow) []model.TransactionRow {
-	seen := make(map[string]bool)
-	var result []model.TransactionRow
-	for _, txn := range txns {
-		key := buildDedupKey(txn)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		result = append(result, txn)
-	}
-	return result
-}
-
-func buildDedupKey(txn model.TransactionRow) string {
-	parts := []string{
-		txn["交易时间"], txn["交易金额"], txn["收付标志"],
-		txn["交易卡号"], txn["交易对手账卡号"],
-	}
-	return strings.Join(parts, "|")
-}
-
 // ExportToExcel writes transaction rows to an Excel file
 func ExportToExcel(txns []model.TransactionRow, outputDir, jobID string) (string, error) {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -466,7 +407,6 @@ func ExportToExcel(txns []model.TransactionRow, outputDir, jobID string) (string
 			log.Debug().Int("written", i).Msg("export_progress")
 		}
 	}
-
 
 	if err := f.SaveAs(outputPath); err != nil {
 		return "", fmt.Errorf("save excel: %w", err)

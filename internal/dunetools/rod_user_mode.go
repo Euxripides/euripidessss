@@ -2,12 +2,13 @@ package dunetools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/proto"
 )
 
 const duneLoginURL = "https://dune.com/auth/login"
@@ -37,34 +38,66 @@ func (r RodUserModeBrowser) LoginAndExtract(ctx context.Context, account Account
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	launch := r.newUserModeLauncher(account)
-	url, err := launch.Launch()
-	if err != nil {
-		return BrowserResult{}, fmt.Errorf("launch Rod user browser: %w", err)
-	}
-	defer launch.Kill()
+	var launch *launcher.Launcher
+	var ownsChrome bool
 
-	browser := rod.New().ControlURL(url).Context(runCtx)
-	if err := browser.Connect(); err != nil {
-		return BrowserResult{}, fmt.Errorf("connect Rod browser: %w", err)
+	port := r.remoteDebuggingPort()
+	browser, ok := tryConnectExistingChrome(port)
+	if ok {
+		browser = browser.Context(runCtx)
+	} else {
+		launch = r.newUserModeLauncher(account)
+		url, lerr := launch.Launch()
+		if lerr != nil {
+			return BrowserResult{}, fmt.Errorf("launch Rod user browser: %w", lerr)
+		}
+		browser = rod.New().ControlURL(url).Context(runCtx)
+		if cerr := browser.Connect(); cerr != nil {
+			launch.Kill()
+			return BrowserResult{}, fmt.Errorf("connect Rod browser: %w", cerr)
+		}
+		ownsChrome = true
 	}
-	defer browser.Close()
 
-	page, err := browser.Page(proto.TargetCreateTarget{URL: duneHomeURL})
+	doClose := func() {
+		if ownsChrome {
+			browser.Close()
+			if launch != nil {
+				launch.Kill()
+			}
+		}
+	}
+	defer doClose()
+
+	if !checkRodCFClearance(browser) {
+		if err := r.waitForCFClearance(runCtx, browser); err != nil {
+			return BrowserResult{}, err
+		}
+	}
+
+	page, err := r.findOrCreateDunePage(runCtx, browser)
 	if err != nil {
-		return BrowserResult{}, fmt.Errorf("open Dune home page: %w", err)
+		return BrowserResult{}, err
 	}
 	defer page.Close()
 	page = page.Context(runCtx)
-	if err := page.WaitLoad(); err != nil {
-		return BrowserResult{}, fmt.Errorf("wait Dune home page: %w", err)
+
+	if blocked, _ := isRodBlocked(page); blocked {
+		if err := r.waitForManualVerification(runCtx, page); err != nil {
+			return BrowserResult{}, err
+		}
 	}
-	if err := r.waitForManualVerification(runCtx, page); err != nil {
-		return BrowserResult{}, err
+
+	if isRodLoggedIn(page) {
+		if result, ok := r.extractIfLoggedIn(browser, page); ok {
+			return result, nil
+		}
 	}
-	if result, ok := r.extractIfLoggedIn(browser, page); ok {
+
+	if result, ok := r.extractIfLoggedIn(browser, page); ok && result.Cookie != "" {
 		return result, nil
 	}
+
 	if err := r.openLoginFromHome(runCtx, page); err != nil {
 		return BrowserResult{}, err
 	}
@@ -93,4 +126,29 @@ func (r RodUserModeBrowser) newUserModeLauncher(account Account) *launcher.Launc
 		launch = launch.UserDataDir(dir)
 	}
 	return launch
+}
+
+type cdpVersionResponse struct {
+	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+}
+
+func tryConnectExistingChrome(port int) (*rod.Browser, bool) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/json/version", port))
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	var v cdpVersionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return nil, false
+	}
+	if v.WebSocketDebuggerURL == "" {
+		return nil, false
+	}
+	browser := rod.New().ControlURL(v.WebSocketDebuggerURL)
+	if err := browser.Connect(); err != nil {
+		return nil, false
+	}
+	return browser, true
 }

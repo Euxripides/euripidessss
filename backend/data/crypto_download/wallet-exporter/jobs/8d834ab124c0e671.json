@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "id": "8d834ab124c0e671",
+  "status": "done",
+  "message": "完成",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-24 19:22:40",
+  "finishedAt": "2026-07-24 19:22:50",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_exports\\real_address_single_bloc_8d834ab124c0e671",
+  "request": {
+    "source": "rpc",
+    "rpcUrl": "https://rpc.mevblocker.io",
+    "chains": "ETH",
+    "startBlock": 25602235,
+    "endBlock": 25602235,
+    "traceMode": "none",
+    "blockBatch": 1,
+    "logBatch": 1,
+    "workers": 1,
+    "rps": 1,
+    "timeoutSeconds": 30,
+    "retries": 1,
+    "pageSize": 50,
+    "rawDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_raw",
+    "outputDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_exports",
+    "outputPrefix": "real_address_single_block",
+    "scanNative": true,
+    "riskCooldownSecs": 120
+  },
+  "entries": [
+    {
+      "address": "0x5b43453fce04b92e190f391a83136bfbecedefd1",
+      "chain": "ETH"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x5b43453fce04b92e190f391a83136bfbecedefd1",
+      "chain": "ETH",
+      "status": "done",
+      "message": "完成地址 1/1: 0x5b43453fce04b92e190f391a83136bfbecedefd1",
+      "progress": 100,
+      "downloaded": 3,
+      "total": -1,
+      "startedAt": "2026-07-24 19:22:40",
+      "updatedAt": "2026-07-24 19:22:50",
+      "finishedAt": "2026-07-24 19:22:50",
+      "result": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_exports\\real_address_single_bloc_8d834ab124c0e671\\001_0x5b43453fce04_fbecedefd1\\real_address_001_ETH_0x5b43453fce04_fbecedefd1_20260724_192240.xlsx",
+      "errors": null,
+      "parts": null,
+      "cancelRequested": false
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x5b43453fce04b92e190f391a83136bfbecedefd1",
+      "chain": "ETH",
+      "complete": true,
+      "segments": 0,
+      "rows": 3
+    }
+  ]
+}

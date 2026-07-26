@@ -1,8 +1,9 @@
-﻿package parser
+package parser
 
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -60,8 +61,9 @@ type WechatResult struct {
 	OutputPath  string                 `json:"output_path"`
 	TableRows   map[string]int         `json:"table_rows"`
 	UnifiedRows int                    `json:"unified_rows"`
-	Sources     []WechatSource          `json:"sources"`
+	Sources     []WechatSource         `json:"sources"`
 	Quality     map[string]interface{} `json:"quality"`
+	UnifiedData [][]string             `json:"-"`
 }
 
 // ProcessWechatDirectory processes all files in a directory for WeChat
@@ -70,6 +72,14 @@ func ProcessWechatDirectory(sourceDir, outputDir string) (*WechatResult, error) 
 	if err != nil {
 		return nil, err
 	}
+	return ProcessWechatFiles(files, outputDir)
+}
+
+func ProcessWechatFiles(files []string, outputDir string) (*WechatResult, error) {
+	files = append([]string(nil), files...)
+	sort.Strings(files)
+
+	numWorkers := 1
 
 	type job struct {
 		path      string
@@ -78,19 +88,11 @@ func ProcessWechatDirectory(sourceDir, outputDir string) (*WechatResult, error) 
 		note      string
 	}
 
-	jobs := make(chan job, len(files)*2)
+	jobs := make(chan job, numWorkers)
 	results := make(chan WechatSource, len(files)*2)
 	var mu sync.Mutex
-	tableFrames := make(map[string][][]string)
+	tableRows := make(map[string]int)
 	unifiedFrames := make([][]string, 0)
-
-	numWorkers := 4
-	if len(files) < numWorkers {
-		numWorkers = len(files)
-	}
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
 	var wg sync.WaitGroup
 
 	go func() {
@@ -145,8 +147,7 @@ func ProcessWechatDirectory(sourceDir, outputDir string) (*WechatResult, error) 
 					unified := wechatToUnified(data, headers, tableType, j.path, headerRow)
 					unifiedFrames = append(unifiedFrames, unified...)
 				}
-				tableFrames[tableType] = append(tableFrames[tableType], headers)
-				tableFrames[tableType] = append(tableFrames[tableType], data...)
+				tableRows[tableType] += len(data)
 				mu.Unlock()
 			}
 		}()
@@ -162,16 +163,12 @@ func ProcessWechatDirectory(sourceDir, outputDir string) (*WechatResult, error) 
 		sources = append(sources, r)
 	}
 
-	tableRows := make(map[string]int)
-	for k, v := range tableFrames {
-		tableRows[k] = len(v) - 1
-	}
-
 	result := &WechatResult{
 		Sources:     sources,
 		TableRows:   tableRows,
 		UnifiedRows: len(unifiedFrames),
-		Quality:     buildWechatQuality(sources, tableFrames, unifiedFrames, tableRows),
+		Quality:     buildWechatQuality(sources, unifiedFrames),
+		UnifiedData: unifiedFrames,
 	}
 
 	return result, nil
@@ -244,15 +241,16 @@ func wechatToUnified(data [][]string, headers []string, tableType, path string, 
 	for i, h := range headers {
 		headerMap[h] = i
 	}
+	columnData := mapToMap(headerMap, data)
 
 	get := func(names ...string) func(row int) string {
 		return func(row int) string {
-			return FirstNonEmpty(mapToMap(headerMap, data), names, row)
+			return FirstNonEmpty(columnData, names, row)
 		}
 	}
 	getFloat := func(names ...string) func(row int) float64 {
 		return func(row int) float64 {
-			v := FirstNonEmpty(mapToMap(headerMap, data), names, row)
+			v := FirstNonEmpty(columnData, names, row)
 			if v == "" {
 				return 0
 			}
@@ -336,7 +334,7 @@ func wechatToUnified(data [][]string, headers []string, tableType, path string, 
 	return result
 }
 
-func buildWechatQuality(sources []WechatSource, tableFrames map[string][][]string, unifiedFrames [][]string, tableRows map[string]int) map[string]interface{} {
+func buildWechatQuality(sources []WechatSource, unifiedFrames [][]string) map[string]interface{} {
 	unknownCount := 0
 	for _, s := range sources {
 		if s.TableType == "未识别" {
@@ -345,7 +343,7 @@ func buildWechatQuality(sources []WechatSource, tableFrames map[string][][]strin
 	}
 	return map[string]interface{}{
 		"summary": map[string]interface{}{
-			"统一流水行数":      len(unifiedFrames),
+			"统一流水行数":       len(unifiedFrames),
 			"识别文件或Sheet数":  len(sources),
 			"未识别文件或Sheet数": unknownCount,
 		},

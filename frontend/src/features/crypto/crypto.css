@@ -1,0 +1,62 @@
+.crypto-address-shell {
+  max-width: 1280px;
+}
+
+.crypto-address-card {
+  margin-bottom: 16px;
+}
+
+.crypto-address-grid {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) minmax(280px, 360px);
+  gap: 18px;
+  align-items: start;
+}
+
+.crypto-address-input {
+  font-family: Consolas, "JetBrains Mono", "Cascadia Mono", monospace;
+}
+
+.crypto-settings-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.crypto-rpc-input {
+  font-family: Consolas, "JetBrains Mono", "Cascadia Mono", monospace;
+}
+
+.crypto-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.crypto-result-card {
+  margin-bottom: 24px;
+}
+
+.crypto-address-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crypto-address-cell code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, "JetBrains Mono", "Cascadia Mono", monospace;
+}
+
+.crypto-reason {
+  color: #475569;
+}
+
+@media (max-width: 980px) {
+  .crypto-address-grid,
+  .crypto-stats {
+    grid-template-columns: 1fr;
+  }
+}

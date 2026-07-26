@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 var detectRodChromePath = defaultRodChromePath
@@ -102,6 +103,27 @@ func (r RodUserModeBrowser) waitForManualVerification(ctx context.Context, page 
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("Dune verification page still active; manual verification timed out")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (r RodUserModeBrowser) waitForCFClearance(ctx context.Context, browser *rod.Browser) error {
+	wait := r.ManualWait
+	if wait <= 0 {
+		wait = 3 * time.Minute
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		if checkRodCFClearance(browser) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("cf_clearance not obtained; manual Cloudflare verification timed out")
 		}
 		select {
 		case <-ctx.Done():
@@ -217,4 +239,109 @@ func rodInt(page *rod.Page, js string, params ...interface{}) (int, error) {
 		return 0, err
 	}
 	return value.Value.Int(), nil
+}
+
+func checkRodCFClearance(browser *rod.Browser) bool {
+	cookies, err := browser.GetCookies()
+	if err != nil {
+		return false
+	}
+	for _, c := range cookies {
+		if c.Name == "cf_clearance" && strings.Contains(c.Domain, "dune.com") {
+			return true
+		}
+	}
+	return false
+}
+
+func checkRodCFClearanceExpiry(browser *rod.Browser) (expiresAt time.Time, valid bool) {
+	cookies, err := browser.GetCookies()
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, c := range cookies {
+		if c.Name == "cf_clearance" && strings.Contains(c.Domain, "dune.com") {
+			expiry := time.Unix(int64(c.Expires), 0)
+			if expiry.IsZero() {
+				return time.Time{}, false
+			}
+			if time.Now().Add(5 * time.Minute).Before(expiry) {
+				return expiry, true
+			}
+			return expiry, false
+		}
+	}
+	return time.Time{}, false
+}
+
+func (r RodUserModeBrowser) findOrCreateDunePage(ctx context.Context, browser *rod.Browser) (*rod.Page, error) {
+	pages, err := browser.Pages()
+	if err != nil {
+		return nil, fmt.Errorf("list browser pages: %w", err)
+	}
+	for _, p := range pages {
+		info, err := p.Info()
+		if err != nil {
+			continue
+		}
+		if strings.Contains(info.URL, "dune.com") {
+			return p, nil
+		}
+	}
+	for _, p := range pages {
+		info, err := p.Info()
+		if err != nil {
+			continue
+		}
+		if info.URL == "about:blank" || info.URL == "" {
+			if err := p.Navigate(duneHomeURL); err != nil {
+				return nil, fmt.Errorf("navigate blank page to Dune: %w", err)
+			}
+			if err := p.WaitLoad(); err != nil {
+				return nil, fmt.Errorf("wait Dune load on blank page: %w", err)
+			}
+			return p, nil
+		}
+	}
+	page, err := browser.Page(proto.TargetCreateTarget{URL: duneHomeURL})
+	if err != nil {
+		return nil, fmt.Errorf("create Dune page: %w", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		page.Close()
+		return nil, fmt.Errorf("wait new Dune page: %w", err)
+	}
+	return page, nil
+}
+
+func isRodBlocked(page *rod.Page) (bool, error) {
+	html, err := page.HTML()
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(html, "Sorry, you have been blocked") ||
+		strings.Contains(html, "Cloudflare Ray ID") ||
+		strings.Contains(html, "Attention Required") ||
+		strings.Contains(html, "cf-browser-verify"), nil
+}
+
+func isRodLoggedIn(page *rod.Page) bool {
+	info, err := page.Info()
+	if err != nil {
+		return false
+	}
+	if strings.Contains(info.URL, "dune.com") &&
+		!strings.Contains(info.URL, "/login") &&
+		!strings.Contains(info.URL, "/auth") {
+		ok, _ := rodBool(page, `() => {
+			const token = localStorage.getItem('dune_token') ||
+			              localStorage.getItem('token') ||
+			              localStorage.getItem('nextauth.message');
+			return !!token;
+		}`)
+		if ok {
+			return true
+		}
+	}
+	return false
 }

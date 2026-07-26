@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "id": "1ccbef8ff9e0b2ac",
+  "status": "done",
+  "message": "完成",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-24 19:18:38",
+  "finishedAt": "2026-07-24 19:18:48",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_exports\\real_address_single_block_1ccbef8ff9e0b2ac",
+  "request": {
+    "source": "rpc",
+    "rpcUrl": "https://rpc.mevblocker.io",
+    "chains": "ETH",
+    "startBlock": 25602235,
+    "endBlock": 25602235,
+    "traceMode": "none",
+    "blockBatch": 1,
+    "logBatch": 1,
+    "workers": 1,
+    "rps": 1,
+    "timeoutSeconds": 30,
+    "retries": 1,
+    "pageSize": 50,
+    "rawDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_raw",
+    "outputDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_exports",
+    "outputPrefix": "real_address_single_block",
+    "scanNative": true,
+    "riskCooldownSecs": 120
+  },
+  "entries": [
+    {
+      "address": "0x5b43453fce04b92e190f391a83136bfbecedefd1",
+      "chain": "ETH"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x5b43453fce04b92e190f391a83136bfbecedefd1",
+      "chain": "ETH",
+      "status": "failed",
+      "message": "0x5b43453fce04b92e190f391a83136bfbecedefd1 写入 Excel 失败: file path length exceeds maximum limit 207 characters",
+      "progress": 8,
+      "downloaded": 3,
+      "total": -1,
+      "startedAt": "2026-07-24 19:18:38",
+      "updatedAt": "2026-07-24 19:18:48",
+      "finishedAt": "2026-07-24 19:18:48",
+      "result": "",
+      "errors": [
+        "0x5b43453fce04b92e190f391a83136bfbecedefd1 写入 Excel 失败: file path length exceeds maximum limit 207 characters"
+      ],
+      "parts": null,
+      "cancelRequested": false
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x5b43453fce04b92e190f391a83136bfbecedefd1",
+      "chain": "ETH",
+      "complete": false,
+      "segments": 0,
+      "rows": 3
+    }
+  ]
+}

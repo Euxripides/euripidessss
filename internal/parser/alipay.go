@@ -1,7 +1,9 @@
-﻿package parser
+package parser
 
 import (
+	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,16 +90,25 @@ type AlipaySource struct {
 }
 
 type AlipayResult struct {
-	OutputPath  string                `json:"output_path"`
-	Sources     []AlipaySource        `json:"sources"`
-	TableRows   map[string]int        `json:"table_rows"`
-	UnifiedRows int                   `json:"unified_rows"`
-	Mode        string                `json:"mode"`
+	OutputPath  string                 `json:"output_path"`
+	Sources     []AlipaySource         `json:"sources"`
+	TableRows   map[string]int         `json:"table_rows"`
+	UnifiedRows int                    `json:"unified_rows"`
+	Mode        string                 `json:"mode"`
 	Quality     map[string]interface{} `json:"quality"`
+	UnifiedData [][]string             `json:"-"`
 }
 
 // ProcessAlipayDirectory processes all files in a directory for Alipay
 func ProcessAlipayDirectory(sourceDir, outputDir, mode string) (*AlipayResult, error) {
+	files, err := scanFiles(sourceDir)
+	if err != nil {
+		return nil, err
+	}
+	return ProcessAlipayFiles(files, outputDir, mode)
+}
+
+func ProcessAlipayFiles(files []string, outputDir, mode string) (*AlipayResult, error) {
 	if mode == "" {
 		mode = "strict"
 	}
@@ -105,11 +116,8 @@ func ProcessAlipayDirectory(sourceDir, outputDir, mode string) (*AlipayResult, e
 		return nil, fmt.Errorf("unknown alipay mode: %s", mode)
 	}
 
-	// Scan files
-	files, err := scanFiles(sourceDir)
-	if err != nil {
-		return nil, err
-	}
+	files = append([]string(nil), files...)
+	sort.Strings(files)
 
 	type job struct {
 		path      string
@@ -118,25 +126,33 @@ func ProcessAlipayDirectory(sourceDir, outputDir, mode string) (*AlipayResult, e
 		note      string
 	}
 
-	jobs := make(chan job, len(files)*2)
+	numWorkers := 1
+
+	jobs := make(chan job, numWorkers)
 	results := make(chan AlipaySource, len(files)*2)
-	tableFrames := make(map[string][][]string)
+	tableRows := make(map[string]int)
 	unifiedFrames := make([][]string, 0)
 	var mu sync.Mutex
-
-	// Worker pool
-	numWorkers := 4
-	if len(files) < numWorkers {
-		numWorkers = len(files)
-	}
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
 	var wg sync.WaitGroup
 
 	// Producer
 	go func() {
 		for _, path := range files {
+			if isDelimitedFile(path) {
+				source, unified, err := processAlipayCSVFile(path, mode)
+				if err != nil {
+					log.Warn().Err(err).Str("path", path).Msg("skip unreadable file")
+					continue
+				}
+				results <- source
+				if _, ok := AlipayStandardTables[source.TableType]; ok {
+					mu.Lock()
+					tableRows[source.TableType] += source.Rows
+					unifiedFrames = append(unifiedFrames, unified...)
+					mu.Unlock()
+				}
+				continue
+			}
 			sheets, err := ReadFile(path)
 			if err != nil {
 				log.Warn().Err(err).Str("path", path).Msg("skip unreadable file")
@@ -188,8 +204,7 @@ func ProcessAlipayDirectory(sourceDir, outputDir, mode string) (*AlipayResult, e
 
 				// Normalize and store results
 				mu.Lock()
-				tableFrames[tableType] = append(tableFrames[tableType], headers)
-				tableFrames[tableType] = append(tableFrames[tableType], data...)
+				tableRows[tableType] += len(data)
 
 				unifyTables, _ := AlipayUnifyTables[mode]
 				if unifyTables[tableType] {
@@ -211,41 +226,140 @@ func ProcessAlipayDirectory(sourceDir, outputDir, mode string) (*AlipayResult, e
 		sources = append(sources, r)
 	}
 
-	// Build output
-	tableRows := make(map[string]int)
-	for k, v := range tableFrames {
-		tableRows[k] = len(v) - 1 // minus header
-	}
-
 	result := &AlipayResult{
 		Sources:     sources,
 		TableRows:   tableRows,
 		UnifiedRows: len(unifiedFrames),
 		Mode:        mode,
-		Quality:     buildAlipayQuality(sources, tableFrames, unifiedFrames, tableRows),
+		Quality:     buildAlipayQuality(sources, unifiedFrames),
+		UnifiedData: unifiedFrames,
 	}
 
 	return result, nil
 }
 
 func scanFiles(dir string) ([]string, error) {
-	entries, err := filepath.Glob(filepath.Join(dir, "*"))
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if SupportedSuffixes[ext] {
+			files = append(files, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	var files []string
-	for _, e := range entries {
-		info, err := os.Stat(e)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(e))
-		if SupportedSuffixes[ext] {
-			files = append(files, e)
-		}
-	}
 	sort.Strings(files)
 	return files, nil
+}
+
+func isDelimitedFile(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".csv", ".tsv", ".txt":
+		return true
+	default:
+		return false
+	}
+}
+
+func processAlipayCSVFile(path, mode string) (AlipaySource, [][]string, error) {
+	preview, encoding, sep, err := readCSVPreview(path, 40)
+	if err != nil {
+		return AlipaySource{}, nil, err
+	}
+	preview = NormalizeEmbeddedCSVRows(TrimRows(preview))
+	headerRow := findAlipayHeaderRow(preview)
+	if headerRow < 0 {
+		return AlipaySource{
+			Path:      path,
+			SheetName: "sheet1",
+			TableType: "未识别",
+			HeaderRow: 0,
+			Rows:      0,
+			Notes:     []string{"前40行未找到支付宝标准表头"},
+		}, nil, nil
+	}
+
+	_, headers := DataFrameFromHeader(preview, headerRow)
+	tableType := classifyAlipayTable(headers, path, "sheet1")
+	source := AlipaySource{
+		Path:      path,
+		SheetName: "sheet1",
+		TableType: tableType,
+		HeaderRow: headerRow + 1,
+		Columns:   headers,
+	}
+	if tableType == "未识别" {
+		return source, nil, nil
+	}
+
+	reader, file, err := openCSVReader(path, sep, encoding)
+	if err != nil {
+		return AlipaySource{}, nil, err
+	}
+	defer file.Close()
+
+	unifyTables, _ := AlipayUnifyTables[mode]
+	var unified [][]string
+	rowIndex := 0
+	for {
+		row, err := reader.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return AlipaySource{}, nil, err
+		}
+		if rowIndex <= headerRow {
+			rowIndex++
+			continue
+		}
+		row = TrimRows([][]string{row})[0]
+		source.Rows++
+		if unifyTables[tableType] {
+			unified = append(unified, alipayToUnified([][]string{row}, headers, tableType, path, rowIndex-1)...)
+		}
+		rowIndex++
+	}
+	return source, unified, nil
+}
+
+func readCSVPreview(path string, maxRows int) ([][]string, string, rune, error) {
+	sep := ','
+	if strings.ToLower(filepath.Ext(path)) == ".tsv" {
+		sep = '\t'
+	}
+
+	encodings := []string{"utf-8-sig", "gb18030", "utf-8"}
+	for _, encoding := range encodings {
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, "", sep, err
+		}
+		rows, readErr := readCSVRowsLimitedWithEncoding(f, sep, encoding, maxRows)
+		closeErr := f.Close()
+		if readErr == nil && closeErr == nil && len(rows) > 0 && rowsAreDecodedText(rows) {
+			return rows, encoding, sep, nil
+		}
+	}
+	return nil, "", sep, fmt.Errorf("read csv preview: all encodings failed")
+}
+
+func openCSVReader(path string, sep rune, encoding string) (*csv.Reader, *os.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	reader := csv.NewReader(csvReaderForEncoding(f, encoding))
+	reader.Comma = sep
+	reader.LazyQuotes = true
+	reader.TrimLeadingSpace = true
+	reader.FieldsPerRecord = -1
+	return reader, f, nil
 }
 
 func findAlipayHeaderRow(rows [][]string) int {
@@ -318,15 +432,26 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 	for i, h := range headers {
 		headerMap[h] = i
 	}
-
 	get := func(names ...string) func(row int) string {
 		return func(row int) string {
-			return FirstNonEmpty(mapToMap(headerMap, data), names, row)
+			if row >= len(data) {
+				return ""
+			}
+			for _, name := range names {
+				idx, ok := headerMap[name]
+				if !ok || idx >= len(data[row]) {
+					continue
+				}
+				if v := strings.TrimSpace(data[row][idx]); v != "" {
+					return v
+				}
+			}
+			return ""
 		}
 	}
 	getFloat := func(names ...string) func(row int) float64 {
 		return func(row int) float64 {
-			return ToNumber(FirstNonEmpty(mapToMap(headerMap, data), names, row))
+			return ToNumber(get(names...)(row))
 		}
 	}
 
@@ -464,7 +589,7 @@ func mapToMap(headerMap map[string]int, data [][]string) map[string][]string {
 	return result
 }
 
-func buildAlipayQuality(sources []AlipaySource, tableFrames map[string][][]string, unifiedFrames [][]string, tableRows map[string]int) map[string]interface{} {
+func buildAlipayQuality(sources []AlipaySource, unifiedFrames [][]string) map[string]interface{} {
 	unknownCount := 0
 	for _, s := range sources {
 		if s.TableType == "未识别" {
@@ -473,11 +598,9 @@ func buildAlipayQuality(sources []AlipaySource, tableFrames map[string][][]strin
 	}
 	return map[string]interface{}{
 		"summary": map[string]interface{}{
-			"统一流水行数":      len(unifiedFrames),
+			"统一流水行数":       len(unifiedFrames),
 			"识别文件或Sheet数":  len(sources),
 			"未识别文件或Sheet数": unknownCount,
 		},
 	}
 }
-
-
