@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "id": "4a767dec32c1f3c8",
+  "status": "cancelled",
+  "message": "已取消",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-24 19:13:06",
+  "finishedAt": "2026-07-24 19:15:04",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_exports\\real_address_smoke_4a767dec32c1f3c8",
+  "request": {
+    "source": "rpc",
+    "rpcUrl": "https://ethereum-rpc.publicnode.com",
+    "chains": "ETH",
+    "startBlock": 25601720,
+    "endBlock": 25602220,
+    "traceMode": "none",
+    "blockBatch": 100,
+    "logBatch": 25,
+    "workers": 1,
+    "rps": 1,
+    "timeoutSeconds": 45,
+    "retries": 2,
+    "pageSize": 50,
+    "rawDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_raw",
+    "outputDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\test_exports",
+    "outputPrefix": "real_address_smoke",
+    "riskCooldownSecs": 120
+  },
+  "entries": [
+    {
+      "address": "0x28C6c06298d514Db089934071355E5743bf21d60",
+      "chain": "ETH"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x28C6c06298d514Db089934071355E5743bf21d60",
+      "chain": "ETH",
+      "status": "cancelled",
+      "message": "已取消",
+      "progress": 6,
+      "downloaded": 0,
+      "total": -1,
+      "startedAt": "2026-07-24 19:13:06",
+      "updatedAt": "2026-07-24 19:15:04",
+      "finishedAt": "2026-07-24 19:15:04",
+      "result": "",
+      "errors": null,
+      "parts": null,
+      "cancelRequested": true
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x28C6c06298d514Db089934071355E5743bf21d60",
+      "chain": "ETH",
+      "complete": false,
+      "segments": 0,
+      "rows": 0
+    }
+  ]
+}

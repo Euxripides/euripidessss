@@ -7,6 +7,7 @@ import './features/clean/clean.css';
 import './features/flow/flow-canvas.css';
 import './features/flow/flow-panels.css';
 import './features/flow/flow-nodes.css';
+import './features/crypto/crypto.css';
 import './styles/shared.css';
 import './styles/responsive.css';
 import { App } from './App';

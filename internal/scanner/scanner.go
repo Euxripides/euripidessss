@@ -1,4 +1,4 @@
-﻿package scanner
+package scanner
 
 import (
 	"encoding/json"
@@ -26,7 +26,7 @@ type SheetCandidate struct {
 }
 
 type DirectoryScan struct {
-	SourceDir    string          `json:"source_dir"`
+	SourceDir    string           `json:"source_dir"`
 	Transactions []SheetCandidate `json:"transactions"`
 	Accounts     []SheetCandidate `json:"accounts"`
 	Labels       []SheetCandidate `json:"labels"`
@@ -35,24 +35,24 @@ type DirectoryScan struct {
 
 // Aliases for scoring
 var txAliases = map[string][]string{
-	"交易卡号": {"交易卡号", "交易卡", "卡号", "银行卡号", "本方卡号", "账户"},
-	"交易账号": {"交易账号", "账号", "银行账号", "本方账号"},
-	"交易户名": {"交易户名", "本方户名", "账户名称", "客户名称"},
-	"交易时间": {"交易时间", "交易日期", "账务日期", "入账时间", "支付时间", "创建时间", "发生时间"},
-	"交易金额": {"交易金额", "金额", "收入金额", "支出金额", "交易额", "付款金额"},
-	"交易余额": {"交易余额", "余额", "账户余额"},
-	"收付标志": {"收付标志", "借贷标志", "借贷方向", "收支类型"},
+	"交易卡号":    {"交易卡号", "交易卡", "卡号", "银行卡号", "本方卡号", "账户"},
+	"交易账号":    {"交易账号", "账号", "银行账号", "本方账号"},
+	"交易户名":    {"交易户名", "本方户名", "账户名称", "客户名称"},
+	"交易时间":    {"交易时间", "交易日期", "账务日期", "入账时间", "支付时间", "创建时间", "发生时间"},
+	"交易金额":    {"交易金额", "金额", "收入金额", "支出金额", "交易额", "付款金额"},
+	"交易余额":    {"交易余额", "余额", "账户余额"},
+	"收付标志":    {"收付标志", "借贷标志", "借贷方向", "收支类型"},
 	"交易对手账卡号": {"交易对手账卡号", "对方账号", "对手账号", "对方卡号", "对手卡号"},
-	"对手户名": {"对手户名", "对方户名", "对方姓名", "交易对方"},
-	"摘要说明": {"摘要说明", "摘要", "交易摘要", "商品说明"},
-	"交易流水号": {"交易流水号", "流水号", "交易号", "商户订单号", "订单号"},
+	"对手户名":    {"对手户名", "对方户名", "对方姓名", "交易对方"},
+	"摘要说明":    {"摘要说明", "摘要", "交易摘要", "商品说明"},
+	"交易流水号":   {"交易流水号", "流水号", "交易号", "商户订单号", "订单号"},
 }
 
 var acctAliases = map[string][]string{
-	"账户开户名称": {"账户开户名称", "开户名称", "客户名称", "户名", "姓名"},
+	"账户开户名称":  {"账户开户名称", "开户名称", "客户名称", "户名", "姓名"},
 	"开户人证件号码": {"开户人证件号码", "证件号码", "身份证号"},
-	"交易卡号":   {"交易卡号", "卡号", "银行卡号"},
-	"交易账号":   {"交易账号", "账号", "银行账号"},
+	"交易卡号":    {"交易卡号", "卡号", "银行卡号"},
+	"交易账号":    {"交易账号", "账号", "银行账号"},
 }
 
 var transactionKeywords = []string{"流水", "交易", "明细", "账单", "statement", "transaction", "bill"}
@@ -204,7 +204,7 @@ func sampleExcelColumns(rows [][]string) []string {
 
 func classifyCandidate(path, sheetName string, columns []string) SheetCandidate {
 	text := fmt.Sprintf("%s %s %s", filepath.Base(path), sheetName, strings.Join(columns, " "))
-	provider := detectProvider(text)
+	provider := detectProvider(text, columns)
 
 	txScore, txHits := scoreColumns(columns, txAliases)
 	acctScore, acctHits := scoreColumns(columns, acctAliases)
@@ -308,13 +308,16 @@ func keywordScore(text string, keywords []string) int {
 	return count
 }
 
-func detectProvider(text string) string {
+func detectProvider(text string, columns []string) string {
 	lower := strings.ToLower(text)
 	if strings.Contains(text, "支付宝") || strings.Contains(lower, "alipay") {
 		return "支付宝"
 	}
 	if strings.Contains(text, "微信") || strings.Contains(lower, "wechat") || strings.Contains(text, "财付通") {
 		return "微信"
+	}
+	if provider := detectProviderByColumns(columns); provider != "未知" {
+		return provider
 	}
 	if strings.Contains(text, "银行") || strings.Contains(lower, "bank") {
 		return "银行"

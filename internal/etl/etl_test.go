@@ -42,6 +42,44 @@ func TestDeduplicateTransactions(t *testing.T) {
 	}
 }
 
+func TestCleanTransactionsAppliesCommonRules(t *testing.T) {
+	rows := []model.TransactionRow{
+		{
+			"交易时间":    "2024/01/01 10:00:00",
+			"交易金额":    "-1,234.50元",
+			"收付标志":    "D",
+			"交易卡号":    "CNYO6222001234567890",
+			"交易账号":    "ACCT-998877",
+			"交易对手账卡号": "ABC-123456-1",
+		},
+		{
+			"交易时间":     "2024/01/02 10:00:00",
+			"交易金额":     "88",
+			"收付标志":     "C",
+			"查询反馈结果原因": "查询失败",
+		},
+	}
+
+	cleaned := CleanTransactions(rows)
+	if len(cleaned) != 1 {
+		t.Fatalf("expected failed-feedback row to be removed, got %d rows", len(cleaned))
+	}
+	row := cleaned[0]
+	if row["交易金额"] != "-1234.50" {
+		t.Fatalf("expected normalized amount to preserve reversal sign -1234.50, got %q", row["交易金额"])
+	}
+	if row["收付标志"] != "出" {
+		t.Fatalf("expected direction 出, got %q", row["收付标志"])
+	}
+	if row["交易时间"] != "2024-01-01 10:00:00" {
+		t.Fatalf("expected normalized datetime, got %q", row["交易时间"])
+	}
+	if row["交易卡号"] != "6222001234567890" || row["交易账号"] != "998877" || row["交易对手账卡号"] != "123456" {
+		t.Fatalf("expected cleaned account numbers, got card=%q account=%q counterparty=%q",
+			row["交易卡号"], row["交易账号"], row["交易对手账卡号"])
+	}
+}
+
 func TestBuildSummary(t *testing.T) {
 	rows := []model.TransactionRow{
 		{"交易时间": "2024-01-01", "交易金额": "100", "收付标志": "进"},

@@ -1,3 +1,339 @@
+### 2026-07-26 23:57 虚拟币下载与地址区分真实地址对比测试
+
+#### 本次任务
+- 使用真实链上地址对比当前项目与 `E:\codex\虚拟币` 的下载实现和输出。
+- 对比当前地址区分 API 与 `D:\app\桌面\新建文件夹 (2)\查询.py` 的 BSC EOA/合约判断。
+
+#### 新增功能
+- 无；本次为测试和一致性审计。
+
+#### 修改文件
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+- 新增测试产物位于 `backend/data/crypto_download/real_compare_20260726/`。
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- 无。
+
+#### 验证结果
+- 当前项目 `go test ./internal/... -count=1` 全部通过；原项目 `go test -count=1 ./...` 全部通过。
+- 当前项目和原项目对真实 ETH 地址 `0x28c6c06298d514db089934071355e5743bf21d60`、区块 `25617962` 均下载到同一笔交易，交易哈希为 `0x0f455c9e1ac3e57fec7eb2c42f6b1305178795079c5195a9092ddf4b997a7886`。
+- 两个 Excel 均包含 7 个同名 sheet，行列维度一致；剔除运行时间和运行时最新区块后，稳定字段及其余 sheet 单元格完全一致。
+- 下载采集引擎静态核对未发现 RPC、CSV、浏览器、source 路由、checkpoint、重试和限速逻辑分叉；当前项目仅有包/导入路径和 Windows 长路径文件名适配。
+- 原地址脚本将真实 BSC EOA 判为 `EOA`、USDT 合约判为 `CONTRACT`；当前 API 对两者均 RPC 验证成功，但都显示 `账户/合约地址`，确认地址类型判断不一致。
+- 101 区块长测完成普通交易扫描 `101/101`、命中 277 行；该任务随后人工取消，不计作完整下载。
+- 已重建并启动后端，PID 40336；`/api/health` 顶层返回 `status=ok`。
+
+#### 未完成事项
+- 需要后续修复地址区分 API，使其复用 `eth_getCode` 结果输出 `EOA`/`CONTRACT`。
+- 长测出现一次 Windows 作业状态文件替换 `Access is denied`，最终持久化成功且单区块任务未复现，后续应继续做并发持久化压测。
+- OKLink CSV/邮箱和浏览器模式尚未做本次真实平台端到端测试。
+
+#### 注意事项
+- 完整成功的当前项目文件位于 `backend/data/crypto_download/real_compare_20260726/small_exports/live_rpc_small_7fbcb1d7a591ecc8/`；原项目对照文件为 `backend/data/crypto_download/real_compare_20260726/original_rpc.xlsx`。
+- 本次未修改业务代码。
+
+### 2026-07-24 18:47 虚拟币下载选项精简
+
+#### 本次任务
+- 删除 `虚拟币 -> 数据下载` 页面的 `DeepAML 标签` 和 `过滤交易所大地址` 选项。
+- 解释 `扫描原生交易` 的含义。
+
+#### 新增功能
+- 无。
+
+#### 修改文件
+- `frontend/src/features/crypto/CryptoDownloadPanel.tsx`
+- `frontend/src/features/crypto/cryptoDownloadApi.ts`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无接口路径变化。
+- 前端不再向 `/api/crypto/download/start` 发送 `amlKey`、`amlLabels`、`amlRps`、`filterExchange`。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- 删除 `DeepAML 标签` 复选框。
+- 删除 `过滤交易所大地址` 复选框。
+- 保留 `扫描原生交易`、`补充交易详情`、`断点续跑` 等选项。
+
+#### 验证结果
+- `cd E:\codex\etl\frontend; npm run build` 通过，仍有既有 Vite chunk size warning。
+- 新前端产物为 `assets/index-YUv87gya.js`。
+
+#### 未完成事项
+- 无。
+
+#### 注意事项
+- 本次仅修改前端，不需要重启后端；浏览器刷新即可。
+
+### 2026-07-24 18:41 启动项目
+
+#### 本次任务
+- 启动当前 ETL 项目，供用户访问测试。
+
+#### 新增功能
+- 无。
+
+#### 修改文件
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无。
+
+#### 数据库变化
+- 无。
+
+#### 前端变化
+- 无。
+
+#### 验证结果
+- `Get-Process etl-server -ErrorAction SilentlyContinue | Stop-Process -Force; .\run.ps1` 已启动后端，PID 45184。
+- `http://127.0.0.1:8000/api/health` 返回 `status=ok`，`analysis_plane.available=true`。
+- `http://127.0.0.1:8000` 已引用当前前端构建产物 `assets/index-VAmw0-gn.js`。
+
+#### 未完成事项
+- 无。
+
+#### 注意事项
+- 当前访问地址为 `http://127.0.0.1:8000`。
+
+### 2026-07-24 17:52 虚拟币数据下载项目移植
+
+#### 本次任务
+- 将 `E:\codex\虚拟币` 项目的代码移植到当前 ETL 项目。
+- 前端入口放在 `虚拟币 -> 数据下载`，保持源项目下载功能主流程可用，前端重新排版为当前项目 Ant Design 工作台。
+
+#### 新增功能
+- 新增虚拟币数据下载后端模块，支持 RPC、OKLink CSV、浏览器三种来源。
+- 支持多地址/多链批量下载、地址级进度、任务进度、取消任务、取消单地址、暂停/冷却后继续下载、任务列表和结果文件展示。
+- 支持 CSV 邮箱/IMAP、并发、RPS、超时、重试、分页、断点续跑、DeepAML 标签、交易所过滤等源项目参数。
+- 新增当前项目专属设置存储目录，设置读取不回显 IMAP 密码/授权码。
+
+#### 修改文件
+- `internal/cryptodownload/`（新增，移植源项目下载引擎及嵌入脚本）
+- `internal/api/handlers.go`
+- `internal/api/crypto_address_handlers.go`
+- `frontend/src/App.tsx`
+- `frontend/src/features/crypto/cryptoDownloadApi.ts`
+- `frontend/src/features/crypto/CryptoDownloadPanel.tsx`
+- `frontend/src/features/crypto/crypto-download.css`
+- `go.mod`
+- `go.sum`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 新增 `/api/crypto/download/settings` 设置读写接口。
+- 新增 `/api/crypto/download/start` 启动下载任务。
+- 新增 `/api/crypto/download/job`、`/api/crypto/download/jobs` 查询任务。
+- 新增 `/api/crypto/download/cancel` 支持任务级/地址级取消。
+- 新增 `/api/crypto/download/resume` 继续暂停或冷却任务。
+- 新增 `/api/crypto/download/history*` 历史任务查询/导入/继续接口。
+
+#### 数据库变化
+- 无外部数据库结构变更。
+- 新增本地运行目录 `backend/data/crypto_download/`，用于配置、作业记录、历史记录、默认 raw/exports 输出。
+
+#### 前端变化
+- `虚拟币` 菜单新增 `数据下载` 页面并默认展开。
+- 新页面提供下载参数表单、当前任务总览、地址进度表、结果文件、错误和最近任务列表。
+- 默认输出目录为 `backend/data/crypto_download/exports`，默认 raw 目录为 `backend/data/crypto_download/raw`。
+
+#### 验证结果
+- `go test ./internal/cryptodownload ./internal/api -count=1` 通过。
+- `go test ./internal/... -count=1` 通过。
+- `go vet ./internal/...` 通过。
+- `go build -o bin\etl-server.exe .\cmd\server\` 通过。
+- `cd frontend && npm run build` 通过，仍有既有 Vite chunk size warning。
+- 已执行 `Get-Process etl-server -ErrorAction SilentlyContinue | Stop-Process -Force; .\run.ps1` 重启后端，PID 7108。
+- `http://127.0.0.1:8000/api/health` 返回 `status=ok`。
+- `http://127.0.0.1:8000/api/crypto/download/settings` 返回当前项目默认设置且不回显授权码。
+- `http://127.0.0.1:8000/api/crypto/download/jobs` 返回空任务列表。
+- `http://127.0.0.1:8000` 已引用最新前端产物 `assets/index-VAmw0-gn.js`。
+
+#### 未完成事项
+- 未用真实 OKLink/RPC 地址做端到端下载，避免在本次移植中触发外部平台、邮箱或限流；需要用户提供可测试地址/邮箱/节点后做真实下载验收。
+- 源项目测试文件未整体迁入，后续可围绕当前项目 API 增加更小的集成测试。
+
+#### 注意事项
+- `/api/crypto/download/settings` 已改为当前项目专属配置目录，不读取源工具全局配置。
+- 读取设置不会返回 IMAP 密码/授权码；保存空密码时保留当前项目已保存值。
+- 工作区已有大量 Dune profile 和运行时改动，本次未回退。
+
+### 2026-06-29 0622反馈真实目录识别/合并验证
+
+#### 本次任务
+- 使用 `E:\项目\网赌\梅县-网赌30娱乐\资金流调证\0622反馈` 做合并测试，验证当前逻辑能否区分支付宝、微信、银行流水。
+
+#### 新增功能
+- 无。
+
+#### 修改文件
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+- `backend/data/outputs/scan_0622_feedback.json`
+- `backend/data/outputs/pipeline_0622_feedback.json`
+- `backend/data/outputs/funds_etl_dfea3ad0-f56.xlsx`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- 目录内有 115 个 CSV、18 个 PDF、18 个 ZIP、3 个 RAR；支持处理的表格文件为 115 个 CSV，总大小约 4.96GB。
+- 当前扫描器结果：`transactions=0`、`accounts=0`、`unknown=115`，provider 全部为 `未知`。
+- 当前合并管道结果：`rows_in=0`、`rows_out=0`，输出空标准表头文件 `backend/data/outputs/funds_etl_dfea3ad0-f56.xlsx`。
+- GB18030 抽样读取 `账户明细` CSV 表头正常；UTF-8 读取乱码，确认当前失败主因是 CSV 编码未被正确识别/转换。
+
+#### 未完成事项
+- 需要后续修复 CSV 编码自动检测或 GBK/GB18030 fallback。
+- 需要增强支付宝 provider 粗分：当文件名/表头命中 `账户明细`、`余额明细`、`注册信息`、`登陆日志` 等支付宝标准表类型时，即使没有 `支付宝` 字样，也应进入支付宝解析链路。
+
+#### 注意事项
+- 该批数据按文件名看主要是支付宝协查反馈，未发现微信/财付通/银行命名特征。
+- 本次未修改后端代码，未执行 `run.ps1` 重启。
+
+### 2026-06-26 DuckDB CLI 工具补齐
+
+#### 本次任务
+- 从 `E:\codex\etl_exe\tools` 复制 `duckdb.exe` 到当前项目，修复健康检查中 `analysis_plane` 缺少 DuckDB CLI 的问题。
+
+#### 新增功能
+- 当前项目新增 `tools/duckdb/duckdb.exe`，后端健康检查可识别 DuckDB CLI。
+
+#### 修改文件
+- `tools/duckdb/duckdb.exe`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `E:\codex\etl\tools\duckdb\duckdb.exe --version` — 返回 `v1.5.3 (Variegata) 14eca11bd9`。
+- `Get-Process etl-server -ErrorAction SilentlyContinue | Stop-Process -Force; .\run.ps1` — 已重启后端，PID 38668。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`，`analysis_plane.available=true`，`exe_path=E:\codex\etl\tools\duckdb\duckdb.exe`。
+
+#### 未完成事项
+- 无。
+
+#### 注意事项
+- 用户给出的目录是 `E:\codex\etl_exe\tools`；实际可执行文件位于其子目录 `duckdb\duckdb.exe`。
+
+### 2026-06-26 通用清洗规则增强
+
+#### 本次任务
+- 将清洗规则加入通用清洗路径，让所有 provider 最终进入 `etl.CleanTransactions` 时都能共享关键清洗规则。
+- 修正通用金额清洗：负数交易金额可能是冲正/撤销/退款，不能统一转正。
+
+#### 新增功能
+- 通用清洗新增账号字段清理：`交易卡号`、`交易账号`、`交易对手账卡号` 统一调用 `parser.CleanAccountNumber`。
+- 通用金额清洗只做解析和格式化，保留负数符号，避免破坏冲正/撤销/退款等业务语义。
+- 通用清洗新增失败反馈过滤：`查询反馈结果原因` 命中 `查询失败`、`失败`、`无记录`、`无此记录`、`查无此`、`no record` 时删除该行。
+
+#### 修改文件
+- `internal/etl/cleaning.go`
+- `internal/etl/etl.go`
+- `internal/etl/etl_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `go test ./internal/etl -run TestCleanTransactionsAppliesCommonRules -count=1` — 初次加入通用规则前失败于未过滤失败反馈行；负数保留修正前失败于金额被转正；对应修复后均通过。
+- `go test ./internal/etl -count=1` — 通过。
+- `go test ./internal/... -count=1` — 通过。
+- `go vet ./internal/...` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server` — 通过。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command 'Get-Process etl-server -ErrorAction SilentlyContinue | Stop-Process -Force; .\run.ps1'` — 已重启后端，PID 47276。
+- `curl.exe -s http://127.0.0.1:8000/api/health` — 返回 `status=ok`；`analysis_plane` 仍提示缺少 `tools/duckdb/duckdb.exe`，与本次清洗规则无关。
+
+#### 未完成事项
+- `internal/etl/etl.go` 仍是既有超大文件；本次只将清洗/去重单元拆出，未做无关重构。
+- 未将银行专用的 0 金额过滤上移到通用层，避免误删其他来源合法 0 金额记录。
+
+#### 注意事项
+- 通用清洗规则会影响支付宝、微信、银行、unknown 等所有最终进入 `RunPipeline` 的流水。
+- 当前工作区存在大量 Dune profile/rod 相关既有运行时改动，本次未处理。
+
+### 2026-06-25 Rod 用户模式增强: cf_clearance 检测 + 页面复用
+
+#### 本次任务
+- 将 `rod-usermode-detailed.md` 中的 rod Chrome CDP 自动化方案（cf_clearance cookie 检测、页面复用、HTML 级 Cloudflare 拦截判定）在最小改动前提下集成进现有的 `internal/dunetools/rod_user_mode_*.go`。
+
+#### 新增功能
+- `checkRodCFClearance(browser)` — 浏览器级 cf_clearance cookie 是否存在判定。
+- `checkRodCFClearanceExpiry(browser)` — cf_clearance 过期时间 + 5 分钟缓冲检测。
+- `findOrCreateDunePage(browser)` — 优先复用已有 dune.com 页面 → 复用 about:blank 并导航 → 新建。
+- `isRodBlocked(page)` — HTML 内容检测 Cloudflare 拦截（"Sorry, you have been blocked" / "Cloudflare Ray ID" / "Attention Required" / "cf-browser-verify"）。
+- `isRodLoggedIn(page)` — URL 排除 /login + localStorage token 双重判定。
+- `waitForCFClearance(browser)` — 基于 cf_clearance cookie 的浏览器级等待。
+
+#### 修复的问题
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| Rod 登录每次新建页面可能触发 Cloudflare 重新检测 | 原 `LoginAndExtract()` 总是 `browser.Page(TargetCreateTarget{URL: duneHomeURL})` 新建页面，不复用已有 cf_clearance 上下文 | 改为 `findOrCreateDunePage()`，优先复用已有 dune.com 页面 |
+| Cloudflare 拦截检测仅依赖页面文本（可能漏检） | `waitForManualVerification()` 只用 JS 内联检测文本模式 | 新增 `isRodBlocked()` HTML 级匹配 + `checkRodCFClearance()` cookie 级双保险 |
+| 缺少 cf_clearance 专项检测和过期判定 | 原代码无 cf_clearance cookie 相关逻辑 | 新增 `checkRodCFClearance()` / `checkRodCFClearanceExpiry()` |
+
+#### 修改文件
+- `internal/dunetools/rod_user_mode.go`
+- `internal/dunetools/rod_user_mode_session.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 接口变化
+- 无新增、删除或重命名 API。
+
+#### 数据库变化
+- 无数据库结构变更。
+
+#### 前端变化
+- 无前端页面或组件变更。
+
+#### 验证结果
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过。
+- `go test ./internal/dunetools -run Rod -count=1` — 5/5 通过。
+- `go test ./internal/... -count=1` — 全部通过。
+
+#### 未完成事项
+- 未对真实 Dune 线上环境发起 rod 端到端重跑；本次由单元测试和编译验证覆盖。
+- `checkRodCFClearanceExpiry()` 预留给后续自动刷新逻辑使用，当前未被调用。
+
+#### 注意事项
+- 核心改进：cf_clearance cookie 级检测比页面文本检测更可靠；页面复用避免 Cloudflare 重新检测。
+- `LoginAndExtract()` 现在不再创建新页面，而是优先复用浏览器中已有的 dune.com 标签页。
+
 ### 2026-06-25 Dune query chained parameter return fix
 
 #### Task
@@ -3611,3 +3947,57 @@ ormalizeFilterBoundary 精确时间边界处理。
 #### Notes
 - The manual verification wait path is still useful for solvable verification pages, but the observed page is a hard Cloudflare block.
 - Do not log raw credentials, Cookie, Authorization, access tokens, or exported account secrets.
+
+### 2026-06-29 支付宝/微信/银行类型识别与大 CSV 清洗合并修正
+
+#### New Functionality
+- CSV 清洗/读取现在真正支持 GB18030 fallback，避免支付宝调证 CSV 被当作乱码 UTF-8 继续处理。
+- scanner 新增按标准表头签名识别 provider，能在文件名没有明确关键字时区分支付宝、微信、银行流水。
+- ETL 支付宝/微信分支现在使用 scanner 判定出的文件列表，不再把整个目录交给 provider 解析。
+- 支付宝 CSV/TSV/TXT 文件新增流式读取路径，避免单个大 CSV 使用 `ReadAll()` 一次性读入内存。
+- DuckDB 已复制到 `tools\duckdb\duckdb.exe`。
+
+#### Modified Files
+- `internal/parser/csv_encoding.go`
+- `internal/parser/csv_encoding_test.go`
+- `internal/parser/parser.go`
+- `internal/parser/alipay.go`
+- `internal/parser/wechat.go`
+- `internal/scanner/provider_detection.go`
+- `internal/scanner/scanner.go`
+- `internal/scanner/scanner_test.go`
+- `internal/etl/etl.go`
+- `internal/etl/provider_rows.go`
+- `internal/etl/pipeline_alipay_test.go`
+- `tools/duckdb/duckdb.exe`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### API Changes
+- No HTTP API changes.
+- Internal Go parser APIs added: `ProcessAlipayFiles`, `ProcessWechatFiles`.
+
+#### Database Changes
+- None.
+
+#### Frontend Changes
+- None.
+
+#### Real Data Validation
+- Real folder: `E:\项目\网赌\梅县-网赌30娱乐\资金流调证\0622反馈`
+- Scan result after fix: `transactions=79`, `unknown=36`, `transaction/支付宝=79`, `unknown/支付宝=18`, `unknown/未知=18`.
+- Full pipeline with `GOARCH=amd64` now passes type detection, GB18030 decoding, scanner-routed provider processing, and streaming CSV read, but still fails on all-in-memory unified output accumulation. Latest OOM stack is in `alipayToUnified` while creating/accumulating unified rows.
+
+#### Verified Commands
+- `go test ./internal/parser -run TestReadCSVRowsLimitedDecodesGB18030 -count=1`
+- `go test ./internal/scanner -run TestScanDirectoryClassifiesAlipayGB18030AccountDetail -count=1`
+- `go test ./internal/etl -run TestRunPipelineProcessesGB18030AlipayAccountDetail -count=1`
+- `go test ./internal/parser ./internal/scanner ./internal/etl -count=1`
+- `go test ./internal/... -count=1`
+- `go vet ./internal/...`
+- `go run .\.codex_tmp_scan "E:\项目\网赌\梅县-网赌30娱乐\资金流调证\0622反馈" > backend\data\outputs\scan_0622_feedback_after_fix.json`
+- `$env:GOARCH='amd64'; go run .\.codex_tmp_scan "E:\项目\网赌\梅县-网赌30娱乐\资金流调证\0622反馈" pipeline "E:\codex\etl\backend\data\outputs" > backend\data\outputs\pipeline_0622_feedback_after_fix.json`
+
+#### Open Items
+- Full merge for the 4.96GB `0622反馈` folder still needs a streaming ETL/export design. The remaining failure is not provider detection or CSV decoding; it is current in-memory accumulation of unified transaction rows.
+- Consider using DuckDB or chunked temp files for clean/dedup/export before retrying full-folder merge.

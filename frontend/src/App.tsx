@@ -1,12 +1,14 @@
 ﻿import { FlowPanel } from "./features/flow/FlowPanel";
 import {
   ApartmentOutlined,
+  CloudDownloadOutlined,
   DatabaseOutlined,
   DownloadOutlined,
   PlusOutlined,
   RightOutlined,
   SettingOutlined,
   UploadOutlined,
+  WalletOutlined,
 } from "@ant-design/icons";
 import {
   Button,
@@ -46,6 +48,8 @@ import {
 import type { ProcessResponse, RuleAnalysis } from "./types";
 import { CleanPanel } from "./features/clean/CleanPanel";
 import { DuneDownloadPanel } from "./features/download/DuneDownloadPanel";
+import { CryptoAddressPanel } from "./features/crypto/CryptoAddressPanel";
+import { CryptoDownloadPanel } from "./features/crypto/CryptoDownloadPanel";
 import { RuleExpansionDrawer } from "./features/clean/RuleExpansionDrawer";
 import { EdgeDetailModal } from "./features/flow/EdgeDetailModal";
 import { EdgeStylePanel } from "./features/flow/EdgeStylePanel";
@@ -202,6 +206,15 @@ const menuItems = [
       { key: "download-dune", icon: <DatabaseOutlined />, label: "dune" },
     ],
   },
+  {
+    key: "crypto",
+    icon: <WalletOutlined />,
+    label: "虚拟币",
+    children: [
+      { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "数据下载" },
+      { key: "crypto-address", icon: <WalletOutlined />, label: "地址区分" },
+    ],
+  },
 ];
 
 export function App() {
@@ -352,7 +365,7 @@ export function App() {
           <Menu
             mode="inline"
             selectedKeys={[active]}
-            defaultOpenKeys={["download"]}
+            defaultOpenKeys={["download", "crypto"]}
             items={menuItems}
             onClick={handleMenuClick}
           />
@@ -422,6 +435,8 @@ export function App() {
               />
             )}
             {active === "download-dune" && <DuneDownloadPanel />}
+            {active === "crypto-download" && <CryptoDownloadPanel />}
+            {active === "crypto-address" && <CryptoAddressPanel />}
           </Content>
         </Layout>
       </Layout>
@@ -500,6 +515,8 @@ export function App() {
       clean: "数据清洗",
       graph: "资金流向图",
       "download-dune": "Dune 下载",
+      "crypto-download": "虚拟币数据下载",
+      "crypto-address": "地址区分",
     }[key];
   }
 }
