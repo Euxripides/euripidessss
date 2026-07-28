@@ -14,18 +14,25 @@ $RetryInterval = 2
 Write-Host "=== ETL Backend Startup ==="
 
 # ---- Build ----
-if (-not (Test-Path $BinPath)) {
-    if (-not $SkipBuild) {
-        Write-Host "[BUILD] Building..."
-        Push-Location $ProjectRoot
-        try {
-            & "go" "build" "-o" $BinPath ".\cmd\server\"
-            if ($LASTEXITCODE -ne 0) { throw "Build failed" }
-        } finally { Pop-Location }
-    } else {
-        Write-Host "[ERROR] Binary not found: $BinPath"
-        exit 1
+if (-not $SkipBuild) {
+    Write-Host "[BUILD] Building windows/amd64..."
+    Push-Location $ProjectRoot
+    $PreviousGoArch = $env:GOARCH
+    try {
+        $env:GOARCH = "amd64"
+        & "go" "build" "-o" $BinPath ".\cmd\server\"
+        if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+    } finally {
+        if ($null -eq $PreviousGoArch) {
+            Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
+        } else {
+            $env:GOARCH = $PreviousGoArch
+        }
+        Pop-Location
     }
+} elseif (-not (Test-Path $BinPath)) {
+    Write-Host "[ERROR] Binary not found: $BinPath"
+    exit 1
 }
 
 # ---- Kill old process ----

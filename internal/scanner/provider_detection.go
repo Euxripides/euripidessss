@@ -6,23 +6,39 @@ import (
 )
 
 func detectProviderByColumns(columns []string) string {
-	if matchesKnownTable(columns, parser.AlipayStandardTables) {
-		return "支付宝"
+	type scoredProvider struct {
+		name  string
+		score int
 	}
-	if matchesKnownTable(columns, parser.WechatTables) {
-		return "微信"
+	// A table can share generic fields such as 交易时间、交易金额、交易流水号
+	// with more than one provider. Select the strongest complete signature
+	// instead of returning the first provider that reaches the minimum score.
+	// Bank wins exact ties because its standardized tables intentionally overlap
+	// with the generic 支付流水汇总 signature.
+	candidates := []scoredProvider{
+		{name: "银行", score: bestKnownTableScore(columns, rules.BankTables)},
+		{name: "微信", score: bestKnownTableScore(columns, parser.WechatTables)},
+		{name: "支付宝", score: bestKnownTableScore(columns, parser.AlipayStandardTables)},
 	}
-	if matchesKnownTable(columns, rules.BankTables) {
-		return "银行"
+	best := scoredProvider{name: "未知"}
+	for _, candidate := range candidates {
+		if candidate.score >= 3 && candidate.score > best.score {
+			best = candidate
+		}
 	}
-	return "未知"
+	return best.name
 }
 
 func matchesKnownTable(columns []string, tables map[string][]string) bool {
+	return bestKnownTableScore(columns, tables) >= 3
+}
+
+func bestKnownTableScore(columns []string, tables map[string][]string) int {
+	best := 0
 	for _, expected := range tables {
-		if parser.HeaderScore(columns, expected) >= 3 {
-			return true
+		if score := parser.HeaderScore(columns, expected); score > best {
+			best = score
 		}
 	}
-	return false
+	return best
 }

@@ -1,3 +1,447 @@
+## 2026-07-27 13:31 虚拟币全链路真实下载与 CSV 回退验收
+
+### Task
+- 使用真实地址 `0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d` 验收 RPC、浏览器、邮件 CSV、DeepAML 和交易所大地址过滤。
+- 保留“小数据先直连，失败后自动切浏览器抓取”的路由语义，并重点验证真实 CSV 文件。
+
+### Changes
+- 修改 `internal/cryptodownload/csv_scraper.go`：
+  - 保持 CSV 小数据先调用直连接口；只有永久签名失败、邮件队列超时且没有可用直连数据时才进入浏览器回退。
+  - 邮件收件地址固定使用用户配置，不再生成 Gmail `+alias` 地址。
+- 修改 `internal/cryptodownload/tools/oklink_browser_email.mjs`：
+  - 邮件 CSV 请求使用标准 Chrome 会话。
+  - 修复 OKLink 脚本资源匹配正则导致的 `Invalid regular expression flags`。
+  - 移除运行时主动注入浏览器隐身脚本及自动化特征开关。
+- 修改 `internal/cryptodownload/csv_hydration.go` 和 `csv_raw_durable.go`：
+  - 只有确实存在旧格式分段文件时才校验旧任务全历史时间范围，避免自定义时间段被误判为旧任务。
+  - 成功分段写入完成标记；恢复时不再重复下载已经完成或不足 20,000 行的末段。
+- 修改 `internal/cryptodownload/gui.go` 和 `gui_pause.go`：
+  - 完成、失败、取消时同步更新每个下载分项的终态。
+  - 断点继续时清除已解决的地址错误和任务错误，并将失败分项重置为等待状态。
+- 新增/扩展测试：
+  - `csv_hydration_test.go`：自定义时间段、完成检查点和断点恢复。
+  - `csv_mail_config_test.go`：邮件目标不做别名轮换。
+  - `gui_pause_test.go`：恢复时清除已解决错误。
+  - `source_parity_test.go`：直连成功不回退、永久失败无数据才回退、已有直连数据不被浏览器覆盖。
+
+### API and Database Changes
+- 无新增 API。
+- 无数据库结构变化。
+- 本次真实测试更新了文件系统任务历史、检查点和下载结果。
+
+### Live Validation
+- 邮件 CSV 任务 `75e4918abb355b16` 最终为 `done`，地址分项均为 `done`：
+  - `BSC_交易记录_*.csv`：8 行、11 列、2,042 字节。
+  - `BSC_代币转账_*.csv`：10 行、10 列、2,703 字节。
+  - 两个 CSV 均包含目标地址；`下载情况.xlsx` 为 8,281 字节，总览 1 行、分项 2 行、报错 0 行。
+  - 真实日志确认两个 CSV 均由邮件链接下载；直连接口先返回业务码 `50113`，随后标准浏览器请求邮件成功，符合“先直连、失败后自动浏览器抓取”。
+  - 三个结果文件均通过 `GET /api/crypto/download/file` 返回 HTTP 200 和正确附件 MIME。
+- 浏览器 BSC 任务 `8a72f74633c64034` 为 `done`，下载量 1,177：
+  - 普通交易 231、代币转账 333、资金记录 564、资产 49。
+- RPC 最新块：
+  - BSC 任务 `817499be4673b89e` 为 `done`。
+  - ETH 任务 `499fcf4dbd7dca21` 为 `done`。
+- RPC 历史实际交易任务 `d230d79256fb39b4` 命中 1 条普通交易和 1 条代币转账，但公共 BSC 节点不提供所需历史状态和 `trace_filter`，任务严格显示失败并保留诊断文件。
+- DeepAML + 交易所过滤任务 `3731ca386f0c71b5` 已实际请求 DeepAML；目标地址及两个交易对手没有返回标签，过滤 0 条。任务失败原因仅为公共节点缺少历史状态，不是 DeepAML 错误。
+- 浏览器 ETH 与 BSC 组合任务 `f8205787b49fc648` 中 BSC 成功，ETH 浏览器摘要返回截断 JSON；总任务严格标记失败，没有误报完成。
+- 历史删除接口使用测试任务验证：记录删除后导出目录仍保留。
+- Playwright 验证任务 `75e4918abb355b16` 的“重新导入”：确认弹窗、目标任务 ID 和“确认并开始下载”按钮均可见，确认前 `/history/import` 请求数为 0。
+
+### Verified Commands
+- `go test ./internal/cryptodownload -run "TestCSVSmallDataFallsBackToBrowserOnlyAfterDirectFailure|TestPrepareResumeClearsResolvedAddressErrors|TestHydrate" -count=1` — 通过。
+- `go test ./internal/...` — 全部通过。
+- `go vet ./...` — 通过。
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过。
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-fFyXy2w6.js`、`assets/index-_89HtAlz.css`。
+- `git diff --check` — 无空白错误，仅现有 Windows 行尾提示。
+- `.\run.ps1` — 后端重启成功，PID `32084`；`/api/health` 返回 `status=ok`。
+- 重启后再次执行 Playwright 历史导入确认测试 — 弹窗可见，确认前导入请求数为 0。
+
+### Unfinished
+- OKLink 直连 CSV 当前仍返回业务码 `50113`；自动浏览器邮件回退已真实跑通，不影响本次 CSV 完成。
+- 公共 BSC RPC 节点无法提供部分历史状态与 `trace_filter`，历史块 RPC 全功能需要具备 archive/trace 能力的节点。
+- ETH 浏览器摘要存在偶发截断 JSON；ETH RPC 最新块模式已跑通，浏览器 ETH 仍需后续增强响应重试。
+
+## 2026-07-27 12:49 历史导入确认、失败状态与结果文件下载修复
+
+### Task
+- 修复历史任务点击导入后未经确认直接下载、RPC 发生 HTTP 403 仍显示完成、结果文件按钮无法打开的问题。
+
+### Root Cause
+- 前端“重新导入/导入所选”直接调用 `/history/import`，没有确认阶段。
+- `runGUIJob` 将采集错误写入 `Errors` 后仍生成工作簿并调用 `completeAddress`，任务结束时又将所有仍为 `running` 的任务无条件改为 `done`。
+- 前端通过 `window.open(file://...)` 打开后端本机路径；浏览器从 HTTP 页面访问本地 `file://` 会被安全策略阻止。
+
+### Changes
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`：
+  - 单条或批量历史导入先弹出确认框，列出任务 ID、地址和链；只有点击“确认并开始下载”才调用导入接口。
+  - 有错误的任务不再显示绿色“结果文件已生成”，改为黄色“下载失败，已保留诊断文件”。
+  - 结果文件按钮改为调用受控 HTTP 下载接口，并将文案改为“下载”。
+  - 支持将分号连接的多个 CSV 结果拆成独立下载项。
+  - “完成地址”改为“已处理地址”，避免失败地址计入终态数时造成误解。
+- 修改 `frontend/src/features/crypto/cryptoDownloadApi.ts`，新增受控结果文件下载 URL 构造。
+- 修改 `frontend/src/features/crypto/crypto-download.css`，新增历史导入确认列表样式。
+- 修改 `internal/cryptodownload/gui.go`：
+  - 任务收尾时只要存在采集错误，任务状态改为 `failed`，消息显示错误数量。
+  - 地址采集存在错误时状态改为 `failed`，不再标记为完成；已生成文件保留为诊断结果。
+- 新增 `internal/cryptodownload/gui_result_file.go`：
+  - 新增 `GET /api/crypto/download/file?id=...&path=...`。
+  - 仅允许下载该任务结果列表、地址结果或任务组 `下载情况.xlsx` 中的真实文件。
+  - 非任务文件返回 403，缺失文件返回 404。
+- 新增 `internal/cryptodownload/gui_result_file_test.go`，覆盖任务失败收尾、失败地址诊断文件和文件下载授权。
+- 修改 `internal/cryptodownload/api_handler.go`，注册结果文件接口。
+
+### API and Database Changes
+- 新增 `GET /api/crypto/download/file`，查询参数为任务 `id` 和结果 `path`，响应为附件下载。
+- 无数据库变化。
+
+### Verified Commands
+- `go test ./internal/cryptodownload/...` — 通过。
+- `go test ./internal/...` — 全部通过。
+- `npm run build`（cwd=`frontend`）— 通过；最终产物 `assets/index-fFyXy2w6.js`、`assets/index-_89HtAlz.css`。
+- `.\run.ps1` — 后端成功重启，PID `38796`，`/api/health` 返回 `ok`。
+- Playwright 运行态验证：
+  - 点击“重新导入”显示确认弹窗和“确认并开始下载”按钮。
+  - 确认前 `/history/import` 请求数量为 0。
+- 真实结果文件接口验证：
+  - 历史任务 `e530b670db07b9da` 的 `001_ETH.xlsx` 返回 HTTP 200。
+  - `Content-Type` 为 Excel MIME，`Content-Disposition` 为 `attachment; filename=001_ETH.xlsx`，响应长度 14,945 字节。
+  - 文件 ZIP/XLSX 结构有效，共 16 个条目且包含 `xl/workbook.xml`。
+  - 请求该任务未授权的 `go.mod` 返回 HTTP 403。
+- 未再次发起真实下载任务，避免在未获用户确认时创建任务或产生额外外部请求。
+
+### Unfinished
+- 用户截图中的任务 `3954bf73db7cc49d` 在当前运行时、历史文件和任务 JSON 中均未找到，无法直接复核其已生成文件；本次从代码路径和截图错误内容确认并修复同一状态错误。
+
+## 2026-07-27 12:40 历史任务导入与删除
+
+### Task
+- 参考原项目，为虚拟币下载页的历史任务补齐导入、删除和断点继续能力。
+
+### Changes
+- 修改 `frontend/src/features/crypto/cryptoDownloadApi.ts`：
+  - 接入 `GET /api/crypto/download/history` 持久化历史列表。
+  - 接入 `POST /api/crypto/download/history/import` 单条或批量重新导入。
+  - 接入 `POST /api/crypto/download/history/resume` 从历史断点继续。
+  - 接入 `DELETE /api/crypto/download/history` 删除历史记录。
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`：
+  - 原“最近任务”折叠改为“历史任务”，显示全部持久化记录。
+  - 新增单条勾选、全选、批量“导入所选”和刷新。
+  - 每条记录新增“重新导入”“删除记录”；暂停或冷却记录额外显示“断点继续”。
+  - 删除前二次确认，并明确“导出的数据文件不会被删除”。
+  - 启动、完成、重新导入或断点继续后同步刷新运行任务和历史记录。
+- 修改 `frontend/src/features/crypto/crypto-download.css`：
+  - 新增历史任务工具栏、记录摘要、操作区和移动端布局。
+
+### API and Database Changes
+- 无后端接口或数据库变更；复用项目中已存在且与原项目一致的历史接口。
+- 历史记录仍使用文件系统持久化；删除历史记录不会删除任务输出目录和导出文件。
+
+### Verified Commands
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-Vw8Ib83Z.js` 和 `assets/index-DEzPJ5cj.css`。
+- Playwright 运行态浏览器测试（`http://127.0.0.1:8000`）：
+  - 实际读取并显示 10 条持久化历史记录。
+  - 历史任务默认收起，收起时操作区不渲染。
+  - 展开后 10 条均显示“重新导入”和“删除记录”，其中 1 条暂停/冷却记录显示“断点继续”。
+  - “导入所选”未选择时禁用，全选后启用。
+  - 删除二次确认显示“删除这条历史记录？”和“导出的数据文件不会被删除。”
+  - 验证未确认导入或删除，现有任务与历史数据未发生变化。
+
+### Unfinished
+- 无。
+
+## 2026-07-27 12:34 结果/错误通知与最近任务折叠
+
+### Task
+- 重新排版虚拟币下载页，将“结果文件、错误、最近任务”三个底部卡片替换为通知和折叠显示。
+
+### Changes
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`：
+  - 删除底部“结果文件”“错误”“最近任务”三个卡片。
+  - 任务产生结果文件时显示右上角持久成功通知，列出最多 5 个文件并提供“打开”按钮。
+  - 任务产生错误时显示右上角持久错误通知，展示最多 3 条错误摘要并支持展开长文本。
+  - 通知按任务 ID 使用固定 key，同一任务结果/错误数量变化时更新原通知，不按轮询频率重复创建。
+  - 通知最多同时显示 4 条。
+  - 最近任务移动到任务状态列，使用默认收起的 `Collapse`。
+  - 展开后以紧凑任务行显示任务 ID、状态消息、状态标签和进度；点击可切换当前任务，并触发该任务的结果/错误通知。
+- 修改 `frontend/src/features/crypto/crypto-download.css`：
+  - 删除旧底部三列卡片布局。
+  - 新增最近任务折叠列表、选中/悬停状态和通知内容布局。
+
+### API and Database Changes
+- 无。
+
+### Verified Commands
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-BZ82QbK7.js` 和 `assets/index-CjQNo_zX.css`。
+- Playwright 运行态浏览器测试：
+  - 旧“结果文件/错误/最近任务”卡片数量均为 0。
+  - 最近任务折叠组件可见；默认收起时条目为 0，展开后显示 8 条。
+  - 选择任务 `224e6dc51dcb8726` 后显示两个持久通知：
+    - `结果文件已生成（2）`，包含 2 个“打开”按钮。
+    - `任务错误（3）`。
+
+### Unfinished
+- 无。
+
+## 2026-07-27 12:28 下载设置分类弹窗
+
+### Task
+- 将地址栏下方的下载设置分类收纳到弹窗，并将弹窗开关放到页面右上角。
+
+### Changes
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`：
+  - 页面右上角新增“下载设置”按钮。
+  - 主表单只保留地址列表、确认多地址链和开始下载。
+  - 设置弹窗按以下类别组织：
+    - 下载方式与默认链
+    - RPC 与区块范围（RPC 模式）
+    - OKLink CSV 与接收邮箱（CSV 模式）
+    - 性能、重试与风控
+    - 输出与数据处理
+    - DeepAML 与地址过滤（非 CSV 模式）
+  - 数据源切换后动态显示对应设置分类。
+  - 所有字段名、默认值、校验规则和提交参数保持不变。
+- 修改 `frontend/src/features/crypto/crypto-download.css`，增加分类卡片间距和弹窗内容布局。
+
+### API and Database Changes
+- 无。
+
+### Verified Commands
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-Go4IRlRi.js` 和 `assets/index-WqiWNNG0.css`。
+- Playwright 运行态浏览器测试：
+  - 右上角“下载设置”按钮可见并可打开弹窗。
+  - CSV 模式显示“OKLink CSV 与接收邮箱”，隐藏 RPC 分类。
+  - RPC 模式显示“RPC 与区块范围”和“DeepAML 与地址过滤”，隐藏 CSV 分类。
+  - “性能、重试与风控”和“输出与数据处理”分类正常。
+  - 关闭设置弹窗后，多地址粘贴仍自动显示 2 行逐地址选链弹窗。
+
+### Unfinished
+- 无。
+
+## 2026-07-27 12:22 多地址粘贴即时弹窗修复
+
+### Task
+- 修复上一版只有点击“开始下载”才弹窗、仅输入或粘贴多个地址没有反应的问题。
+
+### Changes
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`：
+  - 地址框粘贴多个唯一地址后立即打开逐地址选链弹窗。
+  - 增加显式“确认多地址链”按钮，支持手动输入后主动打开弹窗。
+  - 即时弹窗的确认操作只把结果按 `地址,链` 写回地址框，不提前启动下载。
+  - 写回后点击“开始下载”直接使用已经确认的逐地址链配置。
+  - 如果未预先确认，点击开始仍会兜底弹窗，确认后才启动任务。
+- 修改 `frontend/src/features/crypto/crypto-download.css`，增加确认按钮布局。
+
+### Verified Commands
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-Bxi6M7LN.js` 和 `assets/index-BR4G3GUf.css`。
+- Playwright 运行态浏览器测试：
+  - 打开 `http://127.0.0.1:8000/`，进入“虚拟币 → 数据下载”。
+  - 粘贴两个地址后，“确认地址和链”弹窗自动可见，地址选链行数为 2。
+  - 第二个地址选择 BSC 并确认后，地址框写回第一行 `ETH`、第二行 `BSC`。
+  - 弹窗正常关闭，未自动创建下载任务。
+
+### API and Database Changes
+- 无。
+
+## 2026-07-27 12:18 多地址逐一选链弹窗恢复
+
+### Task
+- 修复 React 虚拟币下载页输入多个地址后没有弹窗选择每个地址所属链的问题，使交互与原项目一致。
+
+### Root Cause
+- 原项目内置 GUI 包含 `addressConfirmModal`，多个地址在开始前逐行确认链。
+- React 重构页只调用 `parseAddressChains()`，未迁移确认弹窗；未写链的地址会直接套用默认链并提交。
+
+### Changes
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`：
+  - 多于一个唯一地址时阻止直接启动，打开“确认地址和链”弹窗。
+  - 弹窗逐行展示地址和链下拉框，确认后才生成 `addressChains` 并启动任务。
+  - 支持输入行中的显式 `地址,链` / `地址 链` 作为弹窗初始值。
+  - 未显式写链时使用第一个默认链作为初始值。
+  - 地址按大小写不敏感去重，每个地址只创建一个链任务，与原项目逐地址单链语义一致。
+  - 单地址继续直接启动，不增加多余确认步骤。
+- 修改 `frontend/src/features/crypto/crypto-download.css`，增加弹窗地址/链列表布局。
+
+### API and Database Changes
+- 无。仍通过既有 `addressChains: [{address, chain}]` 提交。
+
+### Verified Commands
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-DsqJyHwG.js` 和 `assets/index-BeHbkAnG.css`。
+- 运行态 `http://127.0.0.1:8000/` 已提供新 JS 产物。
+- 运行态 JS 已确认包含“确认地址和链”及“请逐一确认每个地址所属的链”弹窗文案。
+
+### Unfinished
+- 无。
+
+## 2026-07-27 12:11 DeepAML 真实端到端验收
+
+### Task
+- 使用用户临时提供的 DeepAML Key，验证真实鉴权、地址标签、交易所过滤和 Excel 导出完整链路。
+
+### Changes
+- 未修改业务代码、接口、数据库或前端。
+- DeepAML Key 仅用于本次请求和任务内存，没有写入项目配置、任务持久化、日志或文档。
+
+### Verified Commands
+- 直接请求 `https://openapi.deepaml.io/v1/address-labels`：
+  - HTTP `200`、业务码 `200`、消息 `SUCCESS`。
+  - 测试地址返回 `name=Binance`、`type=EXCHANGE`。
+  - 返回字段 `chain_id/address/type/name` 与 `AMLAddressLabel` 解析结构一致。
+- 当前项目真实任务 `224e6dc51dcb8726`：
+  - 地址 `0x28c6...1d60`，ETH 固定区块 `25618102`，DeepAML RPS `1`，启用标签与交易所过滤。
+  - 下载阶段普通交易命中 3 行；DeepAML 过滤后的 Excel 普通交易为 2 行。
+  - 汇总表 `DeepAML过滤交易所行数=2`；这是同一逻辑记录分别从交易表和资金表移除的合计，不是 2 个唯一交易哈希。
+  - 目标地址和资产标签为 `Binance`；保留交易对手方标签为 `Tether`，类型为 `STABLE COIN,DEFI`。
+  - 任务状态 `done`，生成主工作簿和 `下载情况.xlsx`。
+- 输出：
+  - `backend/data/crypto_download/deepaml_live_20260727/exports/deepaml_live_224e6dc51dcb8726/001_0x28c6c06298d5_743bf21d60/deepaml_live_001_ETH_0x28c6c06298d5_743bf21d60_20260727_121010.xlsx`
+  - `backend/data/crypto_download/deepaml_live_20260727/exports/deepaml_live_224e6dc51dcb8726/下载情况.xlsx`
+- 对 `docs/` 和 `backend/config/` 精确检查，未发现本次 DeepAML Key。
+
+### Notes
+- 本次公共 ETH RPC 对历史余额、合约检查和历史日志返回 archive `403`；普通交易仍成功下载，且不影响本次 DeepAML 标签与过滤验收。
+- DeepAML 功能已证明可真实跑通。公共 RPC 的 archive 限制属于独立问题。
+
+## 2026-07-27 11:59 CSV 邮箱主机错位与暂停提示修复
+
+### Task
+- 修复真实 BSC CSV 任务 `a5ae70fbacc4a0db` 把 Gmail 地址当作 IMAP 主机进行 DNS 查询的问题。
+- 修复所有 CSV 失败一律提示“切换 VPN”的错误归因。
+
+### Root Cause
+- 运行态设置中 `csvImapHost` 错填为接收邮箱，`csvImapUser` 为空，因此程序执行了 `lookup <邮箱地址>`，并非 VPN 节点故障。
+- 同一任务的 OKLink 直连请求先返回业务错误 `50113 incorrect request sign parameters`，随后转邮箱通道时才被错误 IMAP 主机拦截；这是两个独立故障。
+- `run.ps1` 仅在二进制不存在时构建，导致第一次重启继续运行旧二进制。
+
+### Changes
+- 修改 `internal/cryptodownload/main.go`：
+  - Gmail 的 IMAP 主机为空或误填为邮箱地址时自动纠正为 `imap.gmail.com`。
+  - Gmail IMAP 端口默认 `993`，用户名为空时使用接收邮箱。
+- 修改 `internal/cryptodownload/gui.go`、`api_handler.go`、`gui_pause.go`：
+  - 保存设置、启动任务和继续任务均执行相同的邮箱字段规范化。
+  - 启动和继续前从当前安全设置补齐未随响应返回的授权码。
+  - 缺少邮箱、主机、端口、用户名或授权码时在发起下载前返回明确错误。
+  - 继续暂停任务时重新加载当前邮箱设置，因此旧任务无需重建。
+  - IMAP/DNS 错误提示检查邮箱配置；`50113` 提示 OKLink 会话或签名失效；其他错误使用中性配置/网络提示，不再一律要求切换 VPN。
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`：
+  - CSV 邮箱字段增加必填、邮箱格式和 IMAP Host 不能包含 `@` 的校验。
+  - 增加 `imap.gmail.com`、IMAP 用户名和 Gmail 应用密码提示。
+- 新增 `internal/cryptodownload/csv_mail_config_test.go`，覆盖 Gmail 字段纠错和暂停错误分类。
+- 修改 `run.ps1`：未指定 `-SkipBuild` 时始终重新构建后端，避免修改后启动旧二进制。
+
+### API Changes
+- `POST /api/crypto/download/start` 会在启动前校验并规范化 CSV 邮箱配置；无效配置返回 HTTP 400。
+- `POST /api/crypto/download/resume` 会重新加载当前邮箱设置后继续原任务。
+- 接口路径和响应结构不变。
+
+### Database Changes
+- 无。
+
+### Verified Commands
+- `go test ./internal/cryptodownload -count=1` — 通过。
+- `go test ./internal/... -count=1` — 全部通过。
+- `go vet ./internal/...` — 通过。
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-Dhbzya_u.js`，仅有既有 chunk size warning。
+- `.\run.ps1` — 已真实重新构建并重启，PID `34204`。
+- 运行态 `/api/health` 返回 `ok`。
+- 运行态下载设置返回 `csvImapHost=imap.gmail.com`、端口 `993`、IMAP 用户已配置，密码字段未暴露。
+- 原任务 `a5ae70fbacc4a0db` 保持暂停且 `needsCredentials=false`，可由用户点击继续；未自动重发 OKLink 请求。
+
+### Unfinished
+- 用户点击“继续下载”后需要观察 OKLink 邮箱申请结果；若仍返回 `50113`，需要刷新有效的 OKLink 浏览器会话/签名，而不是切换 VPN。
+
+## 2026-07-27 11:09 Gmail 邮箱 CSV 真实测试
+
+### Task
+- 使用用户临时提供的 Gmail 与应用授权码，对虚拟币 CSV 下载的邮箱依赖做真实验证。
+- 继续核对当前项目与 `E:\codex\虚拟币` 的 CSV 下载实现是否一致。
+
+### Changes
+- 未修改业务代码、接口、数据库或前端。
+- 本次凭据仅用于一次 TLS/IMAP 认证，没有写入项目配置、任务记录、日志或本文档。
+
+### Verified Commands
+- 真实连接 `imap.gmail.com:993`：TLS 握手成功，Gmail 应用授权码认证成功，随后正常退出；未读取、删除或修改邮件。
+- `git diff --no-index` 对比原项目与当前项目的 `csv_scraper.go`、`csv_browser_email.go`、`csv_static_strategy.go`：
+  - 下载与邮箱链路逻辑一致。
+  - 差异仅为当前项目包名由 `main` 改为 `cryptodownload`，以及 `gofmt` 对齐空格。
+- 已确认两边均为：小段优先直连 CSV，直连不可用或剩余记录超过 20,000 时申请邮箱 CSV，随后通过 IMAP 匹配链接并下载；业务码、冷却和重试逻辑一致。
+
+### Unfinished
+- 自动把邮箱身份或授权码注入 `/api/crypto/download/start` 被当前执行环境的凭据保护策略阻止，因此没有代替用户点击发起 OKLink 邮箱任务。
+- 需要用户在本项目页面本地填写邮箱字段并点击“开始下载”，才能完成 OKLink 申请邮件、收信匹配和链接下载的最终平台验收。
+
+### Notes
+- 不要在文档、日志、配置或持久化任务中记录邮箱授权码。
+- 不要通过 Gmail `+alias` 或账号轮换规避 OKLink 限流；出现 `429`、`50113` 或风控时保留检查点并按冷却策略停止。
+
+## 2026-07-27 00:18 虚拟币下载与地址区分原项目一致性修复
+
+### Task
+- 按用户要求，使当前项目的虚拟币数据下载和地址区分功能与各自原项目保持一致。
+- 修复上一轮真实测试发现的地址区分 `EOA/CONTRACT` 缺失，并补齐下载页面未暴露的原项目参数。
+
+### Changes
+- 修改 `internal/api/crypto_address_handlers.go`：
+  - BSC 未手填 RPC 时默认使用 `https://bsc-rpc.publicnode.com`。
+  - EVM 在线判断只调用原脚本同源的 `eth_getCode`，根据空/非空 bytecode 输出 `EOA` 或 `CONTRACT`。
+  - 输出 EIP-55 checksum 地址。
+  - 新增原脚本结果字段 `status`、`retry_count`、`error`，并对齐 `INVALID/ERROR` 状态语义。
+  - 限流/瞬时错误最多重试 5 次；多个 RPC 节点时优先切换下一节点；成功后不再把完整合约 bytecode 放入响应。
+- 修改 `internal/api/crypto_address_handlers_test.go`，新增 EOA、CONTRACT、checksum、INVALID、RPC ERROR、限流节点切换契约测试。
+- 修改 `internal/cryptodownload/gui.go`，使未提交 `endBlock` 的下载请求默认使用原项目的 `-1`（最新区块），同时保留显式 `endBlock=0`。
+- 新增 `internal/cryptodownload/source_parity_test.go`，覆盖 RPC/CSV/Browser 显式路由、不可见 Unicode 地址清理、RPC 最新区块默认值。
+- 修改 `frontend/src/features/crypto/CryptoAddressPanel.tsx`、`cryptoAddressApi.ts`：
+  - 页面展示并复制原脚本的 `地址/类型/状态/重试次数/错误信息`。
+  - 默认选择 BSC 和公共 BSC RPC。
+- 修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`、`cryptoDownloadApi.ts`：
+  - 补回原项目 RPC 高级参数：多链 RPC 配置、原生币符号、起止/截止区块、区块/日志批次。
+  - 补回 CSV 起止时间。
+  - 按本次“全部保持一致”要求恢复 DeepAML 标签、DeepAML RPS、交易所大地址过滤选项。
+  - 默认 `endBlock=-1`、风控冷却 1800 秒，与原项目 GUI 一致。
+
+### New Functionality
+- 当前地址区分页面现可准确显示 BSC/EVM 的 `EOA`、`CONTRACT`、`INVALID`、`ERROR`。
+- 当前下载页面可配置原项目 GUI 的 RPC/CSV/DeepAML 高级参数。
+
+### API Changes
+- `POST /api/crypto/address-classify` 的 item 新增：
+  - `status`
+  - `retry_count`
+  - `error`
+- 既有字段和接口路径保持不变。
+- `POST /api/crypto/download/start` 在省略 `endBlock` 时由错误的 Go 零值 `0` 改为原项目默认 `-1`。
+
+### Database Changes
+- 无。
+
+### Frontend Changes
+- 地址区分结果表新增状态和重试次数，类型列优先显示 `EOA/CONTRACT/INVALID/ERROR`。
+- 复制结果表头与原脚本 Excel 一致：`地址、类型、状态、重试次数、错误信息`。
+- 数据下载页恢复并补齐原项目高级参数。
+
+### Verified Commands
+- `go test ./internal/api ./internal/cryptodownload -count=1` — 通过。
+- `go test ./internal/... -count=1` — 全部通过。
+- `go vet ./internal/...` — 通过。
+- `npm run build`（cwd=`frontend`）— 通过；产物 `assets/index-KAqYElXl.js`，仅有既有 chunk size warning。
+- `go build -o bin\etl-server.exe .\cmd\server\; .\run.ps1 -SkipBuild` — 构建并重启成功，PID 43996。
+- 真实 BSC 对照：
+  - 当前项目与原 `查询.py` 均将 `0x28c6...1d60` 输出为 checksum 地址、`EOA/OK/0 次重试/无错误`。
+  - 当前项目与原 `查询.py` 均将 `0x55d3...7955` 输出为 `CONTRACT/OK/0 次重试/无错误`。
+- 真实 ETH 下载对照（区块 `25618102`）：
+  - 当前项目任务 `e530b670db07b9da` 完成，交易 3、代币转账 2、内部交易 0、NFT 0、资产 2、错误 0。
+  - 原项目同参数运行结果完全相同。
+  - 两个工作簿均为 7 个同名 sheet，维度一致；交易哈希、交易/代币/NFT/内部交易/资金明细完全一致。
+  - 仅查询时间、运行时最新区块和查询间隔内变化的实时代币余额不同，属于动态链上状态。
+
+### Open Items
+- OKLink CSV 邮箱和 Browser 模式的实现与原项目为同一份下载引擎，并有路由契约测试；本次未使用真实邮箱/平台会话再次触发外部下载，生产验收仍需有效邮箱及当前平台会话。
+
+### Notes
+- 原 `查询.py` 中的私有 Chainstack URL 未复制到当前项目；使用真实公共 BSC RPC 执行相同 `eth_getCode` 判断，避免传播原脚本内的节点凭据。
+- 当前项目保留 Web 页面批量输入和多链候选扩展；BSC 在线判断结果及下载核心契约已与原项目对齐。
+
 ## 2026-07-26 23:57 虚拟币下载与地址区分真实地址对比测试
 
 ### Task
@@ -4263,3 +4707,368 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 ### Notes
 - 本次已删除临时验证程序 `.codex_tmp_scan\main.go`。
 - 本次未修改前端。
+
+## 2026-07-27 数据清洗统一字段合并改为可选
+
+### Task
+- 将“各来源解析成统一字段后合并”改为数据清洗页可选功能。
+- 勾选时沿用现有统一字段、标准化、跨来源合并和去重；不勾选时保留原字段名，并按支付宝、微信、银行、未知来源分别合并。
+
+### Changes
+- 新增 `etl.PipelineOptions` 和 `RunPipelineWithOptions`；原 `RunPipeline` 继续默认统一合并，保持内部调用兼容。
+- 新增按来源分开合并路径：不同来源并行读取，同一来源内按原字段名取并集并合并，输出到 `支付宝`、`微信`、`银行`、`未知来源` 独立 Excel Sheet。
+- 分开合并模式保留原字段名，只做表头必要清理和空行过滤，不执行字段别名映射、金额/时间/方向标准化、跨来源去重或资金图构建。
+- 分开合并预览新增 `来源类型`，响应新增合并模式和各 Sheet 行列统计。
+- 数据清洗页新增“统一字段名后合并不同来源”复选框，默认勾选以保持现有行为。
+
+### Modified Files
+- `internal/etl/etl.go`
+- `internal/etl/separate_merge.go`
+- `internal/etl/separate_merge_test.go`
+- `internal/api/handlers.go`
+- `internal/model/model.go`
+- `frontend/src/App.tsx`
+- `frontend/src/types.ts`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### API Changes
+- `POST /api/process` multipart form 新增可选字段 `unify_sources`：
+  - 未传或 `true`：统一字段后跨来源合并。
+  - `false`：按来源分 Sheet 合并并保留原字段名。
+- `/api/process` 响应新增：
+  - `merge_mode`: `unified` 或 `separate`。
+  - `source_sheets`: 分开合并模式下各来源 Sheet 的 `provider`、`sheet`、`rows`、`columns`。
+- 内部 Go API 新增 `RunPipelineWithOptions`；原 `RunPipeline` 签名和默认行为不变。
+
+### Database Changes
+- 无。
+
+### Frontend Changes
+- 数据清洗表单新增复选框和模式说明。
+- 清洗结果新增“统一字段合并/按来源分 Sheet”状态标签。
+- 分开合并模式显示每个来源 Sheet 的行数、列数。
+
+### Verified Commands
+- `go test ./internal/etl -run "TestRunPipeline(SeparateMergePreservesSourceHeadersAndSheets|DefaultsToUnifiedMerge)" -count=1` — 通过。
+- `go test ./internal/etl ./internal/api ./internal/model -count=1` — 通过。
+- `go test ./internal/... -count=1` — 通过。
+- `go vet ./...` — 通过。
+- `go build -o bin/etl-server.exe ./cmd/server` — 通过。
+- `cd frontend; npm run build` — 通过，保留既有大 chunk warning。
+- `.\run.ps1` — 已完成最终重新构建和重启，服务 PID 13220。
+- `GET http://127.0.0.1:8000/api/health` — 返回 `status=ok`；首页已引用当前构建 `index-DC1Ia99Z.js`。
+
+### Open Items
+- 分开合并路径当前仍为内存合并与 Excel 写入，超大目录仍受既有内存上限影响。
+- 账户信息表、标签表的处理逻辑未在本次扩展；本次仅调整流水文件的跨来源合并方式。
+
+### Notes
+- 分开合并模式不是统一清洗模式，不生成可直接用于资金流向图的标准字段数据；需要资金图时应勾选统一字段合并。
+- 未传 `unify_sources` 的旧客户端继续使用统一合并，不受影响。
+
+## 2026-07-27 真实数据统一合并质量审计
+
+### 本次工作
+
+- 使用用户指定的微信、银行、支付宝真实数据直接运行现有 scanner、provider、parser 和 `etl.RunPipeline`。
+- 完成微信全量、银行全量、支付宝小批次全量、三来源混合冒烟、三来源分层混合样本和三来源全量压力测试。
+- 审计结果写入 `backend/data/outputs/real_merge_audit_20260727/真实数据统一合并审计.md`，同目录保留 5 个实际输出 Excel 和 2 个全量失败日志。
+- 本次只做诊断和验证，未修改生产代码、接口、数据库或前端。
+
+### 主要结论
+
+- 微信：41,416 行输入、40,470 行输出、去重 946 行；40,470 行时间均未标准化，两位年份格式仍为原值。
+- 银行：主流水错误识别为支付宝，42,193 行全部因必填字段缺失被删除，输出 0 行。
+- 支付宝小批次：13,573 行输入、10,837 行输出；必填缺失删除 2,606 行、去重 130 行，存在 23 行零金额和 11 行“其它”方向。
+- 三来源分层样本：123,609 行输入、63,749 行输出；银行仍为 0 行，全部输出的“数据来源”字段为空。
+- 三来源全量：32 位进程约 1.96 GB 时 OOM；64 位进程约 51 秒达到 18.39 GB 工作集，在系统剩余约 1.02 GB 时安全终止。
+- 两个 `20260612` 支付宝目录的 6 个文件逐一 SHA-256 完全一致，重复目录约占支付宝 CSV 行数的 27%。
+- 严格支付宝交易候选约 521 万行；即使解决内存问题，也超过 Excel 单 Sheet 1,048,576 行上限。
+
+### 接口、数据库、前端变化
+
+- 接口：无。
+- 数据库：无。
+- 前端：无。
+
+### 已验证命令
+
+- 审计工具 `scan`：三类目录文件识别、provider 路由和行数估算。
+- 审计工具 `pipeline`：5 个独立/混合真实数据运行，生成并复核 Excel。
+- 32 位全量 `etl.RunPipeline`：复现 Go runtime OOM，堆栈已保留。
+- 64 位全量受控运行：监测工作集和系统剩余内存，并在安全阈值终止。
+- SQLite `VALUES` 审计查询：运行回执 6 行、内存时间序列 5 行均可执行。
+- Data Analytics artifact validation：通过；报告已渲染。
+- `GET http://127.0.0.1:8000/api/health`：压力测试终止后仍返回 `status=ok`，现有服务 PID 13220 未受影响。
+
+### 未完成事项
+
+- 尚未修复银行误路由、微信日期标准化、来源字段为空、全量内存增长和 Excel 行数上限。
+- 支付宝全部约 521 万严格交易候选行未完成端到端输出；当前只有小批次全量和全目录分层样本证据。
+
+### 注意事项
+
+- 混合分层样本对每个支付宝 CSV 抽取首尾各 2,000 行，不能代表文件中段分布，也不能用金额合计外推总体。
+- 审计过程中仅使用工作区内硬链接/样本暂存，原始三个数据目录未修改。
+
+## 2026-07-27 统一字段合并真实数据修复与流式性能优化
+
+### 本次新增功能
+
+- 统一合并改为磁盘暂存流式管道：逐行解析、逐行清洗、SQLite 唯一键去重、Excel StreamWriter 导出。
+- 支付宝 CSV 新增 `StreamAlipayFiles`，不再把数百万行累积到 `UnifiedData`。
+- 超过 Excel 单 Sheet 1,048,575 条数据行时自动创建 `清洗结果_2`、`清洗结果_3` 等 Sheet。
+- 同尺寸输入文件使用最多 4 worker 并行 SHA-256，跳过内容完全相同的重复文件。
+- 大结果只保留 1,000 行内存预览；全量行数、方向和金额汇总在流式写入时计算。
+
+### 修复内容
+
+- scanner provider 匹配从“第一个达到 3 分”改为“最高完整表头得分”，银行在完全同分时优先，修复银行标准表误识别为支付宝。
+- 修复银行 `filterRows` 使用列数而非行数的问题，真实银行输出由 0 行恢复到 41,638 行。
+- 修复银行账户来源元数据未初始化导致的越界风险。
+- 修复银行转换读取“识别报告”Sheet 造成额外伪交易行。
+- 银行来源字段恢复为原始 CSV 路径，不暴露任务临时目录。
+- `NormalizeDatetime` 新增两位年份月/日格式，`1/1/24 00:04` 现标准化为 `2024-01-01 00:04:00`。
+- 将 parser 的“来源表”映射为最终 33 列中的“数据来源”。
+- 银行临时文件复制改为 `io.Copy`，不再一次性 `os.ReadFile`。
+- `/api/process` 的 `rows` 使用全量 `RowsOut`，summary 使用全量流式统计，不再被预览行数截断。
+
+### 修改文件
+
+- `internal/scanner/provider_detection.go`
+- `internal/scanner/scanner_test.go`
+- `internal/parser/parser.go`
+- `internal/parser/parser_test.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/alipay_stream_test.go`
+- `internal/rules/bank_rules.go`
+- `internal/rules/rules_test.go`
+- `internal/provider/bank.go`
+- `internal/etl/etl.go`
+- `internal/etl/provider_rows.go`
+- `internal/etl/provider_rows_test.go`
+- `internal/etl/stream_pipeline.go`
+- `internal/etl/stream_pipeline_test.go`
+- `internal/api/handlers.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+- `backend/data/outputs/real_merge_fixed_20260727/修复后真实数据回归.md`
+
+### 接口变化
+
+- 端点路径和请求参数不变。
+- 统一合并响应的 `rows` 现在是全量输出行数，不再是内存预览长度。
+- 统一合并 `summary` 新增 `streaming`、`output_sheets`、`duplicate_files_skipped`、`preview_rows`、`flow_graph_sampled`。
+- 内部 parser API 新增 `StreamAlipayFiles`。
+
+### 数据库变化
+
+- 无持久数据库结构变化。
+- 每个统一合并任务创建临时 SQLite `transactions` 表，用 `dedup_key` 唯一约束完成磁盘去重；任务结束自动删除。
+
+### 前端变化
+
+- 无组件和页面修改。
+- 前端继续使用原有响应类型；`rows` 现在显示全量结果。
+
+### 真实数据验证
+
+- 微信全量：41,416 → 40,470；40,470 行日期已标准化，来源已填充。
+- 银行全量：42,193 → 41,638；必填缺失删除 510、去重 45，来源指向原始 `交易明细信息.csv`。
+- 支付宝小批次：13,573 → 10,837；清洗口径与修复前一致，来源已填充。
+- 三来源全量：3,878,158 → 2,585,142；过滤 1,016,976、去重 276,040、跳过完全重复文件 4 个。
+- 最终 Excel 363,660,044 字节，3 个 Sheet 分别为 1,048,575、1,048,575、487,992 条数据行。
+- 最终全量耗时 212.988 秒；修复前 18.39 GB 后仍失败，修复后结束时 Go Sys 约 1.53 GB。
+
+### 已验证命令
+
+- `go test ./internal/provider ./internal/rules ./internal/parser ./internal/scanner ./internal/etl ./internal/api -count=1`
+- `go test ./internal/... -count=1`
+- `go vet ./...`
+- `$env:GOARCH='amd64'; go build -o bin\etl-server.exe .\cmd\server\`
+- `cd frontend; npm run build`（通过，保留既有大 chunk warning）
+- `.\run.ps1`（服务 PID 39012）
+- `GET http://127.0.0.1:8000/api/health`（`status=ok`）
+- 最终 XLSX 工作表 XML 逐行计数与管道回执精确一致。
+
+### 未完成事项
+
+- 微信 Excel 解析仍使用现有 workbook 全量读取；本批 4.96 MB 数据未构成瓶颈。
+- 超大结果资金图只基于前 1,000 行预览构建，summary 已明确 `flow_graph_sampled=true`；完整资金图应继续使用现有 DuckDB 会话分析路径。
+
+### 注意事项
+
+- 原始三类真实数据未修改。
+- 临时 SQLite 和银行中间 Excel 均在任务结束时清理。
+- 最终真实数据回归结果位于 `backend/data/outputs/real_merge_fixed_20260727/`。
+
+## 2026-07-28 分阶段CSV合并、全量产物留存与实时进度
+
+### 本次新增功能
+
+- ETL 改为可审计的固定阶段链：
+  1. 扫描识别来源；
+  2. 把本次上传的全部原文件复制到任务目录；
+  3. 支付宝、微信、银行、未知来源分别按原字段并行合并成大 CSV；
+  4. 启用 `unify_sources` 时，各来源再并行生成 33 列统一字段 CSV；
+  5. 只读取各来源统一字段 CSV，执行必填过滤、标准化、SQLite 去重和跨来源合并；
+  6. 同时导出最终 CSV 与兼容 Excel。
+- 每个任务的阶段文件保存于 `backend/data/outputs/etl_jobs/<job_id>/`：
+  - `01_源文件/`
+  - `02_分类原字段CSV/`
+  - `03_分类统一字段CSV/`（仅统一模式）
+  - `04_最终合并CSV/`（仅统一模式）
+- 未勾选统一字段时仍生成分类原字段 CSV，并继续生成按来源 Sheet 的兼容 Excel。
+- 新增阶段产物清单，前端可逐个下载源文件、分类 CSV、最终 CSV 和兼容 Excel。
+- 新增六阶段实时进度：当前量、总量、百分比、处理速度、已用时间、预计剩余时间和当前来源/文件。
+- 支付宝、微信、银行的分类原字段合并及字段统一阶段使用来源级 goroutine 并行；共享进度使用原子计数。
+- `run.ps1` 固定构建 `windows/amd64`，避免本机默认 `GOARCH=386` 在大 Excel ZIP 压缩时触发 32 位地址空间 OOM。
+
+### 修改文件
+
+- `internal/parser/tabular_stream.go`
+- `internal/model/model.go`
+- `internal/etl/etl.go`
+- `internal/etl/staged_pipeline.go`
+- `internal/etl/stream_pipeline.go`
+- `internal/etl/separate_merge_test.go`
+- `internal/etl/real_staged_pipeline_test.go`
+- `internal/api/process_progress.go`
+- `internal/api/handlers.go`
+- `frontend/src/types.ts`
+- `frontend/src/App.tsx`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `frontend/src/features/clean/clean.css`
+- `run.ps1`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口变化
+
+- `POST /api/process` 新增可选 `job_id`；不传时仍由后端生成，旧调用兼容。
+- 新增 `GET /api/process/progress/:job_id`，返回任务状态及各阶段进度。
+- 新增 `GET /api/process/artifact/:job_id/:artifact_id`，下载单个审计产物。
+- `/api/process` 响应新增 `artifacts`，每项包含 `id`、`stage`、`provider`、`name`、`rows`、`size`、`download_url`。
+- 内部 `PipelineOptions` 新增 `Progress func(ProgressEvent)`。
+- parser 新增 `ReadTabularPreviews` 与 `StreamTabularFile`，CSV/Excel 均可有界内存逐行读取。
+
+### 数据库结构
+
+- 无持久业务数据库变化。
+- 最终清洗去重仍使用任务临时 SQLite，任务结束删除。
+- 阶段产物元数据持久化为 `etl_jobs/<job_id>/artifacts.json`。
+
+### 前端变化
+
+- 清洗页显示扫描、源文件留存、分类原字段合并、分类字段统一、跨来源清洗去重、最终导出等独立进度条。
+- 每条进度展示速度、已用时间、预估剩余时间、当前行/文件数量。
+- 清洗完成后新增“阶段产物”表格，支持逐项下载。
+- `unify_sources` 说明更新为先分类原字段 CSV，再可选统一字段和跨来源合并。
+- 轮询间隔 750 ms，任务高频瞬态值只通过独立进度状态更新，未引入新的前端依赖。
+
+### 真实数据验证
+
+- 输入：微信 6 文件 4,959,357 字节；银行 4 文件 18,646,699 字节；支付宝 26 文件 1,416,163,687 字节。
+- 36 个上传源文件全部保存，逐文件 SHA-256 对比 `36/36` 一致，原始目录未修改。
+- 内容完全相同文件检测到 7 个；原文件副本全部保留，分类合并只处理一份。
+- 分类原字段 CSV：
+  - 微信 `17,389,152` 字节；
+  - 银行 `23,646,332` 字节；
+  - 支付宝 `1,893,537,816` 字节。
+- 分类统一字段 CSV：
+  - 微信 `12,131,745` 字节；
+  - 银行 `16,156,749` 字节；
+  - 支付宝 `1,357,402,076` 字节。
+- 最终统一清洗 CSV：`920,951,132` 字节。
+- 全量统计保持一致：`3,878,158 -> 2,585,142`，删除重复流水 `276,040`。
+- 最终兼容 Excel：约 `363 MB`，按上限拆分 3 个 Sheet。
+- windows/amd64 并行分阶段全量运行耗时 `212.21 秒`，产生 `44` 个审计产物和 `8,498` 次进度事件。
+- windows/386 对同一结果在 Excel ZIP 压缩阶段触发地址空间 OOM；已通过 `run.ps1` 固定 amd64 消除生产环境风险。
+- 真实产物位于 `backend/data/outputs/real_staged_validation_20260728/`。
+
+### 已验证命令
+
+- `go test ./internal/... -count=1`
+- `go test ./internal/etl ./internal/parser ./internal/api -count=1`
+- `$env:GOARCH='amd64'; go test ./internal/etl -run '^TestRealStagedPipeline$' -count=1 -v -timeout 45m`
+- `go vet ./...`
+- `go build -o $env:TEMP\etl-server-staged-check.exe .\cmd\server\`
+- `cd frontend; npm run build`（通过，保留既有大 chunk warning）
+- 36 个源文件副本逐文件 SHA-256 复核。
+- `.\run.ps1`：以 windows/amd64 重建并启动，服务 PID `31952`。
+- `GET /api/health`：`status=ok`。
+- 真实微信文件 API smoke：`13,269` 行、`5` 个阶段产物、六阶段进度均 `done/100%`。
+- `GET /api/process/artifact/api-staged-smoke-20260728/raw-wechat`：下载 `4,916,186` 字节，与产物清单完全一致。
+
+### 未完成事项
+
+- 进度状态当前保存在后端内存中；服务重启后历史阶段产物仍在，但历史进度不会恢复。
+- 微信专用统一转换仍沿用现有 workbook 解析实现；本次 4.96 MB 微信数据未造成压力。
+
+### 注意事项
+
+- 阶段 CSV 与源文件副本会显著增加磁盘占用；当前不自动删除，以满足审计留存要求。
+- 测试入口 `TestRealStagedPipeline` 默认跳过，仅在设置 `ETL_REAL_INPUT_DIR` 和 `ETL_REAL_OUTPUT_DIR` 时运行。
+
+## 2026-07-28 — 清洗结果一键导入 PostgreSQL/MySQL
+
+### 新增功能
+
+- 清洗页统一合并完成后新增“一键导入数据库”，直接流式读取任务的 `final-csv` 产物，不重新把结果整体载入内存。
+- 复用现有加密数据库连接存储，弹窗内可新增、编辑、测试 PostgreSQL/MySQL 连接，并可选择数据库、PostgreSQL Schema 和目标表。
+- 支持 `append` 追加（表不存在自动创建）和 `replace` 清空重建两种模式。
+- 支持英文 `snake_case` 字段或原中文标准字段；默认采用英文命名。
+- 每行写入 SHA-256 指纹，默认重复导入自动跳过；也可选择允许重复写入。
+- PostgreSQL 使用事务、临时表和 `COPY` 批量导入，再以 `ON CONFLICT DO NOTHING` 合并。
+- MySQL 使用 500 行一批的多值 `INSERT`，跳重模式使用 `INSERT IGNORE`。
+- 导入任务实时返回已处理、已写入、已跳过、速度、已用时间和预计剩余时间，支持取消。
+
+### 修改文件
+
+- `internal/dbimport/export.go`
+- `internal/dbimport/export_test.go`
+- `internal/api/db_export_handlers.go`
+- `internal/api/db_handlers.go`
+- `internal/api/handlers.go`
+- `frontend/src/features/flow/dbImportApi.ts`
+- `frontend/src/features/clean/DBExportModal.tsx`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `frontend/src/features/clean/clean.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 新增接口
+
+- `POST /api/db/export/tasks`：校验清洗任务和 `final-csv` 产物后创建并立即启动数据库写入任务。
+- `GET /api/db/export/tasks/:id`：获取任务状态和实时指标。
+- `POST /api/db/export/tasks/:id/cancel`：取消正在执行的写入任务。
+
+### 目标表结构
+
+- 自动增加 `id` 主键。
+- 33 个标准流水字段按配置使用英文 snake_case 或中文字段名。
+- 自动增加 `source_job_id`、`source_row_hash`（唯一）和 `imported_at`。
+- 金额/余额使用 `decimal(20,2)`；交易时间使用无时区 `timestamp/datetime(6)`；导入时间在 PostgreSQL 使用 `timestamptz`。
+- 本项目自身的文件存储和临时 SQLite 结构未改变。
+
+### 验证结果
+
+- `go test ./internal/... -count=1`：通过。
+- `go vet ./...`：通过。
+- `cd frontend; npm run build`：通过，保留既有大 chunk warning。
+- 现有 PostgreSQL 连接测试：通过。
+- 使用真实微信清洗结果 `api-staged-smoke-20260728` 写入 PostgreSQL 测试表：
+  - 输入/处理/写入均为 `13,269` 行；
+  - 目标表 `37` 列（主键 + 33 标准字段 + 3 个审计字段）；
+  - `COUNT(*)=13,269`，`COUNT(DISTINCT source_row_hash)=13,269`；
+  - 对同一结果再次执行 append+skip，新增 `0` 行、跳过 `13,269` 行，幂等校验通过。
+- 验证结束后已删除专用测试表 `public.codex_etl_export_smoke_20260728`，未改动其他数据库对象。
+
+### 未完成与注意事项
+
+- 当前环境没有已配置且可用的 MySQL 实例，因此 MySQL 已完成驱动、DDL、批量 SQL 单元测试和编译验证，尚未做真实实例写入。
+- 数据库写入任务状态保存在内存，服务重启后不会恢复；已提交到数据库的事务不受影响。
+- `replace` 会删除并重建目标表，前端已将其作为明确选项展示，默认仍为安全的 `append`。
+- 分来源模式没有跨来源统一 `final-csv`，因此清洗页只在统一模式结果上显示数据库导入入口。

@@ -5,6 +5,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { classifyCryptoAddresses, type CryptoAddressClassifyResponse, type CryptoAddressClassifyValues, type CryptoAddressItem } from './cryptoAddressApi';
 
 const SETTINGS_KEY = 'etl.crypto.address.settings.v1';
+const DEFAULT_BSC_RPC = 'BSC|https://bsc-rpc.publicnode.com';
 
 const chainOptions = [
   { value: 'ETH', label: 'ETH' },
@@ -38,6 +39,8 @@ export function CryptoAddressPanel() {
   useEffect(() => {
     const saved = loadSettings();
     form.setFieldsValue({
+      chains: ['BSC'],
+      rpcNodesText: DEFAULT_BSC_RPC,
       includeDuplicates: false,
       ...saved,
     });
@@ -58,9 +61,22 @@ export function CryptoAddressPanel() {
       },
       {
         title: '类型',
-        dataIndex: 'family',
+        dataIndex: 'kind',
         width: 130,
-        render: (_, item) => item.valid ? <Tag color="blue">{item.family || item.network}</Tag> : <Tag color="red">未识别</Tag>,
+        render: (_, item) => item.valid
+          ? <Tag color={item.kind === 'CONTRACT' ? 'purple' : item.kind === 'EOA' ? 'blue' : 'default'}>{item.kind || item.family || item.network}</Tag>
+          : <Tag color="red">{item.kind || 'INVALID'}</Tag>,
+      },
+      {
+        title: '状态',
+        dataIndex: 'status',
+        width: 170,
+        render: (status: string) => <Tag color={status.startsWith('OK') ? 'green' : status.includes('失败') || status.includes('错误') ? 'red' : 'default'}>{status || '-'}</Tag>,
+      },
+      {
+        title: '重试次数',
+        dataIndex: 'retry_count',
+        width: 100,
       },
       {
         title: '候选链',
@@ -86,9 +102,9 @@ export function CryptoAddressPanel() {
         render: (confidence: number) => confidence ? `${Math.round(confidence * 100)}%` : '-',
       },
       {
-        title: '说明',
-        dataIndex: 'reason',
-        render: (reason: string) => <span className="crypto-reason">{reason}</span>,
+        title: '错误信息 / 说明',
+        dataIndex: 'error',
+        render: (_, item) => <span className="crypto-reason">{item.error || item.reason}</span>,
       },
     ],
     [],
@@ -118,11 +134,12 @@ export function CryptoAddressPanel() {
     if (!result) return;
     const lines = result.items.map((item) => [
       item.address,
-      item.valid ? item.family : '未识别',
-      item.candidates.map((candidate) => candidate.chain).join('/'),
-      item.reason,
+      item.kind || (item.valid ? item.family : 'INVALID'),
+      item.status,
+      item.retry_count,
+      item.error,
     ].join('\t'));
-    navigator.clipboard.writeText(['地址\t类型\t候选链\t说明', ...lines].join('\n'))
+    navigator.clipboard.writeText(['地址\t类型\t状态\t重试次数\t错误信息', ...lines].join('\n'))
       .then(() => message.success('已复制结果'))
       .catch(() => message.error('复制失败'));
   }
@@ -134,7 +151,7 @@ export function CryptoAddressPanel() {
           <div className="topbar-title-row">
             <h1>地址区分</h1>
           </div>
-          <p>批量识别常见虚拟币地址格式，EVM 地址会列出多链候选；RPC 节点支持多条输入，限流后会自动切换下一条。</p>
+          <p>按原地址区分逻辑在线判断 EVM 外部账户（EOA）和合约（CONTRACT）；默认使用 BSC，也可选择其他链或配置多个 RPC 节点。</p>
         </div>
         <Space>
           <Button icon={<CopyOutlined />} disabled={!result?.items.length} onClick={copyResult}>复制结果</Button>
@@ -195,7 +212,7 @@ export function CryptoAddressPanel() {
               columns={columns}
               dataSource={[...result.items]}
               pagination={{ pageSize: 20, showSizeChanger: true }}
-              scroll={{ x: 960 }}
+              scroll={{ x: 1280 }}
             />
           </Card>
         </>

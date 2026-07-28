@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "id": "a5ae70fbacc4a0db",
+  "status": "paused",
+  "message": "已暂停：请切换 VPN 节点后点击继续下载。原因：0x65975ff306d10418c73ef0ce7e35a258eb8dee00 CSV 下载失败: csv transactions BSC: capture IMAP UID baseline: csv mail reconnecting (dial): dial tcp: lookup ldj1009538134@gmail.com: getaddrinfow: A non-recoverable error occurred during a database lookup.",
+  "progress": 13,
+  "done": 0,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-27 11:53:31",
+  "finishedAt": "2026-07-27 11:53:35",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\exports\\wallet_export_a5ae70fbacc4a0db",
+  "request": {
+    "source": "csv",
+    "chains": "BSC",
+    "csvEmail": "ldj1009538134@gmail.com",
+    "csvImapHost": "ldj1009538134@gmail.com",
+    "csvImapPort": 993,
+    "csvStartTime": 1262304000,
+    "endBlock": -1,
+    "traceMode": "auto",
+    "workers": 4,
+    "rps": 2,
+    "timeoutSeconds": 30,
+    "retries": 4,
+    "pageSize": 50,
+    "rawDir": "backend/data/crypto_download/raw",
+    "outputDir": "backend/data/crypto_download/exports",
+    "outputPrefix": "wallet_export",
+    "details": true,
+    "incremental": true,
+    "riskCooldownSecs": 1800
+  },
+  "entries": [
+    {
+      "address": "0x65975ff306d10418c73ef0ce7e35a258eb8dee00",
+      "chain": "BSC"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x65975ff306d10418c73ef0ce7e35a258eb8dee00",
+      "chain": "BSC",
+      "status": "paused",
+      "message": "已暂停：请切换 VPN 节点后点击继续下载。原因：0x65975ff306d10418c73ef0ce7e35a258eb8dee00 CSV 下载失败: csv transactions BSC: capture IMAP UID baseline: csv mail reconnecting (dial): dial tcp: lookup ldj1009538134@gmail.com: getaddrinfow: A non-recoverable error occurred during a database lookup.",
+      "progress": 13,
+      "downloaded": 0,
+      "total": -1,
+      "startedAt": "2026-07-27 11:53:31",
+      "updatedAt": "2026-07-27 11:53:35",
+      "finishedAt": "2026-07-27 11:53:35",
+      "result": "",
+      "errors": [
+        "0x65975ff306d10418c73ef0ce7e35a258eb8dee00: csv transactions BSC: capture IMAP UID baseline: csv mail reconnecting (dial): dial tcp: lookup ldj1009538134@gmail.com: getaddrinfow: A non-recoverable error occurred during a database lookup.",
+        "0x65975ff306d10418c73ef0ce7e35a258eb8dee00: csv token_transfers BSC: capture IMAP UID baseline: csv mail reconnecting (dial): dial tcp: lookup ldj1009538134@gmail.com: getaddrinfow: A non-recoverable error occurred during a database lookup."
+      ],
+      "parts": [
+        {
+          "key": "BSC|transactions",
+          "chain": "BSC",
+          "kind": "transactions",
+          "downloaded": 0,
+          "total": -1,
+          "directDownloaded": 0,
+          "emailDownloaded": 0,
+          "status": "failed"
+        },
+        {
+          "key": "BSC|token_transfers",
+          "chain": "BSC",
+          "kind": "token_transfers",
+          "downloaded": 0,
+          "total": -1,
+          "directDownloaded": 0,
+          "emailDownloaded": 0,
+          "status": "failed"
+        }
+      ],
+      "cancelRequested": false
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x65975ff306d10418c73ef0ce7e35a258eb8dee00",
+      "chain": "BSC",
+      "complete": false,
+      "segments": 0,
+      "rows": 0
+    }
+  ]
+}

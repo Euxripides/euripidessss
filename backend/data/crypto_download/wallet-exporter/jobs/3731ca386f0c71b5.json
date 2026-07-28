@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "id": "3731ca386f0c71b5",
+  "status": "failed",
+  "message": "下载失败：共 2 条错误",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-27 13:22:43",
+  "finishedAt": "2026-07-27 13:23:11",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\validation_57136\\deepaml_bsc\\audit_57136_deepaml_bsc__3731ca386f0c71b5",
+  "request": {
+    "source": "rpc",
+    "rpcUrl": "https://bsc-dataseed.binance.org",
+    "chains": "BSC",
+    "startBlock": 112348945,
+    "endBlock": 112348945,
+    "traceMode": "none",
+    "blockBatch": 1,
+    "logBatch": 1,
+    "workers": 2,
+    "rps": 2,
+    "timeoutSeconds": 30,
+    "retries": 2,
+    "pageSize": 50,
+    "rawDir": "backend/data/crypto_download/validation_57136/raw_deepaml_bsc",
+    "outputDir": "backend/data/crypto_download/validation_57136/deepaml_bsc",
+    "outputPrefix": "audit_57136_deepaml_bsc_20260727",
+    "amlLabels": true,
+    "amlRps": 2,
+    "filterExchange": true,
+    "details": true,
+    "scanNative": true,
+    "riskCooldownSecs": 1800
+  },
+  "entries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "status": "failed",
+      "message": "地址 1/1 下载失败：共 2 条错误，已保留诊断结果",
+      "progress": 100,
+      "downloaded": 6,
+      "total": -1,
+      "startedAt": "2026-07-27 13:22:43",
+      "updatedAt": "2026-07-27 13:23:08",
+      "finishedAt": "2026-07-27 13:23:11",
+      "result": "E:\\codex\\etl\\backend\\data\\crypto_download\\validation_57136\\deepaml_bsc\\audit_57136_deepaml_bsc__3731ca386f0c71b5\\001_0x57136ea9b2be_2f87c9cb8d\\001_BSC.xlsx",
+      "errors": [
+        "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d: summary BSC: RPC eth_getBalance code=-32000 msg=missing trie node",
+        "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d: contract check BSC: RPC eth_getCode code=-32000 msg=missing trie node"
+      ],
+      "parts": null,
+      "cancelRequested": false
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "complete": false,
+      "segments": 0,
+      "rows": 6
+    }
+  ]
+}

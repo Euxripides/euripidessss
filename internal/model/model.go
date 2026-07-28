@@ -64,14 +64,17 @@ type FlowGraph struct {
 }
 
 type ProcessResponse struct {
-	JobID       string                   `json:"job_id"`
-	Rows        int                      `json:"rows"`
-	Columns     []string                 `json:"columns"`
-	Preview     []map[string]interface{} `json:"preview"`
-	Report      QualityReport            `json:"report"`
-	Summary     map[string]interface{}   `json:"summary"`
-	FlowGraph   FlowGraph                `json:"flow_graph"`
-	DownloadURL string                   `json:"download_url"`
+	JobID        string                   `json:"job_id"`
+	Rows         int                      `json:"rows"`
+	Columns      []string                 `json:"columns"`
+	Preview      []map[string]interface{} `json:"preview"`
+	Report       QualityReport            `json:"report"`
+	Summary      map[string]interface{}   `json:"summary"`
+	FlowGraph    FlowGraph                `json:"flow_graph"`
+	DownloadURL  string                   `json:"download_url"`
+	MergeMode    string                   `json:"merge_mode"`
+	SourceSheets []SourceSheetSummary     `json:"source_sheets,omitempty"`
+	Artifacts    []PipelineArtifact       `json:"artifacts,omitempty"`
 }
 
 type RuleAnalysis struct {
@@ -91,6 +94,27 @@ type PipelineResult struct {
 	OutputPath   string
 	Summary      map[string]interface{}
 	Report       QualityReport
+	MergeMode    string
+	SourceSheets []SourceSheetSummary
+	Artifacts    []PipelineArtifact
+}
+
+type PipelineArtifact struct {
+	ID          string `json:"id"`
+	Stage       string `json:"stage"`
+	Provider    string `json:"provider,omitempty"`
+	Name        string `json:"name"`
+	Path        string `json:"-"`
+	DownloadURL string `json:"download_url,omitempty"`
+	Rows        int64  `json:"rows,omitempty"`
+	Size        int64  `json:"size"`
+}
+
+type SourceSheetSummary struct {
+	Provider string `json:"provider"`
+	Sheet    string `json:"sheet"`
+	Rows     int    `json:"rows"`
+	Columns  int    `json:"columns"`
 }
 
 // --- Scanner Models ---

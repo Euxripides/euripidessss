@@ -67,6 +67,13 @@ func TestNormalizeDatetime(t *testing.T) {
 	}
 }
 
+func TestNormalizeDatetimeTwoDigitYear(t *testing.T) {
+	got := NormalizeDatetime("1/1/24 00:04")
+	if got != "2024-01-01 00:04:00" {
+		t.Fatalf("NormalizeDatetime two-digit year = %q, want %q", got, "2024-01-01 00:04:00")
+	}
+}
+
 func TestNormalizeDirection(t *testing.T) {
 	tests := []struct {
 		input interface{}

@@ -8,7 +8,11 @@ func unifiedRowsToTransactions(rows [][]string, columns []string) []model.Transa
 		txn := make(model.TransactionRow)
 		for i, cell := range row {
 			if i < len(columns) {
-				txn[columns[i]] = cell
+				column := columns[i]
+				if column == "来源表" {
+					column = "数据来源"
+				}
+				txn[column] = cell
 			}
 		}
 		txns = append(txns, txn)

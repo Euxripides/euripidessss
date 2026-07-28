@@ -42,6 +42,9 @@ func registerDBImportRoutes(api *gin.RouterGroup) {
 	api.POST("/db/import/tasks/:id/cancel", HandleDBCancelImportTask)
 	api.GET("/db/import/tasks/:id/errors", HandleDBImportTaskErrors)
 	api.GET("/db/import/tasks/:id/report", HandleDBImportTaskReport)
+	api.POST("/db/export/tasks", HandleDBCreateExportTask)
+	api.GET("/db/export/tasks/:id", HandleDBGetExportTask)
+	api.POST("/db/export/tasks/:id/cancel", HandleDBCancelExportTask)
 }
 
 func HandleDBListConnections(c *gin.Context) {
