@@ -346,7 +346,7 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 				return
 			}
 			writer := csv.NewWriter(file)
-			if err := writer.Write(FinalTransactionColumns); err != nil {
+			if err := writer.Write(UnifiedOutputColumns); err != nil {
 				file.Close()
 				errChan <- err
 				return
@@ -354,8 +354,8 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 			var rows int64
 			group := ProviderFiles{Provider: provider.Provider, Paths: provider.Paths}
 			err = streamProviderTransactions(group, outputDir, func(txn model.TransactionRow) error {
-				values := make([]string, len(FinalTransactionColumns))
-				for index, column := range FinalTransactionColumns {
+				values := make([]string, len(UnifiedOutputColumns))
+				for index, column := range UnifiedOutputColumns {
 					values[index] = txn[column]
 				}
 				if err := writer.Write(values); err != nil {
@@ -385,7 +385,7 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 			}
 			provider.UnifiedCSV = path
 			provider.UnifiedRows = rows
-			provider.UnifiedColumns = append([]string(nil), FinalTransactionColumns...)
+			provider.UnifiedColumns = append([]string(nil), UnifiedOutputColumns...)
 			info, _ := os.Stat(path)
 			artifacts[providerIndex] = model.PipelineArtifact{
 				ID: "unified-" + providerArtifactID(provider.Provider), Stage: "分类统一字段CSV",
@@ -429,7 +429,7 @@ func mergeUnifiedStageCSVs(providers []*stagedProvider, outputDir, jobDir, jobID
 				return nil
 			}
 			current++
-			if err := store.Add(unifiedRowToTransaction(row, FinalTransactionColumns)); err != nil {
+			if err := store.Add(unifiedRowToTransaction(row, UnifiedOutputColumns)); err != nil {
 				return err
 			}
 			if current%progressEmitRows == 0 || current == total {
@@ -469,7 +469,7 @@ func mergeUnifiedStageCSVs(providers []*stagedProvider, outputDir, jobDir, jobID
 	duration := time.Since(startTime)
 	summary := map[string]interface{}{
 		"rows_in": store.rowsIn, "rows_out": store.rowsOut, "total_rows": store.rowsOut,
-		"duration_ms": duration.Milliseconds(), "columns": FinalTransactionColumns,
+		"duration_ms": duration.Milliseconds(), "columns": UnifiedOutputColumns,
 		"in_count": store.inCount, "out_count": store.outCount,
 		"total_in": roundMoney(store.totalIn), "total_out": roundMoney(store.totalOut),
 		"output_sheets": sheetCount, "streaming": true, "staged_csv": true,
@@ -616,7 +616,7 @@ func exportStoreToCSV(db *sql.DB, path string, onRow func(int64)) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	columns := make([]string, len(FinalTransactionColumns))
+	columns := make([]string, len(UnifiedOutputColumns))
 	for index := range columns {
 		columns[index] = fmt.Sprintf("c%d", index)
 	}
@@ -631,12 +631,12 @@ func exportStoreToCSV(db *sql.DB, path string, onRow func(int64)) error {
 	}
 	defer file.Close()
 	writer := csv.NewWriter(file)
-	if err := writer.Write(FinalTransactionColumns); err != nil {
+	if err := writer.Write(UnifiedOutputColumns); err != nil {
 		return err
 	}
 	var done int64
 	for rows.Next() {
-		values := make([]string, len(FinalTransactionColumns))
+		values := make([]string, len(UnifiedOutputColumns))
 		targets := make([]interface{}, len(values))
 		for index := range values {
 			targets[index] = &values[index]

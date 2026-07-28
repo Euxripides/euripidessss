@@ -69,15 +69,15 @@ var AlipayUnifyTables = map[string]map[string]bool{
 }
 
 // UnifiedColumns for all parsers
-var UnifiedColumns = []string{
+var UnifiedColumns = append([]string{
 	"交易卡号", "交易账号", "交易户名", "交易证件号码", "交易方开户行",
 	"账户性质", "交易时间", "交易金额", "交易余额", "收付标志",
 	"交易对手账卡号", "对手账户性质", "现金标志", "对手户名", "对手身份证号",
 	"对手开户银行", "摘要说明", "交易币种", "交易网点名称", "交易发生地",
 	"交易是否成功", "传票号", "IP地址", "MAC地址", "对手交易余额",
 	"交易流水号", "日志号", "凭证种类", "凭证号", "交易柜员号",
-	"备注", "查询反馈结果原因", "数据来源", "来源表", "来源文件",
-}
+	"备注", "查询反馈结果原因", "数据来源",
+}, append(AuditTransactionColumns, "来源表", "来源")...)
 
 type AlipaySource struct {
 	Path      string   `json:"path"`
