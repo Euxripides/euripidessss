@@ -37,6 +37,10 @@ export type CryptoDownloadStartValues = {
   readonly rawDir?: string;
   readonly outputDir?: string;
   readonly outputPrefix?: string;
+  readonly amlKey?: string;
+  readonly amlLabels?: boolean;
+  readonly amlRps?: number;
+  readonly filterExchange?: boolean;
   readonly details?: boolean;
   readonly scanNative?: boolean;
   readonly incremental?: boolean;
@@ -114,6 +118,18 @@ export type CryptoDownloadJob = {
   readonly cooldownUntil?: string;
 };
 
+export type CryptoDownloadHistoryRecord = CryptoDownloadJob & {
+  readonly version?: number;
+  readonly entries?: readonly CryptoDownloadAddressChain[];
+  readonly checkpointSummaries?: readonly {
+    readonly address: string;
+    readonly chain: string;
+    readonly complete?: boolean;
+    readonly segments?: number;
+    readonly rows?: number;
+  }[];
+};
+
 const BASE = '/api/crypto/download';
 
 export async function loadCryptoDownloadSettings() {
@@ -144,6 +160,35 @@ export async function loadCryptoDownloadJobs() {
   const { response, payload } = await getJson<readonly CryptoDownloadJob[]>(`${BASE}/jobs`, '读取虚拟币下载任务列表失败');
   if (!response.ok) throw apiError(payload, response.status, '读取虚拟币下载任务列表失败');
   return payload;
+}
+
+export async function loadCryptoDownloadHistory() {
+  const { response, payload } = await getJson<readonly CryptoDownloadHistoryRecord[]>(`${BASE}/history`, '读取虚拟币下载历史失败');
+  if (!response.ok) throw apiError(payload, response.status, '读取虚拟币下载历史失败');
+  return payload;
+}
+
+export async function importCryptoDownloadHistory(ids: readonly string[]) {
+  const { response, payload } = await postJson<readonly CryptoDownloadJob[]>(`${BASE}/history/import`, { ids }, '导入虚拟币下载历史失败');
+  if (!response.ok) throw apiError(payload, response.status, '导入虚拟币下载历史失败');
+  return payload;
+}
+
+export async function resumeCryptoDownloadHistory(id: string) {
+  const { response, payload } = await postJson<CryptoDownloadJob>(`${BASE}/history/resume?id=${encodeURIComponent(id)}`, {}, '继续历史下载任务失败');
+  if (!response.ok) throw apiError(payload, response.status, '继续历史下载任务失败');
+  return payload;
+}
+
+export async function deleteCryptoDownloadHistory(id: string) {
+  const response = await fetch(`${BASE}/history?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (response.ok) return;
+  const detail = (await response.text()).trim();
+  throw new Error(detail || `删除虚拟币下载历史失败（HTTP ${response.status}）`);
+}
+
+export function cryptoDownloadResultFileUrl(id: string, path: string) {
+  return `${BASE}/file?id=${encodeURIComponent(id)}&path=${encodeURIComponent(path)}`;
 }
 
 export async function cancelCryptoDownload(id: string, index?: number) {

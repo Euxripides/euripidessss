@@ -59,15 +59,15 @@ func (c *CSVExportClient) migrateLegacyCSVKind(cfg Config, chain string, kind cs
 	} else if err != nil {
 		return csvKindHydration{}, fmt.Errorf("stat legacy CSV directory %s: %w", dir, err)
 	}
-	if err := ValidateLegacyCSVMigrationRange(cfg.CSVStartTime, cfg.CSVEndTime); err != nil {
-		return csvKindHydration{}, err
-	}
 	scan, err := ScanLegacyCSV(dir, cfg.Address, kind)
 	if err != nil {
 		return csvKindHydration{}, fmt.Errorf("scan legacy CSV for hydration: %w", err)
 	}
 	if len(scan.Segments) == 0 {
 		return csvKindHydration{SeenRows: map[string]bool{}, NextSegment: 1, NextEndExclusive: end}, nil
+	}
+	if err := ValidateLegacyCSVMigrationRange(cfg.CSVStartTime, cfg.CSVEndTime); err != nil {
+		return csvKindHydration{}, err
 	}
 	checkpoint := CSVKindCheckpoint{NextStart: scan.LastUnix - 1, EndTime: end, Segments: make([]CSVSegmentManifest, 0, len(scan.Segments))}
 	for _, segment := range scan.Segments {
@@ -121,6 +121,9 @@ func hydrateCSVCheckpointKind(cfg Config, chain string, kind csvExportKind, dir 
 		if !wantFiles[filepath.Base(path)] {
 			return csvKindHydration{}, &CSVHydrationMismatchError{Path: path, Reason: "segment exists on disk but not in checkpoint"}
 		}
+	}
+	if checkpoint.Complete || len(checkpoint.Segments) > 0 && checkpoint.Segments[len(checkpoint.Segments)-1].Rows < csvMaxRowsPerExport {
+		result.NextEndExclusive = cfg.CSVStartTime
 	}
 	return result, nil
 }

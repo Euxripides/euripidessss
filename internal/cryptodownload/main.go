@@ -468,7 +468,8 @@ func normalizeCSVMailConfig(cfg Config) Config {
 	if !strings.HasSuffix(email, "@gmail.com") && !strings.HasSuffix(email, "@googlemail.com") {
 		return cfg
 	}
-	if strings.TrimSpace(cfg.CSVIMAPHost) == "" {
+	host := strings.TrimSpace(cfg.CSVIMAPHost)
+	if host == "" || strings.Contains(host, "@") {
 		cfg.CSVIMAPHost = "imap.gmail.com"
 	}
 	if cfg.CSVIMAPPort <= 0 {

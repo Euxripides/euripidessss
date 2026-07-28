@@ -390,6 +390,9 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 		if strictTotal && total == 0 && len(allRaw) == 0 {
 			check.Downloaded = 0
 			check.Status = "complete"
+			if err := c.markCSVKindCheckpointComplete(cfg, chain, kind); err != nil {
+				return allMapped, allRaw, allHeaders, check, err
+			}
 			return allMapped, allRaw, allHeaders, check, nil
 		}
 	}
@@ -663,6 +666,11 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 	if strictTotal && check.ExpectedTotal >= 0 && csvDownloadedShortfall(check.ExpectedTotal, len(allRaw)) > csvCompletenessTolerance {
 		errs = append(errs, fmt.Errorf("%s incomplete: downloaded %d/%d rows", kind.Name, len(allRaw), check.ExpectedTotal))
 		check = finalizeCSVDownloadCheck(check, len(allRaw), strictTotal)
+	}
+	if len(errs) == 0 {
+		if err := c.markCSVKindCheckpointComplete(cfg, chain, kind); err != nil {
+			errs = append(errs, fmt.Errorf("mark %s CSV checkpoint complete: %w", kind.Name, err))
+		}
 	}
 	return allMapped, allRaw, allHeaders, check, errors.Join(errs...)
 }
@@ -1301,26 +1309,11 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 	return lastErr
 }
 
-// emailExportAlias returns a per-request variant of the configured email for
-// the export payload, so that OKLink sees a different destination address each
-// time.  For Gmail / Google Workspace addresses the local-part suffix after
-// '+' is ignored by the mail server, so user+alias@gmail.com and
-// user@gmail.com land in the same inbox.  Other providers keep the base
-// address unchanged.
+// emailExportAlias deliberately keeps the configured destination unchanged.
+// Rotating aliases can break mail correlation and must not be used to work
+// around provider request limits.
 func (c *CSVExportClient) emailExportAlias(chain, kind string) string {
-	base := c.mail.Email
-	if base == "" || !strings.Contains(base, "@") {
-		return base
-	}
-	at := strings.LastIndex(base, "@")
-	local := base[:at]
-	domain := base[at+1:]
-	// Strip any existing +alias so we don't stack them.
-	if plus := strings.IndexByte(local, '+'); plus >= 0 {
-		local = local[:plus]
-	}
-	tag := fmt.Sprintf("+%s.%s.%x", strings.ToLower(chain), kind, time.Now().UnixNano()%0xffff)
-	return local + tag + "@" + domain
+	return strings.TrimSpace(c.mail.Email)
 }
 
 func (c *CSVExportClient) beginCSVEmailRequest(ctx context.Context, cfg Config, chain string, kind csvExportKind) (func(), error) {

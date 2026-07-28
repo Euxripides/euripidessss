@@ -4,12 +4,12 @@ import (
 	"archive/zip"
 	"encoding/csv"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -94,90 +94,36 @@ var ACCOUNT_ALIASES = map[string][]string{
 
 // RunPipeline runs the full ETL pipeline on uploaded files
 func RunPipeline(uploadDir string, outputDir string, jobID string) (*model.PipelineResult, error) {
+	return RunPipelineWithOptions(uploadDir, outputDir, jobID, PipelineOptions{UnifySources: true})
+}
+
+type PipelineOptions struct {
+	UnifySources bool
+	Progress     func(ProgressEvent)
+}
+
+type ProgressEvent struct {
+	Stage   string
+	Name    string
+	Status  string
+	Current int64
+	Total   int64
+	Unit    string
+	Message string
+}
+
+func RunPipelineWithOptions(uploadDir string, outputDir string, jobID string, options PipelineOptions) (*model.PipelineResult, error) {
 	startTime := time.Now()
 	log.Info().Str("uploadDir", uploadDir).Str("jobID", jobID).Msg("pipeline_start")
 
-	result := &model.PipelineResult{
-		Summary: make(map[string]interface{}),
-		Report: model.QualityReport{
-			Files: make([]model.FileReport, 0),
-		},
-	}
-
 	// Scan directory
+	emitProgress(options, ProgressEvent{Stage: "scan", Name: "扫描识别来源", Status: "running", Total: 1, Unit: "阶段"})
 	scan, err := scanner.ScanDirectory(uploadDir)
 	if err != nil {
 		return nil, fmt.Errorf("scan directory: %w", err)
 	}
-
-	// Process by provider
-	var allTransactions []model.TransactionRow
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	providerGroups := categorizeByProvider(scan)
-	// errChan must have buffer >= number of goroutines to prevent deadlock
-	// when all provider goroutines error simultaneously
-	errChan := make(chan error, len(providerGroups))
-
-	// Process in parallel by provider category
-	for _, pfItem := range providerGroups {
-		wg.Add(1)
-		go func(pf ProviderFiles) {
-			defer wg.Done()
-			txns, err := processProviderFiles(pf, uploadDir, outputDir)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			mu.Lock()
-			allTransactions = append(allTransactions, txns...)
-			mu.Unlock()
-		}(pfItem)
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	for err := range errChan {
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Clean and deduplicate
-	cleaned := CleanTransactions(allTransactions)
-	deduped := DeduplicateTransactions(cleaned)
-
-	// Build report
-	totalIn := len(allTransactions)
-	removedEmptyRequired := totalIn - len(cleaned)
-	removedDuplicates := len(cleaned) - len(deduped)
-	totalOut := len(deduped)
-	result.Report.RowsIn = totalIn
-	result.Report.RowsOut = totalOut
-	result.Report.RemovedEmptyRequired = removedEmptyRequired
-	result.Report.RemovedDuplicates = removedDuplicates
-
-	// Export result
-	outputPath, err := ExportToExcel(deduped, outputDir, jobID)
-	if err != nil {
-		return nil, fmt.Errorf("export: %w", err)
-	}
-	result.OutputPath = outputPath
-	result.Transactions = deduped
-
-	duration := time.Since(startTime)
-	result.Summary["rows_in"] = totalIn
-	result.Summary["rows_out"] = totalOut
-	result.Summary["duration_ms"] = duration.Milliseconds()
-	result.Summary["columns"] = FinalTransactionColumns
-
-	log.Info().Int("rows_in", totalIn).Int("rows_out", totalOut).
-		Int64("duration_ms", duration.Milliseconds()).
-		Str("output", outputPath).Msg("pipeline_done")
-
-	return result, nil
+	emitProgress(options, ProgressEvent{Stage: "scan", Name: "扫描识别来源", Status: "done", Current: 1, Total: 1, Unit: "阶段"})
+	return runStagedPipeline(uploadDir, outputDir, jobID, scan, options, startTime)
 }
 
 type ProviderFiles struct {
@@ -222,13 +168,20 @@ func processProviderFiles(pf ProviderFiles, baseDir string, outputDir string) ([
 		}
 		defer os.RemoveAll(tempDir)
 		for _, p := range pf.Paths {
-			copyFile(p, filepath.Join(tempDir, filepath.Base(p)))
+			if err := copyFile(p, filepath.Join(tempDir, filepath.Base(p))); err != nil {
+				return nil, fmt.Errorf("copy bank input %s: %w", filepath.Base(p), err)
+			}
 		}
 		bankResult, err := provider.ProcessBankDirectory(tempDir, outputDir)
 		if err != nil {
 			return nil, err
 		}
-		return convertBankToRows(bankResult), nil
+		rows := convertBankToRows(bankResult)
+		restoreOriginalSourcePaths(rows, pf.Paths)
+		if bankResult.OutputPath != "" {
+			_ = os.Remove(bankResult.OutputPath)
+		}
+		return rows, nil
 	default:
 		// For unknown providers, just read and normalize
 		return processGenericFiles(pf.Paths)
@@ -306,6 +259,21 @@ func convertWechatToRows(result *parser.WechatResult) []model.TransactionRow {
 	return rows
 }
 
+func restoreOriginalSourcePaths(rows []model.TransactionRow, paths []string) {
+	originalByBase := make(map[string]string, len(paths))
+	for _, path := range paths {
+		originalByBase[filepath.Base(path)] = path
+	}
+	for _, row := range rows {
+		source := row["数据来源"]
+		if original, ok := originalByBase[filepath.Base(source)]; ok {
+			row["数据来源"] = original
+		} else if source == "" && len(paths) == 1 {
+			row["数据来源"] = paths[0]
+		}
+	}
+}
+
 func convertBankToRows(result *provider.Result) []model.TransactionRow {
 	rows := make([]model.TransactionRow, 0)
 	if result.OutputPath == "" {
@@ -319,6 +287,9 @@ func convertBankToRows(result *provider.Result) []model.TransactionRow {
 	defer f.Close()
 
 	for _, sheet := range f.GetSheetList() {
+		if sheet != "交易明细信息" {
+			continue
+		}
 		excelRows, err := f.GetRows(sheet)
 		if err != nil || len(excelRows) < 2 {
 			continue
@@ -328,7 +299,16 @@ func convertBankToRows(result *provider.Result) []model.TransactionRow {
 			txn := make(model.TransactionRow)
 			for j, cell := range row {
 				if j < len(headers) {
-					txn[headers[j]] = cell
+					column := headers[j]
+					switch column {
+					case "交易方户名":
+						column = "交易户名"
+					case "交易方证件号码":
+						column = "交易证件号码"
+					case "来源":
+						column = "数据来源"
+					}
+					txn[column] = cell
 				}
 			}
 			rows = append(rows, txn)
@@ -597,12 +577,21 @@ func ParseQueryParam(val string, defaultVal int) int {
 }
 
 func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	input, err := os.Open(src)
 	if err != nil {
 		return err
 	}
+	defer input.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0644)
+	output, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		return err
+	}
+	return output.Close()
 }

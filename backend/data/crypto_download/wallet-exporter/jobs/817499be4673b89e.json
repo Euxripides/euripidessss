@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "id": "817499be4673b89e",
+  "status": "done",
+  "message": "完成",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-27 13:23:49",
+  "finishedAt": "2026-07-27 13:23:56",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\validation_57136\\rpc_bsc_latest\\audit_57136_rpc_bsc_late_817499be4673b89e",
+  "request": {
+    "source": "rpc",
+    "rpcUrl": "https://bsc-dataseed.binance.org",
+    "chains": "BSC",
+    "startBlock": 112377663,
+    "endBlock": 112377663,
+    "traceMode": "none",
+    "blockBatch": 1,
+    "logBatch": 1,
+    "workers": 2,
+    "rps": 2,
+    "timeoutSeconds": 30,
+    "retries": 2,
+    "pageSize": 50,
+    "rawDir": "backend/data/crypto_download/validation_57136/raw_rpc_bsc_latest",
+    "outputDir": "backend/data/crypto_download/validation_57136/rpc_bsc_latest",
+    "outputPrefix": "audit_57136_rpc_bsc_latest_20260727",
+    "details": true,
+    "scanNative": true,
+    "riskCooldownSecs": 1800
+  },
+  "entries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "status": "done",
+      "message": "完成地址 1/1: 0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "progress": 100,
+      "downloaded": 1,
+      "total": -1,
+      "startedAt": "2026-07-27 13:23:50",
+      "updatedAt": "2026-07-27 13:23:56",
+      "finishedAt": "2026-07-27 13:23:56",
+      "result": "E:\\codex\\etl\\backend\\data\\crypto_download\\validation_57136\\rpc_bsc_latest\\audit_57136_rpc_bsc_late_817499be4673b89e\\001_0x57136ea9b2be_2f87c9cb8d\\001_BSC.xlsx",
+      "errors": null,
+      "parts": null,
+      "cancelRequested": false
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "complete": true,
+      "segments": 0,
+      "rows": 1
+    }
+  ]
+}

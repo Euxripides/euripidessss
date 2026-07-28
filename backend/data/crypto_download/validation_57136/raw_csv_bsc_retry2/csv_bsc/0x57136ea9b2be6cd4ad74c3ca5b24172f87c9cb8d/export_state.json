@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "config_fingerprint": "a14fb30dc8aada0f967519ea6c57ffd4139c6cc1e4c4373026b8131b90d5cce9",
+  "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+  "chain": "bsc",
+  "kinds": {
+    "token_transfers": {
+      "next_start": 1785024000,
+      "end_time": 1785129327,
+      "complete": true,
+      "segments": [
+        {
+          "start_time": 1785024000,
+          "end_time": 1785129327,
+          "file": "token_transfers_segment_0001.csv",
+          "rows": 10,
+          "sha256": "afb9dcff05fcabad0d1fc4b60707b348c9809348014d09d6dd18fc31aeaedede"
+        }
+      ]
+    },
+    "transactions": {
+      "next_start": 1785028124,
+      "end_time": 1785129327,
+      "complete": true,
+      "segments": [
+        {
+          "start_time": 1785024000,
+          "end_time": 1785129327,
+          "file": "transactions_segment_0001.csv",
+          "rows": 8,
+          "sha256": "7d78836e46b3bfed44d4f6d44828377fc74089085872d2dc09638cb3260b3357"
+        }
+      ]
+    }
+  }
+}

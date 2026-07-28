@@ -118,6 +118,31 @@ func (c *CSVExportClient) commitCSVEmailSegment(cfg Config, chain string, kind c
 	return mapped, rawNew, false, nil
 }
 
+func (c *CSVExportClient) markCSVKindCheckpointComplete(cfg Config, chain string, kind csvExportKind) error {
+	if c.rawDir == "" {
+		return nil
+	}
+	fingerprint := csvRawFingerprint(cfg, chain)
+	store, err := NewCSVCheckpointStore(c.rawDir, chain, cfg.Address, fingerprint)
+	if err != nil {
+		return err
+	}
+	state, err := store.Load()
+	if errors.Is(err, os.ErrNotExist) {
+		state = NewCSVCheckpointState(cfg.Address, chain, fingerprint)
+	} else if err != nil {
+		return err
+	}
+	checkpointKind := CSVCheckpointKind(kind.Name)
+	checkpoint := state.Kinds[checkpointKind]
+	checkpoint.Complete = true
+	if checkpoint.NextStart <= 0 {
+		checkpoint.NextStart = cfg.CSVStartTime
+	}
+	state.Kinds[checkpointKind] = checkpoint
+	return store.Save(state)
+}
+
 var (
 	ErrCSVRawValidate   = errors.New("validate CSV raw payload")
 	ErrCSVRawWrite      = errors.New("write CSV raw payload")

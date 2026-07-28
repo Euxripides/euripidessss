@@ -1,4 +1,4 @@
-﻿package rules
+package rules
 
 import (
 	"testing"
@@ -16,6 +16,38 @@ func TestClassifyTable(t *testing.T) {
 	tableType := ClassifyTable(headers, "test.xlsx", "Sheet1")
 	if tableType != "交易明细" && tableType != "" {
 		t.Logf("ClassifyTable returned: %s", tableType)
+	}
+}
+
+func TestFilterRowsUsesInputRowCountNotColumnCount(t *testing.T) {
+	rows := 100
+	data := make(map[string][]string)
+	for _, column := range BankTransactionColumns {
+		data[column] = make([]string, rows)
+	}
+	for i := 0; i < rows; i++ {
+		data["交易时间"][i] = "2024-01-01 00:00:00"
+		data["交易金额"][i] = "1"
+	}
+	keep := make([]bool, rows)
+	for i := range keep {
+		keep[i] = true
+	}
+	filtered := filterRows(data, keep, BankTransactionColumns)
+	if got := len(filtered["交易时间"]); got != rows {
+		t.Fatalf("filterRows kept %d rows, want %d", got, rows)
+	}
+}
+
+func TestNormalizeAccountInitializesSourceMetadata(t *testing.T) {
+	headers := []string{"账户开户名称", "交易卡号", "交易账号"}
+	data := [][]string{{"测试账户", "62220001", "10001"}}
+	normalized, err := NormalizeAccount(headers, data, "账户信息", "account.csv", "sheet1")
+	if err != nil {
+		t.Fatalf("NormalizeAccount: %v", err)
+	}
+	if normalized["来源文件"][0] != "account.csv" || normalized["来源Sheet"][0] != "sheet1" {
+		t.Fatalf("unexpected source metadata: %#v", normalized)
 	}
 }
 

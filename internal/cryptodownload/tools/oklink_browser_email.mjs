@@ -8,9 +8,8 @@ const payload = JSON.parse(input.body);
 const endpoint = new URL(input.url).pathname;
 const profile = mkdtempSync(join(tmpdir(), "wtexp-"));
 
-// Randomised viewport to avoid fixed-window fingerprinting.
-const width  = 1200 + Math.floor(Math.random() * 300);  // 1200–1500
-const height = 800  + Math.floor(Math.random() * 250);  // 800–1050
+const width = 1280;
+const height = 900;
 
 const chrome = spawn(findChrome(), [
   `--user-data-dir=${profile}`,
@@ -23,7 +22,6 @@ const chrome = spawn(findChrome(), [
   "--disable-sync",
   "--disable-translate",
   "--disable-features=Translate,OptimizationGuideModelDownloading,IsolateOrigins,site-per-process",
-  "--disable-blink-features=AutomationControlled",
   "--disable-client-side-phishing-detection",
   "--disable-component-update",
   "--disable-domain-reliability",
@@ -36,7 +34,6 @@ const chrome = spawn(findChrome(), [
   "--disable-default-apps",
   "--hide-scrollbars",
   `--window-size=${width},${height}`,
-  `--window-position=${-30000 + Math.floor(Math.random() * 200)},${-30000 + Math.floor(Math.random() * 200)}`,
   "about:blank",
 ], { stdio: "ignore", windowsHide: true });
 
@@ -48,15 +45,8 @@ try {
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
 
-  // Inject stealth scripts before any page content loads so that
-  // Canvas / WebGL / WebDriver probes see normalised values.
-  await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_INJECT });
-
   await cdp.send("Page.navigate", { url: input.pageUrl });
   await waitForPage(cdp);
-
-  // Small human-like pause after page ready before firing the API call.
-  await delay(300 + Math.floor(Math.random() * 900));
 
   const result = await cdp.evaluate(browserRequestExpression(endpoint, payload));
   const data = result?.response?.data ?? result?.response ?? {};
@@ -171,7 +161,7 @@ function browserRequestExpression(endpoint, payload) {
   return `(async () => {
     const endpoint = ${JSON.stringify(endpoint)};
     const resource = performance.getEntriesByType('resource').map((entry) => entry.name)
-      .find((name) => /\\\\/17203-[^/]+\\\\.js(?:\\\\?|$)/.test(name))
+      .find((name) => /\\/17203-[^/]+\\.js(?:\\?|$)/.test(name))
       || 'https://static.oklink.com/cdn/assets/okfe/all-block-chain/assets/17203-CWFspQgO.js';
     const { generateSecToken } = await import(resource);
     const xSecToken = await generateSecToken({ method: 'POST', url: endpoint });

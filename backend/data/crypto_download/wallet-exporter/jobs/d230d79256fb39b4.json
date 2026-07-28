@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "id": "d230d79256fb39b4",
+  "status": "failed",
+  "message": "下载失败：共 3 条错误",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-27 13:09:00",
+  "finishedAt": "2026-07-27 13:09:38",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\validation_57136\\rpc_bsc\\audit_57136_rpc_bsc_2026_d230d79256fb39b4",
+  "request": {
+    "source": "rpc",
+    "rpcUrl": "https://bsc-dataseed.binance.org",
+    "chains": "BSC",
+    "startBlock": 112348945,
+    "endBlock": 112348945,
+    "traceMode": "auto",
+    "blockBatch": 1,
+    "logBatch": 1,
+    "workers": 2,
+    "rps": 2,
+    "timeoutSeconds": 30,
+    "retries": 2,
+    "pageSize": 50,
+    "rawDir": "backend/data/crypto_download/validation_57136/raw_rpc_bsc",
+    "outputDir": "backend/data/crypto_download/validation_57136/rpc_bsc",
+    "outputPrefix": "audit_57136_rpc_bsc_20260727",
+    "details": true,
+    "scanNative": true,
+    "riskCooldownSecs": 1800
+  },
+  "entries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "status": "failed",
+      "message": "地址 1/1 下载失败：共 3 条错误，已保留诊断结果",
+      "progress": 100,
+      "downloaded": 6,
+      "total": -1,
+      "startedAt": "2026-07-27 13:09:00",
+      "updatedAt": "2026-07-27 13:09:38",
+      "finishedAt": "2026-07-27 13:09:38",
+      "result": "E:\\codex\\etl\\backend\\data\\crypto_download\\validation_57136\\rpc_bsc\\audit_57136_rpc_bsc_2026_d230d79256fb39b4\\001_0x57136ea9b2be_2f87c9cb8d\\001_BSC.xlsx",
+      "errors": [
+        "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d: summary BSC: RPC eth_getBalance code=-32000 msg=missing trie node",
+        "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d: contract check BSC: RPC eth_getCode code=-32000 msg=missing trie node",
+        "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d: internal BSC: trace_filter 不可用，内部交易未完整下载；如节点支持 debug_traceTransaction，可用 -trace-mode=debug-all，但会非常慢: RPC trace_filter code=-32002 msg=the resource trace_filter is not available.\nRPC trace_filter code=-32002 msg=the resource trace_filter is not available."
+      ],
+      "parts": null,
+      "cancelRequested": false
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "complete": false,
+      "segments": 0,
+      "rows": 6
+    }
+  ]
+}

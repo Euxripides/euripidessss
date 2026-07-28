@@ -64,6 +64,47 @@ export type ProcessResponse = {
   summary: Record<string, unknown>;
   flow_graph: FlowGraph;
   download_url: string;
+  merge_mode: 'unified' | 'separate';
+  source_sheets?: Array<{
+    provider: string;
+    sheet: string;
+    rows: number;
+    columns: number;
+  }>;
+  artifacts?: ProcessArtifact[];
+};
+
+export type ProcessArtifact = {
+  id: string;
+  stage: string;
+  provider?: string;
+  name: string;
+  download_url: string;
+  rows?: number;
+  size: number;
+};
+
+export type ProcessStageProgress = {
+  id: string;
+  name: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  current: number;
+  total: number;
+  unit: string;
+  percent: number;
+  speed: number;
+  elapsed_seconds: number;
+  eta_seconds: number;
+  message?: string;
+};
+
+export type ProcessProgress = {
+  job_id: string;
+  status: 'running' | 'done' | 'failed';
+  error?: string;
+  started_at: string;
+  elapsed_seconds: number;
+  stages: ProcessStageProgress[];
 };
 
 export type RuleAnalysis = {

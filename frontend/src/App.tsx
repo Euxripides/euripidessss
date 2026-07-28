@@ -45,7 +45,7 @@ import {
   type OnEdgesChange,
   type OnNodesChange,
 } from "@xyflow/react";
-import type { ProcessResponse, RuleAnalysis } from "./types";
+import type { ProcessArtifact, ProcessProgress, ProcessResponse, RuleAnalysis } from "./types";
 import { CleanPanel } from "./features/clean/CleanPanel";
 import { DuneDownloadPanel } from "./features/download/DuneDownloadPanel";
 import { CryptoAddressPanel } from "./features/crypto/CryptoAddressPanel";
@@ -222,6 +222,7 @@ export function App() {
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ProcessResponse | null>(null);
+  const [processProgress, setProcessProgress] = useState<ProcessProgress | null>(null);
 
   const networkMode = useMemo(() => detectNetworkMode(), []);
   const [transferStatus, setTransferStatus] = useState<TransferStatus>({
@@ -265,8 +266,13 @@ export function App() {
     transaction_files?: UploadFile[];
     account_files?: UploadFile[];
     label_file?: UploadFile[];
+    unify_sources?: boolean;
   }) {
     setLoading(true);
+    setResult(null);
+    setProcessProgress(null);
+    const requestedJobId = `etl-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+    let progressTimer: number | undefined;
     try {
       const form = await buildUploadForm(
         [
@@ -277,6 +283,19 @@ export function App() {
         networkMode,
         updateTransferStatus,
       );
+      form.append("unify_sources", String(values.unify_sources !== false));
+      form.append("job_id", requestedJobId);
+      const refreshProgress = async () => {
+        try {
+          const response = await fetch(`/api/process/progress/${encodeURIComponent(requestedJobId)}`, { cache: "no-store" });
+          if (response.ok) {
+            setProcessProgress((await response.json()) as ProcessProgress);
+          }
+        } catch {
+          // Upload and processing continue even if one progress poll is missed.
+        }
+      };
+      progressTimer = window.setInterval(refreshProgress, 750);
       const payload = (await requestJsonWithProgress(
         "/api/process",
         form,
@@ -295,6 +314,7 @@ export function App() {
         throw new Error(typeof detail === "string" ? detail : "处理失败");
       }
       setResult(payload as ProcessResponse);
+      await refreshProgress();
       flowOps.resetFlowGraph();
       message.success("数据清洗完成，可在资金流向图中继续生成或导入数据分析");
     } catch (error) {
@@ -305,6 +325,7 @@ export function App() {
       );
       message.error(error instanceof Error ? error.message : "处理失败");
     } finally {
+      if (progressTimer !== undefined) window.clearInterval(progressTimer);
       setLoading(false);
     }
   }
@@ -324,6 +345,24 @@ export function App() {
         updateTransferStatus,
       );
       message.error(error instanceof Error ? error.message : "下载失败");
+    }
+  }
+
+  async function downloadArtifact(artifact: ProcessArtifact) {
+    try {
+      await downloadWithProgress(
+        artifact.download_url,
+        networkMode,
+        artifact.name,
+        updateTransferStatus,
+      );
+    } catch (error) {
+      failTransfer(
+        networkMode,
+        error instanceof Error ? error.message : "下载阶段产物失败",
+        updateTransferStatus,
+      );
+      message.error(error instanceof Error ? error.message : "下载阶段产物失败");
     }
   }
 
@@ -401,6 +440,8 @@ export function App() {
                 result={result}
                 onOpenRules={() => modals.setRuleOpen(true)}
                 onDownload={downloadResult}
+                progress={processProgress}
+                onDownloadArtifact={downloadArtifact}
               />
             )}
             {active === "graph" && (

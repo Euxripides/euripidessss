@@ -102,6 +102,16 @@ type GUIStartRequest struct {
 	RiskCooldownSecs int               `json:"riskCooldownSecs"`
 }
 
+func (r *GUIStartRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias GUIStartRequest
+	decoded := requestAlias{EndBlock: -1}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = GUIStartRequest(decoded)
+	return nil
+}
+
 type GUIAddressChain struct {
 	Address string `json:"address"`
 	Chain   string `json:"chain"`
@@ -302,6 +312,18 @@ func normalizeGUIPersistedSettings(settings GUIPersistedSettings) GUIPersistedSe
 	settings.CSVIMAPHost = strings.TrimSpace(settings.CSVIMAPHost)
 	settings.CSVIMAPUser = strings.TrimSpace(settings.CSVIMAPUser)
 	settings.CSVIMAPPassword = strings.TrimSpace(settings.CSVIMAPPassword)
+	mail := normalizeCSVMailConfig(Config{
+		CSVEmail:        settings.CSVEmail,
+		CSVIMAPHost:     settings.CSVIMAPHost,
+		CSVIMAPPort:     settings.CSVIMAPPort,
+		CSVIMAPUser:     settings.CSVIMAPUser,
+		CSVIMAPPassword: settings.CSVIMAPPassword,
+	})
+	settings.CSVEmail = mail.CSVEmail
+	settings.CSVIMAPHost = mail.CSVIMAPHost
+	settings.CSVIMAPPort = mail.CSVIMAPPort
+	settings.CSVIMAPUser = mail.CSVIMAPUser
+	settings.CSVIMAPPassword = mail.CSVIMAPPassword
 	if settings.CSVIMAPPort <= 0 {
 		settings.CSVIMAPPort = defaults.CSVIMAPPort
 	}
@@ -387,6 +409,12 @@ func (m *GUIManager) handleStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	var err error
+	req, err = m.hydrateCSVStartRequest(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	entries := parseGUIAddressChains(req)
 	if len(entries) == 0 {
 		http.Error(w, "请至少输入一个地址", http.StatusBadRequest)
@@ -468,18 +496,7 @@ func (m *GUIManager) handleCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func runGUIJob(ctx context.Context, job *GUIJob, req GUIStartRequest, entries []GUIAddressChain, startIndex int) {
-	defer func() {
-		job.mu.Lock()
-		if job.Status == "running" {
-			job.Status = "done"
-			job.Message = "完成"
-			job.Progress = 100
-		}
-		job.Running = false
-		job.FinishedAt = time.Now().Format("2006-01-02 15:04:05")
-		job.mu.Unlock()
-		job.persist()
-	}()
+	defer job.finishRun()
 
 	baseCfg := req.toConfig()
 	outputDir := strings.TrimSpace(req.OutputDir)
@@ -635,9 +652,35 @@ func runGUIJob(ctx context.Context, job *GUIJob, req GUIStartRequest, entries []
 			}
 		}
 		addressCancel()
+		if len(data.Errors) > 0 {
+			job.failAddressWithResult(i, resultPath, fmt.Sprintf(
+				"地址 %d/%d 下载失败：共 %d 条错误，已保留诊断结果",
+				i+1, len(entries), len(data.Errors),
+			))
+			job.log("生成诊断结果文件: " + resultPath)
+			continue
+		}
 		job.completeAddress(i, resultPath, fmt.Sprintf("完成地址 %d/%d: %s", i+1, len(entries), address))
 		job.log("生成文件: " + resultPath)
 	}
+}
+
+func (j *GUIJob) finishRun() {
+	j.mu.Lock()
+	if j.Status == "running" {
+		if len(j.Errors) > 0 {
+			j.Status = "failed"
+			j.Message = fmt.Sprintf("下载失败：共 %d 条错误", len(j.Errors))
+		} else {
+			j.Status = "done"
+			j.Message = "完成"
+		}
+		j.Progress = 100
+	}
+	j.Running = false
+	j.FinishedAt = time.Now().Format("2006-01-02 15:04:05")
+	j.mu.Unlock()
+	j.persist()
 }
 
 func csvAddressFailureError(cfg Config, data ExportData) error {
@@ -1169,6 +1212,7 @@ func (j *GUIJob) failAddress(index int, err error) {
 		addr.Message = msg
 		addr.FinishedAt = now
 		addr.Errors = append(addr.Errors, msg)
+		setGUIAddressPartsStatus(addr, "failed")
 		delete(j.addressCancels, index)
 	}
 	j.Message = msg
@@ -1187,6 +1231,27 @@ func (j *GUIJob) completeAddress(index int, result, message string) {
 		addr.Progress = 100
 		addr.Result = result
 		addr.FinishedAt = now
+		setGUIAddressPartsStatus(addr, "done")
+		delete(j.addressCancels, index)
+	}
+	j.Results = append(j.Results, result)
+	j.Message = message
+	j.syncOverallProgressLocked()
+}
+
+func (j *GUIJob) failAddressWithResult(index int, result, message string) {
+	defer j.persist()
+	now := time.Now().Format("2006-01-02 15:04:05")
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if index >= 0 && index < len(j.Addresses) {
+		addr := &j.Addresses[index]
+		addr.Status = "failed"
+		addr.Message = message
+		addr.Progress = 100
+		addr.Result = result
+		addr.FinishedAt = now
+		setGUIAddressPartsStatus(addr, "failed")
 		delete(j.addressCancels, index)
 	}
 	j.Results = append(j.Results, result)
@@ -1205,6 +1270,7 @@ func (j *GUIJob) markAddressCancelled(index int, message string) {
 		addr.Message = message
 		addr.CancelRequested = true
 		addr.FinishedAt = now
+		setGUIAddressPartsStatus(addr, "cancelled")
 		delete(j.addressCancels, index)
 		if j.cancelledAddresses != nil {
 			j.cancelledAddresses[index] = true
@@ -1212,6 +1278,20 @@ func (j *GUIJob) markAddressCancelled(index int, message string) {
 	}
 	j.Message = message
 	j.syncOverallProgressLocked()
+}
+
+func setGUIAddressPartsStatus(address *GUIAddressProgress, status string) {
+	if address == nil {
+		return
+	}
+	for index := range address.Parts {
+		switch address.Parts[index].Status {
+		case "complete", "failed", "cancelled":
+			continue
+		default:
+			address.Parts[index].Status = status
+		}
+	}
 }
 
 func (j *GUIJob) syncOverallProgressLocked() {

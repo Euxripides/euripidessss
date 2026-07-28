@@ -1,4 +1,4 @@
-﻿package provider
+package provider
 
 import (
 	"fmt"
@@ -198,7 +198,9 @@ func colMapToRows(colMap map[string][]string, columns []string) []model.Transact
 
 func addSourceColumn(rows []model.TransactionRow, source string) []model.TransactionRow {
 	for _, row := range rows {
-		row["来源"] = source
+		if strings.TrimSpace(row["来源"]) == "" {
+			row["来源"] = source
+		}
 	}
 	return rows
 }
@@ -242,8 +244,8 @@ func buildBankQuality(transactions, accounts []model.TransactionRow, sources []S
 	}
 	return map[string]interface{}{
 		"summary": map[string]interface{}{
-			"统一流水行数":      len(transactions),
-			"账户信息行数":      len(accounts),
+			"统一流水行数":       len(transactions),
+			"账户信息行数":       len(accounts),
 			"识别文件或Sheet数":  len(sources),
 			"未识别文件或Sheet数": unknownCount,
 		},

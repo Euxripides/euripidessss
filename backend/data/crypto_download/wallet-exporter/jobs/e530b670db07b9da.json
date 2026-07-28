@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "id": "e530b670db07b9da",
+  "status": "done",
+  "message": "完成",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-27 00:16:05",
+  "finishedAt": "2026-07-27 00:16:12",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\parity_20260727\\latest_exports\\parity_latest_e530b670db07b9da",
+  "request": {
+    "source": "rpc",
+    "rpcUrl": "https://ethereum-rpc.publicnode.com",
+    "chains": "ETH",
+    "startBlock": 25618102,
+    "endBlock": 25618102,
+    "traceMode": "none",
+    "blockBatch": 1,
+    "logBatch": 1,
+    "workers": 2,
+    "rps": 3,
+    "timeoutSeconds": 20,
+    "retries": 1,
+    "pageSize": 50,
+    "rawDir": "backend/data/crypto_download/parity_20260727/latest_raw",
+    "outputDir": "backend/data/crypto_download/parity_20260727/latest_exports",
+    "outputPrefix": "parity_latest",
+    "scanNative": true,
+    "riskCooldownSecs": 1800
+  },
+  "entries": [
+    {
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "chain": "ETH"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "chain": "ETH",
+      "status": "done",
+      "message": "完成地址 1/1: 0x28c6c06298d514db089934071355e5743bf21d60",
+      "progress": 100,
+      "downloaded": 12,
+      "total": -1,
+      "startedAt": "2026-07-27 00:16:05",
+      "updatedAt": "2026-07-27 00:16:12",
+      "finishedAt": "2026-07-27 00:16:12",
+      "result": "E:\\codex\\etl\\backend\\data\\crypto_download\\parity_20260727\\latest_exports\\parity_latest_e530b670db07b9da\\001_0x28c6c06298d5_743bf21d60\\001_ETH.xlsx",
+      "errors": null,
+      "parts": null,
+      "cancelRequested": false
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "chain": "ETH",
+      "complete": true,
+      "segments": 0,
+      "rows": 12
+    }
+  ]
+}

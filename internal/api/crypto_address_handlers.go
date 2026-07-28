@@ -13,11 +13,14 @@ import (
 	"unicode"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/sha3"
 )
 
 const (
 	defaultCryptoAddressAPIBaseURL = "https://www.oklink.com"
+	defaultCryptoAddressBSCRPCURL  = "https://bsc-rpc.publicnode.com"
 	maxCryptoAddressBatchSize      = 1000
+	cryptoAddressMaxRetries        = 5
 )
 
 var (
@@ -52,6 +55,9 @@ type cryptoAddressItem struct {
 	Valid      bool                     `json:"valid"`
 	Family     string                   `json:"family"`
 	Kind       string                   `json:"kind"`
+	Status     string                   `json:"status"`
+	RetryCount int                      `json:"retry_count"`
+	Error      string                   `json:"error,omitempty"`
 	Network    string                   `json:"network"`
 	Confidence float64                  `json:"confidence"`
 	Reason     string                   `json:"reason"`
@@ -60,13 +66,17 @@ type cryptoAddressItem struct {
 }
 
 type cryptoAddressCandidate struct {
-	Chain      string  `json:"chain"`
-	Name       string  `json:"name"`
-	Family     string  `json:"family"`
-	Confidence float64 `json:"confidence"`
-	Source     string  `json:"source"`
-	Status     string  `json:"status,omitempty"`
-	Detail     string  `json:"detail,omitempty"`
+	Chain       string  `json:"chain"`
+	Name        string  `json:"name"`
+	Family      string  `json:"family"`
+	Confidence  float64 `json:"confidence"`
+	Source      string  `json:"source"`
+	Status      string  `json:"status,omitempty"`
+	Detail      string  `json:"detail,omitempty"`
+	Kind        string  `json:"kind,omitempty"`
+	RetryCount  int     `json:"retry_count,omitempty"`
+	RateLimited bool    `json:"rate_limited,omitempty"`
+	Error       string  `json:"error,omitempty"`
 }
 
 type cryptoAddressSummary struct {
@@ -106,6 +116,9 @@ func HandleCryptoAddressClassify(c *gin.Context) {
 
 	rpcPools := parseCryptoRPCNodes(req.RPCNodes)
 	selectedChains := normalizeChainSet(req.Chains)
+	if _, selected := selectedChains["BSC"]; selected && len(rpcPools["BSC"]) == 0 && len(rpcPools[""]) == 0 {
+		rpcPools["BSC"] = []string{defaultCryptoAddressBSCRPCURL}
+	}
 
 	items := make([]cryptoAddressItem, 0, len(addresses))
 	seen := map[string]struct{}{}
@@ -125,7 +138,7 @@ func HandleCryptoAddressClassify(c *gin.Context) {
 
 		if len(rpcPools) > 0 && item.Valid && len(item.Candidates) > 0 {
 			apiUsed = true
-			ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
+			ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
 			item.Candidates = verifyCryptoAddressWithRPCPool(ctx, rpcPools, item.Address, item.Candidates)
 			cancel()
 			item = recomputeCryptoAddressDecision(item)
@@ -192,6 +205,7 @@ func classifyCryptoAddress(input string, selectedChains map[string]struct{}) cry
 	case address == "":
 		item.Reason = "空地址"
 	case evmAddressPattern.MatchString(address):
+		item.Address = checksumEVMAddress(address)
 		item.Valid = true
 		item.Family = "EVM"
 		item.Kind = "账户/合约地址"
@@ -247,6 +261,15 @@ func classifyCryptoAddress(input string, selectedChains map[string]struct{}) cry
 		item.Confidence = 0
 		item.Reason = "地址格式有效，但不在当前选择的链范围内"
 	}
+	if !item.Valid {
+		item.Kind = "INVALID"
+		item.Status = "地址格式错误"
+		item.Error = item.Reason
+	} else if item.Family == "EVM" {
+		item.Status = "未在线校验"
+	} else {
+		item.Status = "格式识别"
+	}
 	sortCandidates(item.Candidates)
 	return item
 }
@@ -267,6 +290,10 @@ func verifyCryptoAddressWithRPCPool(ctx context.Context, rpcPools cryptoRPCPools
 		result := probeCryptoAddressWithRPC(ctx, nodeList, address)
 		candidate.Status = result.status
 		candidate.Detail = result.detail
+		candidate.Kind = result.kind
+		candidate.RetryCount = result.retryCount
+		candidate.RateLimited = result.rateLimited
+		candidate.Error = result.errorMessage
 		if result.ok {
 			candidate.Source = "rpc"
 			candidate.Confidence = 0.98
@@ -287,7 +314,23 @@ func recomputeCryptoAddressDecision(item cryptoAddressItem) cryptoAddressItem {
 	if best.Status == "verified" {
 		item.Network = best.Name
 		item.Family = best.Family
+		item.Kind = best.Kind
+		item.Status = "OK"
+		if best.RateLimited {
+			item.Status = "OK（曾触发限速）"
+		}
+		item.RetryCount = best.RetryCount
+		item.Error = ""
 		item.Reason = "API 校验命中 " + best.Name
+	} else if best.Status == "error" {
+		item.Kind = "ERROR"
+		item.Status = "RPC失败"
+		if best.RateLimited {
+			item.Status = "触发限速，重试后仍失败"
+		}
+		item.RetryCount = best.RetryCount
+		item.Error = best.Error
+		item.Reason = best.Detail
 	}
 	return item
 }
@@ -336,9 +379,13 @@ func sortCandidates(candidates []cryptoAddressCandidate) {
 type cryptoRPCPools map[string][]string
 
 type cryptoRPCProbeResult struct {
-	ok     bool
-	status string
-	detail string
+	ok           bool
+	status       string
+	detail       string
+	kind         string
+	retryCount   int
+	rateLimited  bool
+	errorMessage string
 }
 
 func parseCryptoRPCNodes(lines []string) cryptoRPCPools {
@@ -385,38 +432,106 @@ func candidateChainKey(chain string) string {
 
 func probeCryptoAddressWithRPC(ctx context.Context, nodes []string, address string) cryptoRPCProbeResult {
 	var lastErr string
+	rateLimited := false
 	client := &http.Client{Timeout: 12 * time.Second}
-	for _, endpoint := range nodes {
-		balance, code, err := probeAddressOnRPC(ctx, client, endpoint, address)
+	for attempt := 1; attempt <= cryptoAddressMaxRetries; attempt++ {
+		endpoint := nodes[(attempt-1)%len(nodes)]
+		code, err := probeAddressOnRPC(ctx, client, endpoint, address)
 		if err == nil {
+			kind := cryptoAddressKindFromCode(code)
 			return cryptoRPCProbeResult{
-				ok:     true,
-				status: "verified",
-				detail: fmt.Sprintf("RPC 成功，balance=%s code=%s", balance, code),
+				ok:          true,
+				status:      "verified",
+				detail:      "RPC 成功，类型=" + kind,
+				kind:        kind,
+				retryCount:  attempt - 1,
+				rateLimited: rateLimited,
 			}
 		}
 		lastErr = err.Error()
-		if isRPCQuotaError(err) {
-			lastErr = "RPC 限流/额度耗尽，已切换下一节点: " + lastErr
+		currentRateLimited := isRPCQuotaError(err)
+		rateLimited = rateLimited || currentRateLimited
+		if !currentRateLimited && !isRPCTransientError(err) {
+			break
+		}
+		if attempt >= cryptoAddressMaxRetries {
+			break
+		}
+		if len(nodes) > 1 {
 			continue
+		}
+		delay := 500 * time.Millisecond * time.Duration(1<<(attempt-1))
+		if currentRateLimited {
+			delay = 1500 * time.Millisecond * time.Duration(1<<(attempt-1))
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+		} else if delay > 10*time.Second {
+			delay = 10 * time.Second
+		}
+		if err := waitCryptoAddressRetry(ctx, delay); err != nil {
+			lastErr = err.Error()
+			break
 		}
 	}
 	if lastErr == "" {
 		lastErr = "RPC 校验失败"
 	}
-	return cryptoRPCProbeResult{status: "error", detail: lastErr}
+	return cryptoRPCProbeResult{
+		status:       "error",
+		detail:       lastErr,
+		kind:         "ERROR",
+		retryCount:   cryptoAddressMaxRetries,
+		rateLimited:  rateLimited,
+		errorMessage: lastErr,
+	}
 }
 
-func probeAddressOnRPC(ctx context.Context, client *http.Client, endpoint, address string) (balance string, code string, err error) {
-	balance, err = callEthRPC(ctx, client, endpoint, "eth_getBalance", []any{address, "latest"})
-	if err != nil {
-		return "", "", err
+func probeAddressOnRPC(ctx context.Context, client *http.Client, endpoint, address string) (string, error) {
+	return callEthRPC(ctx, client, endpoint, "eth_getCode", []any{address, "latest"})
+}
+
+func cryptoAddressKindFromCode(code string) string {
+	normalized := strings.ToLower(strings.TrimSpace(strings.Trim(code, `"`)))
+	if normalized == "" || normalized == "0x" || normalized == "0x0" || normalized == "0x00" {
+		return "EOA"
 	}
-	code, err = callEthRPC(ctx, client, endpoint, "eth_getCode", []any{address, "latest"})
-	if err != nil {
-		return "", "", err
+	return "CONTRACT"
+}
+
+func checksumEVMAddress(address string) string {
+	lower := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(address), "0x"))
+	if len(lower) != 40 {
+		return address
 	}
-	return balance, code, nil
+	hasher := sha3.NewLegacyKeccak256()
+	_, _ = hasher.Write([]byte(lower))
+	hash := hasher.Sum(nil)
+	checksummed := []byte(lower)
+	for index, char := range checksummed {
+		if char < 'a' || char > 'f' {
+			continue
+		}
+		nibble := hash[index/2] >> 4
+		if index%2 == 1 {
+			nibble = hash[index/2] & 0x0f
+		}
+		if nibble >= 8 {
+			checksummed[index] = char - ('a' - 'A')
+		}
+	}
+	return "0x" + string(checksummed)
+}
+
+func waitCryptoAddressRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func callEthRPC(ctx context.Context, client *http.Client, endpoint, method string, params []any) (string, error) {
@@ -477,6 +592,19 @@ func isRPCQuotaError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "quota exhausted") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests")
+}
+
+func isRPCTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, keyword := range []string{"timeout", "connection", "temporarily unavailable", "gateway timeout", "502", "503", "504"} {
+		if strings.Contains(msg, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncateString(value string, limit int) string {

@@ -14,6 +14,9 @@ export type CryptoAddressItem = {
   readonly valid: boolean;
   readonly family: string;
   readonly kind: string;
+  readonly status: string;
+  readonly retry_count: number;
+  readonly error: string;
   readonly network: string;
   readonly confidence: number;
   readonly reason: string;
@@ -109,6 +112,9 @@ function parseCryptoAddressItem(value: Record<string, unknown>): CryptoAddressIt
     valid: value.valid === true,
     family: stringField(value, 'family'),
     kind: stringField(value, 'kind'),
+    status: stringField(value, 'status'),
+    retry_count: numberField(value, 'retry_count'),
+    error: stringField(value, 'error'),
     network: stringField(value, 'network'),
     confidence: numberField(value, 'confidence'),
     reason: stringField(value, 'reason'),

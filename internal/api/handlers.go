@@ -30,13 +30,14 @@ import (
 )
 
 var (
-	cfg            *config.Config
-	store          *storage.FileStorage
-	dbStore        *dbimport.Store
-	dbService      *dbimport.Service
-	controlStore   *control.Store
-	analysisEngine *duckdb.Engine
-	cryptoDownload http.Handler
+	cfg             *config.Config
+	store           *storage.FileStorage
+	dbStore         *dbimport.Store
+	dbService       *dbimport.Service
+	dbExportManager *dbimport.ExportManager
+	controlStore    *control.Store
+	analysisEngine  *duckdb.Engine
+	cryptoDownload  http.Handler
 )
 
 const (
@@ -126,6 +127,7 @@ func Setup(c *config.Config) {
 	store = storage.NewFileStorage(c.UploadDir, c.OutputDir)
 	dbStore = dbimport.NewStore(filepath.Join(c.RootDir, "backend", "data", "db_import"))
 	dbService = dbimport.NewService(dbStore, c.UploadDir)
+	dbExportManager = dbimport.NewExportManager(dbService)
 	if handler, err := cryptodownload.NewAPIHandler(filepath.Join(c.RootDir, "backend", "data", "crypto_download")); err != nil {
 		log.Warn().Err(err).Msg("crypto_download_api_unavailable")
 	} else {
@@ -169,6 +171,8 @@ func RegisterRoutes(r *gin.Engine) {
 	api := r.Group("/api")
 	{
 		api.POST("/process", HandleProcess)
+		api.GET("/process/progress/:job_id", HandleProcessProgress)
+		api.GET("/process/artifact/:job_id/:artifact_id", HandleProcessArtifact)
 		api.GET("/download/:job_id", HandleDownload)
 		api.POST("/dune/download", HandleDuneSQLDownload)
 		api.GET("/dune/auth", HandleDuneAuthStatus)
@@ -243,26 +247,61 @@ func HandleProcess(c *gin.Context) {
 		break
 	}
 
-	jobID := etl.GenerateJobID()
-	result, err := etl.RunPipeline(batchDir, cfg.OutputDir, jobID)
+	rawJobID := strings.TrimSpace(c.PostForm("job_id"))
+	jobID := ""
+	if rawJobID != "" {
+		jobID = safeName(rawJobID)
+	}
+	if jobID == "" || jobID == "." {
+		jobID = etl.GenerateJobID()
+	}
+	unifySources := true
+	if raw := strings.TrimSpace(c.PostForm("unify_sources")); raw != "" {
+		unifySources = raw == "true" || raw == "1"
+	}
+	progress := newProcessProgress(jobID, unifySources)
+	result, err := etl.RunPipelineWithOptions(batchDir, cfg.OutputDir, jobID, etl.PipelineOptions{
+		UnifySources: unifySources,
+		Progress:     progress.update,
+	})
 	if err != nil {
+		progress.finish(err)
 		c.JSON(400, gin.H{"detail": err.Error()})
 		return
 	}
+	for index := range result.Artifacts {
+		result.Artifacts[index].DownloadURL = fmt.Sprintf("/api/process/artifact/%s/%s", jobID, result.Artifacts[index].ID)
+	}
+	if err := persistProcessArtifacts(jobID, result.Artifacts); err != nil {
+		progress.finish(err)
+		c.JSON(500, gin.H{"detail": "保存阶段产物清单失败: " + err.Error()})
+		return
+	}
+	progress.finish(nil)
 
 	preview, columns := etl.BuildPreview(result.Transactions, 100)
-	summary := etl.BuildSummary(result.Transactions)
-	flowGraph := etl.BuildFlowGraph(result.Transactions, 600)
+	summary := result.Summary
+	flowGraph := etl.BuildFlowGraph(nil, 600)
+	if result.MergeMode == "unified" {
+		flowGraph = etl.BuildFlowGraph(result.Transactions, 600)
+	}
+	responseRows := result.Report.RowsOut
+	if responseRows == 0 && len(result.Transactions) > 0 {
+		responseRows = len(result.Transactions)
+	}
 
 	resp := model.ProcessResponse{
-		JobID:       jobID,
-		Rows:        len(result.Transactions),
-		Columns:     columns,
-		Preview:     preview,
-		Report:      result.Report,
-		Summary:     summary,
-		FlowGraph:   flowGraph,
-		DownloadURL: fmt.Sprintf("/api/download/%s", jobID),
+		JobID:        jobID,
+		Rows:         responseRows,
+		Columns:      columns,
+		Preview:      preview,
+		Report:       result.Report,
+		Summary:      summary,
+		FlowGraph:    flowGraph,
+		DownloadURL:  fmt.Sprintf("/api/download/%s", jobID),
+		MergeMode:    result.MergeMode,
+		SourceSheets: result.SourceSheets,
+		Artifacts:    result.Artifacts,
 	}
 
 	c.JSON(200, resp)

@@ -31,3 +31,14 @@ func TestScanDirectoryClassifiesAlipayGB18030AccountDetail(t *testing.T) {
 		t.Fatalf("expected provider 支付宝, got %q", got.Provider)
 	}
 }
+
+func TestDetectProviderByColumnsPrefersStrongBankSignature(t *testing.T) {
+	columns := []string{
+		"交易卡号", "交易账号", "交易户名", "交易证件号码", "交易方开户行",
+		"交易时间", "交易金额", "交易余额", "收付标志", "交易对手账卡号",
+		"对手户名", "对手开户银行", "摘要说明", "交易币种", "交易流水号",
+	}
+	if got := detectProviderByColumns(columns); got != "银行" {
+		t.Fatalf("detectProviderByColumns() = %q, want 银行", got)
+	}
+}

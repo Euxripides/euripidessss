@@ -85,6 +85,34 @@ export type DBImportTask = {
   sample?: Record<string, unknown>[];
 };
 
+export type DBExportTask = {
+  id: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+  request: {
+    jobId: string;
+    connectionId: string;
+    database: string;
+    schema?: string;
+    table: string;
+    mode: 'append' | 'replace';
+    columnNaming: 'snake_case' | 'original';
+    duplicateMode: 'skip' | 'allow';
+  };
+  progress: {
+    totalRows: number;
+    processedRows: number;
+    insertedRows: number;
+    skippedRows: number;
+    speedRowsPerSecond: number;
+    elapsedSeconds: number;
+    etaSeconds: number;
+  };
+  error?: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+};
+
 export type DBEditPayload = DBTableRef & {
   values?: Record<string, unknown>;
   keys?: Record<string, unknown>;
@@ -216,5 +244,23 @@ export async function startDBImportTask(id: string) {
 export async function getDBImportTask(id: string) {
   const { response, payload } = await getJson<DBImportTask & { detail?: string }>(`/api/db/import/tasks/${encodeURIComponent(id)}`, '获取导入任务状态失败');
   if (!response.ok) throw new Error(payload.detail || '获取导入任务状态失败');
+  return payload;
+}
+
+export async function createDBExportTask(request: DBExportTask['request']) {
+  const { response, payload } = await postJson<DBExportTask & { detail?: string }>('/api/db/export/tasks', request, '创建数据库写入任务失败');
+  if (!response.ok) throw new Error(payload.detail || '创建数据库写入任务失败');
+  return payload;
+}
+
+export async function getDBExportTask(id: string) {
+  const { response, payload } = await getJson<DBExportTask & { detail?: string }>(`/api/db/export/tasks/${encodeURIComponent(id)}`, '获取数据库写入进度失败');
+  if (!response.ok) throw new Error(payload.detail || '获取数据库写入进度失败');
+  return payload;
+}
+
+export async function cancelDBExportTask(id: string) {
+  const { response, payload } = await postJson<DBExportTask & { detail?: string }>(`/api/db/export/tasks/${encodeURIComponent(id)}/cancel`, {}, '取消数据库写入任务失败');
+  if (!response.ok) throw new Error(payload.detail || '取消数据库写入任务失败');
   return payload;
 }

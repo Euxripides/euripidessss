@@ -1,0 +1,18 @@
+{
+  "source": "csv",
+  "csvEmail": "ldj1009538134@gmail.com",
+  "csvImapHost": "imap.gmail.com",
+  "csvImapPort": 993,
+  "csvImapUser": "ldj1009538134@gmail.com",
+  "csvImapPassword": "femi yawx gjcs peon",
+  "csvStartTime": 1262304000,
+  "csvEndTime": 0,
+  "workers": 4,
+  "rps": 2,
+  "timeoutSeconds": 30,
+  "rawDir": "backend/data/crypto_download/raw",
+  "outputDir": "backend/data/crypto_download/exports",
+  "outputPrefix": "wallet_export",
+  "incremental": true,
+  "riskCooldownSecs": 1800
+}

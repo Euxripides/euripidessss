@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "id": "24a49543db3f68af",
+  "status": "cancelled",
+  "message": "已取消",
+  "progress": 100,
+  "done": 1,
+  "total": 1,
+  "running": false,
+  "needsCredentials": false,
+  "startedAt": "2026-07-27 13:14:02",
+  "finishedAt": "2026-07-27 13:14:37",
+  "taskDir": "E:\\codex\\etl\\backend\\data\\crypto_download\\validation_57136\\csv_bsc_retry\\audit_57136_csv_bsc_retr_24a49543db3f68af",
+  "request": {
+    "source": "csv",
+    "chains": "BSC",
+    "csvEmail": "ldj1009538134@gmail.com",
+    "csvImapHost": "imap.gmail.com",
+    "csvImapPort": 993,
+    "csvImapUser": "ldj1009538134@gmail.com",
+    "csvStartTime": 1785024000,
+    "csvEndTime": 1785129242,
+    "endBlock": -1,
+    "workers": 1,
+    "rps": 1,
+    "timeoutSeconds": 30,
+    "retries": 1,
+    "pageSize": 50,
+    "rawDir": "backend/data/crypto_download/validation_57136/raw_csv_bsc_retry",
+    "outputDir": "backend/data/crypto_download/validation_57136/csv_bsc_retry",
+    "outputPrefix": "audit_57136_csv_bsc_retry_20260727",
+    "riskCooldownSecs": 1800
+  },
+  "entries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC"
+    }
+  ],
+  "addresses": [
+    {
+      "index": 0,
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "status": "cancelled",
+      "message": "已取消",
+      "progress": 14,
+      "downloaded": 0,
+      "total": -1,
+      "startedAt": "2026-07-27 13:14:02",
+      "updatedAt": "2026-07-27 13:14:37",
+      "finishedAt": "2026-07-27 13:14:37",
+      "result": "",
+      "errors": null,
+      "parts": null,
+      "cancelRequested": true
+    }
+  ],
+  "checkpointSummaries": [
+    {
+      "address": "0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d",
+      "chain": "BSC",
+      "complete": false,
+      "segments": 0,
+      "rows": 0
+    }
+  ]
+}

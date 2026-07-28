@@ -2,6 +2,7 @@ package cryptodownload
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ func NewAPIHandler(configDir string) (http.Handler, error) {
 	mux.HandleFunc("/history", manager.handleHistory)
 	mux.HandleFunc("/history/import", manager.handleHistoryImport)
 	mux.HandleFunc("/history/resume", manager.handleHistoryResume)
+	mux.HandleFunc("/file", manager.handleResultFile)
 	mux.HandleFunc("/cancel", manager.handleCancel)
 	mux.HandleFunc("/settings", manager.handleSettings)
 	return mux, nil
@@ -73,4 +75,49 @@ func saveGUISettingsToConfigDir(configDir string, settings GUIPersistedSettings)
 		return err
 	}
 	return os.WriteFile(path, append(encoded, '\n'), 0600)
+}
+
+func (m *GUIManager) hydrateCSVStartRequest(req GUIStartRequest) (GUIStartRequest, error) {
+	if !strings.EqualFold(strings.TrimSpace(req.Source), "csv") {
+		return req, nil
+	}
+	settings, err := loadGUISettingsFromConfigDir(m.configDir)
+	if err != nil {
+		return req, err
+	}
+	req.CSVEmail = firstNonEmpty(strings.TrimSpace(req.CSVEmail), settings.CSVEmail)
+	req.CSVIMAPHost = firstNonEmpty(strings.TrimSpace(req.CSVIMAPHost), settings.CSVIMAPHost)
+	req.CSVIMAPUser = firstNonEmpty(strings.TrimSpace(req.CSVIMAPUser), settings.CSVIMAPUser)
+	req.CSVIMAPPassword = firstNonEmpty(strings.TrimSpace(req.CSVIMAPPassword), settings.CSVIMAPPassword)
+	if req.CSVIMAPPort <= 0 {
+		req.CSVIMAPPort = settings.CSVIMAPPort
+	}
+	cfg := normalizeCSVMailConfig(Config{
+		CSVEmail:        req.CSVEmail,
+		CSVIMAPHost:     req.CSVIMAPHost,
+		CSVIMAPPort:     req.CSVIMAPPort,
+		CSVIMAPUser:     req.CSVIMAPUser,
+		CSVIMAPPassword: req.CSVIMAPPassword,
+	})
+	req.CSVEmail = cfg.CSVEmail
+	req.CSVIMAPHost = cfg.CSVIMAPHost
+	req.CSVIMAPPort = cfg.CSVIMAPPort
+	req.CSVIMAPUser = cfg.CSVIMAPUser
+	req.CSVIMAPPassword = cfg.CSVIMAPPassword
+	switch {
+	case strings.TrimSpace(req.CSVEmail) == "":
+		return req, errors.New("CSV 模式缺少接收邮箱")
+	case strings.TrimSpace(req.CSVIMAPHost) == "":
+		return req, errors.New("CSV 模式缺少 IMAP 主机")
+	case strings.Contains(req.CSVIMAPHost, "@"):
+		return req, errors.New("IMAP 主机不能填写邮箱地址，请填写例如 imap.gmail.com")
+	case req.CSVIMAPPort <= 0:
+		return req, errors.New("CSV 模式缺少有效的 IMAP 端口")
+	case strings.TrimSpace(req.CSVIMAPUser) == "":
+		return req, errors.New("CSV 模式缺少 IMAP 用户名")
+	case strings.TrimSpace(req.CSVIMAPPassword) == "":
+		return req, errors.New("CSV 模式缺少 IMAP 密码或授权码")
+	default:
+		return req, nil
+	}
 }
