@@ -91,7 +91,7 @@ func runUnifiedStreamingPipeline(scan *scanner.DirectoryScan, outputDir, jobID s
 		"rows_out":                store.rowsOut,
 		"total_rows":              store.rowsOut,
 		"duration_ms":             duration.Milliseconds(),
-		"columns":                 FinalTransactionColumns,
+		"columns":                 UnifiedOutputColumns,
 		"in_count":                store.inCount,
 		"out_count":               store.outCount,
 		"total_in":                roundMoney(store.totalIn),
@@ -150,11 +150,11 @@ func newUnifiedStreamStore(path string) (*unifiedStreamStore, error) {
 		}
 	}
 
-	columnDefs := make([]string, len(FinalTransactionColumns))
-	columnNames := make([]string, len(FinalTransactionColumns))
-	placeholders := make([]string, len(FinalTransactionColumns)+1)
+	columnDefs := make([]string, len(UnifiedOutputColumns))
+	columnNames := make([]string, len(UnifiedOutputColumns))
+	placeholders := make([]string, len(UnifiedOutputColumns)+1)
 	placeholders[0] = "?"
-	for i := range FinalTransactionColumns {
+	for i := range UnifiedOutputColumns {
 		columnNames[i] = fmt.Sprintf("c%d", i)
 		columnDefs[i] = columnNames[i] + " TEXT NOT NULL DEFAULT ''"
 		placeholders[i+1] = "?"
@@ -199,9 +199,9 @@ func (s *unifiedStreamStore) Add(txn model.TransactionRow) error {
 	normalizeCommonTransactionFields(txn)
 
 	dedupHash := sha256.Sum256([]byte(buildDedupKey(txn)))
-	args := make([]interface{}, 0, len(FinalTransactionColumns)+1)
+	args := make([]interface{}, 0, len(UnifiedOutputColumns)+1)
 	args = append(args, dedupHash[:])
-	for _, column := range FinalTransactionColumns {
+	for _, column := range UnifiedOutputColumns {
 		args = append(args, txn[column])
 	}
 	result, err := s.insert.Exec(args...)
@@ -311,7 +311,7 @@ func ensureDataSource(row model.TransactionRow) {
 }
 
 func unifiedRowToTransaction(row, columns []string) model.TransactionRow {
-	txn := make(model.TransactionRow, len(FinalTransactionColumns))
+	txn := make(model.TransactionRow, len(UnifiedOutputColumns))
 	for i, value := range row {
 		if i >= len(columns) {
 			break
@@ -456,7 +456,7 @@ func exportStreamStoreToExcelWithLimitAndProgress(db *sql.DB, outputDir, jobID s
 	}
 	filename := fmt.Sprintf("funds_etl_%s.xlsx", jobID)
 	outputPath := filepath.Join(outputDir, filename)
-	columnNames := make([]string, len(FinalTransactionColumns))
+	columnNames := make([]string, len(UnifiedOutputColumns))
 	for i := range columnNames {
 		columnNames[i] = fmt.Sprintf("c%d", i)
 	}
@@ -477,14 +477,14 @@ func exportStreamStoreToExcelWithLimitAndProgress(db *sql.DB, outputDir, jobID s
 	if err != nil {
 		return "", 0, err
 	}
-	if err := writer.SetRow("A1", stringsToInterfaces(FinalTransactionColumns)); err != nil {
+	if err := writer.SetRow("A1", stringsToInterfaces(UnifiedOutputColumns)); err != nil {
 		return "", 0, err
 	}
 	dataRowsInSheet := 0
 	var totalRows int64
 
 	for rows.Next() {
-		values := make([]string, len(FinalTransactionColumns))
+		values := make([]string, len(UnifiedOutputColumns))
 		scanTargets := make([]interface{}, len(values))
 		for i := range values {
 			scanTargets[i] = &values[i]
@@ -505,7 +505,7 @@ func exportStreamStoreToExcelWithLimitAndProgress(db *sql.DB, outputDir, jobID s
 			if err != nil {
 				return "", sheetCount, err
 			}
-			if err := writer.SetRow("A1", stringsToInterfaces(FinalTransactionColumns)); err != nil {
+			if err := writer.SetRow("A1", stringsToInterfaces(UnifiedOutputColumns)); err != nil {
 				return "", sheetCount, err
 			}
 			dataRowsInSheet = 0

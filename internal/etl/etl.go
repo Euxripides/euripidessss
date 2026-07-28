@@ -33,6 +33,10 @@ var FinalTransactionColumns = []string{
 	"备注", "查询反馈结果原因", "数据来源",
 }
 
+// UnifiedOutputColumns preserves the stable 33 standard columns and appends
+// evidence/role fields required for auditable funds analysis.
+var UnifiedOutputColumns = append(append([]string(nil), FinalTransactionColumns...), parser.AuditTransactionColumns...)
+
 // RequiredTransactionColumns must be non-empty after processing
 var RequiredTransactionColumns = []string{"交易时间", "交易金额", "收付标志"}
 
@@ -362,7 +366,7 @@ func ExportToExcel(txns []model.TransactionRow, outputDir, jobID string) (string
 	f.SetSheetName("Sheet1", "清洗结果")
 
 	// Write headers
-	headers := FinalTransactionColumns
+	headers := UnifiedOutputColumns
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue("清洗结果", cell, h)
@@ -414,7 +418,7 @@ func ExportToCSV(txns []model.TransactionRow, outputDir, jobID string) (string, 
 	// Write BOM for Excel compatibility
 	f.WriteString("\xef\xbb\xbf")
 
-	headers := FinalTransactionColumns
+	headers := UnifiedOutputColumns
 	writer.Write(headers)
 	for _, txn := range txns {
 		row := make([]string, len(headers))
@@ -429,7 +433,7 @@ func ExportToCSV(txns []model.TransactionRow, outputDir, jobID string) (string, 
 // BuildPreview creates preview data from transactions
 func BuildPreview(txns []model.TransactionRow, limit int) ([]map[string]interface{}, []string) {
 	if len(txns) == 0 {
-		return nil, FinalTransactionColumns
+		return nil, UnifiedOutputColumns
 	}
 	// Get all column names
 	colSet := make(map[string]bool)
