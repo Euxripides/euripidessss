@@ -226,6 +226,9 @@ func (m *ExportManager) exportPostgres(
 	if _, err := tx.ExecContext(ctx, createExportTableSQL(DBTypePostgres, target, headers, dbColumns)); err != nil {
 		return 0, 0, err
 	}
+	if err := ensureExportTableColumns(ctx, tx, DBTypePostgres, ref, headers, dbColumns); err != nil {
+		return 0, 0, err
+	}
 	tempName := "etl_stage_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	tempColumns := append(append([]string{}, dbColumns...), "source_job_id", "source_row_hash")
 	definitions := exportColumnDefinitions(DBTypePostgres, headers, dbColumns)
@@ -303,6 +306,9 @@ func (m *ExportManager) exportMySQL(
 		}
 	}
 	if _, err := db.ExecContext(ctx, createExportTableSQL(DBTypeMySQL, target, headers, dbColumns)); err != nil {
+		return 0, 0, err
+	}
+	if err := ensureExportTableColumns(ctx, db, DBTypeMySQL, ref, headers, dbColumns); err != nil {
 		return 0, 0, err
 	}
 	allColumns := append(append([]string{}, dbColumns...), "source_job_id", "source_row_hash")
@@ -454,6 +460,62 @@ func createExportTableSQL(dbType DBType, target string, headers, columns []strin
 	return "CREATE TABLE IF NOT EXISTS " + target + " (" + strings.Join(definitions, ", ") + ")"
 }
 
+type exportSchemaExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func ensureExportTableColumns(
+	ctx context.Context,
+	executor exportSchemaExecutor,
+	dbType DBType,
+	ref TableRef,
+	headers, columns []string,
+) error {
+	namespace := ref.Database
+	query := "SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?"
+	args := []any{namespace, ref.Table}
+	if dbType == DBTypePostgres {
+		namespace = ref.Schema
+		if namespace == "" {
+			namespace = "public"
+		}
+		query = "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2"
+		args = []any{namespace, ref.Table}
+	}
+	rows, err := executor.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("读取目标表字段失败: %w", err)
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var column string
+		if err := rows.Scan(&column); err != nil {
+			rows.Close()
+			return fmt.Errorf("读取目标表字段失败: %w", err)
+		}
+		existing[column] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("关闭目标表字段查询失败: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("读取目标表字段失败: %w", err)
+	}
+
+	definitions := exportColumnDefinitions(dbType, headers, columns)
+	target := qualifiedTable(dbType, ref)
+	for index, column := range columns {
+		if existing[column] {
+			continue
+		}
+		if _, err := executor.ExecContext(ctx, "ALTER TABLE "+target+" ADD COLUMN "+definitions[index]); err != nil {
+			return fmt.Errorf("新增目标表字段 %s 失败: %w", column, err)
+		}
+	}
+	return nil
+}
+
 func exportColumnDefinitions(dbType DBType, headers, columns []string) []string {
 	definitions := make([]string, 0, len(columns))
 	for index, column := range columns {
@@ -493,7 +555,8 @@ var snakeCaseExportColumns = map[string]string{
 	"对手开户银行": "counterparty_bank", "摘要说明": "summary", "交易币种": "currency",
 	"交易网点名称": "branch_name", "交易发生地": "location", "交易是否成功": "success_status",
 	"传票号": "voucher_ticket_no", "IP地址": "ip_address", "MAC地址": "mac_address",
-	"对手交易余额": "counterparty_balance", "交易流水号": "transaction_serial_no", "日志号": "log_no",
+	"对手交易余额": "counterparty_balance", "交易流水号": "transaction_serial_no",
+	"商户流水号": "merchant_serial_no", "日志号": "log_no",
 	"凭证种类": "credential_type", "凭证号": "credential_no", "交易柜员号": "teller_no",
 	"备注": "remark", "查询反馈结果原因": "feedback_reason", "数据来源": "data_source",
 }

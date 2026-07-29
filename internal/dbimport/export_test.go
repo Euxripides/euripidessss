@@ -36,9 +36,9 @@ func TestCloneExportTaskKeepsPrivateSourcePath(t *testing.T) {
 }
 
 func TestExportColumnNamesAndDDL(t *testing.T) {
-	headers := []string{"交易时间", "交易金额", "对手户名", "备注"}
+	headers := []string{"交易时间", "交易金额", "对手户名", "交易流水号", "商户流水号", "备注"}
 	columns := exportColumnNames(headers, "snake_case")
-	want := []string{"transaction_time", "transaction_amount", "counterparty_name", "remark"}
+	want := []string{"transaction_time", "transaction_amount", "counterparty_name", "transaction_serial_no", "merchant_serial_no", "remark"}
 	for index := range want {
 		if columns[index] != want[index] {
 			t.Fatalf("column %d = %q, want %q", index, columns[index], want[index])

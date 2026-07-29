@@ -157,7 +157,7 @@ func TestRunPipelineDefaultsToUnifiedMerge(t *testing.T) {
 	}
 	preview, columns := BuildPreview(result.Transactions, 10)
 	if len(columns) != len(FinalTransactionColumns) || len(preview) != 1 {
-		t.Fatalf("preview must expose only the original 33 columns: columns=%d rows=%d", len(columns), len(preview))
+		t.Fatalf("preview must expose the configured unified columns: columns=%d rows=%d", len(columns), len(preview))
 	}
 }
 

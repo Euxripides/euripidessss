@@ -29,38 +29,6 @@ func TestWechatPaymentSummaryMapsPartiesByDirection(t *testing.T) {
 	}
 }
 
-func TestAlipayTransferUsesSubjectIdentifiers(t *testing.T) {
-	headers := []string{"付款方支付宝账号", "收款方支付宝账号", "转账金额（元）", "到账时间", "交易号", "对应的协查数据"}
-	data := [][]string{
-		{"payer@example.com", "payee@example.com", "10", "2026-07-29 10:00:00", "T-1", ""},
-		{"payer@example.com", "payee@example.com", "20", "2026-07-29 11:00:00", "T-2", ""},
-		{"payer@example.com", "payee@example.com", "30", "2026-07-29 12:00:00", "T-3", ""},
-	}
-	context := SourceAuditContext{
-		Provider: "支付宝", TableType: "转账明细", Path: `C:\input\alipay.csv`,
-		Sheet: "转账", FileHash: "def", HeaderRow: 1,
-	}
-	outRows := alipayToUnified(data[:1], headers, context, MappingOptions{
-		SubjectIdentifiers: map[string]bool{"payer@example.com": true},
-	})
-	out := unifiedSliceToMap(outRows[0])
-	if out["收付标志"] != "出" || out["交易账号"] != "payer@example.com" || out["交易对手账卡号"] != "payee@example.com" {
-		t.Fatalf("payer subject mapping incorrect: %#v", out)
-	}
-	inRows := alipayToUnified(data[1:2], headers, context, MappingOptions{
-		SubjectIdentifiers: map[string]bool{"payee@example.com": true},
-	})
-	in := unifiedSliceToMap(inRows[0])
-	if in["收付标志"] != "进" || in["交易账号"] != "payee@example.com" || in["交易对手账卡号"] != "payer@example.com" {
-		t.Fatalf("payee subject mapping incorrect: %#v", in)
-	}
-	unknownRows := alipayToUnified(data[2:], headers, context, MappingOptions{})
-	unknown := unifiedSliceToMap(unknownRows[0])
-	if unknown["收付标志"] != "" || unknown["主体判定状态"] != "无法判定" {
-		t.Fatalf("unmatched transfer must not be forced outgoing: %#v", unknown)
-	}
-}
-
 func TestWechatReceivedAmountIsNotCounterpartyBalance(t *testing.T) {
 	headers := []string{"交易时间", "交易金额(分)", "账户余额(分)", "借贷类型", "对手方接收金额(分)"}
 	rows := wechatToUnified([][]string{{"2026-07-29 10:00:00", "10000", "50000", "借", "9900"}}, headers, SourceAuditContext{

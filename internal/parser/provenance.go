@@ -13,8 +13,8 @@ import (
 
 const MappingRuleVersion = "funds-analysis-v2-20260729"
 
-// AuditTransactionColumns extend the stable 33-column transaction contract.
-// They are appended to exports so existing column names and order remain intact.
+// AuditTransactionColumns are internal-only evidence fields. User-facing
+// unified CSV, Excel, preview, and database exports contain only configured business columns.
 var AuditTransactionColumns = []string{
 	"来源类型", "来源表类型", "来源文件", "来源文件SHA256", "来源Sheet", "原始行号",
 	"映射规则版本", "来源记录ID",
@@ -24,8 +24,8 @@ var AuditTransactionColumns = []string{
 }
 
 type MappingOptions struct {
-	SourceHashes       map[string]string
-	SubjectIdentifiers map[string]bool
+	SourceHashes         map[string]string
+	IncludeAlipayBalance bool
 }
 
 type SourceAuditContext struct {
@@ -94,36 +94,6 @@ func FileSHA256(path string) (string, error) {
 
 func SourceRecordID(fileHash, sheet string, lineNumber int) string {
 	return sourceRecordID(fileHash, sheet, lineNumber)
-}
-
-func NormalizeSubjectIdentifier(value string) []string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	value = strings.Trim(value, `"'`)
-	if value == "" {
-		return nil
-	}
-	values := []string{value}
-	compact := strings.NewReplacer(" ", "", "-", "", "_", "", "\t", "").Replace(value)
-	if compact != "" && compact != value {
-		values = append(values, compact)
-	}
-	return values
-}
-
-func MatchesSubjectIdentifier(value, inquiry string, identifiers map[string]bool) bool {
-	for _, normalized := range NormalizeSubjectIdentifier(value) {
-		if identifiers[normalized] {
-			return true
-		}
-		if len([]rune(normalized)) >= 5 {
-			for _, inquiryValue := range NormalizeSubjectIdentifier(inquiry) {
-				if strings.Contains(inquiryValue, normalized) {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 func sourceRecordID(fileHash, sheet string, lineNumber int) string {

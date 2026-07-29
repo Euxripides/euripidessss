@@ -111,6 +111,7 @@ func runUnifiedStreamingPipeline(scan *scanner.DirectoryScan, outputDir, jobID s
 		"output_sheets":           sheetCount,
 		"duplicate_files_skipped": duplicateFiles,
 		"streaming":               true,
+		"include_alipay_balance":  false,
 	}
 	if store.rowsOut > len(store.preview) {
 		summary["preview_rows"] = len(store.preview)
@@ -411,7 +412,7 @@ func transactionSQLiteColumn(name string) string {
 
 func streamProviderTransactions(group ProviderFiles, outputDir string, options PipelineOptions, emit func(model.TransactionRow) error) error {
 	mappingOptions := parser.MappingOptions{
-		SourceHashes: options.SourceHashes, SubjectIdentifiers: options.SubjectIdentifiers,
+		SourceHashes: options.SourceHashes, IncludeAlipayBalance: options.IncludeAlipayBalance,
 	}
 	switch group.Provider {
 	case "支付宝":

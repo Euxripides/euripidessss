@@ -267,7 +267,7 @@ export function App() {
     account_files?: UploadFile[];
     label_file?: UploadFile[];
     unify_sources?: boolean;
-    subject_accounts?: string;
+    include_alipay_balance?: boolean;
   }) {
     setLoading(true);
     setResult(null);
@@ -285,7 +285,7 @@ export function App() {
         updateTransferStatus,
       );
       form.append("unify_sources", String(values.unify_sources !== false));
-      form.append("subject_accounts", values.subject_accounts ?? "");
+      form.append("include_alipay_balance", String(values.include_alipay_balance === true));
       form.append("job_id", requestedJobId);
       const refreshProgress = async () => {
         try {

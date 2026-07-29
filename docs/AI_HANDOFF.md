@@ -5154,3 +5154,276 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 - 支付宝转账明细若没有账户文件且未填写调查主体账号，方向会保持未判定并进入审计；这是为避免资金方向误判的严格策略。
 - 当前真实回归样本包含支付宝账户明细，不包含独立转账明细和支付流水汇总；这两类方向映射已由新增单元测试覆盖。
 - 本轮没有重新写入真实 PostgreSQL/MySQL；数据库导入源已恢复为原 33 字段，目标表结构继续沿用已验证的 37 列结构。
+
+## 2026-07-29 — 支付宝四类调证表识别修正
+
+### 当前最终口径
+
+- 本节覆盖上一节中关于支付宝“个人账单、转账明细、支付流水汇总、交易记录”和 `subject_accounts` 的中间实现说明。
+- 支付宝只识别本项目真实调证数据的四类表：`账户明细`、`余额明细`、`登陆日志`、`注册信息`。
+- 只有账户明细和余额明细进入统一流水：
+  - 账户明细直接使用原始 `收/支` 字段，`收入 -> 进`、`支出 -> 出`；
+  - 余额明细根据 `收入金额(+)（元）` 和 `支出金额(-)（元）` 判断方向。
+- 登陆日志和注册信息只作为源文件保留，不进入资金流水。
+- 删除支付宝“个人账单、转账明细、支付流水汇总、交易记录”识别模板和转换分支，避免非本项目格式参与表型打分。
+- 删除清洗页“调查主体账号”、multipart `subject_accounts` 解析、主体索引及支付宝付款/收款方方向推断代码。
+- 补齐真实账户明细表头中的 `支付方式`、`充值流水号`，以及注册信息中的 `注册时间`、`注册时IP`、`备注`。
+
+### 余额明细支出修复
+
+- 真实余额明细的支出值为负数，例如 `-1200.0`。
+- 旧代码只在支出金额 `> 0` 时标记为“出”，导致 2,606 条负数支出被判为方向缺失。
+- 现改为支出金额非零即标记为“出”，统一输出金额取绝对值；收入仍按正数标记为“进”。
+- 新增单元测试固定验证 `-1200.0 -> 出 / 1200.00`。
+
+### 修改文件
+
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/alipay_stream_test.go`
+- `internal/parser/funds_mapping_test.go`
+- `internal/parser/party_mapping.go`
+- `internal/parser/provenance.go`
+- `internal/etl/etl.go`
+- `internal/etl/stream_pipeline.go`
+- 删除 `internal/etl/subject_index.go`
+- 删除 `internal/etl/subject_index_test.go`
+- `internal/api/handlers.go`
+- `frontend/src/App.tsx`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口和前端变化
+
+- `POST /api/process` 不再读取 `subject_accounts`；现有客户端即使额外传入该字段也会被忽略，不影响兼容。
+- `PipelineOptions`、`MappingOptions` 删除支付宝主体账号相关字段。
+- 清洗页面删除无实际用途的“调查主体账号”输入框。
+- 对外统一表仍严格保持原 33 字段。
+
+### 真实数据验证
+
+- 输入目录：`E:\项目\网赌\梅县-网赌30娱乐\资金流调证\测试\20260517_zlxc_2_44142121000020260515000006366006_1_respon`。
+- 任务：`alipay-four-tables-fixed-20260729`。
+- 四个真实文件分别识别为账户明细、余额明细、登陆日志、注册信息。
+- 账户明细和余额明细共 `13,573` 条交易候选，最终输出 `13,561` 条：
+  - 账户明细 `8,735` 条；
+  - 余额明细 `4,826` 条；
+  - 登陆日志 `0` 条；
+  - 注册信息 `0` 条。
+- 方向统计：进 `4,483` 条、出 `9,078` 条。
+- 修复前余额明细只有 `2,221` 条收入进入结果；修复后余额明细收入和支出共 `4,826` 条进入结果，恢复负数支出 `2,606` 条。
+- 未纳入 `12` 条：余额明细收入和支出均无有效金额 `1` 条；账户明细原始 `收/支=其它` `11` 条。
+- 最终 CSV 与分类统一 CSV 均为原 33 列。
+- 真实产物：`backend/data/outputs/etl_jobs/alipay-four-tables-fixed-20260729/`。
+
+### 已验证
+
+- `go test ./internal/parser ./internal/etl ./internal/api -count=1`
+- 四类真实文件 API 合并及最终 CSV 逐表、逐方向统计。
+
+## 2026-07-29 — 支付宝余额明细统一流水改为可选且默认关闭
+
+### 当前行为
+
+- 余额明细识别和转为33字段流水的代码保留。
+- 默认不把余额明细写入分类统一 CSV、最终 CSV、Excel、预览或数据库导入。
+- 无论是否启用，余额明细源文件和支付宝原字段合并 CSV 都完整保留。
+- 清洗页新增“支付宝余额明细纳入统一流水”复选框，默认不勾选。
+- 只有用户明确勾选后，余额明细才按收入/支出金额转换并参与最终合并。
+
+### 接口与内部选项
+
+- `POST /api/process` 新增可选 multipart 字段 `include_alipay_balance`：
+  - 未传、空值或 `false`：不启用；
+  - `true` 或 `1`：启用。
+- `PipelineOptions` 和 parser `MappingOptions` 新增 `IncludeAlipayBalance bool`，零值为关闭。
+- 处理结果 `summary.include_alipay_balance` 记录本次是否启用。
+- 旧客户端不传新字段时自动采用关闭状态。
+
+### 修改文件
+
+- `internal/parser/provenance.go`
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/alipay_stream_test.go`
+- `internal/etl/etl.go`
+- `internal/etl/staged_pipeline.go`
+- `internal/etl/stream_pipeline.go`
+- `internal/api/handlers.go`
+- `frontend/src/App.tsx`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 真实数据验证
+
+- 默认关闭任务：`alipay-balance-default-off-20260729`
+  - 支付宝原字段 CSV：`13,573` 行，账户明细和余额明细均保留；
+  - 分类统一 CSV：`8,746` 行，仅账户明细候选；
+  - 最终 CSV：`8,735` 行，账户明细 `8,735`、余额明细 `0`；
+  - 方向：出 `6,473`、进 `2,262`；
+  - 原始方向“其它” `11` 行进入未纳入审计。
+- 显式启用任务：`alipay-balance-explicit-on-20260729`
+  - 分类统一 CSV：`13,573` 行；
+  - 最终 CSV：`13,561` 行，账户明细 `8,735`、余额明细 `4,826`；
+  - 方向：出 `9,078`、进 `4,483`；
+  - 未纳入 `12` 行。
+- 两种模式的分类统一 CSV 和最终 CSV 均为原33列。
+
+## 2026-07-29 — 支付宝账户明细“用户信息”拆分映射
+
+### 映射调整
+
+- 真实 `用户信息` 格式为 `支付宝账号(姓名)`，本次抽样和全量检查 `8,746/8,746` 行均匹配。
+- 新增 `SplitAlipayUserInfo`，兼容半角括号 `()` 和全角括号 `（）`。
+- 无括号时安全回退为“整段作为账号、姓名留空”，避免丢失原值。
+- 账户明细统一映射改为：
+  - 支付宝账号 -> `交易账号`
+  - 支付宝账号 -> `交易卡号`
+  - 姓名 -> `交易户名`
+  - 固定值 `支付宝` -> `交易方开户行`
+- 其他字段本次不修改；统一输出仍为原33列。
+
+### 修改文件
+
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/alipay_stream_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 验证
+
+- 单元测试覆盖半角括号、全角括号、无括号回退，以及收入/支出两种方向下的四字段映射。
+- 真实任务：`alipay-user-info-mapping-20260729`。
+- `8,746` 条候选，排除原始方向“其它” `11` 条，最终 `8,735` 条。
+- 最终 `8,735` 条中：
+  - `交易账号`空值 `0`；
+  - `交易卡号 != 交易账号` `0`；
+  - `交易户名`空值 `0`；
+  - `交易方开户行 != 支付宝` `0`。
+- 最终 CSV 为原33列。
+
+## 2026-07-29 — 支付宝账户明细“交易对方信息”拆分映射
+
+### 映射规则
+
+- 支付宝账号型 `2088532293834122(袁铭璐)`：
+  - `2088532293834122` -> `交易对手账卡号`
+  - `袁铭璐` -> `对手户名`
+- 银行卡型 `(平安银行股份有限公司)6230580000457696578`：
+  - `平安银行股份有限公司` -> `对手开户银行`
+  - `6230580000457696578` -> `交易对手账卡号`
+  - `对手户名`留空
+- 三段型 `熊守文(网商银行)(6668447550399326)`：
+  - `熊守文` -> `对手户名`
+  - `网商银行` -> `对手开户银行`
+  - `6668447550399326` -> `交易对手账卡号`
+- 三段型第二段不含银行机构特征时，例如 `熊守文(熊守文)(6212252007001812085)`：
+  - 第一段仍映射对手户名；
+  - 第三段映射交易对手账卡号；
+  - 第二段不写入对手开户银行，避免把人名误作银行。
+- 支付宝账号型允许姓名内部继续包含括号，例如支付宝小荷包名称。
+- 不属于上述三种格式时，原始交易对方信息完整保留在`对手户名`，等待后续规则，不做猜测拆分。
+
+### 修改文件
+
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/alipay_stream_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 验证
+
+- 单元测试覆盖支付宝账号型、前置银行型、姓名+银行+卡号三段型、姓名重复三段型、嵌套姓名和未识别回退。
+- 真实任务：`alipay-counterparty-mapping-v3-20260729`。
+- 最终 `8,735` 行、原33列。
+- 成功拆出`交易对手账卡号` `8,236` 行。
+- 拆出账号且有对手户名 `8,235` 行。
+- 三段格式真实数据 `462` 行，其中银行型 `68` 行正确写入对手开户银行，第二段为姓名的 `394` 行未误填银行。
+- 其余未配置格式 `499` 行保持原始对手名称。
+- 当前真实文件没有完全匹配 `(银行名称)银行卡号` 的前置银行格式；该格式已由精确单元测试验证。
+
+## 2026-07-29 — 统一表新增商户流水号并映射支付宝商户订单号
+
+### 字段与映射
+
+- 按用户最新要求，在统一表`交易流水号`之后新增`商户流水号`，统一业务字段由33列变为34列。
+- 支付宝账户明细独立映射：`交易号` -> `交易流水号`，`商户订单号` -> `商户流水号`。
+- `交易流水号`不再使用`商户订单号`兜底，通用别名也拆为两个独立目标字段。
+- 支付宝原始`商户订单号`中的`null`、`NULL`和`<nil>`按空值处理。
+- 去重完整业务指纹加入`商户流水号`。
+
+### 数据库
+
+- snake_case字段名：`商户流水号` -> `merchant_serial_no`。
+- 新建导入表为`id` + 34个业务字段 + `source_job_id`、`source_row_hash`、`imported_at`，共38列。
+- append导入已有旧表时会读取目标表结构并自动补充缺失业务字段，旧37列表无需手工改表。
+- API端点和请求结构未变。
+
+### 修改文件
+
+- `internal/etl/etl.go`
+- `internal/etl/cleaning.go`
+- `internal/etl/etl_test.go`
+- `internal/etl/separate_merge_test.go`
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/alipay_stream_test.go`
+- `internal/parser/provenance.go`
+- `internal/dbimport/export.go`
+- `internal/dbimport/export_test.go`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 验证
+
+- `go test ./internal/...`、`go vet ./...`、后端构建和前端生产构建通过。
+- 真实API任务：`alipay-merchant-serial-mapping-20260729`。
+- 原始支付宝账户明细8,746行，清洗排除方向为“其它”的11行，最终8,735行。
+- 最终CSV为34列；`交易流水号`是第26列，`商户流水号`紧随其后为第27列。
+- `交易流水号`非空8,735行，`商户流水号`非空6,983行，商户流水号字面量`null/<nil>`为0行。
+- 首行实测：`交易流水号=2026031422001472211429419304`，`商户流水号=685_202603149505297201771957`。
+- 真实任务保留源文件、支付宝原字段CSV、支付宝34列统一CSV、最终CSV、最终Excel和审计CSV。
+- 修改后执行`.\run.ps1`，服务重启并通过`/api/health`检查。
+
+### 未完成事项与注意事项
+
+- 本轮未对真实PostgreSQL/MySQL实例写入；数据库新字段名、建表DDL、旧表自动补字段逻辑已完成测试、编译和静态检查。
+- 本次34列要求覆盖此前“仅33列”的历史决定；后续字段数量以当前34列契约为准。
+
+## 2026-07-29 — 支付宝消费名称映射摘要说明
+
+### 映射调整
+
+- 支付宝账户明细`消费名称`直接映射统一表`摘要说明`。
+- 取消此前`消费名称`为空时使用`类型`兜底的逻辑，防止把交易类型误作消费摘要。
+- `消费名称`中的`null`、`NULL`和`<nil>`按空值处理。
+- 其他支付宝字段映射及34列统一表结构不变。
+
+### 修改文件
+
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/alipay_stream_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 验证
+
+- 单元测试覆盖`消费名称`有值及“消费名称为空但类型有值”两种情况。
+- `go test ./internal/...`通过。
+- `go vet ./...`通过。
+- 真实API任务：`alipay-consumption-summary-mapping-20260729`。
+- 真实源文件8,746行的`消费名称`均有值；最终有效流水8,735行的`摘要说明`均有值。
+- 按`交易号/交易流水号`逐行核对8,735行，`摘要说明`与源`消费名称`不一致0行。
+- 首行源`消费名称=明智出行费用`，输出`摘要说明=明智出行费用`；源`类型=即时到账交易`未误写摘要。
+- 最终输出保持34列。
+- 修改后执行`.\run.ps1`，当前服务PID 8524，`/api/health`返回`status=ok`。
+
+### 未完成事项
+
+- 无。
