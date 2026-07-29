@@ -11,6 +11,10 @@ import (
 // StreamAlipayFiles parses Alipay files and emits one unified row at a time.
 // Delimited files never accumulate their transaction rows in memory.
 func StreamAlipayFiles(files []string, mode string, emit func([]string) error) ([]AlipaySource, map[string]int, int, error) {
+	return StreamAlipayFilesWithOptions(files, mode, MappingOptions{}, emit)
+}
+
+func StreamAlipayFilesWithOptions(files []string, mode string, options MappingOptions, emit func([]string) error) ([]AlipaySource, map[string]int, int, error) {
 	if mode == "" {
 		mode = "strict"
 	}
@@ -20,6 +24,7 @@ func StreamAlipayFiles(files []string, mode string, emit func([]string) error) (
 
 	files = append([]string(nil), files...)
 	sort.Strings(files)
+	EnsureSourceHashes(files, &options)
 	sources := make([]AlipaySource, 0, len(files))
 	tableRows := make(map[string]int)
 	unifiedRows := 0
@@ -30,7 +35,7 @@ func StreamAlipayFiles(files []string, mode string, emit func([]string) error) (
 			workbookFiles = append(workbookFiles, path)
 			continue
 		}
-		source, emitted, err := streamAlipayCSVFile(path, mode, emit)
+		source, emitted, err := streamAlipayCSVFile(path, mode, options, emit)
 		if err != nil {
 			return sources, tableRows, unifiedRows, fmt.Errorf("stream alipay %s: %w", filepath.Base(path), err)
 		}
@@ -42,7 +47,7 @@ func StreamAlipayFiles(files []string, mode string, emit func([]string) error) (
 	// Excel sources are normally much smaller and keep using the established
 	// workbook parser. Their unified rows are released immediately after emit.
 	if len(workbookFiles) > 0 {
-		result, err := ProcessAlipayFiles(workbookFiles, "", mode)
+		result, err := ProcessAlipayFilesWithOptions(workbookFiles, "", mode, options)
 		if err != nil {
 			return sources, tableRows, unifiedRows, err
 		}
@@ -62,7 +67,7 @@ func StreamAlipayFiles(files []string, mode string, emit func([]string) error) (
 	return sources, tableRows, unifiedRows, nil
 }
 
-func streamAlipayCSVFile(path, mode string, emit func([]string) error) (AlipaySource, int, error) {
+func streamAlipayCSVFile(path, mode string, options MappingOptions, emit func([]string) error) (AlipaySource, int, error) {
 	preview, encoding, sep, err := readCSVPreview(path, 40)
 	if err != nil {
 		return AlipaySource{}, 0, err
@@ -93,7 +98,10 @@ func streamAlipayCSVFile(path, mode string, emit func([]string) error) (AlipaySo
 	defer file.Close()
 
 	unifyTables := AlipayUnifyTables[mode]
-	converter := newAlipayStreamConverter(headers, tableType, path, headerRow)
+	converter := newAlipayStreamConverter(headers, SourceAuditContext{
+		Provider: "支付宝", TableType: tableType, Path: path, Sheet: "sheet1",
+		FileHash: options.SourceHashes[path], HeaderRow: headerRow,
+	}, options)
 	rowIndex := 0
 	dataRowIndex := 0
 	emitted := 0
@@ -124,7 +132,7 @@ func streamAlipayCSVFile(path, mode string, emit func([]string) error) (AlipaySo
 	return source, emitted, nil
 }
 
-func newAlipayStreamConverter(headers []string, tableType, path string, headerRow int) func([]string, int) []string {
+func newAlipayStreamConverter(headers []string, context SourceAuditContext, options MappingOptions) func([]string, int) []string {
 	headerMap := make(map[string]int, len(headers))
 	for i, header := range headers {
 		headerMap[header] = i
@@ -147,7 +155,7 @@ func newAlipayStreamConverter(headers []string, tableType, path string, headerRo
 		}
 
 		row := make([]string, len(UnifiedColumns))
-		switch tableType {
+		switch context.TableType {
 		case "账户明细":
 			row[colIdx("交易时间")] = NormalizeDatetime(get("交易创建时间", "付款时间", "最近修改时间"))
 			row[colIdx("交易金额")] = FloatToStr(getFloat("金额（元）"))
@@ -158,6 +166,11 @@ func newAlipayStreamConverter(headers []string, tableType, path string, headerRo
 			row[colIdx("交易发生地")] = get("交易来源地")
 			row[colIdx("交易是否成功")] = get("交易状态")
 			row[colIdx("备注")] = get("备注")
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{Name: get("用户信息")},
+				PaymentParty{Name: get("交易对方信息")},
+				"支付宝账户明细持有人视角+收支字段",
+			)
 		case "余额明细":
 			income := getFloat("收入金额(+)（元）")
 			expense := getFloat("支出金额(-)（元）")
@@ -176,27 +189,54 @@ func newAlipayStreamConverter(headers []string, tableType, path string, headerRo
 			row[colIdx("交易发生地")] = get("交易发生地")
 			row[colIdx("交易方开户行")] = get("银行名称")
 			row[colIdx("备注")] = get("备注")
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{Account: get("账户"), Bank: get("银行名称")},
+				PaymentParty{Account: get("对方帐户")},
+				"支付宝余额明细账户+收入/支出金额",
+			)
 		case "转账明细":
 			row[colIdx("交易金额")] = FloatToStr(getFloat("转账金额（元）"))
-			row[colIdx("交易账号")] = get("付款方支付宝账号")
-			row[colIdx("交易对手账卡号")] = get("收款方支付宝账号")
+			payerAccount := get("付款方支付宝账号")
+			payeeAccount := get("收款方支付宝账号")
+			direction, basis, status := ResolveTransferDirection(
+				payerAccount,
+				payeeAccount,
+				get("对应的协查数据"),
+				options.SubjectIdentifiers,
+			)
+			row[colIdx("收付标志")] = direction
+			ApplyDirectionalParties(row, direction,
+				PaymentParty{Account: payerAccount},
+				PaymentParty{Account: payeeAccount, Bank: get("收款机构信息")},
+				basis,
+			)
+			setUnifiedValue(row, "主体判定状态", status)
 			row[colIdx("交易流水号")] = get("交易号")
 			row[colIdx("摘要说明")] = get("转账产品名称")
 			row[colIdx("交易发生地")] = get("交易发生地")
 			row[colIdx("交易时间")] = NormalizeDatetime(get("到账时间"))
-			row[colIdx("收付标志")] = "出"
 		case "支付流水汇总":
 			row[colIdx("交易时间")] = NormalizeDatetime(get("交易时间"))
 			row[colIdx("交易金额")] = FloatToStr(getFloat("交易金额"))
-			row[colIdx("收付标志")] = NormalizeDirection(get("交易主体的出入账标识"))
+			direction := NormalizeDirection(get("交易主体的出入账标识"))
+			row[colIdx("收付标志")] = direction
 			row[colIdx("交易余额")] = FloatToStr(getFloat("交易余额"))
 			row[colIdx("交易币种")] = get("币种")
 			row[colIdx("交易流水号")] = get("交易流水号", "支付订单号")
-			row[colIdx("交易对手账卡号")] = get(
-				"收款方的支付帐号", "付款方的支付帐号",
-				"收款方银行卡所属银行卡号", "付款方银行卡所属银行卡号",
+			ApplyDirectionalParties(row, direction,
+				PaymentParty{
+					Account: get("付款方的支付帐号"),
+					Card:    CleanAccountNumber(get("付款方银行卡所属银行卡号")),
+					Bank:    get("付款方银行卡所属银行名称"),
+				},
+				PaymentParty{
+					Account: get("收款方的支付帐号"),
+					Card:    CleanAccountNumber(get("收款方银行卡所属银行卡号")),
+					Name:    get("收款方的商户名称"),
+					Bank:    get("收款方银行卡所属银行名称"),
+				},
+				"交易主体出入账标识",
 			)
-			row[colIdx("对手户名")] = get("收款方的商户名称")
 			row[colIdx("摘要说明")] = get("交易类型", "支付类型")
 			row[colIdx("IP地址")] = get("交易支付设备ip")
 			row[colIdx("MAC地址")] = get("mac地址")
@@ -209,6 +249,11 @@ func newAlipayStreamConverter(headers []string, tableType, path string, headerRo
 			row[colIdx("摘要说明")] = get("商品说明")
 			row[colIdx("交易流水号")] = get("交易订单号", "商家订单号")
 			row[colIdx("备注")] = get("收/付款方式")
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{},
+				PaymentParty{Name: get("交易对方")},
+				"支付宝个人账单持有人视角+收支字段",
+			)
 		case "交易记录":
 			row[colIdx("交易金额")] = FloatToStr(getFloat("交易金额（元）"))
 			row[colIdx("交易时间")] = NormalizeDatetime(get("创建时间", "收款时间", "最后修改时间"))
@@ -218,8 +263,10 @@ func newAlipayStreamConverter(headers []string, tableType, path string, headerRo
 			row[colIdx("交易对手账卡号")] = get("卖家信息", "卖家用户id")
 			row[colIdx("摘要说明")] = get("商品名称", "交易类型")
 			row[colIdx("交易发生地")] = get("来源地")
+			setUnifiedValue(row, "主体判定依据", "支付宝交易记录买卖双方字段，未确认调查主体")
+			setUnifiedValue(row, "主体判定状态", "无法判定")
 		}
-		row[colIdx("来源表")] = SourceLocation(path, rowIndex, headerRow)
+		ApplySourceAudit(row, context, rowIndex)
 		return row
 	}
 }

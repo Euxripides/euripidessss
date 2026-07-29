@@ -1,11 +1,13 @@
 package etl
 
 import (
+	"encoding/csv"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/etl/backend/internal/model"
+	"github.com/etl/backend/internal/parser"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -109,12 +111,22 @@ func TestRunPipelineDefaultsToUnifiedMerge(t *testing.T) {
 	if len(result.Transactions) != 1 || result.Transactions[0]["交易金额"] != "12.50" {
 		t.Fatalf("expected unified transaction, got %#v", result.Transactions)
 	}
+	row := result.Transactions[0]
+	if row["来源类型"] != "支付宝" || row["来源表类型"] != "账户明细" ||
+		row["来源Sheet"] != "sheet1" || row["原始行号"] != "2" ||
+		len(row["来源文件SHA256"]) != 64 || row["来源记录ID"] == "" ||
+		row["映射规则版本"] != parser.MappingRuleVersion {
+		t.Fatalf("expected complete transaction provenance, got %#v", row)
+	}
 	for _, stage := range []string{"scan", "preserve", "source_merge", "normalize", "final_merge", "export"} {
 		if !stageDone[stage] {
 			t.Fatalf("expected completed progress stage %s, got %#v", stage, stageDone)
 		}
 	}
-	for _, artifactID := range []string{"source-1", "raw-alipay", "unified-alipay", "final-csv", "final-xlsx"} {
+	for _, artifactID := range []string{
+		"source-1", "raw-alipay", "unified-alipay", "final-csv", "final-xlsx",
+		"duplicate-file-audit-csv", "duplicate-audit-csv", "rejected-audit-csv",
+	} {
 		artifact := findArtifact(result.Artifacts, artifactID)
 		if artifact == nil {
 			t.Fatalf("expected artifact %s, got %#v", artifactID, result.Artifacts)
@@ -122,6 +134,30 @@ func TestRunPipelineDefaultsToUnifiedMerge(t *testing.T) {
 		if _, err := os.Stat(artifact.Path); err != nil {
 			t.Fatalf("artifact %s missing: %v", artifactID, err)
 		}
+	}
+	for _, artifactID := range []string{"unified-alipay", "final-csv"} {
+		artifact := findArtifact(result.Artifacts, artifactID)
+		file, err := os.Open(artifact.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		headers, err := csv.NewReader(file).Read()
+		file.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(headers) != len(FinalTransactionColumns) {
+			t.Fatalf("%s exported %d columns, want original %d", artifactID, len(headers), len(FinalTransactionColumns))
+		}
+		for index := range FinalTransactionColumns {
+			if headers[index] != FinalTransactionColumns[index] {
+				t.Fatalf("%s column %d = %q, want %q", artifactID, index, headers[index], FinalTransactionColumns[index])
+			}
+		}
+	}
+	preview, columns := BuildPreview(result.Transactions, 10)
+	if len(columns) != len(FinalTransactionColumns) || len(preview) != 1 {
+		t.Fatalf("preview must expose only the original 33 columns: columns=%d rows=%d", len(columns), len(preview))
 	}
 }
 

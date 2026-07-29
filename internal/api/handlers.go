@@ -259,10 +259,14 @@ func HandleProcess(c *gin.Context) {
 	if raw := strings.TrimSpace(c.PostForm("unify_sources")); raw != "" {
 		unifySources = raw == "true" || raw == "1"
 	}
+	subjectAccounts := strings.FieldsFunc(c.PostForm("subject_accounts"), func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || r == '\n' || r == '\r'
+	})
 	progress := newProcessProgress(jobID, unifySources)
 	result, err := etl.RunPipelineWithOptions(batchDir, cfg.OutputDir, jobID, etl.PipelineOptions{
-		UnifySources: unifySources,
-		Progress:     progress.update,
+		UnifySources:    unifySources,
+		SubjectAccounts: subjectAccounts,
+		Progress:        progress.update,
 	})
 	if err != nil {
 		progress.finish(err)

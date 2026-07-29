@@ -3,6 +3,7 @@ package etl
 import (
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+type duplicateInputFile struct {
+	KeptPath      string
+	DuplicatePath string
+	SHA256        string
+	Size          int64
+}
+
 const (
 	streamPreviewLimit   = 1000
 	excelMaxDataRows     = 1048575
@@ -27,18 +35,22 @@ const (
 )
 
 type unifiedStreamStore struct {
-	db                   *sql.DB
-	tx                   *sql.Tx
-	insert               *sql.Stmt
-	preview              []model.TransactionRow
-	rowsIn               int
-	rowsOut              int
-	removedEmptyRequired int
-	removedDuplicates    int
-	inCount              int
-	outCount             int
-	totalIn              float64
-	totalOut             float64
+	db                    *sql.DB
+	tx                    *sql.Tx
+	insert                *sql.Stmt
+	duplicateInsert       *sql.Stmt
+	rejectedInsert        *sql.Stmt
+	preview               []model.TransactionRow
+	rowsIn                int
+	rowsOut               int
+	removedEmptyRequired  int
+	removedFailedFeedback int
+	removedBadDirection   int
+	removedDuplicates     int
+	inCount               int
+	outCount              int
+	totalIn               float64
+	totalOut              float64
 }
 
 func runUnifiedStreamingPipeline(scan *scanner.DirectoryScan, outputDir, jobID string, startTime time.Time) (*model.PipelineResult, error) {
@@ -72,7 +84,7 @@ func runUnifiedStreamingPipeline(scan *scanner.DirectoryScan, outputDir, jobID s
 		return providerGroups[i].Provider < providerGroups[j].Provider
 	})
 	for _, group := range providerGroups {
-		if err := streamProviderTransactions(group, outputDir, store.Add); err != nil {
+		if err := streamProviderTransactions(group, outputDir, PipelineOptions{}, store.Add); err != nil {
 			return nil, err
 		}
 	}
@@ -110,11 +122,13 @@ func runUnifiedStreamingPipeline(scan *scanner.DirectoryScan, outputDir, jobID s
 		OutputPath:   outputPath,
 		Summary:      summary,
 		Report: model.QualityReport{
-			Files:                make([]model.FileReport, 0),
-			RowsIn:               store.rowsIn,
-			RowsOut:              store.rowsOut,
-			RemovedEmptyRequired: store.removedEmptyRequired,
-			RemovedDuplicates:    store.removedDuplicates,
+			Files:                 make([]model.FileReport, 0),
+			RowsIn:                store.rowsIn,
+			RowsOut:               store.rowsOut,
+			RemovedEmptyRequired:  store.removedEmptyRequired,
+			RemovedFailedFeedback: store.removedFailedFeedback,
+			RemovedBadDirection:   store.removedBadDirection,
+			RemovedDuplicates:     store.removedDuplicates,
 		},
 		MergeMode: "unified",
 	}
@@ -150,22 +164,60 @@ func newUnifiedStreamStore(path string) (*unifiedStreamStore, error) {
 		}
 	}
 
-	columnDefs := make([]string, len(UnifiedOutputColumns))
-	columnNames := make([]string, len(UnifiedOutputColumns))
-	placeholders := make([]string, len(UnifiedOutputColumns)+1)
+	columnDefs := make([]string, len(unifiedStorageColumns))
+	columnNames := make([]string, len(unifiedStorageColumns))
+	placeholders := make([]string, len(unifiedStorageColumns)+1)
 	placeholders[0] = "?"
-	for i := range UnifiedOutputColumns {
+	for i := range unifiedStorageColumns {
 		columnNames[i] = fmt.Sprintf("c%d", i)
 		columnDefs[i] = columnNames[i] + " TEXT NOT NULL DEFAULT ''"
 		placeholders[i+1] = "?"
 	}
 	schema := fmt.Sprintf(
-		"CREATE TABLE transactions (id INTEGER PRIMARY KEY, dedup_key BLOB NOT NULL UNIQUE, %s)",
+		"CREATE TABLE transactions (id INTEGER PRIMARY KEY, dedup_key TEXT NOT NULL UNIQUE, %s)",
 		strings.Join(columnDefs, ", "),
 	)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create streaming table: %w", err)
+	}
+	auditSchema := `
+CREATE TABLE duplicates (
+	id INTEGER PRIMARY KEY,
+	dedup_type TEXT NOT NULL,
+	dedup_key TEXT NOT NULL,
+	kept_transaction_id INTEGER NOT NULL,
+	kept_source_record_id TEXT NOT NULL DEFAULT '',
+	duplicate_source_record_id TEXT NOT NULL DEFAULT '',
+	source_type TEXT NOT NULL DEFAULT '',
+	source_file TEXT NOT NULL DEFAULT '',
+	source_sheet TEXT NOT NULL DEFAULT '',
+	source_row TEXT NOT NULL DEFAULT '',
+	transaction_time TEXT NOT NULL DEFAULT '',
+	amount TEXT NOT NULL DEFAULT '',
+	direction TEXT NOT NULL DEFAULT '',
+	subject_account TEXT NOT NULL DEFAULT '',
+	counterparty_account TEXT NOT NULL DEFAULT '',
+	transaction_serial TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE rejected (
+	id INTEGER PRIMARY KEY,
+	reason TEXT NOT NULL,
+	source_record_id TEXT NOT NULL DEFAULT '',
+	source_type TEXT NOT NULL DEFAULT '',
+	source_file TEXT NOT NULL DEFAULT '',
+	source_sheet TEXT NOT NULL DEFAULT '',
+	source_row TEXT NOT NULL DEFAULT '',
+	transaction_time TEXT NOT NULL DEFAULT '',
+	amount TEXT NOT NULL DEFAULT '',
+	direction TEXT NOT NULL DEFAULT '',
+	subject_status TEXT NOT NULL DEFAULT '',
+	subject_basis TEXT NOT NULL DEFAULT '',
+	transaction_serial TEXT NOT NULL DEFAULT ''
+);`
+	if _, err := db.Exec(auditSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create audit tables: %w", err)
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -183,25 +235,60 @@ func newUnifiedStreamStore(path string) (*unifiedStreamStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("prepare streaming insert: %w", err)
 	}
+	duplicateInsert, err := tx.Prepare(`
+INSERT INTO duplicates (
+	dedup_type, dedup_key, kept_transaction_id, kept_source_record_id, duplicate_source_record_id,
+	source_type, source_file, source_sheet, source_row, transaction_time, amount, direction,
+	subject_account, counterparty_account, transaction_serial
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		stmt.Close()
+		tx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("prepare duplicate audit insert: %w", err)
+	}
+	rejectedInsert, err := tx.Prepare(`
+INSERT INTO rejected (
+	reason, source_record_id, source_type, source_file, source_sheet, source_row,
+	transaction_time, amount, direction, subject_status, subject_basis, transaction_serial
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		duplicateInsert.Close()
+		stmt.Close()
+		tx.Rollback()
+		db.Close()
+		return nil, fmt.Errorf("prepare rejected audit insert: %w", err)
+	}
 	return &unifiedStreamStore{
-		db: db, tx: tx, insert: stmt,
+		db: db, tx: tx, insert: stmt, duplicateInsert: duplicateInsert, rejectedInsert: rejectedInsert,
 		preview: make([]model.TransactionRow, 0, streamPreviewLimit),
 	}, nil
 }
 
 func (s *unifiedStreamStore) Add(txn model.TransactionRow) error {
 	s.rowsIn++
-	if shouldSkipTransaction(txn) {
-		s.removedEmptyRequired++
-		return nil
-	}
 	cleanCommonAccountNumbers(txn)
 	normalizeCommonTransactionFields(txn)
+	if shouldSkipTransaction(txn) {
+		reason := transactionRejectReason(txn)
+		switch {
+		case strings.HasPrefix(reason, "收付标志无法标准化"):
+			s.removedBadDirection++
+		case strings.HasPrefix(reason, "查询反馈结果"):
+			s.removedFailedFeedback++
+		default:
+			s.removedEmptyRequired++
+		}
+		if err := s.recordRejected(txn, reason); err != nil {
+			return err
+		}
+		return nil
+	}
 
-	dedupHash := sha256.Sum256([]byte(buildDedupKey(txn)))
-	args := make([]interface{}, 0, len(UnifiedOutputColumns)+1)
-	args = append(args, dedupHash[:])
-	for _, column := range UnifiedOutputColumns {
+	dedupType, dedupKey := buildDedupIdentity(txn)
+	args := make([]interface{}, 0, len(unifiedStorageColumns)+1)
+	args = append(args, dedupKey)
+	for _, column := range unifiedStorageColumns {
 		args = append(args, txn[column])
 	}
 	result, err := s.insert.Exec(args...)
@@ -214,6 +301,22 @@ func (s *unifiedStreamStore) Add(txn model.TransactionRow) error {
 	}
 	if affected == 0 {
 		s.removedDuplicates++
+		var keptID int64
+		var keptSourceID string
+		sourceColumn := transactionSQLiteColumn("来源记录ID")
+		query := fmt.Sprintf("SELECT id, %s FROM transactions WHERE dedup_key = ?", sourceColumn)
+		if err := s.tx.QueryRow(query, dedupKey).Scan(&keptID, &keptSourceID); err != nil {
+			return fmt.Errorf("find retained duplicate: %w", err)
+		}
+		if _, err := s.duplicateInsert.Exec(
+			dedupType, dedupKey, keptID, keptSourceID, txn["来源记录ID"],
+			txn["来源类型"], txn["来源文件"], txn["来源Sheet"], txn["原始行号"],
+			txn["交易时间"], txn["交易金额"], txn["收付标志"],
+			firstNonEmptyTransactionValue(txn, "交易账号", "交易卡号"),
+			txn["交易对手账卡号"], txn["交易流水号"],
+		); err != nil {
+			return fmt.Errorf("record duplicate audit: %w", err)
+		}
 		return nil
 	}
 
@@ -237,6 +340,18 @@ func (s *unifiedStreamStore) Add(txn model.TransactionRow) error {
 }
 
 func (s *unifiedStreamStore) Commit() error {
+	if s.duplicateInsert != nil {
+		if err := s.duplicateInsert.Close(); err != nil {
+			return fmt.Errorf("close duplicate audit insert: %w", err)
+		}
+		s.duplicateInsert = nil
+	}
+	if s.rejectedInsert != nil {
+		if err := s.rejectedInsert.Close(); err != nil {
+			return fmt.Errorf("close rejected audit insert: %w", err)
+		}
+		s.rejectedInsert = nil
+	}
 	if s.insert != nil {
 		if err := s.insert.Close(); err != nil {
 			return fmt.Errorf("close streaming insert: %w", err)
@@ -253,6 +368,12 @@ func (s *unifiedStreamStore) Commit() error {
 }
 
 func (s *unifiedStreamStore) Close() {
+	if s.duplicateInsert != nil {
+		_ = s.duplicateInsert.Close()
+	}
+	if s.rejectedInsert != nil {
+		_ = s.rejectedInsert.Close()
+	}
 	if s.insert != nil {
 		_ = s.insert.Close()
 	}
@@ -264,15 +385,42 @@ func (s *unifiedStreamStore) Close() {
 	}
 }
 
-func streamProviderTransactions(group ProviderFiles, outputDir string, emit func(model.TransactionRow) error) error {
+func (s *unifiedStreamStore) recordRejected(txn model.TransactionRow, reason string) error {
+	if reason == "" {
+		reason = "未通过必填字段校验"
+	}
+	_, err := s.rejectedInsert.Exec(
+		reason, txn["来源记录ID"], txn["来源类型"], txn["来源文件"], txn["来源Sheet"], txn["原始行号"],
+		txn["交易时间"], txn["交易金额"], txn["收付标志"],
+		txn["主体判定状态"], txn["主体判定依据"], txn["交易流水号"],
+	)
+	if err != nil {
+		return fmt.Errorf("record rejected audit: %w", err)
+	}
+	return nil
+}
+
+func transactionSQLiteColumn(name string) string {
+	for index, column := range unifiedStorageColumns {
+		if column == name {
+			return fmt.Sprintf("c%d", index)
+		}
+	}
+	return "''"
+}
+
+func streamProviderTransactions(group ProviderFiles, outputDir string, options PipelineOptions, emit func(model.TransactionRow) error) error {
+	mappingOptions := parser.MappingOptions{
+		SourceHashes: options.SourceHashes, SubjectIdentifiers: options.SubjectIdentifiers,
+	}
 	switch group.Provider {
 	case "支付宝":
-		_, _, _, err := parser.StreamAlipayFiles(group.Paths, "strict", func(row []string) error {
+		_, _, _, err := parser.StreamAlipayFilesWithOptions(group.Paths, "strict", mappingOptions, func(row []string) error {
 			return emit(unifiedRowToTransaction(row, parser.UnifiedColumns))
 		})
 		return err
 	case "微信":
-		result, err := parser.ProcessWechatFiles(group.Paths, outputDir)
+		result, err := parser.ProcessWechatFilesWithOptions(group.Paths, outputDir, mappingOptions)
 		if err != nil {
 			return err
 		}
@@ -284,7 +432,7 @@ func streamProviderTransactions(group ProviderFiles, outputDir string, emit func
 		result.UnifiedData = nil
 		return nil
 	default:
-		rows, err := processProviderFiles(group, "", outputDir)
+		rows, err := processProviderFilesWithOptions(group, "", outputDir, options)
 		if err != nil {
 			return err
 		}
@@ -311,7 +459,7 @@ func ensureDataSource(row model.TransactionRow) {
 }
 
 func unifiedRowToTransaction(row, columns []string) model.TransactionRow {
-	txn := make(model.TransactionRow, len(UnifiedOutputColumns))
+	txn := make(model.TransactionRow, len(unifiedStorageColumns))
 	for i, value := range row {
 		if i >= len(columns) {
 			break
@@ -326,13 +474,18 @@ func unifiedRowToTransaction(row, columns []string) model.TransactionRow {
 }
 
 func deduplicateInputFiles(paths []string) ([]string, int, error) {
+	kept, duplicates, err := deduplicateInputFilesWithAudit(paths)
+	return kept, len(duplicates), err
+}
+
+func deduplicateInputFilesWithAudit(paths []string) ([]string, []duplicateInputFile, error) {
 	paths = append([]string(nil), paths...)
 	sort.Strings(paths)
 	bySize := make(map[int64][]string)
 	for _, path := range paths {
 		info, err := os.Stat(path)
 		if err != nil {
-			return nil, 0, fmt.Errorf("stat input %s: %w", path, err)
+			return nil, nil, fmt.Errorf("stat input %s: %w", path, err)
 		}
 		bySize[info.Size()] = append(bySize[info.Size()], path)
 	}
@@ -345,11 +498,11 @@ func deduplicateInputFiles(paths []string) ([]string, int, error) {
 	}
 	hashes, err := hashFilesParallel(hashTargets, 4)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, err
 	}
 
 	keep := make(map[string]bool, len(paths))
-	skipped := 0
+	duplicates := make([]duplicateInputFile, 0)
 	for _, sameSize := range bySize {
 		if len(sameSize) == 1 {
 			keep[sameSize[0]] = true
@@ -359,7 +512,11 @@ func deduplicateInputFiles(paths []string) ([]string, int, error) {
 		for _, path := range sameSize {
 			hash := hashes[path]
 			if original, exists := seen[hash]; exists {
-				skipped++
+				info, _ := os.Stat(path)
+				duplicates = append(duplicates, duplicateInputFile{
+					KeptPath: original, DuplicatePath: path,
+					SHA256: hex.EncodeToString(hash[:]), Size: fileSize(info),
+				})
 				log.Warn().
 					Str("path", path).
 					Str("duplicate_of", original).
@@ -376,7 +533,7 @@ func deduplicateInputFiles(paths []string) ([]string, int, error) {
 			result = append(result, path)
 		}
 	}
-	return result, skipped, nil
+	return result, duplicates, nil
 }
 
 func hashFilesParallel(paths []string, workers int) (map[string][sha256.Size]byte, error) {

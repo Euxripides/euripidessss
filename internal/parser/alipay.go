@@ -109,6 +109,10 @@ func ProcessAlipayDirectory(sourceDir, outputDir, mode string) (*AlipayResult, e
 }
 
 func ProcessAlipayFiles(files []string, outputDir, mode string) (*AlipayResult, error) {
+	return ProcessAlipayFilesWithOptions(files, outputDir, mode, MappingOptions{})
+}
+
+func ProcessAlipayFilesWithOptions(files []string, outputDir, mode string, options MappingOptions) (*AlipayResult, error) {
 	if mode == "" {
 		mode = "strict"
 	}
@@ -118,6 +122,7 @@ func ProcessAlipayFiles(files []string, outputDir, mode string) (*AlipayResult, 
 
 	files = append([]string(nil), files...)
 	sort.Strings(files)
+	EnsureSourceHashes(files, &options)
 
 	type job struct {
 		path      string
@@ -139,7 +144,7 @@ func ProcessAlipayFiles(files []string, outputDir, mode string) (*AlipayResult, 
 	go func() {
 		for _, path := range files {
 			if isDelimitedFile(path) {
-				source, unified, err := processAlipayCSVFile(path, mode)
+				source, unified, err := processAlipayCSVFile(path, mode, options)
 				if err != nil {
 					log.Warn().Err(err).Str("path", path).Msg("skip unreadable file")
 					continue
@@ -208,7 +213,10 @@ func ProcessAlipayFiles(files []string, outputDir, mode string) (*AlipayResult, 
 
 				unifyTables, _ := AlipayUnifyTables[mode]
 				if unifyTables[tableType] {
-					unified := alipayToUnified(data, headers, tableType, j.path, headerRow)
+					unified := alipayToUnified(data, headers, SourceAuditContext{
+						Provider: "支付宝", TableType: tableType, Path: j.path, Sheet: j.sheetName,
+						FileHash: options.SourceHashes[j.path], HeaderRow: headerRow,
+					}, options)
 					unifiedFrames = append(unifiedFrames, unified...)
 				}
 				mu.Unlock()
@@ -266,7 +274,7 @@ func isDelimitedFile(path string) bool {
 	}
 }
 
-func processAlipayCSVFile(path, mode string) (AlipaySource, [][]string, error) {
+func processAlipayCSVFile(path, mode string, options MappingOptions) (AlipaySource, [][]string, error) {
 	preview, encoding, sep, err := readCSVPreview(path, 40)
 	if err != nil {
 		return AlipaySource{}, nil, err
@@ -321,7 +329,10 @@ func processAlipayCSVFile(path, mode string) (AlipaySource, [][]string, error) {
 		row = TrimRows([][]string{row})[0]
 		source.Rows++
 		if unifyTables[tableType] {
-			unified = append(unified, alipayToUnified([][]string{row}, headers, tableType, path, rowIndex-1)...)
+			unified = append(unified, alipayToUnified([][]string{row}, headers, SourceAuditContext{
+				Provider: "支付宝", TableType: tableType, Path: path, Sheet: "sheet1",
+				FileHash: options.SourceHashes[path], HeaderRow: rowIndex - 1,
+			}, options)...)
 		}
 		rowIndex++
 	}
@@ -423,7 +434,7 @@ func classifyAlipayTable(headers []string, path, sheet string) string {
 	return bestName
 }
 
-func alipayToUnified(data [][]string, headers []string, tableType, path string, headerRow int) [][]string {
+func alipayToUnified(data [][]string, headers []string, context SourceAuditContext, options MappingOptions) [][]string {
 	if len(data) == 0 {
 		return nil
 	}
@@ -457,7 +468,7 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 
 	var result [][]string
 
-	switch tableType {
+	switch context.TableType {
 	case "账户明细":
 		for i := 0; i < len(data); i++ {
 			row := make([]string, len(UnifiedColumns))
@@ -470,7 +481,12 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 			row[colIdx("交易发生地")] = get("交易来源地")(i)
 			row[colIdx("交易是否成功")] = get("交易状态")(i)
 			row[colIdx("备注")] = get("备注")(i)
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{Name: get("用户信息")(i)},
+				PaymentParty{Name: get("交易对方信息")(i)},
+				"支付宝账户明细持有人视角+收支字段",
+			)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 
@@ -494,7 +510,12 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 			row[colIdx("交易发生地")] = get("交易发生地")(i)
 			row[colIdx("交易方开户行")] = get("银行名称")(i)
 			row[colIdx("备注")] = get("备注")(i)
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{Account: get("账户")(i), Bank: get("银行名称")(i)},
+				PaymentParty{Account: get("对方帐户")(i)},
+				"支付宝余额明细账户+收入/支出金额",
+			)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 
@@ -502,14 +523,26 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 		for i := 0; i < len(data); i++ {
 			row := make([]string, len(UnifiedColumns))
 			row[colIdx("交易金额")] = FloatToStr(getFloat("转账金额（元）")(i))
-			row[colIdx("交易账号")] = get("付款方支付宝账号")(i)
-			row[colIdx("交易对手账卡号")] = get("收款方支付宝账号")(i)
+			payerAccount := get("付款方支付宝账号")(i)
+			payeeAccount := get("收款方支付宝账号")(i)
+			direction, basis, status := ResolveTransferDirection(
+				payerAccount,
+				payeeAccount,
+				get("对应的协查数据")(i),
+				options.SubjectIdentifiers,
+			)
+			row[colIdx("收付标志")] = direction
+			ApplyDirectionalParties(row, direction,
+				PaymentParty{Account: payerAccount},
+				PaymentParty{Account: payeeAccount, Bank: get("收款机构信息")(i)},
+				basis,
+			)
+			setUnifiedValue(row, "主体判定状态", status)
 			row[colIdx("交易流水号")] = get("交易号")(i)
 			row[colIdx("摘要说明")] = get("转账产品名称")(i)
 			row[colIdx("交易发生地")] = get("交易发生地")(i)
 			row[colIdx("交易时间")] = NormalizeDatetime(get("到账时间")(i))
-			row[colIdx("收付标志")] = "出"
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 
@@ -518,18 +551,30 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 			row := make([]string, len(UnifiedColumns))
 			row[colIdx("交易时间")] = NormalizeDatetime(get("交易时间")(i))
 			row[colIdx("交易金额")] = FloatToStr(getFloat("交易金额")(i))
-			row[colIdx("收付标志")] = NormalizeDirection(get("交易主体的出入账标识")(i))
+			direction := NormalizeDirection(get("交易主体的出入账标识")(i))
+			row[colIdx("收付标志")] = direction
 			row[colIdx("交易余额")] = FloatToStr(getFloat("交易余额")(i))
 			row[colIdx("交易币种")] = get("币种")(i)
 			row[colIdx("交易流水号")] = get("交易流水号", "支付订单号")(i)
-			row[colIdx("交易对手账卡号")] = get("收款方的支付帐号", "付款方的支付帐号",
-				"收款方银行卡所属银行卡号", "付款方银行卡所属银行卡号")(i)
-			row[colIdx("对手户名")] = get("收款方的商户名称")(i)
+			ApplyDirectionalParties(row, direction,
+				PaymentParty{
+					Account: get("付款方的支付帐号")(i),
+					Card:    CleanAccountNumber(get("付款方银行卡所属银行卡号")(i)),
+					Bank:    get("付款方银行卡所属银行名称")(i),
+				},
+				PaymentParty{
+					Account: get("收款方的支付帐号")(i),
+					Card:    CleanAccountNumber(get("收款方银行卡所属银行卡号")(i)),
+					Name:    get("收款方的商户名称")(i),
+					Bank:    get("收款方银行卡所属银行名称")(i),
+				},
+				"交易主体出入账标识",
+			)
 			row[colIdx("摘要说明")] = get("交易类型", "支付类型")(i)
 			row[colIdx("IP地址")] = get("交易支付设备ip")(i)
 			row[colIdx("MAC地址")] = get("mac地址")(i)
 			row[colIdx("备注")] = get("备注")(i)
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 
@@ -543,7 +588,12 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 			row[colIdx("摘要说明")] = get("商品说明")(i)
 			row[colIdx("交易流水号")] = get("交易订单号", "商家订单号")(i)
 			row[colIdx("备注")] = get("收/付款方式")(i)
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{},
+				PaymentParty{Name: get("交易对方")(i)},
+				"支付宝个人账单持有人视角+收支字段",
+			)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 
@@ -558,7 +608,9 @@ func alipayToUnified(data [][]string, headers []string, tableType, path string, 
 			row[colIdx("交易对手账卡号")] = get("卖家信息", "卖家用户id")(i)
 			row[colIdx("摘要说明")] = get("商品名称", "交易类型")(i)
 			row[colIdx("交易发生地")] = get("来源地")(i)
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			setUnifiedValue(row, "主体判定依据", "支付宝交易记录买卖双方字段，未确认调查主体")
+			setUnifiedValue(row, "主体判定状态", "无法判定")
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 	}

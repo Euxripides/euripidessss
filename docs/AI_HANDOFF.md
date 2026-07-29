@@ -5072,3 +5072,85 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 - 数据库写入任务状态保存在内存，服务重启后不会恢复；已提交到数据库的事务不受影响。
 - `replace` 会删除并重建目标表，前端已将其作为明确选项展示，默认仍为安全的 `append`。
 - 分来源模式没有跨来源统一 `final-csv`，因此清洗页只在统一模式结果上显示数据库导入入口。
+
+## 2026-07-29 — 资金分析字段映射第一阶段
+
+### 本次完成
+
+- 用户最终确认统一分析表只保留原 33 个 `FinalTransactionColumns`；分类统一 CSV、最终 CSV、Excel、API 预览和一键数据库导入均严格使用这 33 列。
+- 17 个来源/角色字段只在任务内部临时处理和独立审计报告中使用，不进入用户分析表；内部阶段文件在任务结束后删除。
+- 微信、支付宝“支付流水汇总”不再固定取付款方作为本方：按“出=付款方是本方、进=收款方是本方”同步填写交易账号/名称/开户行、交易对手和原始付款/收款方字段。
+- 支付宝转账明细不再固定标记为“出”。后端从账户文件和清洗页“调查主体账号”建立主体索引：仅付款方命中为出、仅收款方命中为进；双方命中或均未命中时不进入资金分析结果，而是写入未纳入审计。
+- 微信“对手方接收金额(分)”不再错误写入原 33 字段中的 `对手交易余额`；原值继续保留在源文件和分类原字段 CSV。
+- 来源类型、来源表类型、来源文件、SHA-256、Sheet、原始行号、映射规则版本、稳定来源记录 ID，以及付款/收款方和主体判定信息仅用于内部去重与审计。
+- 去重改为分层身份键：
+  - 有交易流水号时使用“来源 + 本方 + 流水号 + 完整业务指纹”，相同流水号但内容不同的记录不误删；
+  - 无流水号但有来源记录 ID 时只去除同一源记录；
+  - 缺少来源记录 ID 时才使用完整业务指纹兜底。
+- 任务临时 SQLite 新增 `duplicates`、`rejected` 审计表，并固定生成 `重复记录审计.csv`、`未纳入记录审计.csv`、`重复源文件审计.csv`。
+- 清洗结果严格限制 `收付标志` 为“进/出”；“其它”及无法确定主体方向的数据不进入资金分析表，但保留完整来源定位和原因。
+- 文件 SHA-256 在源文件复制时同步计算并传递给 parser，避免对大文件重复读取；主体索引以流式方式读取账户文件。
+
+### 修改文件
+
+- `internal/parser/provenance.go`
+- `internal/parser/party_mapping.go`
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/wechat.go`
+- `internal/parser/funds_mapping_test.go`
+- `internal/etl/subject_index.go`
+- `internal/etl/subject_index_test.go`
+- `internal/etl/cleaning.go`
+- `internal/etl/dedup_audit_test.go`
+- `internal/etl/etl.go`
+- `internal/etl/staged_pipeline.go`
+- `internal/etl/stream_pipeline.go`
+- `internal/etl/separate_merge_test.go`
+- `internal/provider/bank.go`
+- `internal/rules/bank_rules.go`
+- `internal/api/handlers.go`
+- `frontend/src/App.tsx`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口与数据结构变化
+
+- `POST /api/process` 新增可选 multipart 字段 `subject_accounts`，支持逗号、分号或换行分隔；旧调用不传时兼容。
+- 内部 `PipelineOptions` 新增 `SubjectAccounts`、`SubjectIdentifiers` 和 `SourceHashes`。
+- parser 新增带 `MappingOptions` 的支付宝/微信入口；原入口保留并转调新入口。
+- 对外统一输出没有新增字段，仍为原 33 列。
+- 内部存储临时追加 17 个审计字段，但不会出现在阶段统一 CSV、最终 CSV、Excel、预览或数据库导入源中。
+- 一键导入数据库目标表保持 37 列：`id` + 33 个统一字段 + `source_job_id`、`source_row_hash`、`imported_at`。
+- 项目持久业务数据库结构没有变化；`duplicates`、`rejected` 仅存在于任务临时 SQLite。
+
+### 真实数据验证
+
+- API 任务：`phase1-33cols-real-20260729`。
+- 输入：
+  - 微信 `莫灿勋.xlsx`；
+  - 银行 `交易明细信息.csv`、账户文件 `账户信息.csv`；
+  - 支付宝 `826648753_账户明细d2_20260517102205_part1.csv`；
+  - 显式调查主体账号 `826648753`。
+- `53,355` 行输入，最终 `52,793` 行；来源分布为微信 `2,413`、银行 `41,645`、支付宝 `8,735`。
+- API 列清单、微信/银行/支付宝分类统一 CSV、最终 CSV 和最终 Excel 均为原 33 列；第 33 列为 `数据来源`，不存在第 34 列。
+- 最终方向仅有“进/出”；进 `12,291`、出 `40,502`。
+- 微信 `2,413` 行的 `对手交易余额` 非空数为 `0`，确认对手方接收金额未再混入余额字段。
+- 去重审计 `41` 行；未纳入审计 `521` 行，其中缺少收付标志 `510` 行、原方向为“其它” `11` 行。
+- 任务产物位于 `backend/data/outputs/etl_jobs/phase1-33cols-real-20260729/`，源文件、各来源原字段 CSV、33 列分类统一 CSV、33 列最终 CSV 和三类审计 CSV 均保留；`.internal` 临时目录已自动删除。
+
+### 已验证命令
+
+- `go test ./internal/... -count=1`
+- `go vet ./...`
+- `go build -o bin\etl-server.exe .\cmd\server\`
+- `cd frontend; npm run build`（通过，保留既有大 chunk warning）
+- `.\run.ps1`（最终后端 PID `30884`）
+- 真实三来源 `POST /api/process` 回归及最终 CSV/审计 CSV 逐项统计。
+
+### 未完成与注意事项
+
+- 支付宝转账明细若没有账户文件且未填写调查主体账号，方向会保持未判定并进入审计；这是为避免资金方向误判的严格策略。
+- 当前真实回归样本包含支付宝账户明细，不包含独立转账明细和支付流水汇总；这两类方向映射已由新增单元测试覆盖。
+- 本轮没有重新写入真实 PostgreSQL/MySQL；数据库导入源已恢复为原 33 字段，目标表结构继续沿用已验证的 37 列结构。
