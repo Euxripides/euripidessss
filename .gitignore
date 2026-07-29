@@ -38,3 +38,18 @@ backend/data/analysis/
 /find_func.py
 /replace_func.py
 /test_import.csv
+/test_import*.xlsx
+/test_big.xlsx
+
+# Browser / Playwright cache and profiles
+.playwright-mcp/
+.codex_tmp_csv_merge/
+node_modules/
+backend/data/audit_runs/
+backend/data/dune/batch-profiles/
+backend/data/dune/playwright-profile/
+backend/data/dune/profiles/
+backend/data/dune/playwright_tasks/
+backend/data/dune/chrome-cdp-profile/
+backend/data/dune/node_modules/
+backend/data/dune/dune_*/
