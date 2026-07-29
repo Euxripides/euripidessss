@@ -97,11 +97,10 @@ func streamAlipayCSVFile(path, mode string, options MappingOptions, emit func([]
 	}
 	defer file.Close()
 
-	unifyTables := AlipayUnifyTables[mode]
 	converter := newAlipayStreamConverter(headers, SourceAuditContext{
 		Provider: "支付宝", TableType: tableType, Path: path, Sheet: "sheet1",
 		FileHash: options.SourceHashes[path], HeaderRow: headerRow,
-	}, options)
+	})
 	rowIndex := 0
 	dataRowIndex := 0
 	emitted := 0
@@ -119,7 +118,7 @@ func streamAlipayCSVFile(path, mode string, options MappingOptions, emit func([]
 		}
 		row = TrimRows([][]string{row})[0]
 		source.Rows++
-		if unifyTables[tableType] {
+		if shouldUnifyAlipayTable(mode, tableType, options) {
 			unified := converter(row, dataRowIndex)
 			if err := emit(unified); err != nil {
 				return source, emitted, err
@@ -132,7 +131,7 @@ func streamAlipayCSVFile(path, mode string, options MappingOptions, emit func([]
 	return source, emitted, nil
 }
 
-func newAlipayStreamConverter(headers []string, context SourceAuditContext, options MappingOptions) func([]string, int) []string {
+func newAlipayStreamConverter(headers []string, context SourceAuditContext) func([]string, int) []string {
 	headerMap := make(map[string]int, len(headers))
 	for i, header := range headers {
 		headerMap[header] = i
@@ -157,18 +156,27 @@ func newAlipayStreamConverter(headers []string, context SourceAuditContext, opti
 		row := make([]string, len(UnifiedColumns))
 		switch context.TableType {
 		case "账户明细":
+			account, accountName := SplitAlipayUserInfo(get("用户信息"))
+			counterAccount, counterName, counterBank := SplitAlipayCounterpartyInfo(get("交易对方信息"))
+			row[colIdx("交易账号")] = account
+			row[colIdx("交易卡号")] = account
+			row[colIdx("交易户名")] = accountName
+			row[colIdx("交易方开户行")] = "支付宝"
+			row[colIdx("交易对手账卡号")] = counterAccount
+			row[colIdx("对手户名")] = counterName
+			row[colIdx("对手开户银行")] = counterBank
 			row[colIdx("交易时间")] = NormalizeDatetime(get("交易创建时间", "付款时间", "最近修改时间"))
 			row[colIdx("交易金额")] = FloatToStr(getFloat("金额（元）"))
 			row[colIdx("收付标志")] = NormalizeDirection(get("收/支"))
-			row[colIdx("对手户名")] = get("交易对方信息")
-			row[colIdx("摘要说明")] = get("消费名称", "类型")
-			row[colIdx("交易流水号")] = get("交易号", "商户订单号")
+			row[colIdx("摘要说明")] = cleanAlipayOptionalValue(get("消费名称"))
+			row[colIdx("交易流水号")] = cleanAlipayOptionalValue(get("交易号"))
+			row[colIdx("商户流水号")] = cleanAlipayOptionalValue(get("商户订单号"))
 			row[colIdx("交易发生地")] = get("交易来源地")
 			row[colIdx("交易是否成功")] = get("交易状态")
 			row[colIdx("备注")] = get("备注")
 			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
-				PaymentParty{Name: get("用户信息")},
-				PaymentParty{Name: get("交易对方信息")},
+				PaymentParty{Account: account, Card: account, Name: accountName, Bank: "支付宝"},
+				PaymentParty{Account: counterAccount, Name: counterName, Bank: counterBank},
 				"支付宝账户明细持有人视角+收支字段",
 			)
 		case "余额明细":
@@ -179,7 +187,10 @@ func newAlipayStreamConverter(headers []string, context SourceAuditContext, opti
 			if income > 0 {
 				row[colIdx("交易金额")] = FloatToStr(income)
 				row[colIdx("收付标志")] = "进"
-			} else if expense > 0 {
+			} else if expense != 0 {
+				if expense < 0 {
+					expense = -expense
+				}
 				row[colIdx("交易金额")] = FloatToStr(expense)
 				row[colIdx("收付标志")] = "出"
 			}
@@ -194,77 +205,6 @@ func newAlipayStreamConverter(headers []string, context SourceAuditContext, opti
 				PaymentParty{Account: get("对方帐户")},
 				"支付宝余额明细账户+收入/支出金额",
 			)
-		case "转账明细":
-			row[colIdx("交易金额")] = FloatToStr(getFloat("转账金额（元）"))
-			payerAccount := get("付款方支付宝账号")
-			payeeAccount := get("收款方支付宝账号")
-			direction, basis, status := ResolveTransferDirection(
-				payerAccount,
-				payeeAccount,
-				get("对应的协查数据"),
-				options.SubjectIdentifiers,
-			)
-			row[colIdx("收付标志")] = direction
-			ApplyDirectionalParties(row, direction,
-				PaymentParty{Account: payerAccount},
-				PaymentParty{Account: payeeAccount, Bank: get("收款机构信息")},
-				basis,
-			)
-			setUnifiedValue(row, "主体判定状态", status)
-			row[colIdx("交易流水号")] = get("交易号")
-			row[colIdx("摘要说明")] = get("转账产品名称")
-			row[colIdx("交易发生地")] = get("交易发生地")
-			row[colIdx("交易时间")] = NormalizeDatetime(get("到账时间"))
-		case "支付流水汇总":
-			row[colIdx("交易时间")] = NormalizeDatetime(get("交易时间"))
-			row[colIdx("交易金额")] = FloatToStr(getFloat("交易金额"))
-			direction := NormalizeDirection(get("交易主体的出入账标识"))
-			row[colIdx("收付标志")] = direction
-			row[colIdx("交易余额")] = FloatToStr(getFloat("交易余额"))
-			row[colIdx("交易币种")] = get("币种")
-			row[colIdx("交易流水号")] = get("交易流水号", "支付订单号")
-			ApplyDirectionalParties(row, direction,
-				PaymentParty{
-					Account: get("付款方的支付帐号"),
-					Card:    CleanAccountNumber(get("付款方银行卡所属银行卡号")),
-					Bank:    get("付款方银行卡所属银行名称"),
-				},
-				PaymentParty{
-					Account: get("收款方的支付帐号"),
-					Card:    CleanAccountNumber(get("收款方银行卡所属银行卡号")),
-					Name:    get("收款方的商户名称"),
-					Bank:    get("收款方银行卡所属银行名称"),
-				},
-				"交易主体出入账标识",
-			)
-			row[colIdx("摘要说明")] = get("交易类型", "支付类型")
-			row[colIdx("IP地址")] = get("交易支付设备ip")
-			row[colIdx("MAC地址")] = get("mac地址")
-			row[colIdx("备注")] = get("备注")
-		case "个人账单":
-			row[colIdx("交易时间")] = NormalizeDatetime(get("交易时间"))
-			row[colIdx("交易金额")] = FloatToStr(getFloat("金额"))
-			row[colIdx("收付标志")] = NormalizeDirection(get("收/支"))
-			row[colIdx("对手户名")] = get("交易对方")
-			row[colIdx("摘要说明")] = get("商品说明")
-			row[colIdx("交易流水号")] = get("交易订单号", "商家订单号")
-			row[colIdx("备注")] = get("收/付款方式")
-			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
-				PaymentParty{},
-				PaymentParty{Name: get("交易对方")},
-				"支付宝个人账单持有人视角+收支字段",
-			)
-		case "交易记录":
-			row[colIdx("交易金额")] = FloatToStr(getFloat("交易金额（元）"))
-			row[colIdx("交易时间")] = NormalizeDatetime(get("创建时间", "收款时间", "最后修改时间"))
-			row[colIdx("交易流水号")] = get("交易号", "外部交易号")
-			row[colIdx("交易是否成功")] = get("交易状态")
-			row[colIdx("交易账号")] = get("买家信息", "买家用户id")
-			row[colIdx("交易对手账卡号")] = get("卖家信息", "卖家用户id")
-			row[colIdx("摘要说明")] = get("商品名称", "交易类型")
-			row[colIdx("交易发生地")] = get("来源地")
-			setUnifiedValue(row, "主体判定依据", "支付宝交易记录买卖双方字段，未确认调查主体")
-			setUnifiedValue(row, "主体判定状态", "无法判定")
 		}
 		ApplySourceAudit(row, context, rowIndex)
 		return row

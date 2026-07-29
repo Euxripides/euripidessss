@@ -93,7 +93,7 @@ func buildDedupIdentity(txn model.TransactionRow) (string, string) {
 	fingerprintFields := []string{
 		"交易时间", "交易金额", "交易余额", "收付标志",
 		"交易卡号", "交易账号", "交易户名", "交易对手账卡号", "对手户名",
-		"摘要说明", "交易币种", "交易是否成功", "交易流水号",
+		"摘要说明", "交易币种", "交易是否成功", "交易流水号", "商户流水号",
 		"付款方账号", "付款方户名", "收款方账号", "收款方户名",
 	}
 	fingerprintParts := make([]string, 0, len(fingerprintFields))

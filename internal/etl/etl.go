@@ -28,12 +28,12 @@ var FinalTransactionColumns = []string{
 	"交易对手账卡号", "对手账户性质", "现金标志", "对手户名", "对手身份证号",
 	"对手开户银行", "摘要说明", "交易币种", "交易网点名称", "交易发生地",
 	"交易是否成功", "传票号", "IP地址", "MAC地址", "对手交易余额",
-	"交易流水号", "日志号", "凭证种类", "凭证号", "交易柜员号",
+	"交易流水号", "商户流水号", "日志号", "凭证种类", "凭证号", "交易柜员号",
 	"备注", "查询反馈结果原因", "数据来源",
 }
 
 // UnifiedOutputColumns is the user-facing unified transaction contract.
-// Keep this strictly limited to the original 33 standard columns.
+// It contains the original 33 standard columns plus 商户流水号.
 var UnifiedOutputColumns = append([]string(nil), FinalTransactionColumns...)
 
 // unifiedStorageColumns adds internal evidence fields used for strict
@@ -69,7 +69,8 @@ var ALIASES = map[string][]string{
 	"IP地址":     {"IP地址", "IP"},
 	"MAC地址":    {"MAC地址", "MAC"},
 	"对手交易余额":   {"对手交易余额", "对方余额"},
-	"交易流水号":    {"交易流水号", "流水号", "交易号", "商户订单号", "订单号", "微信支付订单号", "支付宝交易号"},
+	"交易流水号":    {"交易流水号", "流水号", "交易号", "微信支付订单号", "支付宝交易号"},
+	"商户流水号":    {"商户流水号", "商户订单号", "商家订单号"},
 	"日志号":      {"日志号"},
 	"凭证种类":     {"凭证种类", "凭证类型"},
 	"凭证号":      {"凭证号"},
@@ -106,11 +107,10 @@ func RunPipeline(uploadDir string, outputDir string, jobID string) (*model.Pipel
 }
 
 type PipelineOptions struct {
-	UnifySources       bool
-	Progress           func(ProgressEvent)
-	SubjectAccounts    []string
-	SourceHashes       map[string]string
-	SubjectIdentifiers map[string]bool
+	UnifySources         bool
+	IncludeAlipayBalance bool
+	Progress             func(ProgressEvent)
+	SourceHashes         map[string]string
 }
 
 type ProgressEvent struct {
@@ -136,7 +136,6 @@ func RunPipelineWithOptions(uploadDir string, outputDir string, jobID string, op
 	if options.SourceHashes == nil {
 		options.SourceHashes = make(map[string]string)
 	}
-	options.SubjectIdentifiers = buildSubjectIdentifiers(scan, options.SubjectAccounts)
 	emitProgress(options, ProgressEvent{Stage: "scan", Name: "扫描识别来源", Status: "done", Current: 1, Total: 1, Unit: "阶段"})
 	return runStagedPipeline(uploadDir, outputDir, jobID, scan, options, startTime)
 }
@@ -168,7 +167,7 @@ func processProviderFiles(pf ProviderFiles, baseDir string, outputDir string) ([
 
 func processProviderFilesWithOptions(pf ProviderFiles, baseDir string, outputDir string, options PipelineOptions) ([]model.TransactionRow, error) {
 	mappingOptions := parser.MappingOptions{
-		SourceHashes: options.SourceHashes, SubjectIdentifiers: options.SubjectIdentifiers,
+		SourceHashes: options.SourceHashes, IncludeAlipayBalance: options.IncludeAlipayBalance,
 	}
 	switch pf.Provider {
 	case "支付宝":

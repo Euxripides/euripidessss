@@ -7,7 +7,7 @@ import {
   TagsOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { Button, Checkbox, Form, Input, Progress, Space, Table, Tag, Upload } from 'antd';
+import { Button, Checkbox, Form, Progress, Space, Table, Tag, Upload } from 'antd';
 import type { ProcessArtifact, ProcessProgress, ProcessResponse } from '../../types';
 import { DBExportModal } from './DBExportModal';
 export function CleanPanel({
@@ -70,7 +70,7 @@ export function CleanPanel({
           规则扩充
         </Button>
       </div>
-      <Form layout="vertical" initialValues={{ unify_sources: true }} onFinish={onFinish}>
+      <Form layout="vertical" initialValues={{ unify_sources: true, include_alipay_balance: false }} onFinish={onFinish}>
         <div className="upload-grid">
           <Form.Item label="流水文件" name="transaction_files" valuePropName="fileList" getValueFromEvent={(event) => event.fileList} rules={[{ required: true, message: '请上传至少一个流水文件' }]}>
             <Upload.Dragger multiple beforeUpload={() => false} accept=".xlsx,.xls,.xlsm,.csv,.tsv">
@@ -99,11 +99,11 @@ export function CleanPanel({
           <Checkbox>统一字段名后合并不同来源</Checkbox>
         </Form.Item>
         <Form.Item
-          label="调查主体账号"
-          name="subject_accounts"
-          extra="可选。用于支付宝转账明细判断本方是付款方还是收款方；可填写多个账号、手机号、邮箱或用户ID，每行一个。系统也会从账户信息表自动提取。无法唯一匹配的转账不会强行判定方向。"
+          name="include_alipay_balance"
+          valuePropName="checked"
+          extra="默认关闭。余额明细仍会保留源文件和原字段CSV；仅勾选后才转换为统一字段流水并进入最终合并。"
         >
-          <Input.TextArea rows={3} placeholder={'例如：\n13800138000\nexample@alipay.com\n2088xxxxxxxx'} />
+          <Checkbox>支付宝余额明细纳入统一流水</Checkbox>
         </Form.Item>
         <Button type="primary" htmlType="submit" loading={loading} icon={<BarChartOutlined />}>
           开始清洗

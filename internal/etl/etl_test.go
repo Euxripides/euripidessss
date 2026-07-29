@@ -30,6 +30,24 @@ func TestBuildPreviewEmpty(t *testing.T) {
 	}
 }
 
+func TestUnifiedOutputColumnsIncludeMerchantSerialAfterTransactionSerial(t *testing.T) {
+	if len(FinalTransactionColumns) != 34 {
+		t.Fatalf("统一表字段数=%d，期望34", len(FinalTransactionColumns))
+	}
+	transactionIndex, merchantIndex := -1, -1
+	for index, column := range FinalTransactionColumns {
+		switch column {
+		case "交易流水号":
+			transactionIndex = index
+		case "商户流水号":
+			merchantIndex = index
+		}
+	}
+	if transactionIndex < 0 || merchantIndex != transactionIndex+1 {
+		t.Fatalf("字段顺序错误：交易流水号=%d，商户流水号=%d", transactionIndex, merchantIndex)
+	}
+}
+
 func TestDeduplicateTransactions(t *testing.T) {
 	rows := []model.TransactionRow{
 		{"交易时间": "2024-01-01", "交易金额": "100", "收付标志": "进"},

@@ -52,21 +52,6 @@ func ApplySubjectCounterpartyRoles(row []string, direction string, subject, coun
 	}
 }
 
-func ResolveTransferDirection(payerAccount, payeeAccount, inquiry string, identifiers map[string]bool) (string, string, string) {
-	payerMatch := MatchesSubjectIdentifier(payerAccount, inquiry, identifiers)
-	payeeMatch := MatchesSubjectIdentifier(payeeAccount, inquiry, identifiers)
-	switch {
-	case payerMatch && !payeeMatch:
-		return "出", "调查主体匹配付款方账号", "已判定"
-	case payeeMatch && !payerMatch:
-		return "进", "调查主体匹配收款方账号", "已判定"
-	case payerMatch && payeeMatch:
-		return "", "付款方与收款方均匹配调查主体", "双方均为调查主体"
-	default:
-		return "", "付款方与收款方均未匹配调查主体", "无法判定"
-	}
-}
-
 func firstValue(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {

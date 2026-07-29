@@ -560,6 +560,7 @@ func mergeUnifiedStageCSVs(providers []*stagedProvider, outputDir, jobDir, jobID
 		"in_count": store.inCount, "out_count": store.outCount,
 		"total_in": roundMoney(store.totalIn), "total_out": roundMoney(store.totalOut),
 		"output_sheets": sheetCount, "streaming": true, "staged_csv": true,
+		"include_alipay_balance": options.IncludeAlipayBalance,
 	}
 	if store.rowsOut > len(store.preview) {
 		summary["preview_rows"] = len(store.preview)
