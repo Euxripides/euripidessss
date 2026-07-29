@@ -2,8 +2,10 @@ package etl
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -31,13 +33,15 @@ type sourcePlan struct {
 }
 
 type stagedProvider struct {
-	Provider       string
-	Paths          []string
-	RawCSV         string
-	RawRows        int64
-	UnifiedCSV     string
-	UnifiedRows    int64
-	UnifiedColumns []string
+	Provider        string
+	Paths           []string
+	RawCSV          string
+	RawRows         int64
+	UnifiedCSV      string
+	UnifiedAuditCSV string
+	UnifiedRows     int64
+	UnifiedColumns  []string
+	DuplicateFiles  []duplicateInputFile
 }
 
 func emitProgress(options PipelineOptions, event ProgressEvent) {
@@ -51,6 +55,11 @@ func runStagedPipeline(uploadDir, outputDir, jobID string, scan *scanner.Directo
 	if err := os.MkdirAll(jobDir, 0755); err != nil {
 		return nil, fmt.Errorf("create job artifact directory: %w", err)
 	}
+	internalDir := filepath.Join(jobDir, ".internal")
+	if err := os.RemoveAll(internalDir); err != nil {
+		return nil, fmt.Errorf("reset internal stage directory: %w", err)
+	}
+	defer os.RemoveAll(internalDir)
 
 	artifacts, err := preserveUploadedSources(uploadDir, jobDir, options)
 	if err != nil {
@@ -107,9 +116,11 @@ func preserveUploadedSources(uploadDir, jobDir string, options PipelineOptions) 
 			return nil, relErr
 		}
 		target := filepath.Join(jobDir, "01_源文件", relative)
-		if err := copyStageFile(path, target); err != nil {
+		hash, err := copyStageFileWithHash(path, target)
+		if err != nil {
 			return nil, fmt.Errorf("preserve source %s: %w", filepath.Base(path), err)
 		}
+		options.SourceHashes[path] = hash
 		info, _ := os.Stat(target)
 		artifacts = append(artifacts, model.PipelineArtifact{
 			ID: fmt.Sprintf("source-%d", index+1), Stage: "源文件", Name: relative,
@@ -143,7 +154,7 @@ func buildRawProviderCSVs(scan *scanner.DirectoryScan, jobDir string, options Pi
 		}
 		sort.Strings(item.Paths)
 		var err error
-		item.Paths, _, err = deduplicateInputFiles(item.Paths)
+		item.Paths, item.DuplicateFiles, err = deduplicateInputFilesWithAudit(item.Paths)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -212,7 +223,46 @@ func buildRawProviderCSVs(scan *scanner.DirectoryScan, jobDir string, options Pi
 	}
 	done := current.Load()
 	emitProgress(options, ProgressEvent{Stage: "source_merge", Name: "分类原字段合并", Status: "done", Current: done, Total: done, Unit: "行"})
+	fileAuditPath := filepath.Join(jobDir, "05_审计报告", "重复源文件审计.csv")
+	fileAuditRows, err := exportDuplicateFileAudit(fileAuditPath, providers)
+	if err != nil {
+		return nil, nil, err
+	}
+	fileAuditInfo, _ := os.Stat(fileAuditPath)
+	artifacts = append(artifacts, model.PipelineArtifact{
+		ID: "duplicate-file-audit-csv", Stage: "审计报告", Name: filepath.Base(fileAuditPath),
+		Path: fileAuditPath, Rows: fileAuditRows, Size: fileSize(fileAuditInfo),
+	})
 	return providers, artifacts, nil
+}
+
+func exportDuplicateFileAudit(path string, providers []*stagedProvider) (int64, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return 0, err
+	}
+	file, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	writer := csv.NewWriter(file)
+	if err := writer.Write([]string{"来源类型", "保留文件", "重复文件", "文件SHA256", "文件大小"}); err != nil {
+		return 0, err
+	}
+	var count int64
+	for _, provider := range providers {
+		for _, duplicate := range provider.DuplicateFiles {
+			if err := writer.Write([]string{
+				provider.Provider, duplicate.KeptPath, duplicate.DuplicatePath,
+				duplicate.SHA256, fmt.Sprintf("%d", duplicate.Size),
+			}); err != nil {
+				return count, err
+			}
+			count++
+		}
+	}
+	writer.Flush()
+	return count, writer.Error()
 }
 
 func inspectSourcePlan(path, provider string) (sourcePlan, error) {
@@ -331,6 +381,10 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 	if err := os.MkdirAll(unifiedDir, 0755); err != nil {
 		return nil, err
 	}
+	internalDir := filepath.Join(jobDir, ".internal")
+	if err := os.MkdirAll(internalDir, 0755); err != nil {
+		return nil, err
+	}
 	var current atomic.Int64
 	artifacts := make([]model.PipelineArtifact, len(providers))
 	errChan := make(chan error, len(providers))
@@ -340,6 +394,7 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 		go func(providerIndex int, provider *stagedProvider) {
 			defer wg.Done()
 			path := filepath.Join(unifiedDir, providerFileName(provider.Provider)+"_统一字段.csv")
+			auditPath := filepath.Join(internalDir, providerFileName(provider.Provider)+"_内部审计字段.csv")
 			file, err := os.Create(path)
 			if err != nil {
 				errChan <- err
@@ -351,14 +406,34 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 				errChan <- err
 				return
 			}
+			auditFile, err := os.Create(auditPath)
+			if err != nil {
+				file.Close()
+				errChan <- err
+				return
+			}
+			auditWriter := csv.NewWriter(auditFile)
+			if err := auditWriter.Write(unifiedStorageColumns); err != nil {
+				auditFile.Close()
+				file.Close()
+				errChan <- err
+				return
+			}
 			var rows int64
 			group := ProviderFiles{Provider: provider.Provider, Paths: provider.Paths}
-			err = streamProviderTransactions(group, outputDir, func(txn model.TransactionRow) error {
+			err = streamProviderTransactions(group, outputDir, options, func(txn model.TransactionRow) error {
 				values := make([]string, len(UnifiedOutputColumns))
 				for index, column := range UnifiedOutputColumns {
 					values[index] = txn[column]
 				}
 				if err := writer.Write(values); err != nil {
+					return err
+				}
+				auditValues := make([]string, len(unifiedStorageColumns))
+				for index, column := range unifiedStorageColumns {
+					auditValues[index] = txn[column]
+				}
+				if err := auditWriter.Write(auditValues); err != nil {
 					return err
 				}
 				rows++
@@ -371,6 +446,9 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 			writer.Flush()
 			writeErr := writer.Error()
 			closeErr := file.Close()
+			auditWriter.Flush()
+			auditWriteErr := auditWriter.Error()
+			auditCloseErr := auditFile.Close()
 			if err != nil {
 				errChan <- err
 				return
@@ -383,7 +461,16 @@ func buildUnifiedProviderCSVs(providers []*stagedProvider, jobDir, outputDir str
 				errChan <- closeErr
 				return
 			}
+			if auditWriteErr != nil {
+				errChan <- auditWriteErr
+				return
+			}
+			if auditCloseErr != nil {
+				errChan <- auditCloseErr
+				return
+			}
 			provider.UnifiedCSV = path
+			provider.UnifiedAuditCSV = auditPath
 			provider.UnifiedRows = rows
 			provider.UnifiedColumns = append([]string(nil), UnifiedOutputColumns...)
 			info, _ := os.Stat(path)
@@ -424,12 +511,12 @@ func mergeUnifiedStageCSVs(providers []*stagedProvider, outputDir, jobDir, jobID
 	emitProgress(options, ProgressEvent{Stage: "final_merge", Name: "跨来源清洗去重合并", Status: "running", Total: total, Unit: "行"})
 	var current int64
 	for _, provider := range providers {
-		err := parser.StreamTabularFile(provider.UnifiedCSV, func(_ string, rowIndex int, row []string) error {
+		err := parser.StreamTabularFile(provider.UnifiedAuditCSV, func(_ string, rowIndex int, row []string) error {
 			if rowIndex == 0 {
 				return nil
 			}
 			current++
-			if err := store.Add(unifiedRowToTransaction(row, UnifiedOutputColumns)); err != nil {
+			if err := store.Add(unifiedRowToTransaction(row, unifiedStorageColumns)); err != nil {
 				return err
 			}
 			if current%progressEmitRows == 0 || current == total {
@@ -482,15 +569,44 @@ func mergeUnifiedStageCSVs(providers []*stagedProvider, outputDir, jobDir, jobID
 		Transactions: store.preview, OutputPath: outputPath, Summary: summary,
 		Report: model.QualityReport{
 			Files: make([]model.FileReport, 0), RowsIn: store.rowsIn, RowsOut: store.rowsOut,
-			RemovedEmptyRequired: store.removedEmptyRequired, RemovedDuplicates: store.removedDuplicates,
+			RemovedEmptyRequired: store.removedEmptyRequired, RemovedFailedFeedback: store.removedFailedFeedback,
+			RemovedBadDirection: store.removedBadDirection,
+			RemovedDuplicates:   store.removedDuplicates,
 		},
 		MergeMode: "unified",
 	}
 	csvInfo, _ := os.Stat(finalCSV)
 	xlsxInfo, _ := os.Stat(outputPath)
+	auditDir := filepath.Join(jobDir, "05_审计报告")
+	duplicateAudit := filepath.Join(auditDir, "重复记录审计.csv")
+	duplicateRows, err := exportSQLiteAuditCSV(store.db, duplicateAudit, "duplicates", []auditExportColumn{
+		{"去重键类型", "dedup_type"}, {"去重键", "dedup_key"}, {"保留记录ID", "kept_transaction_id"},
+		{"保留来源记录ID", "kept_source_record_id"}, {"重复来源记录ID", "duplicate_source_record_id"},
+		{"来源类型", "source_type"}, {"来源文件", "source_file"}, {"来源Sheet", "source_sheet"},
+		{"原始行号", "source_row"}, {"交易时间", "transaction_time"}, {"交易金额", "amount"},
+		{"收付标志", "direction"}, {"本方账号", "subject_account"}, {"对手账号", "counterparty_account"},
+		{"交易流水号", "transaction_serial"},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	rejectedAudit := filepath.Join(auditDir, "未纳入记录审计.csv")
+	rejectedRows, err := exportSQLiteAuditCSV(store.db, rejectedAudit, "rejected", []auditExportColumn{
+		{"未纳入原因", "reason"}, {"来源记录ID", "source_record_id"}, {"来源类型", "source_type"},
+		{"来源文件", "source_file"}, {"来源Sheet", "source_sheet"}, {"原始行号", "source_row"},
+		{"交易时间", "transaction_time"}, {"交易金额", "amount"}, {"收付标志", "direction"},
+		{"主体判定状态", "subject_status"}, {"主体判定依据", "subject_basis"}, {"交易流水号", "transaction_serial"},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	duplicateInfo, _ := os.Stat(duplicateAudit)
+	rejectedInfo, _ := os.Stat(rejectedAudit)
 	return result, []model.PipelineArtifact{
 		{ID: "final-csv", Stage: "最终合并", Name: filepath.Base(finalCSV), Path: finalCSV, Rows: int64(store.rowsOut), Size: fileSize(csvInfo)},
 		{ID: "final-xlsx", Stage: "兼容导出", Name: filepath.Base(outputPath), Path: outputPath, Rows: int64(store.rowsOut), Size: fileSize(xlsxInfo)},
+		{ID: "duplicate-audit-csv", Stage: "审计报告", Name: filepath.Base(duplicateAudit), Path: duplicateAudit, Rows: duplicateRows, Size: fileSize(duplicateInfo)},
+		{ID: "rejected-audit-csv", Stage: "审计报告", Name: filepath.Base(rejectedAudit), Path: rejectedAudit, Rows: rejectedRows, Size: fileSize(rejectedInfo)},
 	}, nil
 }
 
@@ -657,6 +773,57 @@ func exportStoreToCSV(db *sql.DB, path string, onRow func(int64)) error {
 	return rows.Err()
 }
 
+type auditExportColumn struct {
+	Header string
+	Field  string
+}
+
+func exportSQLiteAuditCSV(db *sql.DB, path, table string, columns []auditExportColumn) (int64, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return 0, err
+	}
+	fields := make([]string, len(columns))
+	headers := make([]string, len(columns))
+	for index, column := range columns {
+		fields[index] = column.Field
+		headers[index] = column.Header
+	}
+	rows, err := db.Query("SELECT " + strings.Join(fields, ", ") + " FROM " + table + " ORDER BY id")
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	file, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	writer := csv.NewWriter(file)
+	if err := writer.Write(headers); err != nil {
+		return 0, err
+	}
+	var count int64
+	for rows.Next() {
+		values := make([]string, len(columns))
+		targets := make([]interface{}, len(values))
+		for index := range values {
+			targets[index] = &values[index]
+		}
+		if err := rows.Scan(targets...); err != nil {
+			return count, err
+		}
+		if err := writer.Write(values); err != nil {
+			return count, err
+		}
+		count++
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return count, err
+	}
+	return count, rows.Err()
+}
+
 func previewCSV(path string, limit int) []model.TransactionRow {
 	if limit <= 0 {
 		return nil
@@ -703,24 +870,33 @@ func countCSVColumns(path string) int {
 }
 
 func copyStageFile(source, target string) error {
+	_, err := copyStageFileWithHash(source, target)
+	return err
+}
+
+func copyStageFileWithHash(source, target string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return err
+		return "", err
 	}
 	input, err := os.Open(source)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer input.Close()
 	output, err := os.Create(target)
 	if err != nil {
-		return err
+		return "", err
 	}
-	_, copyErr := io.Copy(output, input)
+	hash := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(output, hash), input)
 	closeErr := output.Close()
 	if copyErr != nil {
-		return copyErr
+		return "", copyErr
 	}
-	return closeErr
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func countDelimitedRows(path string) int64 {

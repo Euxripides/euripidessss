@@ -29,21 +29,37 @@ type MappingOptions struct {
 }
 
 type SourceAuditContext struct {
-	Provider   string
-	TableType  string
-	Path       string
-	Sheet      string
-	FileHash   string
-	HeaderRow  int
+	Provider  string
+	TableType string
+	Path      string
+	Sheet     string
+	FileHash  string
+	HeaderRow int
+}
+
+func EnsureSourceHashes(files []string, options *MappingOptions) {
+	if options.SourceHashes == nil {
+		options.SourceHashes = make(map[string]string, len(files))
+	}
+	for _, path := range files {
+		if options.SourceHashes[path] != "" {
+			continue
+		}
+		hash, err := FileSHA256(path)
+		if err == nil {
+			options.SourceHashes[path] = hash
+		}
+	}
 }
 
 func ApplySourceAudit(row []string, context SourceAuditContext, dataRowIndex int) {
 	lineNumber := context.HeaderRow + dataRowIndex + 2
 	fileHash := context.FileHash
-	if fileHash == "" {
-		fileHash, _ = FileSHA256(context.Path)
+	sourceIdentity := fileHash
+	if sourceIdentity == "" {
+		sourceIdentity = context.Path
 	}
-	sourceID := sourceRecordID(fileHash, context.Sheet, lineNumber)
+	sourceID := sourceRecordID(sourceIdentity, context.Sheet, lineNumber)
 	display := strings.Join([]string{
 		context.Provider,
 		filepath.Base(context.Path),

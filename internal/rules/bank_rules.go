@@ -2,13 +2,14 @@ package rules
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/etl/backend/internal/parser"
 )
 
 // Bank transaction and account column constants
-var BankTransactionColumns = append(parser.UnifiedColumns, "来源表", "来源文件", "来源Sheet", "来源")
+var BankTransactionColumns = append(append([]string(nil), parser.UnifiedColumns...), "来源")
 
 var BankAccountColumns = []string{
 	"账户开户名称", "开户人证件号码", "交易卡号", "交易账号", "账号开户时间",
@@ -174,7 +175,7 @@ func ClassifyTable(headers []string, filename, sheetName string) string {
 }
 
 // NormalizeTransaction maps bank transaction columns to standard format
-func NormalizeTransaction(headers []string, data [][]string, tableType, filename, sheetName string) (map[string][]string, error) {
+func NormalizeTransaction(headers []string, data [][]string, tableType, filename, fileHash, sheetName string, headerRow int) (map[string][]string, error) {
 	result := make(map[string][]string)
 	for _, col := range BankTransactionColumns {
 		result[col] = make([]string, len(data))
@@ -197,9 +198,22 @@ func NormalizeTransaction(headers []string, data [][]string, tableType, filename
 
 	// Set source file info
 	for i := range data {
+		lineNumber := headerRow + i + 2
+		sourceIdentity := fileHash
+		if sourceIdentity == "" {
+			sourceIdentity = filename
+		}
+		display := parser.AuditDisplay("银行", filename, sheetName, lineNumber)
+		result["数据来源"][i] = display
+		result["来源类型"][i] = "银行"
+		result["来源表类型"][i] = tableType
 		result["来源文件"][i] = filename
+		result["来源文件SHA256"][i] = fileHash
 		result["来源Sheet"][i] = sheetName
-		result["来源"][i] = filename
+		result["原始行号"][i] = strconv.Itoa(lineNumber)
+		result["映射规则版本"][i] = parser.MappingRuleVersion
+		result["来源记录ID"][i] = parser.SourceRecordID(sourceIdentity, sheetName, lineNumber)
+		result["来源"][i] = display
 	}
 
 	return result, nil

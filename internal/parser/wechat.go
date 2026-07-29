@@ -76,8 +76,13 @@ func ProcessWechatDirectory(sourceDir, outputDir string) (*WechatResult, error) 
 }
 
 func ProcessWechatFiles(files []string, outputDir string) (*WechatResult, error) {
+	return ProcessWechatFilesWithOptions(files, outputDir, MappingOptions{})
+}
+
+func ProcessWechatFilesWithOptions(files []string, outputDir string, options MappingOptions) (*WechatResult, error) {
 	files = append([]string(nil), files...)
 	sort.Strings(files)
+	EnsureSourceHashes(files, &options)
 
 	numWorkers := 1
 
@@ -144,7 +149,10 @@ func ProcessWechatFiles(files []string, outputDir string) (*WechatResult, error)
 
 				mu.Lock()
 				if WechatUnifyTables[tableType] {
-					unified := wechatToUnified(data, headers, tableType, j.path, headerRow)
+					unified := wechatToUnified(data, headers, SourceAuditContext{
+						Provider: "微信", TableType: tableType, Path: j.path, Sheet: j.sheetName,
+						FileHash: options.SourceHashes[j.path], HeaderRow: headerRow,
+					})
 					unifiedFrames = append(unifiedFrames, unified...)
 				}
 				tableRows[tableType] += len(data)
@@ -232,7 +240,7 @@ func classifyWechatTable(headers []string, path, sheet string) string {
 	return bestName
 }
 
-func wechatToUnified(data [][]string, headers []string, tableType, path string, headerRow int) [][]string {
+func wechatToUnified(data [][]string, headers []string, context SourceAuditContext) [][]string {
 	if len(data) == 0 {
 		return nil
 	}
@@ -260,7 +268,7 @@ func wechatToUnified(data [][]string, headers []string, tableType, path string, 
 
 	var result [][]string
 
-	switch tableType {
+	switch context.TableType {
 	case "交易明细信息":
 		for i := 0; i < len(data); i++ {
 			row := make([]string, len(UnifiedColumns))
@@ -286,11 +294,24 @@ func wechatToUnified(data [][]string, headers []string, tableType, path string, 
 			row[colIdx("交易流水号")] = get("交易单号")(i)
 			row[colIdx("备注")] = get("备注1", "备注2")(i)
 
-			// 对手方接收金额(分) -> 元
+			// 对手方接收金额是发生额，不是对手账户余额。
 			recvFen := getFloat("对手方接收金额(分)")(i)
-			row[colIdx("对手交易余额")] = FloatToStr(recvFen / 100)
+			row[colIdx("对手方接收金额")] = FloatToStr(recvFen / 100)
 
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{
+					Account: get("用户侧账号名称")(i),
+					Card:    CleanAccountNumber(get("用户银行卡号")(i)),
+					Bank:    get("用户侧银行名称")(i),
+				},
+				PaymentParty{
+					Account: CleanAccountNumber(get("对手方银行卡号")(i)),
+					Name:    get("对手侧账户名称")(i),
+					Bank:    get("对手侧银行名称")(i),
+				},
+				"微信交易明细用户侧账号+借贷类型",
+			)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 
@@ -305,28 +326,44 @@ func wechatToUnified(data [][]string, headers []string, tableType, path string, 
 			row[colIdx("交易是否成功")] = get("当前状态")(i)
 			row[colIdx("交易流水号")] = get("交易单号")(i)
 			row[colIdx("备注")] = get("备注", "商户单号")(i)
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySubjectCounterpartyRoles(row, row[colIdx("收付标志")],
+				PaymentParty{},
+				PaymentParty{Name: get("交易对方")(i)},
+				"微信账单持有人视角+收支字段",
+			)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 
 	case "支付流水汇总":
 		for i := 0; i < len(data); i++ {
 			row := make([]string, len(UnifiedColumns))
-			row[colIdx("交易账号")] = get("付款方的支付帐号", "收款方的支付帐号")(i)
 			row[colIdx("交易时间")] = NormalizeDatetime(get("交易时间")(i))
 			row[colIdx("交易金额")] = FloatToStr(getFloat("交易金额")(i))
 			row[colIdx("交易余额")] = FloatToStr(getFloat("交易余额")(i))
-			row[colIdx("收付标志")] = NormalizeDirection(get("交易主体的出入账标识")(i))
-			row[colIdx("交易对手账卡号")] = get("收款方的支付帐号", "付款方的支付帐号",
-				"收款方银行卡所属银行卡号", "付款方银行卡所属银行卡号")(i)
-			row[colIdx("对手户名")] = get("收款方的商户名称")(i)
+			direction := NormalizeDirection(get("交易主体的出入账标识")(i))
+			row[colIdx("收付标志")] = direction
+			ApplyDirectionalParties(row, direction,
+				PaymentParty{
+					Account: get("付款方的支付帐号")(i),
+					Card:    CleanAccountNumber(get("付款方银行卡所属银行卡号")(i)),
+					Bank:    get("付款方银行卡所属银行名称")(i),
+				},
+				PaymentParty{
+					Account: get("收款方的支付帐号")(i),
+					Card:    CleanAccountNumber(get("收款方银行卡所属银行卡号")(i)),
+					Name:    get("收款方的商户名称")(i),
+					Bank:    get("收款方银行卡所属银行名称")(i),
+				},
+				"交易主体出入账标识",
+			)
 			row[colIdx("摘要说明")] = get("交易类型", "支付类型")(i)
 			row[colIdx("交易币种")] = get("币种")(i)
 			row[colIdx("IP地址")] = get("交易支付设备ip")(i)
 			row[colIdx("MAC地址")] = get("mac地址")(i)
 			row[colIdx("交易流水号")] = get("交易流水号", "支付订单号")(i)
 			row[colIdx("备注")] = get("备注")(i)
-			row[colIdx("来源表")] = SourceLocation(path, i, headerRow)
+			ApplySourceAudit(row, context, i)
 			result = append(result, row)
 		}
 	}

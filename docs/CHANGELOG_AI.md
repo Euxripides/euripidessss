@@ -4613,6 +4613,76 @@ ormalizeFilterBoundary 精确时间边界处理。
 - 服务重启后不恢复历史进度状态；阶段文件和清单不受影响。
 - 阶段文件会增加磁盘占用，后续如需自动归档/清理应增加明确保留策略。
 
+## 2026-07-29 — 资金分析字段映射第一阶段
+
+### 新增与调整
+
+- 用户最终确认所有统一分析输出只保留原 33 个字段；分类统一 CSV、最终 CSV、Excel、API 预览和数据库导入源均固定为 33 列。
+- 17 个来源/角色字段改为内部临时审计字段，不进入用户分析表，任务结束后删除内部阶段文件。
+- 微信、支付宝支付汇总按收付方向确定本方和对手方，不再固定使用付款方。
+- 支付宝转账按调查主体账号判定方向；无法唯一判定时不进入资金分析结果并写入审计。
+- 新增清洗页“调查主体账号”，`POST /api/process` 新增可选 `subject_accounts`。
+- 微信“对手方接收金额(分)”不再占用 `对手交易余额`；原值保留在源文件和分类原字段 CSV，不扩展统一表。
+- 来源文件 SHA-256、Sheet、原始行号、映射版本、来源记录 ID 以及原始付款/收款方字段仅供内部去重和审计。
+- 去重改为“流水号完整指纹 / 来源记录 ID / 完整业务指纹”三级策略，减少同秒同金额合法交易误删。
+- 临时 SQLite 新增重复和未纳入记录审计，任务固定输出三类审计 CSV。
+- 非“进/出”方向统一排除出分析结果并写入未纳入审计。
+- 文件哈希合并到源文件复制过程，账户主体索引采用流式读取，避免额外大文件 I/O 和全量内存加载。
+- 一键数据库导入继续使用 33 个业务字段；目标表仍为 37 列（`id` + 33 数据列 + 3 导入审计列）。
+
+### 修改文件
+
+- `internal/parser/provenance.go`
+- `internal/parser/party_mapping.go`
+- `internal/parser/alipay.go`
+- `internal/parser/alipay_stream.go`
+- `internal/parser/wechat.go`
+- `internal/parser/funds_mapping_test.go`
+- `internal/etl/subject_index.go`
+- `internal/etl/subject_index_test.go`
+- `internal/etl/cleaning.go`
+- `internal/etl/dedup_audit_test.go`
+- `internal/etl/etl.go`
+- `internal/etl/staged_pipeline.go`
+- `internal/etl/stream_pipeline.go`
+- `internal/etl/separate_merge_test.go`
+- `internal/provider/bank.go`
+- `internal/rules/bank_rules.go`
+- `internal/api/handlers.go`
+- `frontend/src/App.tsx`
+- `frontend/src/features/clean/CleanPanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口与结构
+
+- `POST /api/process`：新增可选 multipart 参数 `subject_accounts`。
+- `PipelineOptions`：新增 `SubjectAccounts`、`SubjectIdentifiers`、`SourceHashes`。
+- 对外统一输出无新增字段；内部临时存储使用来源/角色字段支持去重和审计。
+- 新增临时 SQLite `duplicates`、`rejected` 表；无持久业务数据库迁移。
+
+### 验证
+
+- `go test ./internal/... -count=1`：通过。
+- `go vet ./...`：通过。
+- 后端 windows/amd64 构建：通过。
+- 前端生产构建：通过，保留既有大 chunk warning。
+- `.\run.ps1`：最终后端 PID `30884`。
+- 真实三来源 API 任务 `phase1-33cols-real-20260729`：
+  - `53,355 -> 52,793`；
+  - 微信 `2,413`、银行 `41,645`、支付宝 `8,735`；
+  - 接口、三类分类统一 CSV、最终 CSV 和最终 Excel全部为原 33 列；
+  - 方向仅“进/出”；
+  - 微信 2,413 行未将对手方接收金额写入对手交易余额；
+  - 重复记录审计 41 行；
+  - 未纳入审计 521 行，其中缺少方向 510 行、原方向“其它”11 行。
+
+### 未完成与注意事项
+
+- 本次真实文件未包含支付宝独立转账明细和支付流水汇总，这两类由新增单元测试覆盖。
+- 本次未重新执行 PostgreSQL/MySQL 写入；数据库导入已恢复使用 33 字段 CSV 和既有 37 列目标结构。
+- 未提供主体账号或账户文件的转账数据将进入未纳入审计，避免方向误判。
+
 ## 2026-07-28 — 新增清洗结果一键导入 PostgreSQL/MySQL
 
 ### 新增与调整

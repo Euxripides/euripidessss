@@ -7,7 +7,7 @@ import {
   TagsOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { Button, Checkbox, Form, Progress, Space, Table, Tag, Upload } from 'antd';
+import { Button, Checkbox, Form, Input, Progress, Space, Table, Tag, Upload } from 'antd';
 import type { ProcessArtifact, ProcessProgress, ProcessResponse } from '../../types';
 import { DBExportModal } from './DBExportModal';
 export function CleanPanel({
@@ -97,6 +97,13 @@ export function CleanPanel({
           extra="所有模式都会先保留源文件，并按支付宝、微信、银行分别生成原字段大CSV。勾选后继续生成各类统一字段CSV，再清洗、去重并跨来源合并；所有阶段产物均保留。"
         >
           <Checkbox>统一字段名后合并不同来源</Checkbox>
+        </Form.Item>
+        <Form.Item
+          label="调查主体账号"
+          name="subject_accounts"
+          extra="可选。用于支付宝转账明细判断本方是付款方还是收款方；可填写多个账号、手机号、邮箱或用户ID，每行一个。系统也会从账户信息表自动提取。无法唯一匹配的转账不会强行判定方向。"
+        >
+          <Input.TextArea rows={3} placeholder={'例如：\n13800138000\nexample@alipay.com\n2088xxxxxxxx'} />
         </Form.Item>
         <Button type="primary" htmlType="submit" loading={loading} icon={<BarChartOutlined />}>
           开始清洗

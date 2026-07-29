@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"time"
 
@@ -33,9 +32,14 @@ var FinalTransactionColumns = []string{
 	"备注", "查询反馈结果原因", "数据来源",
 }
 
-// UnifiedOutputColumns preserves the stable 33 standard columns and appends
-// evidence/role fields required for auditable funds analysis.
-var UnifiedOutputColumns = append(append([]string(nil), FinalTransactionColumns...), parser.AuditTransactionColumns...)
+// UnifiedOutputColumns is the user-facing unified transaction contract.
+// Keep this strictly limited to the original 33 standard columns.
+var UnifiedOutputColumns = append([]string(nil), FinalTransactionColumns...)
+
+// unifiedStorageColumns adds internal evidence fields used for strict
+// deduplication and standalone audit reports. These fields are never exported
+// in the unified CSV, Excel, preview, or database import source.
+var unifiedStorageColumns = append(append([]string(nil), FinalTransactionColumns...), parser.AuditTransactionColumns...)
 
 // RequiredTransactionColumns must be non-empty after processing
 var RequiredTransactionColumns = []string{"交易时间", "交易金额", "收付标志"}
@@ -102,8 +106,11 @@ func RunPipeline(uploadDir string, outputDir string, jobID string) (*model.Pipel
 }
 
 type PipelineOptions struct {
-	UnifySources bool
-	Progress     func(ProgressEvent)
+	UnifySources       bool
+	Progress           func(ProgressEvent)
+	SubjectAccounts    []string
+	SourceHashes       map[string]string
+	SubjectIdentifiers map[string]bool
 }
 
 type ProgressEvent struct {
@@ -126,6 +133,10 @@ func RunPipelineWithOptions(uploadDir string, outputDir string, jobID string, op
 	if err != nil {
 		return nil, fmt.Errorf("scan directory: %w", err)
 	}
+	if options.SourceHashes == nil {
+		options.SourceHashes = make(map[string]string)
+	}
+	options.SubjectIdentifiers = buildSubjectIdentifiers(scan, options.SubjectAccounts)
 	emitProgress(options, ProgressEvent{Stage: "scan", Name: "扫描识别来源", Status: "done", Current: 1, Total: 1, Unit: "阶段"})
 	return runStagedPipeline(uploadDir, outputDir, jobID, scan, options, startTime)
 }
@@ -152,15 +163,22 @@ func categorizeByProvider(scan *scanner.DirectoryScan) []ProviderFiles {
 }
 
 func processProviderFiles(pf ProviderFiles, baseDir string, outputDir string) ([]model.TransactionRow, error) {
+	return processProviderFilesWithOptions(pf, baseDir, outputDir, PipelineOptions{})
+}
+
+func processProviderFilesWithOptions(pf ProviderFiles, baseDir string, outputDir string, options PipelineOptions) ([]model.TransactionRow, error) {
+	mappingOptions := parser.MappingOptions{
+		SourceHashes: options.SourceHashes, SubjectIdentifiers: options.SubjectIdentifiers,
+	}
 	switch pf.Provider {
 	case "支付宝":
-		alipayResult, err := parser.ProcessAlipayFiles(pf.Paths, outputDir, "strict")
+		alipayResult, err := parser.ProcessAlipayFilesWithOptions(pf.Paths, outputDir, "strict", mappingOptions)
 		if err != nil {
 			return nil, err
 		}
 		return convertAlipayToRows(alipayResult), nil
 	case "微信":
-		wechatResult, err := parser.ProcessWechatFiles(pf.Paths, outputDir)
+		wechatResult, err := parser.ProcessWechatFilesWithOptions(pf.Paths, outputDir, mappingOptions)
 		if err != nil {
 			return nil, err
 		}
@@ -275,6 +293,9 @@ func restoreOriginalSourcePaths(rows []model.TransactionRow, paths []string) {
 		} else if source == "" && len(paths) == 1 {
 			row["数据来源"] = paths[0]
 		}
+		if original, ok := originalByBase[filepath.Base(row["来源文件"])]; ok {
+			row["来源文件"] = original
+		}
 	}
 }
 
@@ -324,12 +345,13 @@ func convertBankToRows(result *provider.Result) []model.TransactionRow {
 func processGenericFiles(paths []string) ([]model.TransactionRow, error) {
 	var result []model.TransactionRow
 	for _, path := range paths {
+		fileHash, _ := parser.FileSHA256(path)
 		fileData, err := parser.ReadFile(path)
 		if err != nil {
 			log.Warn().Err(err).Str("path", path).Msg("skip unreadable file")
 			continue
 		}
-		for _, rows := range fileData {
+		for sheetName, rows := range fileData {
 			if len(rows) < 2 {
 				continue
 			}
@@ -337,14 +359,23 @@ func processGenericFiles(paths []string) ([]model.TransactionRow, error) {
 			for i, h := range rows[0] {
 				headers[i] = parser.NormalizeHeader(h)
 			}
-			for _, row := range rows[1:] {
+			for rowIndex, row := range rows[1:] {
 				txn := make(model.TransactionRow)
 				for j, cell := range row {
 					if j < len(headers) {
 						txn[headers[j]] = cell
 					}
 				}
-				txn["数据来源"] = filepath.Base(path)
+				lineNumber := rowIndex + 2
+				txn["数据来源"] = parser.AuditDisplay("未知来源", path, sheetName, lineNumber)
+				txn["来源类型"] = "未知来源"
+				txn["来源表类型"] = "通用流水"
+				txn["来源文件"] = path
+				txn["来源文件SHA256"] = fileHash
+				txn["来源Sheet"] = sheetName
+				txn["原始行号"] = fmt.Sprintf("%d", lineNumber)
+				txn["映射规则版本"] = parser.MappingRuleVersion
+				txn["来源记录ID"] = parser.SourceRecordID(fileHash, sheetName, lineNumber)
 				result = append(result, txn)
 			}
 		}
@@ -435,18 +466,7 @@ func BuildPreview(txns []model.TransactionRow, limit int) ([]map[string]interfac
 	if len(txns) == 0 {
 		return nil, UnifiedOutputColumns
 	}
-	// Get all column names
-	colSet := make(map[string]bool)
-	for _, txn := range txns {
-		for k := range txn {
-			colSet[k] = true
-		}
-	}
-	var columns []string
-	for k := range colSet {
-		columns = append(columns, k)
-	}
-	sort.Strings(columns)
+	columns := append([]string(nil), UnifiedOutputColumns...)
 
 	if limit <= 0 {
 		limit = 100

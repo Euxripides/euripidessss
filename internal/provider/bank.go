@@ -35,6 +35,7 @@ func ProcessBankDirectory(sourceDir, outputDir string) (*Result, error) {
 	var accountFrames []map[string][]string
 
 	for _, path := range files {
+		fileHash, _ := parser.FileSHA256(path)
 		sheets, err := parser.ReadFile(path)
 		if err != nil {
 			log.Warn().Err(err).Str("path", path).Msg("skip file")
@@ -69,7 +70,7 @@ func ProcessBankDirectory(sourceDir, outputDir string) (*Result, error) {
 			}
 
 			if rules.TransactionTableTypes[tableType] {
-				normalized, err := rules.NormalizeTransaction(headers, data, tableType, path, sheetName)
+				normalized, err := rules.NormalizeTransaction(headers, data, tableType, path, fileHash, sheetName, headerRow)
 				if err == nil {
 					transactionFrames = append(transactionFrames, normalized)
 				}
@@ -261,7 +262,7 @@ func writeBankOutput(outputPath string, transactions, accounts []model.Transacti
 
 	sheetName := "交易明细信息"
 	f.SetSheetName("Sheet1", sheetName)
-	txCols := rules.BankFinalTables["交易明细信息"]
+	txCols := append(append([]string(nil), rules.BankFinalTables["交易明细信息"]...), parser.AuditTransactionColumns...)
 	for i, h := range txCols {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue(sheetName, cell, h)
