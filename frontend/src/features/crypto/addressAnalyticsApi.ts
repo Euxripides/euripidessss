@@ -24,6 +24,17 @@ export type AddressSummary = {
   readonly native_symbol?: string;
   readonly rpc_cached?: boolean;
   readonly rpc_checked_at?: string;
+  readonly data_complete?: boolean;
+  readonly data_status_message?: string;
+  readonly dataset_coverage?: {
+    readonly job_id: string;
+    readonly chain_id: number;
+    readonly transactions_status: string;
+    readonly logs_status: string;
+    readonly trace_status: string;
+    readonly coverage_percent: number;
+    readonly updated_at: string;
+  };
 };
 
 export type AddressActivity = {

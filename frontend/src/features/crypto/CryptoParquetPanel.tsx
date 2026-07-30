@@ -73,11 +73,15 @@ type TaskFormValues = {
 const statusMeta: Record<string, { label: string; color: string }> = {
   queued: { label: '排队中', color: 'default' },
   running: { label: '运行中', color: 'processing' },
+  pausing: { label: '暂停中', color: 'warning' },
+  paused: { label: '已暂停', color: 'warning' },
+  canceling: { label: '取消中', color: 'warning' },
   downloading: { label: '下载中', color: 'processing' },
   downloaded: { label: '已下载', color: 'cyan' },
   processing: { label: '筛选中', color: 'blue' },
   done: { label: '已完成', color: 'success' },
   failed: { label: '失败', color: 'error' },
+  skipped: { label: '已跳过', color: 'default' },
   canceled: { label: '已取消', color: 'warning' },
 };
 
@@ -99,7 +103,7 @@ export function CryptoParquetPanel() {
   const selectedSources = Form.useWatch('selected_sources', form) ?? [];
   const transactionsSelected = selectedSources.includes('transactions');
   const addressSummary = useMemo(() => summarizeAddresses(rawAddresses), [rawAddresses]);
-  const active = job?.status === 'running' || job?.status === 'queued';
+  const active = job?.status === 'running' || job?.status === 'queued' || job?.status === 'canceling';
   const columns = useMemo<ColumnsType<ParquetFileTask>>(() => buildFileColumns(), []);
 
   useEffect(() => {
@@ -131,7 +135,7 @@ export function CryptoParquetPanel() {
       setSettings(loadedSettings);
       settingsForm.setFieldsValue(loadedSettings);
       setJobs(loadedJobs);
-      const latest = loadedJobs.find((item) => item.status === 'running' || item.status === 'queued') ?? loadedJobs[0];
+      const latest = loadedJobs.find((item) => item.status === 'running' || item.status === 'queued' || item.status === 'canceling') ?? loadedJobs[0];
       if (latest) setJob(latest);
       form.setFieldsValue({
         chain_key: 'bsc',
@@ -537,8 +541,43 @@ export function CryptoParquetPanel() {
                   percent={Math.round(job.progress)}
                   showInfo={false}
                   status={job.status === 'failed' ? 'exception' : job.status === 'done' ? 'success' : 'active'}
+                  strokeColor={job.status === 'done' ? '#2f956a' : job.status === 'failed' ? '#d24444' : '#11a8c8'}
                   strokeWidth={12}
                 />
+                <div className="crypto-parquet-coverage">
+                  <div>
+                    <span>数据覆盖率</span>
+                    <strong>{job.dataset_coverage.coverage_percent.toFixed(2)}%</strong>
+                  </div>
+                  <Progress
+                    percent={Math.round(job.dataset_coverage.coverage_percent)}
+                    showInfo={false}
+                    status={job.dataset_coverage.coverage_percent >= 100 ? 'success' : 'active'}
+                    strokeColor={job.dataset_coverage.coverage_percent >= 100 ? '#2f956a' : '#11a8c8'}
+                  />
+                  <div className="crypto-parquet-coverage-sources">
+                    <span>Transactions <StatusTag status={coverageStatusLabel(job.dataset_coverage.transactions_status)} /></span>
+                    <span>Logs <StatusTag status={coverageStatusLabel(job.dataset_coverage.logs_status)} /></span>
+                    <span>Trace <StatusTag status={coverageStatusLabel(job.dataset_coverage.trace_status)} /></span>
+                  </div>
+                </div>
+                {job.dataset_coverage.coverage_percent < 100 && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="数据覆盖尚未完整"
+                    description="页面中的交易数和资产数只代表已加载数据，零值不表示完整历史没有交易。"
+                  />
+                )}
+                <div className="crypto-parquet-manifest-state">
+                  <span>Manifest</span>
+                  <StatusTag status={job.manifest.status || 'queued'} />
+                  <span>Schema {job.manifest.schema_version || job.schema_version}</span>
+                  <Tag color={job.manifest.consistent ? 'success' : 'warning'}>
+                    {job.manifest.consistent ? 'API 状态一致' : '等待最终提交'}
+                  </Tag>
+                  <span>SHA256 {(job.checksums ?? []).length} 个</span>
+                </div>
                 <div className="crypto-parquet-live-stats">
                   <span>源记录 <strong>{job.source_rows.toLocaleString('zh-CN')}</strong></span>
                   <span>命中记录 <strong>{job.matched_rows.toLocaleString('zh-CN')}</strong></span>
@@ -559,12 +598,12 @@ export function CryptoParquetPanel() {
                 </div>
                 <Space>
                   <Button icon={<ReloadOutlined />} onClick={() => refreshJob()} disabled={loading}>刷新</Button>
-                  {active && (
+                  {active && job.status !== 'canceling' && (
                     <Button danger icon={<StopOutlined />} onClick={cancelTask}>
                       安全取消
                     </Button>
                   )}
-                  {(job.status === 'failed' || job.status === 'canceled') && (
+                  {(job.status === 'failed' || job.status === 'canceled' || job.status === 'paused') && (
                     <Button type="primary" icon={<RetweetOutlined />} onClick={() => retryTask()}>
                       从检查点重试
                     </Button>
@@ -573,21 +612,24 @@ export function CryptoParquetPanel() {
               </div>
 
               {job.error && <Alert className="crypto-parquet-job-error" type="error" showIcon message={job.error} />}
+              {job.status === 'canceling' && (
+                <Alert className="crypto-parquet-job-error" type="warning" showIcon message="正在停止 I/O 并等待 Worker 释放资源…" />
+              )}
 
-              {job.files.length ? (
+              {(job.files ?? []).length ? (
                 <>
                   <div className="crypto-parquet-table-head">
                     <div>
                       <strong>AWS 分区任务</strong>
                       <span>每个文件独立记录下载、校验、筛选与重试状态</span>
                     </div>
-                    <span>{job.files.length} 个文件</span>
+                    <span>{(job.files ?? []).length} 个文件</span>
                   </div>
                   <Table
                     rowKey="uri"
                     size="small"
                     columns={columns}
-                    dataSource={[...job.files]}
+                    dataSource={[...(job.files ?? [])]}
                     pagination={false}
                     scroll={{ x: 740, y: 350 }}
                   />
@@ -625,7 +667,7 @@ export function CryptoParquetPanel() {
                     </span>
                     <span>
                       <StatusTag status={item.status} />
-                      {(item.status === 'failed' || item.status === 'canceled') && (
+                      {(item.status === 'failed' || item.status === 'canceled' || item.status === 'paused') && (
                         <Tooltip title="从 ETag 检查点和 .partial 文件继续">
                           <Button
                             size="small"
@@ -701,7 +743,8 @@ export function CryptoParquetPanel() {
 }
 
 function ResultFiles({ job }: { job: ParquetJob }) {
-  if (!job.outputs.length) return null;
+  if (!(job.outputs ?? []).length) return null;
+  const checksumByPath = new Map((job.checksums ?? []).map((item) => [item.path.toLowerCase(), item]));
   return (
     <div className="crypto-parquet-results">
       <div className="crypto-parquet-table-head">
@@ -711,11 +754,18 @@ function ResultFiles({ job }: { job: ParquetJob }) {
         </div>
       </div>
       <div className="crypto-parquet-result-list">
-        {job.outputs.map((path) => (
+        {(job.outputs ?? []).map((path) => (
           <div key={path}>
             <span>
               {path.toLowerCase().endsWith('.csv') ? <FileExcelOutlined /> : <DatabaseOutlined />}
-              <code>{path}</code>
+              <span>
+                <code>{path}</code>
+                {checksumByPath.get(path.toLowerCase()) && (
+                  <Tooltip title={checksumByPath.get(path.toLowerCase())?.value}>
+                    <small>SHA256 {checksumByPath.get(path.toLowerCase())?.value.slice(0, 16)}…</small>
+                  </Tooltip>
+                )}
+              </span>
             </span>
             <Button
               type="link"
@@ -763,6 +813,9 @@ function buildFileColumns(): ColumnsType<ParquetFileTask> {
             status={row.status === 'failed' ? 'exception' : row.status === 'done' ? 'success' : 'active'}
           />
           <small>{formatBytes(row.downloaded_bytes)} / {formatBytes(row.size_bytes)}</small>
+          {Boolean(row.total_chunks) && (
+            <small>分片 {row.total_chunks} · 恢复 {row.resumed_chunks ?? 0}</small>
+          )}
         </div>
       ),
     },
@@ -799,6 +852,17 @@ function StatusTag({ status }: { status: string }) {
 
 function stageLabel(status: string) {
   return statusMeta[status]?.label ?? '等待';
+}
+
+function coverageStatusLabel(status: string) {
+  switch (status) {
+    case 'COMPLETE': return 'done';
+    case 'DOWNLOADING': return 'running';
+    case 'FAILED': return 'failed';
+    case 'PARTIAL': return 'canceled';
+    case 'NOT_SELECTED': return 'skipped';
+    default: return status.toLowerCase();
+  }
 }
 
 function summarizeAddresses(raw: string): AddressSummary {

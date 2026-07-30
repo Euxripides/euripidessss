@@ -5894,3 +5894,247 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 - 当前未配置用户真实 Chainstack/Ankr/NodeReal 凭据，因此本轮没有向付费供应商发出真实请求；上线后需在RPC节点管理页录入完整Endpoint。
 - Token余额批量快照仍由既有环境变量RPC客户端执行；受管RPC已覆盖地址原生币余额、地址类型和Token Metadata，后续可继续将`balanceOf`与Receipt批量完全迁移至同一路由器。
 - 历史数据下载严格不走RPC；RPC失败只会使实时富化降级，不会中断AWS Parquet或SQD历史采集。
+
+## 2026-07-30 — Data Source Manager 数据源管理中心 V1.0
+
+### 新增功能
+
+- 在“虚拟币”菜单新增“数据源管理”，统一展示SQD Finalized Stream、AWS Public Dataset和V1.4受管RPC节点。
+- 页面提供数据源数量、健康数据源、异常数据源、今日请求和RPC缓存命中率五项概览。
+- 采用响应式卡片而非密集后台表格，展示支持链、脱敏Endpoint、P95延迟、成功率、健康评分、最近成功时间及配置/测试/日志/删除操作。
+- 新增全部/SQD/AWS/RPC过滤和名称、Provider、链搜索。
+- 新增健康事件中心与单数据源日志抽屉，事件不记录API Key。
+- 新增连接测试进度条和结果弹窗；测试全部由后端执行，浏览器不直接访问SQD、AWS或RPC。
+- SQD/AWS支持新增、修改、删除、启停和连接测试；RPC配置复用RPC节点管理页及其加密、限流、熔断和主备路由。
+- SQD/AWS有效配置已回注Parquet下载管理器：SQD使用配置的Portal/API Key，AWS发现结果保留配置Endpoint并用于后续文件下载。
+- 数据源健康监控每60秒运行一次；保存启用配置前必须先通过受控连接测试。
+
+### 安全与存储
+
+- 配置保存到`E:\codex\bsc_analytics\config\datasources.json`，系统盘C:数据目录会被拒绝。
+- SQD/AWS API Key使用V1.4 RPC管理器的DPAPI机器绑定主密钥和AES-GCM密文保存。
+- 前端、列表API、配置读取API和健康事件均不返回API Key明文；编辑时留空表示保留原密钥。
+- Endpoint只返回脱敏形式，错误中的URL替换为`[REDACTED_ENDPOINT]`。
+- 本轮未新增数据库表；数据源配置和最近100条健康事件使用原子JSON文件，RPC指标继续使用`rpc_control.sqlite`。
+
+### 新增或变更接口
+
+- `GET /api/crypto/datasource/list`
+- `GET /api/crypto/datasource/health`
+- `GET /api/crypto/datasource/metrics`
+- `GET /api/crypto/datasource/config?id={source_id}`
+- `POST /api/crypto/datasource/test`
+- `POST /api/crypto/datasource/save`
+- `DELETE /api/crypto/datasource/delete?id={source_id}`
+- SQD客户端新增`NewConfigured(client, portalRoot, apiKey)`，用于统一配置注入。
+
+### 修改文件
+
+- `internal/datasourcemanager/*`
+- `internal/datasource/sqd/client.go`
+- `internal/rpcmanager/manager.go`
+- `internal/parquetdownload/manager.go`
+- `internal/parquetdownload/handler.go`
+- `internal/parquetdownload/s3.go`
+- `internal/api/handlers.go`
+- `internal/api/crypto_datasource_handlers.go`
+- `frontend/src/App.tsx`
+- `frontend/src/features/crypto/datasource/*`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 已验证命令与结果
+
+- `go test ./...`：全包通过。
+- `go vet ./...`：通过。
+- `go build -o bin\etl-server.exe .\cmd\server\`：通过。
+- `cd frontend && npm run build`：TypeScript及Vite生产构建通过；仅保留既有大包体积提示。
+- 数据源管理器自动测试通过：新增、修改、删除、加密密钥、不回显密钥、重启读取、连接测试、HTTPS限制和C盘拒绝。
+- 运行服务真实请求：SQD返回`binance-mainnet`，延迟340ms；AWS公共目录测试成功，延迟299ms。
+- Playwright/Edge三项通过：桌面真实SQD测试、添加/修改/删除临时停用数据源、390px移动端；无控制台错误和页面级横向溢出。
+- 临时Playwright数据源已删除，最终运行状态仅保留SQD和AWS两个默认数据源。
+- 修改后执行`.\run.ps1`，服务PID 18408，`/api/health`返回`status=ok`。
+
+### 未完成事项与注意事项
+
+- 当前未配置真实付费RPC节点，因此统一页面只显示SQD和AWS；录入NodeReal/Chainstack/Ankr后会自动出现对应RPC卡片。
+- AWS下载速度指标结构已预留，但当前V1.0健康卡片只展示真实连接延迟和成功率；后续可把Parquet任务实时下载速度聚合到该字段。
+- 健康趋势没有使用伪造的前端曲线；V1.0展示真实健康评分与事件，需持久化时间序列后再增加趋势图。
+## 2026-07-30 — RPC 页面说明提示精简
+
+- 删除 RPC 节点管理页顶部整行 Endpoint 安全说明提示。
+- 删除新增/编辑 RPC 节点弹窗中的整行 API Key 提示。
+- 仅调整前端展示文案；Endpoint 加密、脱敏、Chain ID 与最新区块校验逻辑未变。
+- 修改文件：`frontend/src/features/rpc/RpcSettingsPage.tsx`、`frontend/src/features/rpc/rpc-settings.css`。
+## 2026-07-30 — 数据源卡片与日志布局修复
+
+- 数据源卡片栅格改为基于360px最小卡宽自动适配，避免主内容区域较窄时仍强制四列。
+- 卡片底部最近成功时间与操作按钮改为上下两行；配置、测试、日志和删除按钮始终约束在卡片内。
+- 健康日志抽屉宽度限制为视口的92%，长日志最多显示三行并自动断词，悬停可查看全文。
+- 修改文件：`frontend/src/features/crypto/datasource/components/SourceCard.tsx`、`DataSourcePage.tsx`、`datasource.css`。
+## 2026-07-30 — RPC 独立测试 Endpoint
+
+### 新增功能与行为
+
+- RPC节点新增可选`test_endpoint_url`；配置后，手动“测试连接”和保存前连接校验优先使用测试Endpoint。
+- 未配置测试Endpoint时，测试连接自动回退到正常`endpoint_url`。
+- 自动路由、正式富化请求及定时健康检查始终使用正常Endpoint，测试Endpoint不会进入生产路由或历史数据下载。
+- 测试结果新增`endpoint_role`，值为`TEST`或`PRIMARY`，前端成功提示会明确本次使用的地址类型。
+- RPC列表新增`test_endpoint_configured`和脱敏`test_endpoint_masked`，不返回测试Endpoint明文。
+
+### 数据结构与前端
+
+- `rpc_endpoints`新增可空字段`test_endpoint_encrypted BLOB`，启动时自动兼容迁移旧库。
+- 测试Endpoint与正常Endpoint使用相同DPAPI机器绑定主密钥和AES-GCM加密。
+- RPC节点表单新增“使用独立测试 Endpoint”开关；编辑时留空保留既有测试地址，关闭开关会清除测试地址。
+- 移动端节点弹窗限制在视口内滚动，限速与并发参数改为两列布局，确保保存按钮始终可达。
+- 修改文件：`internal/rpcmanager/types.go`、`manager.go`、`store.go`、`manager_test.go`、`frontend/src/features/rpc/RpcSettingsPage.tsx`、`rpcTypes.ts`、`rpc-settings.css`。
+
+### 已验证
+
+- `go test -v -timeout 90s ./internal/rpcmanager`：9项通过，新增测试地址隔离与正常地址回退用例。
+- `go test ./...`、`go vet ./...`、后端构建及前端生产构建通过。
+- 运行服务临时双路径RPC闭环：配置测试地址时`primary=0,test=4`；清除后回退正常地址，最终`primary=4,test=4`；接口角色分别为`TEST`和`PRIMARY`。
+- 临时节点与模拟服务已清理；Playwright/Edge桌面和390px移动端表单通过，无横向溢出或控制台错误。
+- 已执行`.\run.ps1`，服务PID 34392。
+## 2026-07-30 — RPC 健康检查降频与使用前预检
+
+- RPC后台周期健康检查由每30秒调整为每30分钟。
+- 正常Endpoint健康结果有效期为30分钟；正式RPC调用前若从未检测或结果已过期，先执行一次`eth_chainId`和`eth_blockNumber`预检。
+- 30分钟内有健康检查或成功业务请求时直接复用健康状态，不为每笔请求重复测试。
+- 单节点使用前预检增加并发锁；并发首次使用只会执行一组预检。
+- 预检只使用正常Endpoint，不使用独立测试Endpoint；独立测试Endpoint仍仅用于手动测试和保存校验。
+- 修改文件：`internal/rpcmanager/manager.go`、`internal/rpcmanager/manager_test.go`。
+- 验证：RPC管理器10项测试通过；新用例确认新建测试2次后，连续两次业务请求总调用数为4，状态过期后的下一次请求总调用数增至7，即仅增加2次预检和1次业务调用。
+- `go test ./...`、`go vet ./...`及后端构建通过。
+- 运行服务Base临时节点验证：保存校验仅命中独立测试地址2次；首次正式地址富化前，正常地址执行2次预检并完成2次业务调用，计数由`primary=0,test=2`变为`primary=4,test=2`，结果为`DETECTED/EOA`。
+- 临时节点与模拟服务已删除；执行`.\run.ps1`后服务PID 808，健康检查正常。
+
+## 2026-07-30 — BSC 真实地址完整功能验证
+
+### 验证对象与结论
+
+- 使用真实地址 `0xD26889f63094Ba5A9d32666CdF5Ba381acfad6A6` 执行受管 RPC、地址分析页、历史数据任务、缓存和故障切换验证。
+- BSC 实时富化结果为 `CONTRACT / DETECTED`，原生 BNB 余额为 0；独立分类接口返回 BNB Smart Chain、置信度 0.98。
+- Token Metadata 完整识别为 `Finanx AI (FNXAI)`、18 位精度、总供应量原始值 `645850555960320580000000000`；二次请求命中缓存。
+- 同一地址在 ETH 上识别为 `EOA`、余额为 0；Base 与 Arbitrum 未配置 RPC 时均明确返回“该链未配置可用 RPC 节点”。
+- 通过临时高优先级 429 节点验证正式请求故障切换：失败节点被标记 `RATE_LIMITED`，请求自动切换到健康节点并返回正确 BSC 结果；临时节点与模拟服务已清理。
+
+### 历史数据与证据
+
+- SQD 任务 `3b751dae9980c229` 已完成，覆盖 2026-03-13 的 logs、traces、internal/address summary 输出；trace Parquet 共 30,249 行、8,294 个不同交易哈希。
+- 已在输出中核验真实交易 `0xb93fc5d1585c08bf1e9f90e9c256de082002f211221ff74a24f915326fab5993`，区块 86,297,561，时间 2026-03-13 13:35:50+08:00，共命中 3 条调用轨迹。
+- 地址流水、Token、NFT 和交易对手均为 0：本任务未下载 transactions 层，且命中的合约调用为零价值 trace，不能据此断言地址没有完整历史交易。
+- AWS transactions 单文件约 5.96GB，实测约 2.3MB/s；为避免长时间占用，任务 `4a33337970cfce97` 已通过应用安全取消。损坏的并行下载 staging partial 与 `.aria2` 元数据已删除，已完成的 SQD 输出未受影响。
+
+### 前端与运行状态
+
+- Playwright/Edge 桌面 1536×960 与移动端 390×844 均通过：合约地址状态、四个数据页签、BscScan 跳转、响应式布局正常，无页面横向溢出和控制台错误。
+- 截图保存在 Codex visualization 目录：`real-address-bsc-desktop.png`、`real-address-bsc-mobile.png`。
+- 最终 `/api/health` 返回 `status=ok`；本次未修改后端代码，因此未执行重启。
+
+### 发现的问题与注意事项
+
+- 完成任务的持久化 manifest 仍记录 `status=running / progress=85 / stage=output`，而任务 API 已为 `done / 100%`；说明 manifest 在最终状态更新前写入。
+- SQD 任务设置 `export_csv=true` 后仍只生成 Parquet 和 manifest；当前 CSV 导出仅覆盖 AWS `processSource` 路径。
+- 完整 transactions 历史层尚未完成真实下载验证，后续不能把本次测试表述为“完整交易历史已核验”。
+- 本次无代码、接口或数据库结构变更，仅产生测试任务数据、截图与交接记录。
+- 完整测试步骤、API结果、阶段计数、SHA-256、DuckDB抽样、缺陷和验证边界已整理至`docs/BSC真实地址完整功能测试报告_2026-07-30.md`。
+
+## 2026-07-30 — EVM 多链分析平台 V1.4.1 稳定性修复
+
+### Task Finalizer 与 Manifest
+
+- 新增统一 Task Finalizer；正常完成、失败和取消全部经过输出存在性检查、SHA-256、终态收敛、最终 Manifest 与 Job 状态强制持久化。
+- Manifest Schema 升级为`1.4.1`，新增`schema_version`、`dataset_coverage`、`checksums`、`finished_at`、`manifest`和`task_events`。
+- Manifest 使用同目录临时文件、`fsync`和原子替换；Windows使用`MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`，不再先删除正式文件再rename。
+- Worker不再提前写最终Manifest；最终Manifest只由Finalizer生成。
+- 启动时自动检查旧任务。旧任务状态、Schema或Manifest不一致时重新最终化。
+- 真实旧任务`3b751dae9980c229`已自动修复为API/Manifest同时`done/100%`，Schema 1.4.1，`finished_at`有效。
+
+### 状态机、取消与恢复
+
+- 新增`pausing`、`paused`、`canceling`状态；取消请求先记录`cancellation_requested=true`和`CANCEL_REQUESTED`事件，再中断Worker。
+- 终态任务统一收敛Stage和FileTask：Canceled/Failed任务不再保留Running或Queued Stage。
+- 服务在运行任务中重启时，任务先进入Paused，再使用Chunk或旧`.partial`检查点自动恢复；取消过程中重启则直接收敛为Canceled。
+- `task_events`最多保留500条，记录创建、开始、Chunk完成/复用、数据源完成、CSV、取消、异常和完成。
+- 真实旧取消任务`4a33337970cfce97`已修复为`canceled`，活动Stage为0，文件状态、Manifest和API一致。
+
+### 统一Dataset Writer与CSV
+
+- 新增`internal/writer`：Parquet校验、DuckDB CSV导出、SHA-256及原子Manifest写入。
+- SQD产生的所有Parquet在`export_csv=true`时统一导出CSV，不再只有AWS transactions路径生成CSV。
+- 启动时对“已完成、要求CSV但没有CSV”的历史任务从现有Parquet补生成CSV，无需重新请求数据源。
+- 真实任务`3b751dae9980c229`已补生成9个CSV；`traces.csv`为12,581,974字节。最终输出19个、SHA-256共18个，CSV均有真实Schema表头。
+
+### 大文件并行下载
+
+- 新增`internal/downloader`：32MiB Range Chunk规划、最多4个并行Worker、ETag/If-Match校验、原子JSON检查点、分片复用、顺序合并及最终SHA-256。
+- 64MiB以上新文件走并行Chunk下载；服务重启自动复用已完成Chunk。
+- 遇到不支持Range的服务器自动回退单流下载；已有旧版连续`.partial`时继续使用原单流Range续传，避免丢失旧进度。
+- 完成后清理Chunk与检查点；取消或异常时保留合法Chunk供恢复。
+- 自动测试验证5GiB生成160个Chunk、10GiB生成320个Chunk；真实Range服务器集成测试验证跳过已完成Chunk、合并内容和SHA-256一致。
+
+### 数据覆盖与地址页
+
+- Job新增`dataset_coverage`：transactions/logs/trace分别显示`COMPLETE/PARTIAL/DOWNLOADING/FAILED/NOT_SELECTED`及总覆盖率。
+- 覆盖率按三类完整历史数据层计算；未选择的数据源不会被误认为完整。
+- 地址Summary接口新增`dataset_coverage`、`data_complete`和`data_status_message`。
+- 地址页在覆盖不足时显示黄色提示和Coverage，明确“零值不代表完整历史没有交易”。
+- 真实任务仅完成logs/traces，覆盖率显示66.67%，transactions为NOT_SELECTED。
+
+### 前端任务监控
+
+- Parquet任务页新增覆盖率、三类数据层状态、Manifest状态、Schema、API一致性及SHA-256数量。
+- 结果文件逐项显示SHA-256短摘要和完整Tooltip；AWS文件显示Chunk总数及复用数。
+- 增加Canceling提示，取消按钮在等待Worker释放时禁用。
+- 修复SQD历史任务`files=null`导致Parquet页面React空白的问题；`files/outputs/checksums/task_events`全部兼容null。
+- 完成态进度条固定使用绿色，覆盖率未满使用青色。
+
+### 接口与数据结构
+
+- API路径没有变化。
+- Parquet Job响应新增：`schema_version`、`cancellation_requested`、`dataset_coverage`、`checksums`、`manifest`、`task_events`。
+- FileTask新增：`download_sha256`、`resumed_chunks`、`total_chunks`。
+- 地址Summary响应新增：`dataset_coverage`、`data_complete`、`data_status_message`。
+- 没有新增数据库或数据库表；覆盖率和事件随Job JSON持久化，符合项目文件系统存储约束。
+
+### 修改文件
+
+- `internal/writer/*`
+- `internal/downloader/*`
+- `internal/parquetdownload/types.go`
+- `internal/parquetdownload/manager.go`
+- `internal/parquetdownload/process.go`
+- `internal/parquetdownload/download.go`
+- `internal/parquetdownload/task_finalizer.go`
+- `internal/parquetdownload/dataset_writer.go`
+- `internal/parquetdownload/coverage.go`
+- `internal/parquetdownload/address_query.go`
+- `internal/parquetdownload/stability_test.go`
+- `frontend/src/features/crypto/cryptoParquetApi.ts`
+- `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+- `frontend/src/features/crypto/crypto-parquet.css`
+- `frontend/src/features/crypto/addressAnalyticsApi.ts`
+- `frontend/src/features/crypto/AddressAnalyticsPanel.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 验证结果
+
+- `go test ./...`：全包通过。
+- `go vet ./...`：通过。
+- `go build -o bin\etl-server.exe .\cmd\server\`：通过。
+- `cd frontend && npm run build`：TypeScript及Vite生产构建通过；仅保留既有大包体积提示。
+- 自动测试通过：Manifest原子替换和SHA、API/Manifest一致性、取消Stage收敛、SQD真实DuckDB CSV、5/10GiB Chunk规划、Range Chunk恢复与合并。
+- 真实旧任务修复：9个CSV、19个输出、18个SHA256、Manifest/API`done/100%`。
+- 真实SQD新任务连续两次因供应商`HTTP 503 No available workers`失败；失败Finalizer、Stage收敛和Manifest一致性均通过，未继续高频重试。
+- Playwright/Edge桌面1536×960与移动端390×844通过：无横向溢出、控制台错误、页面错误或请求失败；Coverage、Manifest一致性和Checksum均可见。
+- 截图：`v141-parquet-stability-desktop.png`、`v141-parquet-stability-mobile.png`。
+- 最终执行`.\run.ps1`，服务PID 21088，`/api/health`返回`status=ok`。
+
+### 未完成事项与边界
+
+- 5GiB/10GiB已完成确定性Chunk规划测试和小文件真实Range恢复测试，但本次没有重新完整下载5GiB或10GiB远程文件；不能声称这两个体量已完成端到端远程下载。
+- SQD供应商本次连续返回503，新建任务的成功路径未从供应商重新跑完；CSV成功路径使用此前真实SQD Parquet完成补导出并核验。
+- 前端仍有既有约2MB主包体积提示，本次未重构无关路由拆包。

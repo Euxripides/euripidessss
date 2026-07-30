@@ -79,6 +79,18 @@ ORDER BY last_active_time DESC NULLS LAST LIMIT 1`)
 	}
 	rows[0]["chain_key"] = chainKey
 	rows[0]["address"] = address
+	if jobID := strings.TrimSpace(fmt.Sprint(rows[0]["job"])); jobID != "" {
+		if job, jobErr := m.Get(jobID); jobErr == nil {
+			rows[0]["dataset_coverage"] = job.Coverage
+			rows[0]["data_complete"] = job.Coverage.CoveragePercent >= 100
+			if job.Coverage.CoveragePercent < 100 {
+				rows[0]["data_status_message"] = fmt.Sprintf(
+					"历史数据未完整加载，当前覆盖率 %.2f%%；零值不能解释为完整历史无交易",
+					job.Coverage.CoveragePercent,
+				)
+			}
+		}
+	}
 	network, resolveErr := chain.Resolve(chainKey)
 	if resolveErr == nil {
 		rpcConfigured := m.rpcConfigured(network.Key, network.RPCEnv)

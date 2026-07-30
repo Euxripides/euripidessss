@@ -19,6 +19,7 @@ import (
 	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/config"
 	"github.com/etl/backend/internal/cryptodownload"
+	"github.com/etl/backend/internal/datasourcemanager"
 	"github.com/etl/backend/internal/dbimport"
 	"github.com/etl/backend/internal/etl"
 	"github.com/etl/backend/internal/model"
@@ -32,17 +33,19 @@ import (
 )
 
 var (
-	cfg             *config.Config
-	store           *storage.FileStorage
-	dbStore         *dbimport.Store
-	dbService       *dbimport.Service
-	dbExportManager *dbimport.ExportManager
-	controlStore    *control.Store
-	analysisEngine  *duckdb.Engine
-	cryptoDownload  http.Handler
-	parquetDownload *parquetdownload.Handler
-	rpcManager      *rpcmanager.Manager
-	rpcAPI          http.Handler
+	cfg               *config.Config
+	store             *storage.FileStorage
+	dbStore           *dbimport.Store
+	dbService         *dbimport.Service
+	dbExportManager   *dbimport.ExportManager
+	controlStore      *control.Store
+	analysisEngine    *duckdb.Engine
+	cryptoDownload    http.Handler
+	parquetDownload   *parquetdownload.Handler
+	rpcManager        *rpcmanager.Manager
+	rpcAPI            http.Handler
+	dataSourceManager *datasourcemanager.Manager
+	dataSourceAPI     http.Handler
 )
 
 const (
@@ -174,12 +177,26 @@ func Setup(c *config.Config) {
 			parquetDownload.SetRPCManager(manager)
 		}
 	}
+	if rpcManager != nil {
+		if manager, err := datasourcemanager.New(`E:\codex\bsc_analytics`, rpcManager); err != nil {
+			log.Warn().Err(err).Msg("crypto_datasource_api_unavailable")
+		} else {
+			dataSourceManager = manager
+			dataSourceAPI = http.StripPrefix("/api/crypto/datasource", datasourcemanager.NewHandler(manager))
+			if parquetDownload != nil {
+				parquetDownload.SetDataSourceManager(manager)
+			}
+		}
+	}
 }
 
 // Shutdown closes the control store
 func Shutdown() {
 	if parquetDownload != nil {
 		parquetDownload.Close()
+	}
+	if dataSourceManager != nil {
+		dataSourceManager.Close()
 	}
 	if rpcManager != nil {
 		if err := rpcManager.Close(); err != nil {
@@ -227,6 +244,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/crypto/parquet/*path", HandleCryptoParquet)
 		api.Any("/crypto/rpc/*path", HandleCryptoRPC)
 		api.Any("/crypto/enrichment/*path", HandleCryptoRPC)
+		api.Any("/crypto/datasource/*path", HandleCryptoDataSource)
 		api.GET("/address/*path", HandleAddressAnalytics)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)

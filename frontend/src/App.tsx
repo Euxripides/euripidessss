@@ -56,6 +56,7 @@ import { CryptoAddressPanel } from "./features/crypto/CryptoAddressPanel";
 import { CryptoDownloadPanel } from "./features/crypto/CryptoDownloadPanel";
 import { CryptoParquetPanel } from "./features/crypto/CryptoParquetPanel";
 import { AddressAnalyticsPanel } from "./features/crypto/AddressAnalyticsPanel";
+import { DataSourcePage } from "./features/crypto/datasource/DataSourcePage";
 import { RpcSettingsPage } from "./features/rpc/RpcSettingsPage";
 import { RuleExpansionDrawer } from "./features/clean/RuleExpansionDrawer";
 import { EdgeDetailModal } from "./features/flow/EdgeDetailModal";
@@ -221,6 +222,7 @@ const menuItems = [
       { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "数据下载" },
       { key: "crypto-parquet", icon: <FileZipOutlined />, label: "Parquet下载" },
       { key: "crypto-rpc", icon: <CloudServerOutlined />, label: "RPC节点管理" },
+      { key: "crypto-datasource", icon: <DatabaseOutlined />, label: "数据源管理" },
       { key: "crypto-analytics", icon: <FundProjectionScreenOutlined />, label: "链上地址分析" },
       { key: "crypto-address", icon: <WalletOutlined />, label: "地址区分" },
     ],
@@ -516,6 +518,7 @@ export function App() {
             {active === "crypto-download" && <CryptoDownloadPanel />}
             {active === "crypto-parquet" && <CryptoParquetPanel />}
             {active === "crypto-rpc" && <RpcSettingsPage />}
+            {active === "crypto-datasource" && <DataSourcePage onOpenRpc={() => setActive("crypto-rpc")} />}
             {active === "crypto-analytics" && <AddressAnalyticsPanel />}
             {active === "crypto-address" && <CryptoAddressPanel />}
           </Content>
@@ -599,6 +602,7 @@ export function App() {
       "crypto-download": "虚拟币数据下载",
       "crypto-parquet": "EVM Parquet 批量资金分析",
       "crypto-rpc": "EVM RPC 节点管理",
+      "crypto-datasource": "数据源管理中心",
       "crypto-analytics": "链上地址分析",
       "crypto-address": "地址区分",
     }[key];

@@ -25,6 +25,7 @@ type downloadResult struct {
 	file       *FileTask
 	localPath  string
 	checkpoint *checkpoint
+	metadata   downloadMetadata
 	err        error
 }
 
@@ -35,6 +36,7 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 		job.Stage = "download"
 		job.StartedAt = &started
 		setStage(job, "download", StatusRunning, 0, "准备下载队列")
+		addTaskEvent(job, "DOWNLOAD_STARTED", "下载与数据处理开始", "download", nil)
 	})
 	job, err := m.Get(id)
 	if err != nil {
@@ -102,10 +104,31 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 					task.LocalPath = localPath
 					task.Error = ""
 				})
-				err := downloadSource(ctx, client, file.SourceObject, localPath, func(downloaded int64) {
-					m.updateDownloadProgress(id, file.URI, downloaded, started)
-				})
-				results <- downloadResult{file: file, localPath: localPath, err: err}
+				metadata, err := downloadSource(
+					ctx,
+					client,
+					file.SourceObject,
+					localPath,
+					func(downloaded int64) {
+						m.updateDownloadProgress(id, file.URI, downloaded, started)
+					},
+					func(index, total int, resumed bool) {
+						m.mutate(id, func(job *Job) {
+							eventType := "CHUNK_COMPLETED"
+							message := fmt.Sprintf("下载分片 %d/%d 完成", index+1, total)
+							if resumed {
+								eventType = "CHUNK_RESUMED"
+								message = fmt.Sprintf("复用已完成分片 %d/%d", index+1, total)
+							}
+							addTaskEvent(job, eventType, message, "download", map[string]any{
+								"source_uri":  file.URI,
+								"chunk_index": index,
+								"chunk_total": total,
+							})
+						})
+					},
+				)
+				results <- downloadResult{file: file, localPath: localPath, metadata: metadata, err: err}
 			}
 		}()
 	}
@@ -165,6 +188,9 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 			task.CSVPath = outcome.CSVPath
 			task.SourceRows = outcome.SourceRows
 			task.MatchedRows = outcome.Matched
+			task.DownloadSHA256 = result.metadata.SHA256
+			task.ResumedChunks = result.metadata.ResumedChunks
+			task.TotalChunks = result.metadata.TotalChunks
 			task.Error = ""
 		})
 		m.mutate(id, func(job *Job) {
@@ -176,6 +202,13 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 				job.Outputs = appendUnique(job.Outputs, outcome.CSVPath)
 			}
 			updateProcessingStages(job, processedBytes)
+			addTaskEvent(job, "SOURCE_COMPLETED", "数据源下载、校验与筛选完成", "match", map[string]any{
+				"source_uri":     result.file.URI,
+				"matched_rows":   outcome.Matched,
+				"source_rows":    outcome.SourceRows,
+				"resumed_chunks": result.metadata.ResumedChunks,
+				"total_chunks":   result.metadata.TotalChunks,
+			})
 		})
 		_ = m.saveCheckpoint(settings, result.file.SourceObject, batchHash, outcome)
 		if !job.KeepSourceFiles {
@@ -215,6 +248,21 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 				item.Outputs = appendUnique(item.Outputs, output)
 			}
 		})
+		if job.ExportCSV {
+			csvOutputs, exportErr := m.exportDatasetCSVs(ctx, id, settings, sqdResult.Outputs)
+			if exportErr != nil {
+				m.finishJob(id, StatusFailed, exportErr)
+				return
+			}
+			m.mutate(id, func(item *Job) {
+				for _, output := range csvOutputs {
+					item.Outputs = appendUnique(item.Outputs, output)
+				}
+				addTaskEvent(item, "CSV_EXPORTED", fmt.Sprintf("SQD 输出已生成 %d 个 CSV", len(csvOutputs)), "output", map[string]any{
+					"csv_count": len(csvOutputs),
+				})
+			})
+		}
 	}
 	if len(job.Files) > 0 {
 		analytics, analyticsErr := m.buildAnalytics(ctx, id, settings, network, targetPath)
@@ -281,17 +329,7 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 		setStage(job, "download", StatusDone, 100, "所有分片已校验")
 		setStage(job, "schema", StatusDone, 100, "必需字段已确认")
 		setStage(job, "match", StatusDone, 100, "批量地址匹配完成")
-		setStage(job, "output", StatusRunning, 90, "写入任务清单")
-	})
-	snapshot, _ := m.Get(id)
-	manifestPath := filepath.Join(settings.DataRoot, "exports", id+"-manifest.json")
-	if err := writeJSONAtomic(manifestPath, snapshot); err != nil {
-		m.finishJob(id, StatusFailed, err)
-		return
-	}
-	m.mutate(id, func(job *Job) {
-		job.Outputs = appendUnique(job.Outputs, manifestPath)
-		setStage(job, "output", StatusDone, 100, "Parquet、清单与可选 CSV 已提交")
+		setStage(job, "output", StatusRunning, 90, "检查输出并计算 SHA256")
 	})
 	m.finishJob(id, StatusDone, nil)
 }
@@ -319,28 +357,7 @@ func ensurePipelineDiskCapacity(settings Settings, files []*FileTask) error {
 }
 
 func (m *Manager) finishJob(id, status string, finishErr error) {
-	finished := time.Now()
-	m.mutate(id, func(job *Job) {
-		job.Status = status
-		job.FinishedAt = &finished
-		job.Progress = 100
-		if status == StatusDone {
-			job.Stage = "done"
-			job.Error = ""
-		} else {
-			job.Stage = status
-			if finishErr != nil {
-				job.Error = finishErr.Error()
-			}
-		}
-	})
-	m.mu.Lock()
-	delete(m.cancels, id)
-	job := m.jobs[id]
-	m.mu.Unlock()
-	if job != nil {
-		_ = m.persistJob(job, true)
-	}
+	m.finalizeJob(id, status, finishErr)
 }
 
 func (m *Manager) updateFile(id, uri string, mutate func(*FileTask)) {

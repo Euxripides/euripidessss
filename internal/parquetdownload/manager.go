@@ -18,7 +18,9 @@ import (
 	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/datasource/sqd"
+	"github.com/etl/backend/internal/datasourcemanager"
 	"github.com/etl/backend/internal/rpcmanager"
+	datasetwriter "github.com/etl/backend/internal/writer"
 )
 
 type Manager struct {
@@ -33,6 +35,34 @@ type Manager struct {
 	sqd          *sqd.Client
 	engine       *duckdb.Engine
 	rpcManager   *rpcmanager.Manager
+	dataSources  *datasourcemanager.Manager
+}
+
+func (m *Manager) SetDataSourceManager(manager *datasourcemanager.Manager) {
+	m.mu.Lock()
+	m.dataSources = manager
+	m.mu.Unlock()
+}
+
+func (m *Manager) syncDataSourceConfig() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dataSources == nil {
+		return
+	}
+	sqdConfig := m.dataSources.RuntimeConfig(datasourcemanager.TypeStream)
+	if sqdConfig.Endpoint != "" {
+		m.sqd = sqd.NewConfigured(
+			&http.Client{Timeout: time.Duration(sqdConfig.TimeoutMS) * time.Millisecond},
+			sqdConfig.Endpoint,
+			sqdConfig.APIKey,
+		)
+	}
+	awsConfig := m.dataSources.RuntimeConfig(datasourcemanager.TypeDataset)
+	if awsConfig.Endpoint != "" {
+		m.discoverer.endpoint = awsConfig.Endpoint
+		m.discoverer.adapter.Client.Timeout = time.Duration(awsConfig.TimeoutMS) * time.Millisecond
+	}
 }
 
 func (m *Manager) SetRPCManager(manager *rpcmanager.Manager) {
@@ -77,6 +107,8 @@ func NewManager(rootDir string, engine *duckdb.Engine) (*Manager, error) {
 		return nil, err
 	}
 	manager.loadJobs()
+	manager.reconcileFinalManifests()
+	manager.resumePausedJobs()
 	return manager, nil
 }
 
@@ -104,6 +136,7 @@ func (m *Manager) SaveSettings(settings Settings) (Settings, error) {
 }
 
 func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, error) {
+	m.syncDataSourceConfig()
 	chainKey := strings.ToLower(strings.TrimSpace(request.ChainKey))
 	network, err := chain.Resolve(chainKey)
 	if err != nil {
@@ -186,7 +219,7 @@ func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, e
 func (m *Manager) Start(ctx context.Context, request StartRequest) (*Job, error) {
 	m.mu.RLock()
 	for _, existing := range m.jobs {
-		if existing.Status == StatusRunning || existing.Status == StatusQueued {
+		if existing.Status == StatusRunning || existing.Status == StatusQueued || existing.Status == StatusCanceling {
 			m.mu.RUnlock()
 			return nil, fmt.Errorf("已有 Parquet 任务 %s 正在运行；为控制磁盘和 DuckDB 内存，请等待完成或先取消", existing.ID)
 		}
@@ -214,6 +247,7 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (*Job, error)
 	id := newJobID()
 	now := time.Now()
 	job := &Job{
+		SchemaVersion:   datasetwriter.ManifestSchemaVersion,
 		ID:              id,
 		ChainKey:        preview.ChainKey,
 		ChainID:         preview.ChainID,
@@ -234,11 +268,20 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (*Job, error)
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		Stages:          defaultStages(),
+		Manifest: ManifestInfo{
+			Status:        StatusQueued,
+			SchemaVersion: datasetwriter.ManifestSchemaVersion,
+		},
 	}
 	for _, source := range preview.Files {
 		sourceCopy := source
 		job.Files = append(job.Files, &FileTask{SourceObject: sourceCopy, Status: StatusQueued})
 	}
+	updateCoverage(job)
+	addTaskEvent(job, "JOB_CREATED", "任务已创建", "queued", map[string]any{
+		"selected_sources": append([]string(nil), job.SelectedSources...),
+		"address_count":    job.Addresses.Valid,
+	})
 	m.mu.Lock()
 	m.jobs[id] = job
 	m.mu.Unlock()
@@ -283,14 +326,29 @@ func (m *Manager) List() []*Job {
 
 func (m *Manager) Cancel(id string) (*Job, error) {
 	m.mu.RLock()
-	cancel := m.cancels[id]
 	job := m.jobs[id]
 	m.mu.RUnlock()
 	if job == nil {
 		return nil, errors.New("Parquet 任务不存在")
 	}
+	if job.Status == StatusDone || job.Status == StatusFailed || job.Status == StatusCanceled {
+		return m.Get(id)
+	}
+	m.mutate(id, func(item *Job) {
+		item.Status = StatusCanceling
+		item.Stage = "canceling"
+		item.CancellationRequested = true
+		addTaskEvent(item, "CANCEL_REQUESTED", "用户请求取消任务", item.Stage, nil)
+		updateCoverage(item)
+	})
+	m.mu.RLock()
+	cancel := m.cancels[id]
+	m.mu.RUnlock()
 	if cancel != nil {
 		cancel()
+	}
+	if current, getErr := m.Get(id); getErr == nil {
+		_ = m.persistJob(current, true)
 	}
 	return m.Get(id)
 }
@@ -300,8 +358,8 @@ func (m *Manager) Retry(id string) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	if job.Status != StatusFailed && job.Status != StatusCanceled {
-		return nil, errors.New("仅失败或已取消任务可以重试")
+	if job.Status != StatusFailed && job.Status != StatusCanceled && job.Status != StatusPaused {
+		return nil, errors.New("仅失败、已取消或已暂停任务可以重试")
 	}
 	keepSource := job.KeepSourceFiles
 	exportCSV := job.ExportCSV
@@ -334,13 +392,63 @@ func (m *Manager) loadJobs() {
 		if err != nil || json.Unmarshal(content, &job) != nil || job.ID == "" {
 			continue
 		}
-		if job.Status == StatusRunning || job.Status == StatusQueued {
-			job.Status = StatusFailed
-			job.Stage = "interrupted"
-			job.Error = "服务重启中断，保留 .partial 与检查点，可点击重试继续"
+		if job.Status == StatusCanceling || job.CancellationRequested {
+			job.Status = StatusCanceled
+			job.Stage = "canceled"
+			job.Error = "服务在取消过程中重启，已按取消请求收敛"
+			finished := time.Now()
+			job.FinishedAt = &finished
+			settleStages(&job, StatusCanceled)
+			addTaskEvent(&job, "CANCEL_RECOVERED", job.Error, "canceled", nil)
+		} else if job.Status == StatusRunning || job.Status == StatusQueued || job.Status == StatusPausing {
+			job.Status = StatusPaused
+			job.Stage = "paused"
+			job.Error = ""
+			for index := range job.Stages {
+				if job.Stages[index].Status == StatusRunning {
+					job.Stages[index].Status = StatusQueued
+					job.Stages[index].Detail = "服务重启后等待从 Chunk/.partial 检查点恢复"
+				}
+			}
+			addTaskEvent(&job, "WORKER_PAUSED", "服务重启中断，任务将自动从检查点恢复", "paused", nil)
 		}
+		if job.SchemaVersion == "" {
+			job.SchemaVersion = datasetwriter.ManifestSchemaVersion
+		}
+		if job.Manifest.SchemaVersion == "" {
+			job.Manifest.SchemaVersion = datasetwriter.ManifestSchemaVersion
+		}
+		updateCoverage(&job)
 		m.jobs[job.ID] = &job
 	}
+}
+
+func (m *Manager) resumePausedJobs() {
+	var selected *Job
+	for _, job := range m.List() {
+		if job.Status == StatusPaused {
+			selected = job
+			break
+		}
+	}
+	if selected == nil {
+		return
+	}
+	runContext, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.cancels[selected.ID] = cancel
+	if current := m.jobs[selected.ID]; current != nil {
+		current.Status = StatusQueued
+		current.Stage = "queued"
+		addTaskEvent(current, "WORKER_RESUMED", "服务启动后从下载检查点自动恢复", "download", nil)
+		current.UpdatedAt = time.Now()
+		updateCoverage(current)
+	}
+	m.mu.Unlock()
+	if current, err := m.Get(selected.ID); err == nil {
+		_ = m.persistJob(current, true)
+	}
+	go m.runJob(runContext, selected.ID, m.Settings())
 }
 
 func (m *Manager) persistJob(job *Job, force bool) error {
@@ -371,6 +479,7 @@ func (m *Manager) mutate(id string, mutate func(*Job)) {
 	if job != nil {
 		mutate(job)
 		job.UpdatedAt = time.Now()
+		updateCoverage(job)
 	}
 	m.mu.Unlock()
 	if job != nil {
@@ -391,25 +500,7 @@ func cloneJob(job *Job) (*Job, error) {
 }
 
 func writeJSONAtomic(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return err
-	}
-	content, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, content, 0644); err != nil {
-		return err
-	}
-	if err := os.Rename(temp, path); err == nil {
-		return nil
-	}
-	_ = os.Remove(path)
-	if err := os.Rename(temp, path); err != nil {
-		return fmt.Errorf("提交状态文件 %s: %w", path, err)
-	}
-	return nil
+	return datasetwriter.WriteJSONAtomic(path, value)
 }
 
 func newJobID() string {

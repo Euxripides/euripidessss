@@ -26,6 +26,7 @@ const (
 type Client struct {
 	httpClient *http.Client
 	portalRoot string
+	apiKey     string
 }
 
 type Metadata struct {
@@ -110,10 +111,18 @@ type streamRequest struct {
 }
 
 func New(client *http.Client) *Client {
+	return NewConfigured(client, DefaultPortal, "")
+}
+
+func NewConfigured(client *http.Client, portalRoot, apiKey string) *Client {
 	if client == nil {
 		client = &http.Client{Timeout: 90 * time.Second}
 	}
-	return &Client{httpClient: client, portalRoot: DefaultPortal}
+	portalRoot = strings.TrimRight(strings.TrimSpace(portalRoot), "/")
+	if portalRoot == "" {
+		portalRoot = DefaultPortal
+	}
+	return &Client{httpClient: client, portalRoot: portalRoot, apiKey: strings.TrimSpace(apiKey)}
 }
 
 func (c *Client) Metadata(ctx context.Context, network chain.EVM) (Metadata, error) {
@@ -296,6 +305,7 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		c.authorize(req)
 		response, err := c.httpClient.Do(req)
 		if err == nil && (response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent) {
 			return response, nil
@@ -334,6 +344,7 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, target any) error
 	if err != nil {
 		return err
 	}
+	c.authorize(request)
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return err
@@ -343,6 +354,12 @@ func (c *Client) getJSON(ctx context.Context, endpoint string, target any) error
 		return fmt.Errorf("SQD HTTP %d", response.StatusCode)
 	}
 	return json.NewDecoder(response.Body).Decode(target)
+}
+
+func (c *Client) authorize(request *http.Request) {
+	if c.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 }
 
 func (c *Client) datasetURL(network chain.EVM) string {

@@ -25,6 +25,8 @@ export interface RpcEndpoint {
   endpoint_host: string;
   endpoint_masked: string;
   secret_configured: boolean;
+  test_endpoint_masked?: string;
+  test_endpoint_configured: boolean;
   priority: number;
   enabled: boolean;
   max_rps: number;
@@ -54,6 +56,7 @@ export interface RpcEndpointInput {
   chain_key: string;
   display_name: string;
   endpoint_url: string;
+  test_endpoint_url?: string;
   priority: number;
   enabled: boolean;
   max_rps: number;
@@ -69,6 +72,7 @@ export interface RpcTestResult {
   error_class?: string;
   error_message?: string;
   suggestion?: string;
+  endpoint_role: 'PRIMARY' | 'TEST';
 }
 
 export interface EnrichmentJob {
