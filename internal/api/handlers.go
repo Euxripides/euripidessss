@@ -22,6 +22,7 @@ import (
 	"github.com/etl/backend/internal/dbimport"
 	"github.com/etl/backend/internal/etl"
 	"github.com/etl/backend/internal/model"
+	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/etl/backend/internal/parser"
 	"github.com/etl/backend/internal/rules"
 	"github.com/etl/backend/internal/scanner"
@@ -38,6 +39,7 @@ var (
 	controlStore    *control.Store
 	analysisEngine  *duckdb.Engine
 	cryptoDownload  http.Handler
+	parquetDownload *parquetdownload.Handler
 )
 
 const (
@@ -155,10 +157,18 @@ func Setup(c *config.Config) {
 	} else {
 		log.Warn().Str("error", analysisEngine.Status().Error).Msg("duckdb_engine_unavailable")
 	}
+	if handler, err := parquetdownload.NewHandler(c.RootDir, analysisEngine); err != nil {
+		log.Warn().Err(err).Msg("crypto_parquet_api_unavailable")
+	} else {
+		parquetDownload = handler
+	}
 }
 
 // Shutdown closes the control store
 func Shutdown() {
+	if parquetDownload != nil {
+		parquetDownload.Close()
+	}
 	if controlStore != nil {
 		if err := controlStore.Close(); err != nil {
 			log.Warn().Err(err).Msg("control_store_close_error")
@@ -197,6 +207,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/flow/values", HandleFlowFieldValues)
 		api.POST("/crypto/address-classify", HandleCryptoAddressClassify)
 		api.Any("/crypto/download/*path", HandleCryptoDownload)
+		api.Any("/crypto/parquet/*path", HandleCryptoParquet)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)
 		api.POST("/rules/analyze", HandleAnalyzeRules)
