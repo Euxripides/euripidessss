@@ -70,10 +70,48 @@ export type ParquetFileTask = ParquetSourceObject & {
   readonly source_rows: number;
   readonly matched_rows: number;
   readonly retry_count: number;
+  readonly download_sha256?: string;
+  readonly resumed_chunks?: number;
+  readonly total_chunks?: number;
   readonly error?: string;
 };
 
+export type DatasetCoverage = {
+  readonly job_id: string;
+  readonly chain_id: number;
+  readonly transactions_status: string;
+  readonly logs_status: string;
+  readonly trace_status: string;
+  readonly coverage_percent: number;
+  readonly updated_at: string;
+};
+
+export type ArtifactChecksum = {
+  readonly path: string;
+  readonly algorithm: string;
+  readonly value: string;
+  readonly size_bytes: number;
+  readonly created_at: string;
+};
+
+export type ManifestInfo = {
+  readonly path?: string;
+  readonly status: string;
+  readonly schema_version: string;
+  readonly consistent: boolean;
+  readonly finished_at?: string;
+};
+
+export type TaskEvent = {
+  readonly type: string;
+  readonly message: string;
+  readonly stage?: string;
+  readonly details?: Readonly<Record<string, unknown>>;
+  readonly created_at: string;
+};
+
 export type ParquetJob = {
+  readonly schema_version: string;
   readonly id: string;
   readonly chain_key: string;
   readonly chain_id: number;
@@ -103,11 +141,16 @@ export type ParquetJob = {
   readonly summary_rows: number;
   readonly balance_rows: number;
   readonly failed_files: number;
-  readonly files: readonly ParquetFileTask[];
+  readonly files: readonly ParquetFileTask[] | null;
   readonly stages: readonly ParquetStage[];
-  readonly outputs: readonly string[];
+  readonly outputs: readonly string[] | null;
   readonly warnings: readonly string[];
   readonly error?: string;
+  readonly cancellation_requested: boolean;
+  readonly dataset_coverage: DatasetCoverage;
+  readonly checksums: readonly ArtifactChecksum[] | null;
+  readonly manifest: ManifestInfo;
+  readonly task_events: readonly TaskEvent[] | null;
   readonly keep_source_files: boolean;
   readonly export_csv: boolean;
   readonly include_receipts: boolean;

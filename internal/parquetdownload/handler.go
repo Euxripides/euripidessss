@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/datasourcemanager"
 	"github.com/etl/backend/internal/rpcmanager"
 )
 
@@ -41,6 +42,10 @@ func (h *Handler) Close() {
 
 func (h *Handler) SetRPCManager(manager *rpcmanager.Manager) {
 	h.manager.SetRPCManager(manager)
+}
+
+func (h *Handler) SetDataSourceManager(manager *datasourcemanager.Manager) {
+	h.manager.SetDataSourceManager(manager)
 }
 
 func (h *Handler) register() {

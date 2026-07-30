@@ -12,7 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/etl/backend/internal/downloader"
+	datasetwriter "github.com/etl/backend/internal/writer"
 )
+
+const parallelDownloadThreshold int64 = 64 << 20
+
+type downloadMetadata struct {
+	SHA256        string
+	ResumedChunks int
+	TotalChunks   int
+}
 
 func downloadSource(
 	ctx context.Context,
@@ -20,8 +31,9 @@ func downloadSource(
 	source SourceObject,
 	localPath string,
 	onProgress func(downloaded int64),
-) error {
-	return downloadSourceFromURL(ctx, client, sourceHTTPURL(source), source, localPath, onProgress)
+	onChunkComplete func(index, total int, resumed bool),
+) (downloadMetadata, error) {
+	return downloadSourceDetailed(ctx, client, sourceHTTPURL(source), source, localPath, onProgress, onChunkComplete)
 }
 
 func downloadSourceFromURL(
@@ -32,14 +44,68 @@ func downloadSourceFromURL(
 	localPath string,
 	onProgress func(downloaded int64),
 ) error {
+	_, err := downloadSourceDetailed(ctx, client, requestURL, source, localPath, onProgress, nil)
+	return err
+}
+
+func downloadSourceDetailed(
+	ctx context.Context,
+	client *http.Client,
+	requestURL string,
+	source SourceObject,
+	localPath string,
+	onProgress func(downloaded int64),
+	onChunkComplete func(index, total int, resumed bool),
+) (downloadMetadata, error) {
 	if info, err := os.Stat(localPath); err == nil && info.Size() == source.SizeBytes {
 		if err := verifyParquetFile(localPath); err == nil {
 			onProgress(source.SizeBytes)
-			return nil
+			checksums, checksumErr := datasetwriter.ComputeChecksums([]string{localPath})
+			if checksumErr != nil {
+				return downloadMetadata{}, checksumErr
+			}
+			return downloadMetadata{SHA256: checksums[0].Value}, nil
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
-		return err
+		return downloadMetadata{}, err
+	}
+	legacyPartial := false
+	if info, err := os.Stat(localPath + ".partial"); err == nil && info.Size() > 0 {
+		legacyPartial = true
+	}
+	if source.SizeBytes >= parallelDownloadThreshold && !legacyPartial {
+		checkpointPath := localPath + ".download.json"
+		result, err := downloader.Download(ctx, downloader.Source{
+			URL:       requestURL,
+			ETag:      source.ETag,
+			SizeBytes: source.SizeBytes,
+		}, localPath, downloader.Options{
+			Client:          client,
+			Workers:         4,
+			ChunkSize:       downloader.DefaultChunkSize,
+			CheckpointPath:  checkpointPath,
+			OnProgress:      onProgress,
+			OnChunkComplete: onChunkComplete,
+		})
+		if err == nil {
+			if verifyErr := verifyParquetFile(localPath); verifyErr != nil {
+				return downloadMetadata{}, verifyErr
+			}
+			return downloadMetadata{
+				SHA256:        result.SHA256,
+				ResumedChunks: result.ResumedChunks,
+				TotalChunks:   result.TotalChunks,
+			}, nil
+		}
+		if !errors.Is(err, downloader.ErrRangeUnsupported) {
+			return downloadMetadata{
+				ResumedChunks: result.ResumedChunks,
+				TotalChunks:   result.TotalChunks,
+			}, err
+		}
+		_ = os.Remove(checkpointPath)
+		_ = os.RemoveAll(checkpointPath + ".chunks")
 	}
 	partial := localPath + ".partial"
 	var lastErr error
@@ -47,14 +113,14 @@ func downloadSourceFromURL(
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return downloadMetadata{}, ctx.Err()
 			case <-time.After(time.Duration(1<<attempt) * time.Second):
 			}
 		}
 		if err := downloadAttempt(ctx, client, requestURL, source, partial, onProgress); err != nil {
 			lastErr = err
 			if errors.Is(err, context.Canceled) {
-				return err
+				return downloadMetadata{}, err
 			}
 			continue
 		}
@@ -73,11 +139,15 @@ func downloadSourceFromURL(
 		}
 		_ = os.Remove(localPath)
 		if err := os.Rename(partial, localPath); err != nil {
-			return err
+			return downloadMetadata{}, err
 		}
-		return nil
+		checksums, checksumErr := datasetwriter.ComputeChecksums([]string{localPath})
+		if checksumErr != nil {
+			return downloadMetadata{}, checksumErr
+		}
+		return downloadMetadata{SHA256: checksums[0].Value, TotalChunks: 1}, nil
 	}
-	return fmt.Errorf("下载失败（已重试 3 次）: %w", lastErr)
+	return downloadMetadata{}, fmt.Errorf("下载失败（已重试 3 次）: %w", lastErr)
 }
 
 func downloadAttempt(
@@ -167,34 +237,5 @@ func downloadAttempt(
 }
 
 func verifyParquetFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() < 8 {
-		return errors.New("Parquet 文件过小")
-	}
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(file, header); err != nil {
-		return err
-	}
-	if string(header) != "PAR1" {
-		return errors.New("Parquet 文件头校验失败")
-	}
-	if _, err := file.Seek(-4, io.SeekEnd); err != nil {
-		return err
-	}
-	footer := make([]byte, 4)
-	if _, err := io.ReadFull(file, footer); err != nil {
-		return err
-	}
-	if string(footer) != "PAR1" {
-		return errors.New("Parquet footer 校验失败")
-	}
-	return nil
+	return datasetwriter.VerifyParquet(path)
 }

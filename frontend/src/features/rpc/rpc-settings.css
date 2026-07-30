@@ -3,7 +3,6 @@
 .rpc-hero h2.ant-typography { margin: 4px 0 3px; font-size: 27px; letter-spacing: -.5px; }
 .rpc-hero .ant-typography { margin-bottom: 0; color: #667085; }
 .rpc-kicker { color: #246bfd !important; font-weight: 700; font-size: 11px; letter-spacing: 1.4px; }
-.rpc-security-alert { margin-bottom: 16px; border: 1px solid #cfe0ff; background: linear-gradient(90deg, #f2f7ff, #fbfdff); }
 .rpc-metrics { margin-bottom: 16px; }
 .rpc-metric { height: 106px; border-color: var(--rpc-border); box-shadow: 0 3px 14px rgba(35, 62, 112, .045); }
 .rpc-metric .ant-card-body { height: 100%; padding: 18px; display: flex; gap: 13px; align-items: center; }
@@ -24,6 +23,7 @@
 .rpc-node-card .ant-card-body { padding: 0; }
 .rpc-node-card .ant-table-cell { vertical-align: middle; }
 .rpc-provider, .rpc-endpoint { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rpc-endpoint { align-items: flex-start; }
 .rpc-provider span { color: #8791a4; font-size: 11px; text-transform: uppercase; }
 .rpc-endpoint code { display: block; max-width: 220px; overflow: hidden; color: #7d8798; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; background: none; }
 .rpc-routing-card .ant-card-body { padding: 12px; }
@@ -42,12 +42,14 @@
 .rpc-jobs .ant-card-body { padding: 0; }
 .rpc-success { color: #08976c; font-weight: 600; }
 .rpc-failure { color: #e44f63; font-weight: 600; }
-.rpc-modal-alert { margin-bottom: 18px; }
 @media (max-width: 1280px) {
   .rpc-workspace { grid-template-columns: 1fr; }
   .rpc-routing-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 720px) {
+  .rpc-endpoint-modal { top: 12px; max-width: calc(100vw - 16px); padding-bottom: 0; }
+  .rpc-endpoint-modal .ant-modal-content { display: flex; flex-direction: column; max-height: calc(100vh - 24px); }
+  .rpc-endpoint-modal .ant-modal-body { overflow-y: auto; }
   .rpc-page { padding: 16px 12px; }
   .rpc-hero { flex-direction: column; }
   .rpc-hero > .ant-space { width: 100%; }

@@ -5178,3 +5178,93 @@ ormalizeFilterBoundary 精确时间边界处理。
 
 - 未使用或保存真实供应商密钥；需由用户在新页面录入。
 - 受管RPC当前覆盖地址类型/原生币余额、Token Metadata；Token `balanceOf`与Receipt批量仍保留既有环境变量RPC路径。
+
+## 2026-07-30 — 数据源管理中心 V1.0
+
+### 新增与优化
+
+- 新增`internal/datasourcemanager`统一聚合SQD、AWS和受管RPC，提供Provider列表、健康、指标、连接测试和配置生命周期。
+- SQD/AWS配置支持添加、修改、删除、启停和保存前连接校验。
+- API Key复用DPAPI+AES-GCM机器绑定加密，列表、配置读取、事件和错误不回显密钥或完整敏感URL。
+- 新增60秒健康检查、P50/P95、成功率、请求/失败/429/超时计数和最近健康事件。
+- 有效SQD Portal/API Key与AWS Endpoint回注Parquet管理器，AWS发现结果使用配置Endpoint完成下载。
+- 前端新增“虚拟币 → 数据源管理”，使用响应式数据源卡片、五项概览、过滤/搜索、连接测试进度、配置弹窗和日志抽屉。
+- RPC卡片直接复用V1.4节点状态，配置操作进入RPC节点管理，未建立重复密钥或路由系统。
+
+### 接口与存储
+
+- 新增`/api/crypto/datasource/list|health|metrics|config|test|save|delete`。
+- 新增`E:\codex\bsc_analytics\config\datasources.json`，原子保存配置及最近100条健康事件。
+- 未新增数据库表；RPC请求指标仍来自`rpc_control.sqlite`。
+
+### 验证
+
+- `go test ./...`、`go vet ./...`、后端构建和前端生产构建通过。
+- 自动测试覆盖配置新增/修改/删除、密钥密文、连接测试、HTTPS限制和C盘拒绝。
+- 真实SQD连接返回`binance-mainnet`，340ms；AWS公共目录连接成功，299ms。
+- Playwright/Edge桌面、CRUD和390px移动端3项通过，无页面横向溢出及控制台错误。
+- 已执行`.\run.ps1`，PID 18408，健康检查正常。
+
+### 注意事项
+
+- 未配置付费RPC时页面只显示SQD与AWS；新增RPC节点后会自动聚合显示。
+- AWS下载速度和持久化健康趋势为后续扩展，V1.0不显示伪造曲线。
+## 2026-07-30 — 精简 RPC 页面大型提示
+
+- 移除 RPC 节点管理页顶部 Endpoint 安全说明 Alert。
+- 移除节点配置弹窗中的 API Key 说明 Alert，并清理无用样式与组件导入。
+- 本次不变更后端接口、加密存储或连接校验逻辑。
+## 2026-07-30 — 修复数据源卡片操作区与长日志溢出
+
+- 修复数据源卡片日志、配置、测试按钮越出卡片并与相邻卡片重叠的问题。
+- 优化卡片自适应列宽和底部操作布局。
+- 健康日志增加三行截断、任意长字符串换行、全文 Tooltip 和移动端抽屉宽度约束。
+## 2026-07-30 — RPC 支持独立测试 Endpoint
+
+- RPC配置新增可选加密测试Endpoint，手动连接测试优先使用测试地址，未配置则回退正常地址。
+- 正常Endpoint继续独占自动路由、正式RPC调用和定时健康检查，避免测试地址进入生产流量。
+- `rpc_endpoints`新增`test_endpoint_encrypted`并自动迁移现有SQLite控制库。
+- 列表只返回测试地址配置状态与脱敏值；测试结果新增`endpoint_role`。
+- 前端节点表单新增独立测试Endpoint开关、编辑保留/清除语义及连接结果来源提示。
+- 移动端节点弹窗增加视口高度约束和内部滚动，参数区使用两列响应式布局。
+- 自动测试覆盖测试地址隔离和正常地址回退。
+- 全包测试、`go vet`、前后端构建通过；运行服务双路径RPC验证分别返回`TEST`和`PRIMARY`，临时配置已删除。
+- Playwright/Edge桌面与390px移动端通过；已重启服务，PID 34392。
+## 2026-07-30 — RPC 检测频率调整为30分钟
+
+- 定时健康检查从30秒降为30分钟。
+- 正式请求增加30分钟过期判断：首次使用或健康状态过期时先测试正常Endpoint。
+- 健康状态未过期时不重复测试；成功业务请求会刷新有效期。
+- 增加单节点预检锁，避免并发首次使用产生重复测试流量。
+- RPC管理器10项、全包测试、`go vet`和后端构建通过。
+- 运行服务验证首次正式使用前只对正常Endpoint进行一组预检，独立测试Endpoint计数不变；临时配置已清理。
+- 已重启服务，PID 808。
+
+## 2026-07-30 — 真实 BSC 地址功能验证
+
+- 使用 `0xD26889f63094Ba5A9d32666CdF5Ba381acfad6A6` 完成真实 RPC 地址分类、原生币余额、Token Metadata、缓存命中、429 节点故障切换及 ETH 对照验证。
+- BSC 结果：`CONTRACT / DETECTED`、BNB 余额 0；Token 为 `Finanx AI (FNXAI)`、18 位精度；ETH 结果为 `EOA`。
+- SQD 任务 `3b751dae9980c229` 完成，trace 共 30,249 行和 8,294 个不同交易哈希；核验交易 `0xb93fc5d1585c08bf1e9f90e9c256de082002f211221ff74a24f915326fab5993` 在区块 86,297,561 命中 3 条调用轨迹。
+- Playwright/Edge 桌面与 390px 移动端地址分析页通过，无横向溢出、控制台错误或外部浏览器链接异常。
+- AWS transactions 文件约 5.96GB，受控下载任务 `4a33337970cfce97` 因预计耗时较长已安全取消；并行下载产生的不兼容临时片段已删除。
+- 发现缺陷：完成任务的 manifest 仍为 `running/85%`；SQD 设置 `export_csv=true` 未生成 CSV。
+- 验证边界：本次未完成 5.96GB transactions 层下载，流水/Token/NFT/对手方空结果不能视为完整历史结论。
+- 本次未修改代码、接口或数据库结构；最终健康检查正常，无需重启。
+- 新增`docs/BSC真实地址完整功能测试报告_2026-07-30.md`，详细记录测试过程、真实接口返回、任务阶段、输出校验和未完成边界。
+
+## 2026-07-30 — V1.4.1 任务与下载稳定性修复
+
+- 新增统一Task Finalizer，完成/失败/取消均执行Stage收敛、输出检查、SHA-256、Job持久化和最终Manifest原子提交。
+- Manifest升级为Schema 1.4.1，API与Manifest统一包含覆盖率、Checksum、结束时间、Manifest状态及任务事件。
+- 新增Windows原子替换Writer，避免删除旧Manifest后再rename产生空窗。
+- 取消流程调整为`canceling → canceled`，终态不允许残留Running/Queued Stage；服务重启可从Paused及Chunk/`.partial`检查点恢复。
+- 新增统一SQD CSV导出，并自动为历史`export_csv=true`完成任务补生成CSV。
+- 真实旧SQD任务补生成9个CSV，`traces.csv`为12,581,974字节；最终19个输出、18个SHA256，API/Manifest均为`done/100%`。
+- 新增32MiB Range Chunk并行下载、ETag校验、原子检查点、分片复用、合并和SHA256；Range不支持及旧`.partial`自动回退兼容。
+- 新增数据覆盖模型，地址页在transactions/logs/trace不完整时显示Coverage和“零值不代表完整历史无交易”提示。
+- Parquet任务页新增覆盖率、数据源状态、Manifest一致性、Schema、Checksum及Chunk恢复信息。
+- 修复SQD任务`files=null`导致Parquet页面空白。
+- 自动测试覆盖5GiB/10GiB Chunk规划、Range恢复、取消收敛、Manifest一致性和SQD CSV；全包测试、`go vet`、前后端构建通过。
+- 真实SQD新任务两次受供应商503影响未完成；失败状态和Manifest收敛正确，未继续重试。
+- Playwright/Edge桌面与390px移动端通过，无溢出、控制台错误、页面异常或请求失败。
+- 已执行`.\run.ps1`，PID 21088，健康检查正常。

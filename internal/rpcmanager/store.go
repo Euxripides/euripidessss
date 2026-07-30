@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -13,7 +14,8 @@ import (
 
 type endpointRecord struct {
 	Endpoint
-	EncryptedURL []byte
+	EncryptedURL     []byte
+	EncryptedTestURL []byte
 }
 
 type store struct {
@@ -59,6 +61,7 @@ func (s *store) init() error {
 			display_name TEXT NOT NULL,
 			endpoint_host TEXT NOT NULL,
 			endpoint_encrypted BLOB NOT NULL,
+			test_endpoint_encrypted BLOB,
 			secret_encrypted BLOB,
 			priority INTEGER NOT NULL,
 			enabled INTEGER NOT NULL,
@@ -135,12 +138,16 @@ func (s *store) init() error {
 			return err
 		}
 	}
+	if _, err := s.db.Exec("ALTER TABLE rpc_endpoints ADD COLUMN test_endpoint_encrypted BLOB"); err != nil &&
+		!strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return err
+	}
 	return nil
 }
 
 func (s *store) endpoints(chainKey string, enabledOnly bool) ([]endpointRecord, error) {
 	query := `SELECT endpoint_id, provider, chain_key, chain_id, display_name, endpoint_host,
-endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_timeout_ms, created_at, updated_at
+endpoint_encrypted, test_endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_timeout_ms, created_at, updated_at
 FROM rpc_endpoints WHERE 1=1`
 	args := []any{}
 	if chainKey != "" {
@@ -162,13 +169,14 @@ FROM rpc_endpoints WHERE 1=1`
 		var createdAt, updatedAt string
 		if err := rows.Scan(
 			&item.ID, &item.Provider, &item.ChainKey, &item.ChainID, &item.DisplayName,
-			&item.EndpointHost, &item.EncryptedURL, &item.Priority, &enabled, &item.MaxRPS,
+			&item.EndpointHost, &item.EncryptedURL, &item.EncryptedTestURL, &item.Priority, &enabled, &item.MaxRPS,
 			&item.MaxConcurrency, &item.RequestTimeoutMS, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, err
 		}
 		item.Enabled = enabled == 1
 		item.SecretConfigured = len(item.EncryptedURL) > 0
+		item.TestEndpointConfigured = len(item.EncryptedTestURL) > 0
 		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		item.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 		result = append(result, item)
@@ -202,10 +210,10 @@ func (s *store) endpoint(id string) (endpointRecord, error) {
 func (s *store) insertEndpoint(item endpointRecord) error {
 	_, err := s.db.Exec(`INSERT INTO rpc_endpoints (
 endpoint_id, provider, chain_key, chain_id, display_name, endpoint_host, endpoint_encrypted,
-priority, enabled, max_rps, max_concurrency, request_timeout_ms, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+test_endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_timeout_ms, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Provider, item.ChainKey, item.ChainID, item.DisplayName, item.EndpointHost,
-		item.EncryptedURL, item.Priority, boolInt(item.Enabled), item.MaxRPS, item.MaxConcurrency,
+		item.EncryptedURL, item.EncryptedTestURL, item.Priority, boolInt(item.Enabled), item.MaxRPS, item.MaxConcurrency,
 		item.RequestTimeoutMS, item.CreatedAt.Format(time.RFC3339Nano), item.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -216,10 +224,10 @@ priority, enabled, max_rps, max_concurrency, request_timeout_ms, created_at, upd
 
 func (s *store) updateEndpoint(item endpointRecord) error {
 	_, err := s.db.Exec(`UPDATE rpc_endpoints SET provider=?, chain_key=?, chain_id=?, display_name=?,
-endpoint_host=?, endpoint_encrypted=?, priority=?, enabled=?, max_rps=?, max_concurrency=?,
-request_timeout_ms=?, updated_at=? WHERE endpoint_id=?`,
+endpoint_host=?, endpoint_encrypted=?, test_endpoint_encrypted=?, priority=?, enabled=?, max_rps=?,
+max_concurrency=?, request_timeout_ms=?, updated_at=? WHERE endpoint_id=?`,
 		item.Provider, item.ChainKey, item.ChainID, item.DisplayName, item.EndpointHost, item.EncryptedURL,
-		item.Priority, boolInt(item.Enabled), item.MaxRPS, item.MaxConcurrency, item.RequestTimeoutMS,
+		item.EncryptedTestURL, item.Priority, boolInt(item.Enabled), item.MaxRPS, item.MaxConcurrency, item.RequestTimeoutMS,
 		item.UpdatedAt.Format(time.RFC3339Nano), item.ID,
 	)
 	return err

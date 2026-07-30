@@ -148,6 +148,15 @@ export function AddressAnalyticsPanel() {
               description={`${summary.rpc_env} 未配置：地址类型显示“未检测”，Token Metadata 不推测，余额快照暂不可用。`}
             />
           )}
+          {summary.data_complete === false && summary.dataset_coverage && (
+            <Alert
+              className="address-analytics-rpc-alert"
+              type="warning"
+              showIcon
+              message={`历史数据未完整加载 · Coverage ${summary.dataset_coverage.coverage_percent.toFixed(2)}%`}
+              description={summary.data_status_message || '当前统计仅代表已加载数据，交易数为 0 不代表完整历史没有交易。'}
+            />
+          )}
           <section className="address-analytics-identity">
             <div>
               <div className="address-analytics-avatar"><WalletOutlined /></div>

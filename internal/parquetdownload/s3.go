@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/datasource/aws"
@@ -26,7 +27,14 @@ func (d *discoverer) discover(ctx context.Context, chainKey, startDate, endDate 
 		return nil, err
 	}
 	d.adapter.Endpoint = d.endpoint
-	return d.adapter.DiscoverTransactions(ctx, network, startDate, endDate)
+	items, err := d.adapter.DiscoverTransactions(ctx, network, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	for index := range items {
+		items[index].URI = aws.HTTPURL(d.endpoint, items[index])
+	}
+	return items, nil
 }
 
 func sourceDateFromKey(key string) string {
@@ -34,6 +42,9 @@ func sourceDateFromKey(key string) string {
 }
 
 func sourceHTTPURL(object SourceObject) string {
+	if strings.HasPrefix(object.URI, "http://") || strings.HasPrefix(object.URI, "https://") {
+		return object.URI
+	}
 	return aws.HTTPURL(derefEndpoint(), object)
 }
 

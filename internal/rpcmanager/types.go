@@ -20,6 +20,7 @@ type EndpointInput struct {
 	ChainKey         string  `json:"chain_key"`
 	DisplayName      string  `json:"display_name"`
 	EndpointURL      string  `json:"endpoint_url"`
+	TestEndpointURL  string  `json:"test_endpoint_url,omitempty"`
 	Priority         int     `json:"priority"`
 	Enabled          bool    `json:"enabled"`
 	MaxRPS           float64 `json:"max_rps"`
@@ -32,6 +33,7 @@ type EndpointPatch struct {
 	ChainKey         *string  `json:"chain_key,omitempty"`
 	DisplayName      *string  `json:"display_name,omitempty"`
 	EndpointURL      *string  `json:"endpoint_url,omitempty"`
+	TestEndpointURL  *string  `json:"test_endpoint_url,omitempty"`
 	Priority         *int     `json:"priority,omitempty"`
 	Enabled          *bool    `json:"enabled,omitempty"`
 	MaxRPS           *float64 `json:"max_rps,omitempty"`
@@ -40,23 +42,25 @@ type EndpointPatch struct {
 }
 
 type Endpoint struct {
-	ID               string    `json:"endpoint_id"`
-	Provider         string    `json:"provider"`
-	ChainKey         string    `json:"chain_key"`
-	ChainID          int64     `json:"chain_id"`
-	DisplayName      string    `json:"display_name"`
-	EndpointHost     string    `json:"endpoint_host"`
-	EndpointMasked   string    `json:"endpoint_masked"`
-	SecretConfigured bool      `json:"secret_configured"`
-	Priority         int       `json:"priority"`
-	Enabled          bool      `json:"enabled"`
-	MaxRPS           float64   `json:"max_rps"`
-	CurrentRPS       float64   `json:"current_rps"`
-	MaxConcurrency   int       `json:"max_concurrency"`
-	RequestTimeoutMS int       `json:"request_timeout_ms"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	Health           Health    `json:"health"`
+	ID                     string    `json:"endpoint_id"`
+	Provider               string    `json:"provider"`
+	ChainKey               string    `json:"chain_key"`
+	ChainID                int64     `json:"chain_id"`
+	DisplayName            string    `json:"display_name"`
+	EndpointHost           string    `json:"endpoint_host"`
+	EndpointMasked         string    `json:"endpoint_masked"`
+	SecretConfigured       bool      `json:"secret_configured"`
+	TestEndpointMasked     string    `json:"test_endpoint_masked,omitempty"`
+	TestEndpointConfigured bool      `json:"test_endpoint_configured"`
+	Priority               int       `json:"priority"`
+	Enabled                bool      `json:"enabled"`
+	MaxRPS                 float64   `json:"max_rps"`
+	CurrentRPS             float64   `json:"current_rps"`
+	MaxConcurrency         int       `json:"max_concurrency"`
+	RequestTimeoutMS       int       `json:"request_timeout_ms"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+	Health                 Health    `json:"health"`
 }
 
 type Health struct {
@@ -89,6 +93,7 @@ type TestResult struct {
 	ErrorClass   string `json:"error_class,omitempty"`
 	Suggestion   string `json:"suggestion,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+	EndpointRole string `json:"endpoint_role"`
 }
 
 type Overview struct {

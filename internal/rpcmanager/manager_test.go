@@ -75,6 +75,112 @@ func TestRejectsChainMismatch(t *testing.T) {
 	}
 }
 
+func TestDedicatedTestEndpointNeverEntersProductionRouting(t *testing.T) {
+	var primaryCalls, testCalls atomic.Int64
+	primary := rpcServer(t, func(method string) (int, any) {
+		primaryCalls.Add(1)
+		return http.StatusOK, rpcResult(method)
+	})
+	defer primary.Close()
+	testEndpoint := rpcServer(t, func(method string) (int, any) {
+		testCalls.Add(1)
+		return http.StatusOK, rpcResult(method)
+	})
+	defer testEndpoint.Close()
+
+	manager, err := New(testRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	input := endpointInput("独立测试节点", primary.URL+"/primary-secret")
+	input.TestEndpointURL = testEndpoint.URL + "/test-secret"
+	item, err := manager.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !item.TestEndpointConfigured || strings.Contains(item.TestEndpointMasked, "test-secret") {
+		t.Fatalf("test endpoint was not safely exposed: %+v", item)
+	}
+	result, err := manager.TestEndpoint(context.Background(), item.ID)
+	if err != nil || !result.Success || result.EndpointRole != "TEST" {
+		t.Fatalf("dedicated endpoint test mismatch: %+v err=%v", result, err)
+	}
+	if _, _, err := manager.Call(context.Background(), "bsc", "eth_getBalance", []any{"0x0000000000000000000000000000000000000000", "latest"}); err != nil {
+		t.Fatal(err)
+	}
+	manager.RefreshHealth(context.Background())
+	if testCalls.Load() != 4 {
+		t.Fatalf("manual tests must use dedicated endpoint, calls=%d", testCalls.Load())
+	}
+	if primaryCalls.Load() != 5 {
+		t.Fatalf("production call and health check must use primary endpoint, calls=%d", primaryCalls.Load())
+	}
+}
+
+func TestEndpointTestFallsBackToPrimary(t *testing.T) {
+	var calls atomic.Int64
+	primary := rpcServer(t, func(method string) (int, any) {
+		calls.Add(1)
+		return http.StatusOK, rpcResult(method)
+	})
+	defer primary.Close()
+	manager, err := New(testRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	item, err := manager.Create(context.Background(), endpointInput("正常节点", primary.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.TestEndpoint(context.Background(), item.ID)
+	if err != nil || !result.Success || result.EndpointRole != "PRIMARY" || calls.Load() != 4 {
+		t.Fatalf("primary endpoint fallback mismatch: %+v calls=%d err=%v", result, calls.Load(), err)
+	}
+}
+
+func TestCallPreflightsOnlyWhenHealthIsStale(t *testing.T) {
+	if healthCheckInterval != 30*time.Minute {
+		t.Fatalf("unexpected health interval: %s", healthCheckInterval)
+	}
+	var calls atomic.Int64
+	primary := rpcServer(t, func(method string) (int, any) {
+		calls.Add(1)
+		return http.StatusOK, rpcResult(method)
+	})
+	defer primary.Close()
+	manager, err := New(testRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	item, err := manager.Create(context.Background(), endpointInput("按需预检节点", primary.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, _, err := manager.Call(context.Background(), "bsc", "eth_getBalance", []any{"0x0000000000000000000000000000000000000000", "latest"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls.Load() != 4 {
+		t.Fatalf("fresh health must not trigger extra tests, calls=%d", calls.Load())
+	}
+	health := manager.store.health(item.ID)
+	stale := time.Now().UTC().Add(-31 * time.Minute)
+	health.CheckedAt = &stale
+	if err := manager.store.saveHealth(health); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.Call(context.Background(), "bsc", "eth_getBalance", []any{"0x0000000000000000000000000000000000000000", "latest"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 7 {
+		t.Fatalf("stale health must run one preflight before the request, calls=%d", calls.Load())
+	}
+}
+
 func TestFailoverAfterRateLimit(t *testing.T) {
 	var primaryCalls, backupCalls atomic.Int64
 	primary := rpcServer(t, func(method string) (int, any) {

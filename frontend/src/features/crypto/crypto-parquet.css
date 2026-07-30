@@ -436,6 +436,53 @@
   font-variant-numeric: tabular-nums;
 }
 
+.crypto-parquet-coverage {
+  margin: 14px 0 12px;
+  padding: 12px;
+  border: 1px solid #d8e1ed;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.crypto-parquet-coverage > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  color: var(--parquet-muted);
+  font-size: 12px;
+}
+
+.crypto-parquet-coverage > div:first-child strong {
+  color: #1f3654;
+  font-size: 16px;
+}
+
+.crypto-parquet-coverage-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 8px;
+  color: var(--parquet-muted);
+  font-size: 11px;
+}
+
+.crypto-parquet-coverage-sources > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.crypto-parquet-manifest-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0;
+  color: var(--parquet-muted);
+  font-size: 11px;
+}
+
 .crypto-parquet-job-error {
   margin-bottom: 16px;
 }
@@ -542,6 +589,22 @@
   align-items: center;
   gap: 9px;
   color: #4c6079;
+}
+
+.crypto-parquet-result-list > div > span > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.crypto-parquet-result-list small {
+  overflow: hidden;
+  max-width: 520px;
+  color: #73839a;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .crypto-parquet-result-list code {

@@ -4,14 +4,27 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/datasource"
+	datasetwriter "github.com/etl/backend/internal/writer"
 )
 
 const (
-	StatusQueued   = "queued"
-	StatusRunning  = "running"
-	StatusDone     = "done"
-	StatusFailed   = "failed"
-	StatusCanceled = "canceled"
+	StatusQueued    = "queued"
+	StatusRunning   = "running"
+	StatusPausing   = "pausing"
+	StatusPaused    = "paused"
+	StatusCanceling = "canceling"
+	StatusDone      = "done"
+	StatusFailed    = "failed"
+	StatusSkipped   = "skipped"
+	StatusCanceled  = "canceled"
+)
+
+const (
+	CoverageComplete    = "COMPLETE"
+	CoveragePartial     = "PARTIAL"
+	CoverageDownloading = "DOWNLOADING"
+	CoverageFailed      = "FAILED"
+	CoverageNotSelected = "NOT_SELECTED"
 )
 
 type Settings struct {
@@ -88,54 +101,89 @@ type FileTask struct {
 	SourceRows      int64   `json:"source_rows"`
 	MatchedRows     int64   `json:"matched_rows"`
 	RetryCount      int     `json:"retry_count"`
+	DownloadSHA256  string  `json:"download_sha256,omitempty"`
+	ResumedChunks   int     `json:"resumed_chunks,omitempty"`
+	TotalChunks     int     `json:"total_chunks,omitempty"`
 	Error           string  `json:"error,omitempty"`
 }
 
+type DatasetCoverage struct {
+	JobID              string    `json:"job_id"`
+	ChainID            int64     `json:"chain_id"`
+	TransactionsStatus string    `json:"transactions_status"`
+	LogsStatus         string    `json:"logs_status"`
+	TraceStatus        string    `json:"trace_status"`
+	CoveragePercent    float64   `json:"coverage_percent"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type TaskEvent struct {
+	Type      string         `json:"type"`
+	Message   string         `json:"message"`
+	Stage     string         `json:"stage,omitempty"`
+	Details   map[string]any `json:"details,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+type ManifestInfo struct {
+	Path          string     `json:"path,omitempty"`
+	Status        string     `json:"status"`
+	SchemaVersion string     `json:"schema_version"`
+	Consistent    bool       `json:"consistent"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+}
+
 type Job struct {
-	ID                string         `json:"id"`
-	ChainKey          string         `json:"chain_key"`
-	ChainID           int64          `json:"chain_id"`
-	NativeSymbol      string         `json:"native_symbol"`
-	Status            string         `json:"status"`
-	Stage             string         `json:"stage"`
-	Progress          float64        `json:"progress"`
-	Addresses         AddressSummary `json:"addresses"`
-	StartDate         string         `json:"start_date"`
-	EndDate           string         `json:"end_date"`
-	TotalBytes        int64          `json:"total_bytes"`
-	DownloadedBytes   int64          `json:"downloaded_bytes"`
-	DownloadSpeedBPS  float64        `json:"download_speed_bps"`
-	ETASeconds        int64          `json:"eta_seconds"`
-	SourceRows        int64          `json:"source_rows"`
-	MatchedRows       int64          `json:"matched_rows"`
-	ReceiptRows       int64          `json:"receipt_rows"`
-	ContractCreations int64          `json:"contract_creations"`
-	TransactionRows   int64          `json:"transaction_rows"`
-	LogRows           int64          `json:"log_rows"`
-	TokenMetadataRows int64          `json:"token_metadata_rows"`
-	TokenTransferRows int64          `json:"token_transfer_rows"`
-	NFTTransferRows   int64          `json:"nft_transfer_rows"`
-	TraceRows         int64          `json:"trace_rows"`
-	InternalRows      int64          `json:"internal_rows"`
-	ActivityRows      int64          `json:"activity_rows"`
-	SummaryRows       int64          `json:"summary_rows"`
-	BalanceRows       int64          `json:"balance_rows"`
-	FailedFiles       int            `json:"failed_files"`
-	Files             []*FileTask    `json:"files"`
-	Stages            []Stage        `json:"stages"`
-	Outputs           []string       `json:"outputs"`
-	Warnings          []string       `json:"warnings"`
-	Error             string         `json:"error,omitempty"`
-	KeepSourceFiles   bool           `json:"keep_source_files"`
-	ExportCSV         bool           `json:"export_csv"`
-	IncludeReceipts   bool           `json:"include_receipts"`
-	SelectedSources   []string       `json:"selected_sources"`
-	SQDDataset        string         `json:"sqd_dataset,omitempty"`
-	SQDBlockRange     *SQDBlockRange `json:"sqd_block_range,omitempty"`
-	CreatedAt         time.Time      `json:"created_at"`
-	StartedAt         *time.Time     `json:"started_at,omitempty"`
-	UpdatedAt         time.Time      `json:"updated_at"`
-	FinishedAt        *time.Time     `json:"finished_at,omitempty"`
+	SchemaVersion         string                   `json:"schema_version"`
+	ID                    string                   `json:"id"`
+	ChainKey              string                   `json:"chain_key"`
+	ChainID               int64                    `json:"chain_id"`
+	NativeSymbol          string                   `json:"native_symbol"`
+	Status                string                   `json:"status"`
+	Stage                 string                   `json:"stage"`
+	Progress              float64                  `json:"progress"`
+	Addresses             AddressSummary           `json:"addresses"`
+	StartDate             string                   `json:"start_date"`
+	EndDate               string                   `json:"end_date"`
+	TotalBytes            int64                    `json:"total_bytes"`
+	DownloadedBytes       int64                    `json:"downloaded_bytes"`
+	DownloadSpeedBPS      float64                  `json:"download_speed_bps"`
+	ETASeconds            int64                    `json:"eta_seconds"`
+	SourceRows            int64                    `json:"source_rows"`
+	MatchedRows           int64                    `json:"matched_rows"`
+	ReceiptRows           int64                    `json:"receipt_rows"`
+	ContractCreations     int64                    `json:"contract_creations"`
+	TransactionRows       int64                    `json:"transaction_rows"`
+	LogRows               int64                    `json:"log_rows"`
+	TokenMetadataRows     int64                    `json:"token_metadata_rows"`
+	TokenTransferRows     int64                    `json:"token_transfer_rows"`
+	NFTTransferRows       int64                    `json:"nft_transfer_rows"`
+	TraceRows             int64                    `json:"trace_rows"`
+	InternalRows          int64                    `json:"internal_rows"`
+	ActivityRows          int64                    `json:"activity_rows"`
+	SummaryRows           int64                    `json:"summary_rows"`
+	BalanceRows           int64                    `json:"balance_rows"`
+	FailedFiles           int                      `json:"failed_files"`
+	Files                 []*FileTask              `json:"files"`
+	Stages                []Stage                  `json:"stages"`
+	Outputs               []string                 `json:"outputs"`
+	Warnings              []string                 `json:"warnings"`
+	Error                 string                   `json:"error,omitempty"`
+	CancellationRequested bool                     `json:"cancellation_requested"`
+	Coverage              DatasetCoverage          `json:"dataset_coverage"`
+	Checksums             []datasetwriter.Checksum `json:"checksums,omitempty"`
+	Manifest              ManifestInfo             `json:"manifest"`
+	Events                []TaskEvent              `json:"task_events,omitempty"`
+	KeepSourceFiles       bool                     `json:"keep_source_files"`
+	ExportCSV             bool                     `json:"export_csv"`
+	IncludeReceipts       bool                     `json:"include_receipts"`
+	SelectedSources       []string                 `json:"selected_sources"`
+	SQDDataset            string                   `json:"sqd_dataset,omitempty"`
+	SQDBlockRange         *SQDBlockRange           `json:"sqd_block_range,omitempty"`
+	CreatedAt             time.Time                `json:"created_at"`
+	StartedAt             *time.Time               `json:"started_at,omitempty"`
+	UpdatedAt             time.Time                `json:"updated_at"`
+	FinishedAt            *time.Time               `json:"finished_at,omitempty"`
 }
 
 type UploadAddressResponse struct {

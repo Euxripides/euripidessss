@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,8 @@ import (
 	"github.com/etl/backend/internal/chain"
 )
 
+const healthCheckInterval = 30 * time.Minute
+
 type Manager struct {
 	store       *store
 	secure      *secureStore
@@ -41,6 +44,7 @@ type Manager struct {
 
 type endpointRuntime struct {
 	mu             sync.Mutex
+	preflightMu    sync.Mutex
 	nextAllowed    time.Time
 	currentRPS     float64
 	concurrency    chan struct{}
@@ -130,11 +134,21 @@ func (m *Manager) Create(ctx context.Context, input EndpointInput) (Endpoint, er
 	if err != nil {
 		return Endpoint{}, err
 	}
-	test := m.testURL(ctx, input.Provider, network, endpointURL, time.Duration(input.RequestTimeoutMS)*time.Millisecond)
+	testEndpointURL, err := validateOptionalEndpointURL(input.TestEndpointURL)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	testURL, endpointRole := endpointURLForTest(endpointURL, testEndpointURL)
+	test := m.testURL(ctx, input.Provider, network, testURL, time.Duration(input.RequestTimeoutMS)*time.Millisecond)
+	test.EndpointRole = endpointRole
 	if !test.Success {
 		return Endpoint{}, fmt.Errorf("%s：%s", test.ErrorClass, test.ErrorMessage)
 	}
 	encrypted, err := m.secure.encrypt(endpointURL)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	encryptedTest, err := m.encryptOptionalURL(testEndpointURL)
 	if err != nil {
 		return Endpoint{}, err
 	}
@@ -143,18 +157,21 @@ func (m *Manager) Create(ctx context.Context, input EndpointInput) (Endpoint, er
 		ID: newID("rpc"), Provider: input.Provider, ChainKey: network.Key, ChainID: network.ID,
 		DisplayName: input.DisplayName, EndpointHost: endpointHost(endpointURL),
 		EndpointMasked: maskEndpoint(endpointURL), SecretConfigured: true,
+		TestEndpointMasked: maskOptionalEndpoint(testEndpointURL), TestEndpointConfigured: testEndpointURL != "",
 		Priority: input.Priority, Enabled: input.Enabled, MaxRPS: input.MaxRPS,
 		CurrentRPS: input.MaxRPS, MaxConcurrency: input.MaxConcurrency,
 		RequestTimeoutMS: input.RequestTimeoutMS, CreatedAt: now, UpdatedAt: now,
-	}, EncryptedURL: encrypted}
+	}, EncryptedURL: encrypted, EncryptedTestURL: encryptedTest}
 	if err := m.store.insertEndpoint(item); err != nil {
 		return Endpoint{}, err
 	}
-	health := healthFromTest(item.ID, test)
-	if !item.Enabled {
-		health.Status = StatusDisabled
+	if endpointRole == "PRIMARY" {
+		health := healthFromTest(item.ID, test)
+		if !item.Enabled {
+			health.Status = StatusDisabled
+		}
+		_ = m.store.saveHealth(health)
 	}
-	_ = m.store.saveHealth(health)
 	return m.publicEndpoint(item), nil
 }
 
@@ -197,27 +214,50 @@ func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (E
 		return Endpoint{}, err
 	}
 	input.EndpointURL = existingURL
+	if len(item.EncryptedTestURL) > 0 {
+		input.TestEndpointURL, err = m.secure.decrypt(item.EncryptedTestURL)
+		if err != nil {
+			return Endpoint{}, err
+		}
+	}
 	if patch.EndpointURL != nil && strings.TrimSpace(*patch.EndpointURL) != "" {
 		input.EndpointURL = *patch.EndpointURL
+	}
+	if patch.TestEndpointURL != nil {
+		input.TestEndpointURL = *patch.TestEndpointURL
 	}
 	input, network, endpointURL, err := validateEndpointInput(input)
 	if err != nil {
 		return Endpoint{}, err
 	}
-	if patch.EndpointURL != nil || input.ChainKey != item.ChainKey || (patch.Enabled != nil && *patch.Enabled) {
-		test := m.testURL(ctx, input.Provider, network, endpointURL, time.Duration(input.RequestTimeoutMS)*time.Millisecond)
+	testEndpointURL, err := validateOptionalEndpointURL(input.TestEndpointURL)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	if patch.EndpointURL != nil || patch.TestEndpointURL != nil || input.ChainKey != item.ChainKey || (patch.Enabled != nil && *patch.Enabled) {
+		testURL, endpointRole := endpointURLForTest(endpointURL, testEndpointURL)
+		test := m.testURL(ctx, input.Provider, network, testURL, time.Duration(input.RequestTimeoutMS)*time.Millisecond)
+		test.EndpointRole = endpointRole
 		if !test.Success {
 			return Endpoint{}, fmt.Errorf("%s：%s", test.ErrorClass, test.ErrorMessage)
 		}
-		_ = m.store.saveHealth(healthFromTest(item.ID, test))
+		if endpointRole == "PRIMARY" {
+			_ = m.store.saveHealth(healthFromTest(item.ID, test))
+		}
 	}
 	encrypted, err := m.secure.encrypt(endpointURL)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	encryptedTest, err := m.encryptOptionalURL(testEndpointURL)
 	if err != nil {
 		return Endpoint{}, err
 	}
 	item.Provider, item.ChainKey, item.ChainID = input.Provider, network.Key, network.ID
 	item.DisplayName, item.EndpointHost = input.DisplayName, endpointHost(endpointURL)
 	item.EndpointMasked, item.EncryptedURL = maskEndpoint(endpointURL), encrypted
+	item.TestEndpointMasked, item.TestEndpointConfigured = maskOptionalEndpoint(testEndpointURL), testEndpointURL != ""
+	item.EncryptedTestURL = encryptedTest
 	item.Priority, item.Enabled, item.MaxRPS = input.Priority, input.Enabled, input.MaxRPS
 	item.CurrentRPS, item.MaxConcurrency = input.MaxRPS, input.MaxConcurrency
 	item.RequestTimeoutMS, item.UpdatedAt = input.RequestTimeoutMS, time.Now().UTC()
@@ -256,12 +296,37 @@ func (m *Manager) HasConfigured(chainKey string) bool {
 	return err == nil && len(items) > 0
 }
 
+// SealSecret encrypts a non-RPC provider secret with the same machine-bound
+// master key used by RPC endpoints. The returned value is safe to persist.
+func (m *Manager) SealSecret(value string) (string, error) {
+	encrypted, err := m.secure.encrypt(strings.TrimSpace(value))
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(encrypted), nil
+}
+
+func (m *Manager) OpenSecret(value string) (string, error) {
+	encrypted, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return "", errors.New("数据源密钥密文格式错误")
+	}
+	return m.secure.decrypt(encrypted)
+}
+
 func (m *Manager) TestInput(ctx context.Context, input EndpointInput) TestResult {
 	input, network, endpointURL, err := validateEndpointInput(input)
 	if err != nil {
 		return failedTest(input.Provider, input.ChainKey, "VALIDATION", err.Error())
 	}
-	return m.testURL(ctx, input.Provider, network, endpointURL, time.Duration(input.RequestTimeoutMS)*time.Millisecond)
+	testEndpointURL, err := validateOptionalEndpointURL(input.TestEndpointURL)
+	if err != nil {
+		return failedTest(input.Provider, input.ChainKey, "VALIDATION", err.Error())
+	}
+	testURL, endpointRole := endpointURLForTest(endpointURL, testEndpointURL)
+	result := m.testURL(ctx, input.Provider, network, testURL, time.Duration(input.RequestTimeoutMS)*time.Millisecond)
+	result.EndpointRole = endpointRole
+	return result
 }
 
 func (m *Manager) TestEndpoint(ctx context.Context, id string) (TestResult, error) {
@@ -269,18 +334,42 @@ func (m *Manager) TestEndpoint(ctx context.Context, id string) (TestResult, erro
 	if err != nil {
 		return TestResult{}, err
 	}
-	endpointURL, err := m.secure.decrypt(item.EncryptedURL)
+	result, err := m.testStoredEndpoint(ctx, item, true)
+	if err != nil {
+		return TestResult{}, err
+	}
+	if result.EndpointRole == "PRIMARY" {
+		health := healthFromTest(id, result)
+		if !item.Enabled {
+			health.Status = StatusDisabled
+		}
+		_ = m.store.saveHealth(health)
+	}
+	return result, nil
+}
+
+func (m *Manager) testStoredEndpoint(ctx context.Context, item endpointRecord, useConfiguredTest bool) (TestResult, error) {
+	encryptedURL := item.EncryptedURL
+	endpointRole := "PRIMARY"
+	if useConfiguredTest && len(item.EncryptedTestURL) > 0 {
+		encryptedURL = item.EncryptedTestURL
+		endpointRole = "TEST"
+	}
+	endpointURL, err := m.secure.decrypt(encryptedURL)
 	if err != nil {
 		return TestResult{}, err
 	}
 	network, _ := chain.Resolve(item.ChainKey)
 	result := m.testURL(ctx, item.Provider, network, endpointURL, time.Duration(item.RequestTimeoutMS)*time.Millisecond)
-	health := healthFromTest(id, result)
-	if !item.Enabled {
-		health.Status = StatusDisabled
-	}
-	_ = m.store.saveHealth(health)
+	result.EndpointRole = endpointRole
 	return result, nil
+}
+
+func (m *Manager) encryptOptionalURL(endpointURL string) ([]byte, error) {
+	if endpointURL == "" {
+		return nil, nil
+	}
+	return m.secure.encrypt(endpointURL)
 }
 
 func (m *Manager) UpdateRouting(chainKey string, input RoutingInput) error {
@@ -326,7 +415,15 @@ func (m *Manager) RefreshHealth(ctx context.Context) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, _ = m.TestEndpoint(ctx, item.ID)
+			result, testErr := m.testStoredEndpoint(ctx, item, false)
+			if testErr != nil {
+				return
+			}
+			health := healthFromTest(item.ID, result)
+			if !item.Enabled {
+				health.Status = StatusDisabled
+			}
+			_ = m.store.saveHealth(health)
 		}()
 	}
 	wait.Wait()
@@ -350,7 +447,14 @@ func (m *Manager) Call(ctx context.Context, chainKey, method string, params any)
 	var last error
 	attempts := 0
 	for _, item := range items {
-		if attempts >= 5 || !m.routeAllowed(item) {
+		if attempts >= 5 {
+			continue
+		}
+		if preflightErr := m.ensureEndpointReady(ctx, item); preflightErr != nil {
+			last = preflightErr
+			continue
+		}
+		if !m.routeAllowed(item) {
 			continue
 		}
 		for endpointAttempt := 0; endpointAttempt < 2 && attempts < 5; endpointAttempt++ {
@@ -375,6 +479,36 @@ func (m *Manager) Call(ctx context.Context, chainKey, method string, params any)
 		last = errors.New("当前没有健康的 RPC 节点")
 	}
 	return nil, "", fmt.Errorf("RPC_UNAVAILABLE: %w", last)
+}
+
+func (m *Manager) ensureEndpointReady(ctx context.Context, item endpointRecord) error {
+	if healthIsFresh(m.store.health(item.ID), time.Now().UTC()) {
+		return nil
+	}
+	runtime := m.runtime(item)
+	runtime.preflightMu.Lock()
+	defer runtime.preflightMu.Unlock()
+	if healthIsFresh(m.store.health(item.ID), time.Now().UTC()) {
+		return nil
+	}
+	result, err := m.testStoredEndpoint(ctx, item, false)
+	if err != nil {
+		return err
+	}
+	health := healthFromTest(item.ID, result)
+	_ = m.store.saveHealth(health)
+	if !result.Success {
+		return fmt.Errorf("RPC_PREFLIGHT_%s: %s", result.ErrorClass, result.ErrorMessage)
+	}
+	return nil
+}
+
+func healthIsFresh(health Health, now time.Time) bool {
+	if health.CheckedAt == nil {
+		return false
+	}
+	age := now.Sub(health.CheckedAt.UTC())
+	return age >= 0 && age < healthCheckInterval
 }
 
 func (m *Manager) callEndpoint(ctx context.Context, item endpointRecord, method string, params any) (json.RawMessage, *callError) {
@@ -597,7 +731,15 @@ func (m *Manager) publicEndpoint(item endpointRecord) Endpoint {
 		item.EndpointMasked = maskEndpoint(endpointURL)
 	}
 	item.SecretConfigured = true
+	item.TestEndpointMasked = ""
+	item.TestEndpointConfigured = len(item.EncryptedTestURL) > 0
+	if item.TestEndpointConfigured {
+		if endpointURL, err := m.secure.decrypt(item.EncryptedTestURL); err == nil {
+			item.TestEndpointMasked = maskEndpoint(endpointURL)
+		}
+	}
 	item.EncryptedURL = nil
+	item.EncryptedTestURL = nil
 	item.Health = m.store.health(item.ID)
 	runtime := m.runtime(item)
 	runtime.mu.Lock()
@@ -627,7 +769,7 @@ func (m *Manager) applyBlockLag(items []Endpoint) {
 
 func (m *Manager) healthLoop() {
 	defer close(m.closed)
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(healthCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -657,17 +799,12 @@ func validateEndpointInput(input EndpointInput) (EndpointInput, chain.EVM, strin
 	if input.DisplayName == "" || len([]rune(input.DisplayName)) > 80 {
 		return input, network, "", errors.New("显示名称不能为空且不能超过 80 个字符")
 	}
-	endpointURL := strings.TrimSpace(input.EndpointURL)
-	parsed, err := url.Parse(endpointURL)
-	if err != nil || parsed.Host == "" {
-		return input, network, "", errors.New("Endpoint URL 格式错误")
+	endpointURL, err := validateRPCURL(input.EndpointURL, "Endpoint")
+	if err != nil {
+		return input, network, "", err
 	}
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
-		return input, network, "", errors.New("Endpoint 必须使用 HTTPS；仅本机测试允许 HTTP")
-	}
-	if parsed.User != nil {
-		return input, network, "", errors.New("Endpoint 不允许 URL Basic Auth，请使用供应商 HTTPS Endpoint")
-	}
+	input.EndpointURL = endpointURL
+	input.TestEndpointURL = strings.TrimSpace(input.TestEndpointURL)
 	if input.Priority <= 0 {
 		input.Priority = 10
 	}
@@ -690,6 +827,42 @@ func validateEndpointInput(input EndpointInput) (EndpointInput, chain.EVM, strin
 		return input, network, "", errors.New("请求超时必须在 1000～30000 毫秒之间")
 	}
 	return input, network, endpointURL, nil
+}
+
+func validateOptionalEndpointURL(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	return validateRPCURL(value, "测试 Endpoint")
+}
+
+func validateRPCURL(value, label string) (string, error) {
+	endpointURL := strings.TrimSpace(value)
+	parsed, err := url.Parse(endpointURL)
+	if err != nil || parsed.Host == "" {
+		return "", fmt.Errorf("%s URL 格式错误", label)
+	}
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
+		return "", fmt.Errorf("%s 必须使用 HTTPS；仅本机测试允许 HTTP", label)
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("%s 不允许 URL Basic Auth，请使用供应商 HTTPS Endpoint", label)
+	}
+	return endpointURL, nil
+}
+
+func endpointURLForTest(primaryURL, testURL string) (string, string) {
+	if testURL != "" {
+		return testURL, "TEST"
+	}
+	return primaryURL, "PRIMARY"
+}
+
+func maskOptionalEndpoint(endpointURL string) string {
+	if endpointURL == "" {
+		return ""
+	}
+	return maskEndpoint(endpointURL)
 }
 
 func classifyError(err error, status int, body string) *callError {

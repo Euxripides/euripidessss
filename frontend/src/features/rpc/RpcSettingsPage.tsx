@@ -7,7 +7,6 @@ import {
   EditOutlined,
   ExclamationCircleFilled,
   InfoCircleOutlined,
-  LockOutlined,
   PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -16,7 +15,6 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
-  Alert,
   Button,
   Card,
   Col,
@@ -67,6 +65,8 @@ const EMPTY: RpcHealthResponse = {
   routing: {},
 };
 
+type RpcEndpointForm = RpcEndpointInput & { use_test_endpoint: boolean };
+
 export function RpcSettingsPage() {
   const [data, setData] = useState<RpcHealthResponse>(EMPTY);
   const [jobs, setJobs] = useState<EnrichmentJob[]>([]);
@@ -76,8 +76,9 @@ export function RpcSettingsPage() {
   const [editing, setEditing] = useState<RpcEndpoint | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [jobOpen, setJobOpen] = useState(false);
-  const [form] = Form.useForm<RpcEndpointInput>();
+  const [form] = Form.useForm<RpcEndpointForm>();
   const [jobForm] = Form.useForm<{ job_type: string; chain_key: string; items: string }>();
+  const useTestEndpoint = Form.useWatch('use_test_endpoint', form);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -102,6 +103,7 @@ export function RpcSettingsPage() {
     setEditing(null);
     form.setFieldsValue({
       provider: 'CHAINSTACK', chain_key: 'bsc', display_name: '', endpoint_url: '',
+      test_endpoint_url: '', use_test_endpoint: false,
       priority: 10, enabled: true, max_rps: 3, max_concurrency: 2, request_timeout_ms: 8000,
     });
     setDialogOpen(true);
@@ -111,7 +113,8 @@ export function RpcSettingsPage() {
     setEditing(item);
     form.setFieldsValue({
       provider: item.provider, chain_key: item.chain_key, display_name: item.display_name,
-      endpoint_url: '', priority: item.priority, enabled: item.enabled, max_rps: item.max_rps,
+      endpoint_url: '', test_endpoint_url: '', use_test_endpoint: item.test_endpoint_configured,
+      priority: item.priority, enabled: item.enabled, max_rps: item.max_rps,
       max_concurrency: item.max_concurrency, request_timeout_ms: item.request_timeout_ms,
     });
     setDialogOpen(true);
@@ -119,15 +122,20 @@ export function RpcSettingsPage() {
 
   const save = async () => {
     const values = await form.validateFields();
+    const { use_test_endpoint: useTest, ...endpointValues } = values;
     setSaving(true);
     try {
       if (editing) {
-        const payload: Partial<RpcEndpointInput> = { ...values };
-        if (!values.endpoint_url) delete payload.endpoint_url;
+        const payload: Partial<RpcEndpointInput> = { ...endpointValues };
+        if (!endpointValues.endpoint_url) delete payload.endpoint_url;
+        if (useTest && !endpointValues.test_endpoint_url && editing.test_endpoint_configured) {
+          delete payload.test_endpoint_url;
+        }
+        if (!useTest) payload.test_endpoint_url = '';
         await rpcApi.update(editing.endpoint_id, payload);
         message.success('节点配置已更新并通过连接校验');
       } else {
-        await rpcApi.create(values);
+        await rpcApi.create({ ...endpointValues, test_endpoint_url: useTest ? endpointValues.test_endpoint_url : '' });
         message.success('节点已加密保存并加入路由');
       }
       setDialogOpen(false);
@@ -143,7 +151,8 @@ export function RpcSettingsPage() {
     setTestingId(item.endpoint_id);
     try {
       const result = await rpcApi.test(item.endpoint_id);
-      if (result.success) message.success(`连接正常：区块 ${result.latest_block.toLocaleString()}，${result.latency_ms} ms`);
+      const endpointLabel = result.endpoint_role === 'TEST' ? '测试 Endpoint' : '正常 Endpoint';
+      if (result.success) message.success(`${endpointLabel} 连接正常：区块 ${result.latest_block.toLocaleString()}，${result.latency_ms} ms`);
       else message.error(`${result.error_message || '连接失败'} ${result.suggestion || ''}`);
       await refresh(true);
     } catch (error) {
@@ -203,15 +212,6 @@ export function RpcSettingsPage() {
         </Space>
       </header>
 
-      <Alert
-        className="rpc-security-alert"
-        type="info"
-        showIcon
-        icon={<LockOutlined />}
-        message="Endpoint 仅在后端加密保存"
-        description="页面和接口只返回脱敏地址；保存时自动校验 Chain ID 与最新区块，不用于历史数据下载。"
-      />
-
       <Row gutter={[14, 14]} className="rpc-metrics">
         {metrics.map((item) => (
           <Col xs={12} sm={8} xl={4} key={item.label}>
@@ -242,7 +242,7 @@ export function RpcSettingsPage() {
                 },
                 {
                   title: '节点名称 / Endpoint', width: 250,
-                  render: (_, row) => <div className="rpc-endpoint"><strong>{row.display_name}</strong><Tooltip title={row.endpoint_masked}><code>{row.endpoint_masked}</code></Tooltip></div>,
+                  render: (_, row) => <div className="rpc-endpoint"><strong>{row.display_name}</strong><Tooltip title={row.endpoint_masked}><code>{row.endpoint_masked}</code></Tooltip>{row.test_endpoint_configured ? <Tag color="purple">独立测试 Endpoint</Tag> : null}</div>,
                 },
                 { title: '优先级', dataIndex: 'priority', width: 74, align: 'center' },
                 {
@@ -327,8 +327,7 @@ export function RpcSettingsPage() {
         </Card>
       </Spin>
 
-      <Modal title={editing ? '编辑 RPC 节点' : '新增 RPC 节点'} open={dialogOpen} onCancel={() => setDialogOpen(false)} onOk={() => void save()} okText={editing ? '校验并保存' : '测试并保存'} confirmLoading={saving} width={680} destroyOnHidden>
-        <Alert className="rpc-modal-alert" type="warning" showIcon message="Endpoint 包含的 API Key 不会回显；编辑时留空表示保持原密钥。" />
+      <Modal className="rpc-endpoint-modal" title={editing ? '编辑 RPC 节点' : '新增 RPC 节点'} open={dialogOpen} onCancel={() => setDialogOpen(false)} onOk={() => void save()} okText={editing ? '校验并保存' : '测试并保存'} confirmLoading={saving} width={680} destroyOnHidden>
         <Form form={form} layout="vertical">
           <Row gutter={16}>
             <Col span={12}><Form.Item name="provider" label="Provider" rules={[{ required: true }]}><Select options={['CHAINSTACK', 'ANKR', 'NODEREAL', 'CUSTOM'].map((value) => ({ value, label: value }))} /></Form.Item></Col>
@@ -338,11 +337,24 @@ export function RpcSettingsPage() {
           <Form.Item name="endpoint_url" label={editing ? '新 Endpoint（留空保持原配置）' : '完整 Endpoint URL'} rules={editing ? [] : [{ required: true, message: '请输入供应商提供的 HTTPS Endpoint' }]}>
             <Input.Password autoComplete="new-password" placeholder="https://provider.example/v1/YOUR_API_KEY" />
           </Form.Item>
+          <Form.Item name="use_test_endpoint" label="使用独立测试 Endpoint" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          {useTestEndpoint ? (
+            <Form.Item
+              name="test_endpoint_url"
+              label={editing && editing.test_endpoint_configured ? '新测试 Endpoint（留空保持原配置）' : '测试 Endpoint URL'}
+              extra="仅用于手动测试连接；自动路由、定时健康检查和正式请求仍使用正常 Endpoint。"
+              rules={editing && editing.test_endpoint_configured ? [] : [{ required: true, message: '请输入测试 Endpoint' }]}
+            >
+              <Input.Password autoComplete="new-password" placeholder="https://provider.example/test/YOUR_API_KEY" />
+            </Form.Item>
+          ) : null}
           <Row gutter={16}>
-            <Col span={6}><Form.Item name="priority" label="优先级"><InputNumber min={1} max={999} /></Form.Item></Col>
-            <Col span={6}><Form.Item name="max_rps" label="最大 RPS"><InputNumber min={0.25} max={100} step={0.25} /></Form.Item></Col>
-            <Col span={6}><Form.Item name="max_concurrency" label="最大并发"><InputNumber min={1} max={32} /></Form.Item></Col>
-            <Col span={6}><Form.Item name="request_timeout_ms" label="超时（ms）"><InputNumber min={1000} max={30000} step={500} /></Form.Item></Col>
+            <Col xs={12} sm={6}><Form.Item name="priority" label="优先级"><InputNumber min={1} max={999} /></Form.Item></Col>
+            <Col xs={12} sm={6}><Form.Item name="max_rps" label="最大 RPS"><InputNumber min={0.25} max={100} step={0.25} /></Form.Item></Col>
+            <Col xs={12} sm={6}><Form.Item name="max_concurrency" label="最大并发"><InputNumber min={1} max={32} /></Form.Item></Col>
+            <Col xs={12} sm={6}><Form.Item name="request_timeout_ms" label="超时（ms）"><InputNumber min={1000} max={30000} step={500} /></Form.Item></Col>
           </Row>
           <Form.Item name="enabled" label="加入自动路由" valuePropName="checked"><Switch /></Form.Item>
         </Form>
