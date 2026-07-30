@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/rpcmanager"
 )
 
 type Handler struct {
@@ -38,6 +39,10 @@ func (h *Handler) Close() {
 	h.manager.Close()
 }
 
+func (h *Handler) SetRPCManager(manager *rpcmanager.Manager) {
+	h.manager.SetRPCManager(manager)
+}
+
 func (h *Handler) register() {
 	h.mux.HandleFunc("/settings", h.settings)
 	h.mux.HandleFunc("/preview", h.preview)
@@ -48,6 +53,7 @@ func (h *Handler) register() {
 	h.mux.HandleFunc("/retry", h.retry)
 	h.mux.HandleFunc("/addresses/upload", h.uploadAddresses)
 	h.mux.HandleFunc("/file", h.downloadFile)
+	h.mux.HandleFunc("/address/", h.address)
 }
 
 func (h *Handler) settings(writer http.ResponseWriter, request *http.Request) {

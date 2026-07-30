@@ -13,6 +13,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
+  padding-left: 24px;
   margin-bottom: 18px;
 }
 
@@ -113,6 +114,61 @@
 
 .crypto-parquet-date {
   width: 100%;
+}
+
+.crypto-parquet-source-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  width: 100%;
+}
+
+.crypto-parquet-source-grid .ant-checkbox-wrapper {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  margin-inline-start: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--parquet-border);
+  border-radius: 7px;
+  background: #fff;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.crypto-parquet-source-grid .ant-checkbox-wrapper:hover {
+  border-color: #9ab1d1;
+  box-shadow: 0 3px 10px rgba(35, 72, 120, 0.06);
+}
+
+.crypto-parquet-source-grid .ant-checkbox-wrapper-checked {
+  border-color: #8aa5da;
+  background: #f6f9ff;
+}
+
+.crypto-parquet-source-grid .ant-checkbox {
+  margin-top: 2px;
+}
+
+.crypto-parquet-source-grid .ant-checkbox + span {
+  min-width: 0;
+  padding-inline-end: 0;
+}
+
+.crypto-parquet-source-grid strong,
+.crypto-parquet-source-grid small {
+  display: block;
+}
+
+.crypto-parquet-source-grid strong {
+  color: #273a54;
+  font-size: 12px;
+}
+
+.crypto-parquet-source-grid small {
+  margin-top: 2px;
+  color: var(--parquet-muted);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .crypto-parquet-address-label {
@@ -226,7 +282,7 @@
 
 .crypto-parquet-pipeline {
   display: grid;
-  grid-template-columns: repeat(6, minmax(90px, 1fr));
+  grid-template-columns: repeat(4, minmax(105px, 1fr));
   gap: 0;
   margin-bottom: 22px;
   overflow: hidden;
@@ -247,6 +303,14 @@
 
 .crypto-parquet-stage:last-child {
   border-right: 0;
+}
+
+.crypto-parquet-stage:nth-child(4n) {
+  border-right: 0;
+}
+
+.crypto-parquet-stage:nth-child(-n + 12) {
+  border-bottom: 1px solid var(--parquet-border);
 }
 
 .crypto-parquet-stage > span {
@@ -580,11 +644,16 @@
     grid-template-columns: repeat(3, 1fr);
   }
 
-  .crypto-parquet-stage:nth-child(3) {
+  .crypto-parquet-stage,
+  .crypto-parquet-stage:nth-child(4n) {
+    border-right: 1px solid var(--parquet-border);
+  }
+
+  .crypto-parquet-stage:nth-child(3n) {
     border-right: 0;
   }
 
-  .crypto-parquet-stage:nth-child(-n + 3) {
+  .crypto-parquet-stage:nth-child(-n + 15) {
     border-bottom: 1px solid var(--parquet-border);
   }
 }
@@ -593,6 +662,7 @@
   .crypto-parquet-header {
     align-items: stretch;
     flex-direction: column;
+    padding-left: 0;
   }
 
   .crypto-parquet-workspace {

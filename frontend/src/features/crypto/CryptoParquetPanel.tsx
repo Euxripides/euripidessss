@@ -15,6 +15,7 @@ import dayjs from 'dayjs';
 import {
   Alert,
   Button,
+  Checkbox,
   Collapse,
   DatePicker,
   Descriptions,
@@ -52,6 +53,7 @@ import {
   type ParquetJob,
   type ParquetPreview,
   type ParquetSettings,
+  type ParquetSource,
   type ParquetStartPayload,
 } from './cryptoParquetApi';
 import './crypto-parquet.css';
@@ -59,11 +61,13 @@ import './crypto-parquet.css';
 const { RangePicker } = DatePicker;
 
 type TaskFormValues = {
-  chain_key: 'bsc';
+  chain_key: 'bsc' | 'eth' | 'base' | 'arbitrum';
   dates: [Dayjs, Dayjs];
   addresses: string;
+  selected_sources: ParquetSource[];
   keep_source_files: boolean;
   export_csv: boolean;
+  include_receipts: boolean;
 };
 
 const statusMeta: Record<string, { label: string; color: string }> = {
@@ -91,6 +95,9 @@ export function CryptoParquetPanel() {
   const pollingRef = useRef<number | undefined>(undefined);
 
   const rawAddresses = Form.useWatch('addresses', form) ?? '';
+  const selectedChain = Form.useWatch('chain_key', form) ?? 'bsc';
+  const selectedSources = Form.useWatch('selected_sources', form) ?? [];
+  const transactionsSelected = selectedSources.includes('transactions');
   const addressSummary = useMemo(() => summarizeAddresses(rawAddresses), [rawAddresses]);
   const active = job?.status === 'running' || job?.status === 'queued';
   const columns = useMemo<ColumnsType<ParquetFileTask>>(() => buildFileColumns(), []);
@@ -130,8 +137,10 @@ export function CryptoParquetPanel() {
         chain_key: 'bsc',
         dates: [dayjs().subtract(2, 'day'), dayjs().subtract(2, 'day')],
         addresses: '',
+        selected_sources: ['transactions', 'logs', 'traces'],
         keep_source_files: loadedSettings.keep_source_files,
         export_csv: loadedSettings.export_csv,
+        include_receipts: false,
       });
     } catch (error) {
       message.error(error instanceof Error ? error.message : '读取 Parquet 工作台失败');
@@ -148,6 +157,8 @@ export function CryptoParquetPanel() {
       end_date: values.dates[1].format('YYYY-MM-DD'),
       keep_source_files: values.keep_source_files,
       export_csv: values.export_csv,
+      include_receipts: values.include_receipts,
+      selected_sources: values.selected_sources,
     };
   }
 
@@ -162,11 +173,20 @@ export function CryptoParquetPanel() {
     try {
       const result = await previewParquetTask(payload);
       setPreview(result);
-      setPreviewKey(payloadKey(payload));
-      if (!result.files.length) {
-        message.warning('所选日期尚未发现可用 Parquet 分区');
+      if (payload.include_receipts && !result.receipt_available) {
+        const downgraded = { ...payload, include_receipts: false };
+        form.setFieldValue('include_receipts', false);
+        setPreviewKey(payloadKey(downgraded));
+        message.warning(`未配置 ${result.receipt_rpc_env}，本任务不会把合约创建候选当作确认结果`);
       } else {
-        message.success(`已发现 ${result.files.length} 个分区，共 ${formatBytes(result.total_bytes)}`);
+        setPreviewKey(payloadKey(payload));
+      }
+      if (!result.files.length && !result.sqd_available) {
+        message.warning('所选日期尚未发现可用数据');
+      } else if (result.sqd_available && !result.files.length) {
+        message.success(`SQD ${result.sqd_dataset} 区块范围已确认`);
+      } else {
+        message.success(`已发现 ${result.files.length} 个 AWS 分区，并完成 SQD 区块预检`);
       }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '预检失败');
@@ -276,6 +296,16 @@ export function CryptoParquetPanel() {
     { key: 'download', label: '分片下载', status: 'queued', progress: 0 },
     { key: 'schema', label: 'Schema 探测', status: 'queued', progress: 0 },
     { key: 'match', label: '批量匹配', status: 'queued', progress: 0 },
+    { key: 'transactions', label: '多链交易统一', status: 'queued', progress: 0 },
+    { key: 'logs', label: 'Transfer 日志', status: 'queued', progress: 0 },
+    { key: 'metadata', label: 'Token Metadata', status: 'queued', progress: 0 },
+    { key: 'nft', label: 'Token / NFT 解析', status: 'queued', progress: 0 },
+    { key: 'traces', label: 'Trace / 内部交易', status: 'queued', progress: 0 },
+    { key: 'receipts', label: 'Receipt 富化', status: 'queued', progress: 0 },
+    { key: 'normalize', label: '准确合约创建', status: 'queued', progress: 0 },
+    { key: 'activity', label: '地址统一流水', status: 'queued', progress: 0 },
+    { key: 'summary', label: '地址画像', status: 'queued', progress: 0 },
+    { key: 'balances', label: '余额快照', status: 'queued', progress: 0 },
     { key: 'output', label: 'Parquet 输出', status: 'queued', progress: 0 },
   ];
 
@@ -284,7 +314,7 @@ export function CryptoParquetPanel() {
       <header className="crypto-parquet-header">
         <div>
           <h1>EVM Parquet 批量资金分析</h1>
-          <p>按日期发现 AWS 公共分区，一次扫描匹配全部目标地址</p>
+          <p>多链适配、Receipt 富化与统一地址流水的一体化工作台</p>
         </div>
         <Button
           icon={<SettingOutlined />}
@@ -299,10 +329,10 @@ export function CryptoParquetPanel() {
 
       <Alert
         className="crypto-parquet-source-alert"
-        type="warning"
+        type="info"
         showIcon
-        message="当前公开源能力边界"
-        description="AWS BNB 目录已实时核验为 blocks 与 transactions。本页只处理 transactions：普通交易、原生 BNB 转账和顶层合约创建候选；不把缺失的 Transfer logs、Trace 或回执伪装成完整结果。"
+        message="V1.3 多链地址分析数据层"
+        description="统一采集 Transactions、Token/NFT Logs 与 Trace，并生成 Metadata、Activity V2、地址画像和余额快照；未知链上信息始终保留 UNKNOWN，不做猜测。"
       />
 
       <div className="crypto-parquet-workspace">
@@ -327,9 +357,31 @@ export function CryptoParquetPanel() {
               <Select
                 options={[
                   { label: 'BSC Mainnet · Chain ID 56', value: 'bsc' },
-                  { label: 'Ethereum Mainnet · 规划中', value: 'eth', disabled: true },
+                  { label: 'Ethereum Mainnet · Chain ID 1', value: 'eth' },
+                  { label: 'Base Mainnet · Chain ID 8453', value: 'base' },
+                  { label: 'Arbitrum One · Chain ID 42161', value: 'arbitrum' },
                 ]}
               />
+            </Form.Item>
+            <Form.Item
+              label="链上数据层"
+              name="selected_sources"
+              rules={[{ required: true, type: 'array', min: 1, message: '至少选择一个数据层' }]}
+            >
+              <Checkbox.Group className="crypto-parquet-source-grid">
+                <Checkbox value="transactions">
+                  <strong>Transactions</strong>
+                  <small>{selectedChain === 'bsc' ? 'AWS 原生交易 Parquet' : 'SQD 多链统一交易'}</small>
+                </Checkbox>
+                <Checkbox value="logs">
+                  <strong>Token / NFT Logs</strong>
+                  <small>ERC20 · BEP20 · ERC721 · ERC1155</small>
+                </Checkbox>
+                <Checkbox value="traces">
+                  <strong>Trace</strong>
+                  <small>内部转账与合约调用</small>
+                </Checkbox>
+              </Checkbox.Group>
             </Form.Item>
             <Form.Item
               label="数据日期"
@@ -393,6 +445,16 @@ export function CryptoParquetPanel() {
                 </Form.Item>
                 同时导出 CSV
               </span>
+              <span>
+                <Form.Item name="include_receipts" valuePropName="checked" noStyle>
+                  <Switch
+                    size="small"
+                    disabled={!transactionsSelected || selectedChain !== 'bsc' || Boolean(preview && !preview.receipt_available)}
+                  />
+                </Form.Item>
+                Receipt 准确合约创建
+                {preview && !preview.receipt_available ? `（需 ${preview.receipt_rpc_env}）` : ''}
+              </span>
             </Space>
             <div className="crypto-parquet-primary-actions">
               <Button icon={<ReloadOutlined />} onClick={runPreview} loading={loading}>
@@ -403,7 +465,7 @@ export function CryptoParquetPanel() {
                 icon={<CloudDownloadOutlined />}
                 onClick={startTask}
                 loading={loading}
-                disabled={!preview?.files.length || active}
+                disabled={(!preview?.files.length && !preview?.sqd_available) || active}
               >
                 开始下载与筛选
               </Button>
@@ -414,12 +476,20 @@ export function CryptoParquetPanel() {
             <div className="crypto-parquet-preview">
               <div className="crypto-parquet-preview-head">
                 <strong>预检结果</strong>
-                <Tag color={preview.files.length ? 'blue' : 'default'}>{preview.files.length} 个分区</Tag>
+                <Tag color={preview.sqd_available ? 'cyan' : preview.files.length ? 'blue' : 'default'}>
+                  {preview.sqd_available ? '多源就绪' : `${preview.files.length} 个分区`}
+                </Tag>
               </div>
               <Descriptions column={1} size="small" colon={false}>
                 <Descriptions.Item label="预计下载">{formatBytes(preview.total_bytes)}</Descriptions.Item>
                 <Descriptions.Item label="磁盘可用">{formatBytes(preview.free_bytes)}</Descriptions.Item>
                 <Descriptions.Item label="批量地址">{preview.addresses.valid.toLocaleString('zh-CN')} 个</Descriptions.Item>
+                <Descriptions.Item label="数据层">{preview.selected_sources.join(' · ')}</Descriptions.Item>
+                {preview.sqd_block_range && (
+                  <Descriptions.Item label="SQD 区块">
+                    {preview.sqd_block_range.from_block.toLocaleString('zh-CN')} — {preview.sqd_block_range.to_block.toLocaleString('zh-CN')}
+                  </Descriptions.Item>
+                )}
               </Descriptions>
               {preview.total_bytes > 20 * 1024 ** 3 && (
                 <Alert type="warning" showIcon message="本次源数据较大；任务会按分片流水线处理并及时清理 staging。" />
@@ -472,6 +542,18 @@ export function CryptoParquetPanel() {
                 <div className="crypto-parquet-live-stats">
                   <span>源记录 <strong>{job.source_rows.toLocaleString('zh-CN')}</strong></span>
                   <span>命中记录 <strong>{job.matched_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>回执 <strong>{job.receipt_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>确认创建 <strong>{job.contract_creations.toLocaleString('zh-CN')}</strong></span>
+                  <span>统一交易 <strong>{job.transaction_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>Logs <strong>{job.log_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>Metadata <strong>{job.token_metadata_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>Token <strong>{job.token_transfer_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>NFT <strong>{job.nft_transfer_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>Trace <strong>{job.trace_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>内部交易 <strong>{job.internal_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>统一流水 <strong>{job.activity_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>地址画像 <strong>{job.summary_rows.toLocaleString('zh-CN')}</strong></span>
+                  <span>余额快照 <strong>{job.balance_rows.toLocaleString('zh-CN')}</strong></span>
                   <span>失败分区 <strong>{job.failed_files}</strong></span>
                   <span>有效地址 <strong>{job.addresses.valid}</strong></span>
                 </div>
@@ -492,21 +574,27 @@ export function CryptoParquetPanel() {
 
               {job.error && <Alert className="crypto-parquet-job-error" type="error" showIcon message={job.error} />}
 
-              <div className="crypto-parquet-table-head">
-                <div>
-                  <strong>分区任务</strong>
-                  <span>每个文件独立记录下载、校验、筛选与重试状态</span>
-                </div>
-                <span>{job.files.length} 个文件</span>
-              </div>
-              <Table
-                rowKey="uri"
-                size="small"
-                columns={columns}
-                dataSource={[...job.files]}
-                pagination={false}
-                scroll={{ x: 740, y: 350 }}
-              />
+              {job.files.length ? (
+                <>
+                  <div className="crypto-parquet-table-head">
+                    <div>
+                      <strong>AWS 分区任务</strong>
+                      <span>每个文件独立记录下载、校验、筛选与重试状态</span>
+                    </div>
+                    <span>{job.files.length} 个文件</span>
+                  </div>
+                  <Table
+                    rowKey="uri"
+                    size="small"
+                    columns={columns}
+                    dataSource={[...job.files]}
+                    pagination={false}
+                    scroll={{ x: 740, y: 350 }}
+                  />
+                </>
+              ) : (
+                <Alert type="info" showIcon message="本任务使用 SQD 流式数据，无需下载 AWS 分区。" />
+              )}
 
               <ResultFiles job={job} />
             </>
@@ -571,7 +659,7 @@ export function CryptoParquetPanel() {
         <Alert
           type="info"
           showIcon
-          message="业务目录必须使用非系统盘绝对路径；程序不会回退到 C 盘或用户临时目录。"
+          message="V1.1 业务目录固定为 E:\codex\bsc_analytics；程序不会回退到 C 盘、用户目录或系统临时目录。"
         />
         <Form<ParquetSettings> form={settingsForm} layout="vertical" className="crypto-parquet-settings-form">
           <Form.Item
@@ -579,7 +667,7 @@ export function CryptoParquetPanel() {
             label="数据根目录"
             rules={[{ required: true, message: '请输入非系统盘绝对路径' }]}
           >
-            <Input prefix={<FolderOpenOutlined />} placeholder="E:\codex\etl\backend\data\crypto_parquet" />
+            <Input prefix={<FolderOpenOutlined />} placeholder="E:\codex\bsc_analytics" disabled />
           </Form.Item>
           <div className="crypto-parquet-settings-grid">
             <Form.Item name="download_concurrency" label="下载并发">
@@ -593,6 +681,9 @@ export function CryptoParquetPanel() {
             </Form.Item>
             <Form.Item name="minimum_free_gb" label="最低保留空间（GB）">
               <InputNumber min={10} max={2048} />
+            </Form.Item>
+            <Form.Item name="receipt_batch_size" label="Receipt RPC 批量">
+              <InputNumber min={1} max={100} />
             </Form.Item>
           </div>
           <Space size={24}>

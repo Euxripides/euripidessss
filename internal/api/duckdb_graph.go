@@ -448,14 +448,14 @@ func (q *duckDBGraphQuery) executeEdgesWithSummary(ctx context.Context) ([]model
 	for _, row := range rows {
 		if summary["total_rows"] == nil {
 			summary = map[string]interface{}{
-				"total_rows":  int(getFloat(row, "total_rows")),
+				"total_rows":   int(getFloat(row, "total_rows")),
 				"total_amount": getFloat(row, "total_amount"),
-				"in_count":    int(getFloat(row, "in_count")),
-				"in_amount":   getFloat(row, "in_amount"),
-				"out_count":   int(getFloat(row, "out_count")),
-				"out_amount":  getFloat(row, "out_amount"),
-				"start_time":  getStr(row, "start_time"),
-				"end_time":    getStr(row, "end_time"),
+				"in_count":     int(getFloat(row, "in_count")),
+				"in_amount":    getFloat(row, "in_amount"),
+				"out_count":    int(getFloat(row, "out_count")),
+				"out_amount":   getFloat(row, "out_amount"),
+				"start_time":   getStr(row, "start_time"),
+				"end_time":     getStr(row, "end_time"),
 			}
 		}
 		source := getStr(row, "source")
@@ -637,16 +637,16 @@ func queryEdgeDetailFromDuckDB(sessionID string, mapping flowColumnMapping, payl
 	}
 
 	q := newDuckDBGraphQuery(tableName, columns, mapping, map[string]interface{}{
-		"source_filters": payload.SourceFilters,
-		"target_filters": payload.TargetFilters,
-		"detail_filters": payload.DetailFilters,
-		"directions":     payload.Directions,
-		"start_date":     payload.StartDate,
-		"end_date":       payload.EndDate,
-		"source_column":  payload.SourceColumn,
-		"target_column":  payload.TargetColumn,
-		"amount_column":  payload.AmountColumn,
-		"time_column":    payload.TimeColumn,
+		"source_filters":   payload.SourceFilters,
+		"target_filters":   payload.TargetFilters,
+		"detail_filters":   payload.DetailFilters,
+		"directions":       payload.Directions,
+		"start_date":       payload.StartDate,
+		"end_date":         payload.EndDate,
+		"source_column":    payload.SourceColumn,
+		"target_column":    payload.TargetColumn,
+		"amount_column":    payload.AmountColumn,
+		"time_column":      payload.TimeColumn,
 		"direction_column": payload.DirectionColumn,
 	})
 

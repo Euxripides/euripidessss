@@ -1,6 +1,15 @@
 .app-shell {
   min-height: 100%;
 }
+.mobile-nav-trigger {
+  display: none;
+}
+.mobile-nav-drawer .ant-drawer-body {
+  padding: 8px 0;
+}
+.mobile-nav-drawer .ant-menu {
+  border-inline-end: 0 !important;
+}
 .side {
   background: #ffffff !important;
   border-right: 1px solid #e5eaf2;

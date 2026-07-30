@@ -24,6 +24,7 @@ import (
 	"github.com/etl/backend/internal/model"
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/etl/backend/internal/parser"
+	"github.com/etl/backend/internal/rpcmanager"
 	"github.com/etl/backend/internal/rules"
 	"github.com/etl/backend/internal/scanner"
 	"github.com/etl/backend/internal/storage"
@@ -40,6 +41,8 @@ var (
 	analysisEngine  *duckdb.Engine
 	cryptoDownload  http.Handler
 	parquetDownload *parquetdownload.Handler
+	rpcManager      *rpcmanager.Manager
+	rpcAPI          http.Handler
 )
 
 const (
@@ -162,12 +165,26 @@ func Setup(c *config.Config) {
 	} else {
 		parquetDownload = handler
 	}
+	if manager, err := rpcmanager.New(`E:\codex\bsc_analytics`); err != nil {
+		log.Warn().Err(err).Msg("crypto_rpc_api_unavailable")
+	} else {
+		rpcManager = manager
+		rpcAPI = http.StripPrefix("/api/crypto", rpcmanager.NewHandler(manager))
+		if parquetDownload != nil {
+			parquetDownload.SetRPCManager(manager)
+		}
+	}
 }
 
 // Shutdown closes the control store
 func Shutdown() {
 	if parquetDownload != nil {
 		parquetDownload.Close()
+	}
+	if rpcManager != nil {
+		if err := rpcManager.Close(); err != nil {
+			log.Warn().Err(err).Msg("crypto_rpc_close_error")
+		}
 	}
 	if controlStore != nil {
 		if err := controlStore.Close(); err != nil {
@@ -208,6 +225,9 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/crypto/address-classify", HandleCryptoAddressClassify)
 		api.Any("/crypto/download/*path", HandleCryptoDownload)
 		api.Any("/crypto/parquet/*path", HandleCryptoParquet)
+		api.Any("/crypto/rpc/*path", HandleCryptoRPC)
+		api.Any("/crypto/enrichment/*path", HandleCryptoRPC)
+		api.GET("/address/*path", HandleAddressAnalytics)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)
 		api.POST("/rules/analyze", HandleAnalyzeRules)

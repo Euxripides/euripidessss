@@ -10,14 +10,19 @@ import (
 )
 
 func defaultSettings(root string) Settings {
+	dataRoot := filepath.Join(root, "backend", "data", "crypto_parquet")
+	if runtime.GOOS == "windows" {
+		dataRoot = `E:\codex\bsc_analytics`
+	}
 	return Settings{
-		DataRoot:            filepath.Join(root, "backend", "data", "crypto_parquet"),
+		DataRoot:            dataRoot,
 		DownloadConcurrency: 3,
 		DuckDBThreads:       minInt(14, maxInt(4, runtime.NumCPU())),
 		MemoryLimit:         "20GB",
 		MinimumFreeGB:       150,
 		KeepSourceFiles:     false,
 		ExportCSV:           false,
+		ReceiptBatchSize:    50,
 	}
 }
 
@@ -34,6 +39,9 @@ func validateSettings(settings Settings) (Settings, error) {
 	if volume == systemDrive {
 		return settings, fmt.Errorf("禁止将 Parquet 业务数据写入系统盘：%s", settings.DataRoot)
 	}
+	if runtime.GOOS == "windows" && !strings.EqualFold(settings.DataRoot, filepath.Clean(`E:\codex\bsc_analytics`)) {
+		return settings, fmt.Errorf("V1.1 数据根目录固定为 E:\\codex\\bsc_analytics，收到：%s", settings.DataRoot)
+	}
 	if settings.DownloadConcurrency < 1 || settings.DownloadConcurrency > 4 {
 		return settings, errors.New("下载并发必须在 1 到 4 之间")
 	}
@@ -45,6 +53,9 @@ func validateSettings(settings Settings) (Settings, error) {
 	}
 	if settings.MinimumFreeGB < 10 {
 		return settings, errors.New("最低保留空间不能小于 10 GB")
+	}
+	if settings.ReceiptBatchSize < 1 || settings.ReceiptBatchSize > 100 {
+		return settings, errors.New("Receipt RPC 批量大小必须在 1 到 100 之间")
 	}
 	return settings, nil
 }

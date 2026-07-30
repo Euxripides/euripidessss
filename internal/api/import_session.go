@@ -7,16 +7,16 @@ import (
 
 // AsyncImportProgress tracks import status for async import
 type AsyncImportProgress struct {
-	Status    string                 `json:"status"` // "parsing", "loading", "done", "error"
-	SessionID string                 `json:"session_id"`
-	Rows      int                    `json:"rows"`
-	Columns   []string               `json:"columns,omitempty"`
-	Files     []string               `json:"files,omitempty"`
-	Sample    []map[string]interface{} `json:"sample,omitempty"`
-	MappingRule map[string]interface{} `json:"mapping_rule,omitempty"`
-	Error     string                 `json:"error,omitempty"`
-	StartedAt time.Time              `json:"-"`
-	mu        sync.Mutex
+	Status      string                   `json:"status"` // "parsing", "loading", "done", "error"
+	SessionID   string                   `json:"session_id"`
+	Rows        int                      `json:"rows"`
+	Columns     []string                 `json:"columns,omitempty"`
+	Files       []string                 `json:"files,omitempty"`
+	Sample      []map[string]interface{} `json:"sample,omitempty"`
+	MappingRule map[string]interface{}   `json:"mapping_rule,omitempty"`
+	Error       string                   `json:"error,omitempty"`
+	StartedAt   time.Time                `json:"-"`
+	mu          sync.Mutex
 }
 
 var (
