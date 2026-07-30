@@ -1,0 +1,92 @@
+```mermaid
+graph LR
+	github_com_etl_backend_cmd_server["server"]
+	github_com_etl_backend_internal_analysis_duckdb["duckdb"]
+	github_com_etl_backend_internal_api["api"]
+	github_com_etl_backend_internal_chain["chain"]
+	github_com_etl_backend_internal_config["config"]
+	github_com_etl_backend_internal_cryptodownload["cryptodownload"]
+	github_com_etl_backend_internal_cryptodownload_browser_stealth["browser_stealth"]
+	github_com_etl_backend_internal_cryptodownload_useragent["useragent"]
+	github_com_etl_backend_internal_datasource["datasource"]
+	github_com_etl_backend_internal_datasource_aws["aws"]
+	github_com_etl_backend_internal_datasource_rpc["rpc"]
+	github_com_etl_backend_internal_datasource_sqd["sqd"]
+	github_com_etl_backend_internal_datasource_sqd_scheduler["scheduler"]
+	github_com_etl_backend_internal_datasourcemanager["datasourcemanager"]
+	github_com_etl_backend_internal_dbimport["dbimport"]
+	github_com_etl_backend_internal_downloader["downloader"]
+	github_com_etl_backend_internal_dunetools["dunetools"]
+	github_com_etl_backend_internal_etl["etl"]
+	github_com_etl_backend_internal_logger["logger"]
+	github_com_etl_backend_internal_model["model"]
+	github_com_etl_backend_internal_normalize["normalize"]
+	github_com_etl_backend_internal_parquetdownload["parquetdownload"]
+	github_com_etl_backend_internal_parser["parser"]
+	github_com_etl_backend_internal_provider["provider"]
+	github_com_etl_backend_internal_rpcmanager["rpcmanager"]
+	github_com_etl_backend_internal_rules["rules"]
+	github_com_etl_backend_internal_scanner["scanner"]
+	github_com_etl_backend_internal_storage["storage"]
+	github_com_etl_backend_internal_storage_control["control"]
+	github_com_etl_backend_internal_writer["writer"]
+	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_api
+	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_config
+	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_logger
+	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_rules
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_config
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_cryptodownload
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_datasourcemanager
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_dbimport
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_dunetools
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_etl
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_model
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_parquetdownload
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_parser
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_rpcmanager
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_rules
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_scanner
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage_control
+	github_com_etl_backend_internal_cryptodownload --> github_com_etl_backend_internal_cryptodownload_useragent
+	github_com_etl_backend_internal_datasource --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_datasource --> github_com_etl_backend_internal_normalize
+	github_com_etl_backend_internal_datasource_aws --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_datasource_aws --> github_com_etl_backend_internal_datasource
+	github_com_etl_backend_internal_datasource_rpc --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_datasource_rpc --> github_com_etl_backend_internal_normalize
+	github_com_etl_backend_internal_datasource_sqd --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_datasourcemanager --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_datasourcemanager --> github_com_etl_backend_internal_datasource_aws
+	github_com_etl_backend_internal_datasourcemanager --> github_com_etl_backend_internal_datasource_sqd
+	github_com_etl_backend_internal_datasourcemanager --> github_com_etl_backend_internal_rpcmanager
+	github_com_etl_backend_internal_dbimport --> github_com_etl_backend_internal_model
+	github_com_etl_backend_internal_dbimport --> github_com_etl_backend_internal_parser
+	github_com_etl_backend_internal_downloader --> github_com_etl_backend_internal_writer
+	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_model
+	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_parser
+	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_provider
+	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_rules
+	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_scanner
+	github_com_etl_backend_internal_normalize --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_normalize --> github_com_etl_backend_internal_datasource_sqd
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_datasource
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_datasource_aws
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_datasource_rpc
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_datasource_sqd
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_datasourcemanager
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_downloader
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_normalize
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_rpcmanager
+	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_writer
+	github_com_etl_backend_internal_provider --> github_com_etl_backend_internal_model
+	github_com_etl_backend_internal_provider --> github_com_etl_backend_internal_parser
+	github_com_etl_backend_internal_provider --> github_com_etl_backend_internal_rules
+	github_com_etl_backend_internal_rpcmanager --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_rules --> github_com_etl_backend_internal_parser
+	github_com_etl_backend_internal_scanner --> github_com_etl_backend_internal_parser
+	github_com_etl_backend_internal_scanner --> github_com_etl_backend_internal_rules
+```

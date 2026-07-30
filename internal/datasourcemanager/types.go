@@ -7,12 +7,14 @@ const (
 	TypeDataset = "DATASET"
 	TypeRPC     = "RPC"
 
-	StatusHealthy     = "HEALTHY"
-	StatusDegraded    = "DEGRADED"
-	StatusRateLimited = "RATE_LIMITED"
-	StatusUnavailable = "UNAVAILABLE"
-	StatusDisabled    = "DISABLED"
-	StatusUnknown     = "UNKNOWN"
+	StatusHealthy            = "HEALTHY"
+	StatusDegraded           = "DEGRADED"
+	StatusNoAvailableWorkers = "NO_AVAILABLE_WORKERS"
+	StatusRateLimited        = "RATE_LIMITED"
+	StatusUnavailable        = "UNAVAILABLE"
+	StatusRecovering         = "RECOVERING"
+	StatusDisabled           = "DISABLED"
+	StatusUnknown            = "UNKNOWN"
 )
 
 type ConfigInput struct {
@@ -51,10 +53,13 @@ type Source struct {
 	FailureCount     int64        `json:"failure_count"`
 	RateLimitedCount int64        `json:"rate_limited_count"`
 	TimeoutCount     int64        `json:"timeout_count"`
+	Worker503Count   int64        `json:"worker_503_count"`
 	AverageSpeedBPS  float64      `json:"average_speed_bps"`
 	LastSuccessAt    *time.Time   `json:"last_success_at,omitempty"`
 	LastFailureAt    *time.Time   `json:"last_failure_at,omitempty"`
+	LastRecoveryAt   *time.Time   `json:"last_recovery_at,omitempty"`
 	LastError        string       `json:"last_error,omitempty"`
+	CurrentTasks     int64        `json:"current_tasks"`
 	CheckedAt        *time.Time   `json:"checked_at,omitempty"`
 	Config           PublicConfig `json:"config"`
 }

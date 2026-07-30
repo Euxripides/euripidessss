@@ -245,6 +245,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/crypto/rpc/*path", HandleCryptoRPC)
 		api.Any("/crypto/enrichment/*path", HandleCryptoRPC)
 		api.Any("/crypto/datasource/*path", HandleCryptoDataSource)
+		api.Any("/crypto/addresses/:chain/:address/first-seen", HandleFirstSeen)
 		api.GET("/address/*path", HandleAddressAnalytics)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)

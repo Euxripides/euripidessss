@@ -34,6 +34,7 @@ import {
   Typography,
   Upload,
   message,
+  notification,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -97,6 +98,9 @@ export function CryptoParquetPanel() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const pollingRef = useRef<number | undefined>(undefined);
+  const lastErrorRef = useRef<string | undefined>(undefined);
+  const lastCancelNotifyRef = useRef<boolean>(false);
+  const lastCoverageJobRef = useRef<string | null>(null);
 
   const rawAddresses = Form.useWatch('addresses', form) ?? '';
   const selectedChain = Form.useWatch('chain_key', form) ?? 'bsc';
@@ -124,6 +128,49 @@ export function CryptoParquetPanel() {
       if (pollingRef.current !== undefined) window.clearInterval(pollingRef.current);
     };
   }, [job?.id, active]);
+
+  useEffect(() => {
+    if (job?.error && job.error !== lastErrorRef.current) {
+      notification.error({
+        message: '任务执行错误',
+        description: job.error,
+        placement: 'topRight',
+        duration: 0,
+      });
+      lastErrorRef.current = job.error;
+    }
+    if (!job?.error) {
+      lastErrorRef.current = undefined;
+    }
+  }, [job?.error]);
+
+  useEffect(() => {
+    if (job?.status === 'canceling' && !lastCancelNotifyRef.current) {
+      notification.warning({
+        message: '正在取消任务',
+        description: '正在停止 I/O 并等待 Worker 释放资源…',
+        placement: 'topRight',
+        duration: 4,
+      });
+      lastCancelNotifyRef.current = true;
+    }
+    if (job?.status !== 'canceling') {
+      lastCancelNotifyRef.current = false;
+    }
+  }, [job?.status]);
+
+  useEffect(() => {
+    if (!job?.id || !job?.dataset_coverage) return;
+    if (job.dataset_coverage.coverage_percent >= 100) return;
+    if (lastCoverageJobRef.current === job.id) return;
+    lastCoverageJobRef.current = job.id;
+    notification.warning({
+      message: '数据覆盖尚未完整',
+      description: '页面中的交易数和资产数只代表已加载数据，零值不表示完整历史没有交易。',
+      placement: 'topRight',
+      duration: 6,
+    });
+  }, [job?.id, job?.dataset_coverage?.coverage_percent]);
 
   async function initialize() {
     setLoading(true);
@@ -318,7 +365,6 @@ export function CryptoParquetPanel() {
       <header className="crypto-parquet-header">
         <div>
           <h1>EVM Parquet 批量资金分析</h1>
-          <p>多链适配、Receipt 富化与统一地址流水的一体化工作台</p>
         </div>
         <Button
           icon={<SettingOutlined />}
@@ -331,20 +377,11 @@ export function CryptoParquetPanel() {
         </Button>
       </header>
 
-      <Alert
-        className="crypto-parquet-source-alert"
-        type="info"
-        showIcon
-        message="V1.3 多链地址分析数据层"
-        description="统一采集 Transactions、Token/NFT Logs 与 Trace，并生成 Metadata、Activity V2、地址画像和余额快照；未知链上信息始终保留 UNKNOWN，不做猜测。"
-      />
-
       <div className="crypto-parquet-workspace">
         <section className="crypto-parquet-config">
           <div className="crypto-parquet-section-title">
             <div>
               <h2>任务配置</h2>
-              <span>先预检体量，再开始下载</span>
             </div>
             <SafetyCertificateOutlined />
           </div>
@@ -506,7 +543,6 @@ export function CryptoParquetPanel() {
           <div className="crypto-parquet-section-title">
             <div>
               <h2>任务监控</h2>
-              <span>{job ? `任务 ${job.id}` : '尚未启动任务'}</span>
             </div>
             {job && <StatusTag status={job.status} />}
           </div>
@@ -561,14 +597,6 @@ export function CryptoParquetPanel() {
                     <span>Trace <StatusTag status={coverageStatusLabel(job.dataset_coverage.trace_status)} /></span>
                   </div>
                 </div>
-                {job.dataset_coverage.coverage_percent < 100 && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="数据覆盖尚未完整"
-                    description="页面中的交易数和资产数只代表已加载数据，零值不表示完整历史没有交易。"
-                  />
-                )}
                 <div className="crypto-parquet-manifest-state">
                   <span>Manifest</span>
                   <StatusTag status={job.manifest.status || 'queued'} />
@@ -611,17 +639,11 @@ export function CryptoParquetPanel() {
                 </Space>
               </div>
 
-              {job.error && <Alert className="crypto-parquet-job-error" type="error" showIcon message={job.error} />}
-              {job.status === 'canceling' && (
-                <Alert className="crypto-parquet-job-error" type="warning" showIcon message="正在停止 I/O 并等待 Worker 释放资源…" />
-              )}
-
               {(job.files ?? []).length ? (
                 <>
                   <div className="crypto-parquet-table-head">
                     <div>
                       <strong>AWS 分区任务</strong>
-                      <span>每个文件独立记录下载、校验、筛选与重试状态</span>
                     </div>
                     <span>{(job.files ?? []).length} 个文件</span>
                   </div>
@@ -635,7 +657,7 @@ export function CryptoParquetPanel() {
                   />
                 </>
               ) : (
-                <Alert type="info" showIcon message="本任务使用 SQD 流式数据，无需下载 AWS 分区。" />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分区文件" />
               )}
 
               <ResultFiles job={job} />
@@ -872,7 +894,10 @@ function summarizeAddresses(raw: string): AddressSummary {
   let invalid = 0;
   let duplicates = 0;
   for (const field of fields) {
-    const normalized = field.toLowerCase();
+    // 去除零宽字符和不可见 Unicode 控制字符（常见于从富文本/网页复制粘贴）
+    const sanitized = field.replace(/[\u200B\u200C\u200D\u200E\u200F\uFEFF\u00A0\u2028\u2029]/g, '').trim();
+    if (!sanitized) continue;
+    const normalized = sanitized.toLowerCase();
     if (!/^0x[0-9a-f]{40}$/.test(normalized)) {
       invalid += 1;
       continue;

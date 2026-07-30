@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/etl/backend/internal/chain"
@@ -21,12 +22,22 @@ const (
 	TransferTopic       = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 	TransferSingleTopic = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
 	TransferBatchTopic  = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
+
+	// DefaultMaxCooldown is the maximum cooldown duration for 503 errors.
+	DefaultMaxCooldown = 10 * time.Minute
 )
 
 type Client struct {
-	httpClient *http.Client
-	portalRoot string
-	apiKey     string
+	httpClient     *http.Client
+	portalRoot     string
+	apiKey         string
+
+	cooldownMu     sync.Mutex
+	cooldownUntil  time.Time
+	consecutive503 int
+	maxCooldown    time.Duration
+
+	breaker *CircuitBreaker
 }
 
 type Metadata struct {
@@ -122,7 +133,69 @@ func NewConfigured(client *http.Client, portalRoot, apiKey string) *Client {
 	if portalRoot == "" {
 		portalRoot = DefaultPortal
 	}
-	return &Client{httpClient: client, portalRoot: portalRoot, apiKey: strings.TrimSpace(apiKey)}
+	return &Client{
+		httpClient:  client,
+		portalRoot:  portalRoot,
+		apiKey:      strings.TrimSpace(apiKey),
+		maxCooldown: DefaultMaxCooldown,
+		breaker:     NewCircuitBreaker(DefaultCircuitBreakerConfig()),
+	}
+}
+
+// ErrSQDCooldown is returned when SQD is in 503 cooldown.
+var ErrSQDCooldown = errors.New("sqd: cooling down after 503 No available workers")
+
+// IsInCooldown checks whether the client is in 503 cooldown.
+func (c *Client) IsInCooldown() bool {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+	return time.Now().Before(c.cooldownUntil)
+}
+
+// CooldownUntil returns when the cooldown period ends.
+func (c *Client) CooldownUntil() time.Time {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+	return c.cooldownUntil
+}
+
+// Consecutive503 returns consecutive 503 count.
+func (c *Client) Consecutive503() int {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+	return c.consecutive503
+}
+
+func (c *Client) cooldownDuration() time.Duration {
+	switch c.consecutive503 {
+	case 0:
+		return 30 * time.Second
+	case 1:
+		return 60 * time.Second
+	case 2:
+		return 120 * time.Second
+	default:
+		if c.maxCooldown > 0 {
+			return c.maxCooldown
+		}
+		return DefaultMaxCooldown
+	}
+}
+
+func (c *Client) setCooldown() time.Duration {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+	c.consecutive503++
+	d := c.cooldownDuration()
+	c.cooldownUntil = time.Now().Add(d)
+	return d
+}
+
+func (c *Client) resetCooldown() {
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+	c.consecutive503 = 0
+	c.cooldownUntil = time.Time{}
 }
 
 func (c *Client) Metadata(ctx context.Context, network chain.EVM) (Metadata, error) {
@@ -298,34 +371,67 @@ func (c *Client) stream(
 }
 
 func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
+	// Check circuit breaker first
+	if err := c.breaker.Allow(); err != nil {
+		return nil, err
+	}
+
+	// Check cooldown
+	if c.IsInCooldown() {
+		c.breaker.RecordFailure()
+		return nil, fmt.Errorf("%w: available at %s", ErrSQDCooldown, c.CooldownUntil().Format(time.RFC3339))
+	}
+
 	var last error
 	for attempt := 0; attempt < 4; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
+			c.breaker.RecordFailure()
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		c.authorize(req)
 		response, err := c.httpClient.Do(req)
 		if err == nil && (response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent) {
+			c.resetCooldown()
+			c.breaker.RecordSuccess()
 			return response, nil
 		}
 		if err == nil {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 			response.Body.Close()
 			err = fmt.Errorf("SQD HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
+
+			// 503 No available workers: enter cooldown immediately
+			if response.StatusCode == http.StatusServiceUnavailable &&
+				(strings.Contains(strings.ToLower(string(message)), "no available worker") ||
+					strings.Contains(strings.ToLower(string(message)), "no_available_worker")) {
+				d := c.setCooldown()
+				c.breaker.RecordFailure()
+				return nil, fmt.Errorf("%w: %s (cooldown %v)", ErrSQDCooldown, strings.TrimSpace(string(message)), d)
+			}
+
+			// Client errors (4xx except 429) are not retryable
 			if response.StatusCode != http.StatusTooManyRequests && response.StatusCode < 500 {
+				c.breaker.RecordFailure()
 				return nil, err
 			}
 		}
 		last = err
+		// Exponential backoff for retryable errors: 1s, 2s, 4s, 8s
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(time.Duration(1<<attempt) * time.Second):
 		}
 	}
+	c.breaker.RecordFailure()
 	return nil, last
+}
+
+// Breaker returns the circuit breaker for health monitoring.
+func (c *Client) Breaker() *CircuitBreaker {
+	return c.breaker
 }
 
 func (c *Client) timestampBlock(ctx context.Context, network chain.EVM, timestamp int64) (uint64, error) {

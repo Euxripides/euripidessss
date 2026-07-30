@@ -492,7 +492,6 @@ export function CryptoDownloadPanel() {
           <div className="topbar-title-row">
             <h1>虚拟币数据下载</h1>
           </div>
-          <p>按地址和链批量下载链上交易、代币转账、资产与下载报告，支持断点续跑、邮箱 CSV 和地址级取消。</p>
         </div>
         <Space>
           <Button icon={<SettingOutlined />} onClick={() => setSettingsModalOpen(true)}>下载设置</Button>

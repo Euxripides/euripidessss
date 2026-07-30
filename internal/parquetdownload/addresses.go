@@ -16,6 +16,15 @@ import (
 
 var evmAddressPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 
+// zeroWidthChars 去除从富文本/网页复制粘贴时带入的零宽和不可见 Unicode 字符
+func zeroWidthChars(r rune) rune {
+	switch r {
+	case '\u200b', '\u200c', '\u200d', '\u200e', '\u200f', '\ufeff', '\u00a0', '\u2028', '\u2029':
+		return -1
+	}
+	return r
+}
+
 func normalizeAddresses(raw string) AddressSummary {
 	fields := strings.FieldsFunc(raw, func(r rune) bool {
 		return unicode.IsSpace(r) || strings.ContainsRune(",，;；|", r)
@@ -23,7 +32,11 @@ func normalizeAddresses(raw string) AddressSummary {
 	summary := AddressSummary{Input: len(fields)}
 	seen := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
-		value := strings.ToLower(strings.TrimSpace(field))
+		cleaned := strings.Map(zeroWidthChars, strings.TrimSpace(field))
+		if cleaned == "" {
+			continue
+		}
+		value := strings.ToLower(cleaned)
 		if !evmAddressPattern.MatchString(value) {
 			if value != "" {
 				summary.InvalidItems = append(summary.InvalidItems, value)
