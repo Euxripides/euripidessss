@@ -4,6 +4,7 @@ import {
   CloudDownloadOutlined,
   DatabaseOutlined,
   DownloadOutlined,
+  FileZipOutlined,
   PlusOutlined,
   RightOutlined,
   SettingOutlined,
@@ -50,6 +51,7 @@ import { CleanPanel } from "./features/clean/CleanPanel";
 import { DuneDownloadPanel } from "./features/download/DuneDownloadPanel";
 import { CryptoAddressPanel } from "./features/crypto/CryptoAddressPanel";
 import { CryptoDownloadPanel } from "./features/crypto/CryptoDownloadPanel";
+import { CryptoParquetPanel } from "./features/crypto/CryptoParquetPanel";
 import { RuleExpansionDrawer } from "./features/clean/RuleExpansionDrawer";
 import { EdgeDetailModal } from "./features/flow/EdgeDetailModal";
 import { EdgeStylePanel } from "./features/flow/EdgeStylePanel";
@@ -212,6 +214,7 @@ const menuItems = [
     label: "虚拟币",
     children: [
       { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "数据下载" },
+      { key: "crypto-parquet", icon: <FileZipOutlined />, label: "Parquet下载" },
       { key: "crypto-address", icon: <WalletOutlined />, label: "地址区分" },
     ],
   },
@@ -479,6 +482,7 @@ export function App() {
             )}
             {active === "download-dune" && <DuneDownloadPanel />}
             {active === "crypto-download" && <CryptoDownloadPanel />}
+            {active === "crypto-parquet" && <CryptoParquetPanel />}
             {active === "crypto-address" && <CryptoAddressPanel />}
           </Content>
         </Layout>
@@ -559,6 +563,7 @@ export function App() {
       graph: "资金流向图",
       "download-dune": "Dune 下载",
       "crypto-download": "虚拟币数据下载",
+      "crypto-parquet": "EVM Parquet 批量资金分析",
       "crypto-address": "地址区分",
     }[key];
   }

@@ -1,3 +1,79 @@
+## 2026-07-30 01:57 EVM Parquet 批量下载与资金筛选接入
+
+### Task
+- 按 `D:\下载文件\EVM多链批量资金分析系统V1设计文档.md` 将首阶段能力接入当前 Go/React 项目。
+- 前端入口固定为 `虚拟币 -> Parquet下载`，提供真实进度条、分区级进度、取消、失败重试和结果下载。
+- 在不增加外部依赖的前提下补充下载流水线、磁盘保护、DuckDB 批量匹配和幂等检查点。
+
+### Changes
+- 新增 `internal/parquetdownload/`：
+  - BSC Chain Adapter 首发配置：`chain_key=bsc`、`chain_id=56`、`native_symbol=BNB`。
+  - 使用 AWS S3 ListObjects V2 匿名接口发现 `v1.1/bnb/transactions/date=YYYY-MM-DD/*.parquet`；范围查询使用 `start-after` 和 continuation token，避免逐日请求。
+  - 支持 `.partial` HTTP Range 续传、3 次退避重试、文件大小与 `PAR1` 头尾校验。
+  - 下载并发限制 1～4；只允许一个大型 DuckDB 任务同时运行；分片下载完成即进入单写入处理流水线。
+  - DuckDB 运行时 Schema 探测，缺少 `hash/block_number/from_address/to_address/value/block_timestamp` 时立即停止。
+  - 全地址批量导入临时表，分别对 from/to 执行 SEMI JOIN 后 UNION 去重；不按地址重复扫描源文件。
+  - 输出 ZSTD Parquet、250,000 Row Group；可选同步输出 CSV。
+  - 检查点键包含源 URI、ETag 和排序后的地址批次哈希，避免不同地址批次错误复用或覆盖输出。
+  - staging 源文件默认在处理完成后删除；`.partial`、已完成输出与检查点在取消/失败时保留供重试。
+  - 数据根目录强制为非系统盘绝对路径；默认 `E:\codex\etl\backend\data\crypto_parquet`；保留空间默认 150 GB。
+  - 地址文件支持 XLSX/XLSM、CSV、TXT，统一小写、格式校验和去重。
+- 新增 `internal/api/crypto_parquet_handlers.go`，并在 `internal/api/handlers.go` 初始化、注册和关闭 Parquet 任务服务。
+- 新增前端：
+  - `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+  - `frontend/src/features/crypto/cryptoParquetApi.ts`
+  - `frontend/src/features/crypto/crypto-parquet.css`
+- 修改 `frontend/src/App.tsx`，在 `虚拟币` 下新增 `Parquet下载`。
+- 页面提供真实分区预检、地址审计、数据体量/磁盘余量、六阶段流水线、总体进度、字节/速度/ETA、逐文件进度、源/命中行数、取消、检查点重试、历史任务和结果清单。
+
+### API and Storage Changes
+- 新增：
+  - `GET/POST /api/crypto/parquet/settings`
+  - `POST /api/crypto/parquet/preview`
+  - `POST /api/crypto/parquet/start`
+  - `GET /api/crypto/parquet/job`
+  - `GET /api/crypto/parquet/jobs`
+  - `POST /api/crypto/parquet/cancel`
+  - `POST /api/crypto/parquet/retry`
+  - `POST /api/crypto/parquet/addresses/upload`
+  - `GET /api/crypto/parquet/file`
+- 无外部数据库结构变化。
+- 新增文件系统结构：`jobs/`、`staging/`、`warehouse/transactions/chain=bsc/year=YYYY/month=MM/date=YYYY-MM-DD/`、`checkpoints/`、`exports/`、`tmp/`。
+- 设置持久化为 `backend/config/crypto_parquet.json`；只有用户实际保存设置时创建。
+
+### Current Source Boundary
+- 2026-07-30 实时核验 AWS Registry 和 S3：BNB 路径为 `s3://aws-public-blockchain/v1.1/bnb/`，当前顶层仅有 `blocks/` 与 `transactions/`。
+- 2026-07-28 transactions 分区为单个 `transactions.parquet`，大小 `5,951,495,515` 字节，ETag `3b82f4a42e2eacab5148916d35b598bc-89`。
+- 远程 DuckDB footer/Schema 探测成功，字段包括 `hash`、`block_number`、`from_address`、`to_address`、`value`、`input`、`block_timestamp` 等。
+- 因公开目录没有 logs/receipts，本版只提供普通交易、原生 BNB 转账和顶层合约创建候选；不宣称包含 BEP-20 Transfer logs、Trace、回执状态、EOA/合约当前状态或余额。
+
+### Verified Commands and Evidence
+- `go test ./internal/parquetdownload -count=1 -v` — 通过；覆盖地址审计、C 盘拦截、S3 分区发现、Range 续传和本地 DuckDB 端到端筛选。
+- 本地 DuckDB 端到端：2 条源交易、1 条目标命中，成功生成 Parquet 和 CSV，源/命中计数为 2/1。
+- `go test ./internal/... -count=1` — 全部通过。
+- `go vet ./internal/...` — 通过。
+- `go build -o bin\etl-server.exe .\cmd\server\` — 通过。
+- `npm run build`（cwd=`frontend`）— 通过；只有既有 chunk size warning。
+- `.\run.ps1` — 重启成功，PID `11564`。
+- `GET /api/health` — `status=ok`，`analysis_plane.available=true`。
+- 真实 `POST /api/crypto/parquet/preview` — 找到 1 个 2026-07-28 分区，返回精确大小、ETag 和磁盘可用 `1,211,232,776,192` 字节。
+- 向设置接口提交 `C:\bsc_analytics` — HTTP 400，明确返回禁止系统盘；原设置保持不变。
+- Browser/IAB 在当前会话不可用，改用 Playwright + 本机 Edge：
+  - 1440x960 和 390x844 真实页面预检均无页面级横向溢出。
+  - 验证地址输入、真实预检、开始按钮、来源边界提示、设置弹窗和移动端重排。
+  - 使用路由 mock 检查运行态 42% 总进度、3 个文件级进度条、安全取消和结果清单；后端进度计算由下载续传测试与真实 API 覆盖。
+- Image Gen 概念服务连续两次网络失败；本次按已记录的白底/深蓝/青色进度、开放面板、紧凑表格设计系统实现，并对最终桌面、移动端和运行态截图执行 `view_image` 视觉复核。
+
+### Unfinished
+- 未实际下载完整 5.95 GB 公网日分区，避免无必要地产生长时间网络和磁盘写入；已完成真实目录/Schema/体量预检，以及本地同一处理链路的 Parquet 端到端验证。
+- BEP-20 Transfer、Trace、receipt/status、RPC 当前余额、Token metadata、地址查询 API 和汇总页需等待可验证的对应历史数据源后分阶段接入。
+- 当前只启用 BSC；数据模型、路径和唯一键已包含 chain key/id，ETH Adapter 仍为后续阶段。
+
+### Notes
+- 前端显示的总体进度为下载 55% + 批量处理/输出 35% + 准备/收尾 10% 的真实加权进度；文件行使用实际字节进度。
+- 同一源文件只有地址批次哈希相同且 ETag/大小一致时才复用检查点。
+- 工作区原有大量运行时文件删除和文档改动，本次未回退。
+
 ## 2026-07-27 13:31 虚拟币全链路真实下载与 CSV 回退验收
 
 ### Task
@@ -149,6 +225,40 @@
 
 ### Unfinished
 - 无。
+
+## 2026-07-29 — 新增 GitHub 项目 README
+
+### 新增内容
+
+- 新增根目录`README.md`，作为GitHub项目首页和公开项目说明。
+- 以“多源资金数据、可审计ETL、资金关系分析”为核心定位，系统介绍平台价值与适用场景。
+- README包含：
+  - 银行、微信、支付宝多源接入能力；
+  - 分类原字段合并、可选统一字段、清洗去重和阶段产物保留流程；
+  - 34字段统一数据模型及支付宝关键字段映射；
+  - PostgreSQL/MySQL一键导入；
+  - 资金流向图、筛选、路径分析与多格式导出；
+  - Mermaid处理流程图；
+  - 技术架构、项目目录、快速启动、配置和测试命令；
+  - 运行时敏感数据防误提交提示和正式调查使用边界。
+- 使用当前Git远程地址作为克隆示例，不保留待替换占位符。
+
+### 修改文件
+
+- `README.md`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 验证
+
+- README共249行，包含1个一级标题、10个二级章节。
+- Markdown代码围栏共20个标记，全部成对闭合。
+- Mermaid流程图、34字段说明、商户流水号、消费名称映射、数据库导入和安全提示均已检查存在。
+- 本次仅修改文档，未修改后端或前端代码，不需要重启服务。
+
+### 未完成事项
+
+- 当前未配置GitHub Actions，因此README未添加虚构的构建状态或测试覆盖率徽章。
 
 ## 2026-07-27 12:34 结果/错误通知与最近任务折叠
 

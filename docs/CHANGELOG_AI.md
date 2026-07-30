@@ -1,3 +1,45 @@
+### 2026-07-30 01:57 EVM Parquet 批量下载与资金筛选接入
+
+#### 本次任务
+- 将 EVM 多链资金分析设计中的首阶段 BSC Parquet 能力接入 `虚拟币 -> Parquet下载`。
+
+#### 修改文件
+- `internal/parquetdownload/`（新增任务、发现、下载、续传、Schema、DuckDB 筛选、检查点、文件下载与测试）
+- `internal/api/crypto_parquet_handlers.go`
+- `internal/api/handlers.go`
+- `frontend/src/App.tsx`
+- `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+- `frontend/src/features/crypto/cryptoParquetApi.ts`
+- `frontend/src/features/crypto/crypto-parquet.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+#### 新增或变更功能
+- 新增 BSC AWS Parquet 日期范围预检和匿名分区发现。
+- 新增 `.partial` Range 断点续传、文件校验、限并发下载、单 DuckDB 写入、取消和检查点重试。
+- 新增地址批量清洗/去重和 XLSX/CSV/TXT 导入。
+- 新增运行时 Schema 探测、from/to 双 SEMI JOIN 批量匹配、ZSTD Parquet/可选 CSV。
+- 新增真实总体进度、文件进度、字节、速度、ETA、源/命中计数、历史与结果清单。
+- 新增非系统盘强制校验、150 GB 保留空间和处理后清理 staging。
+- 检查点与输出文件名加入地址批次哈希，防止跨批次误复用。
+
+#### 接口、数据库、前端变化
+- 新增 `/api/crypto/parquet/settings|preview|start|job|jobs|cancel|retry|addresses/upload|file`。
+- 无外部数据库变化；新增 `backend/data/crypto_parquet` 文件任务目录结构。
+- `虚拟币` 菜单新增 `Parquet下载` 页面，桌面和移动端自适应。
+
+#### 验证结果
+- Parquet 专项测试、全部后端测试、go vet、Go build 和前端生产构建通过。
+- 本地 DuckDB 端到端以 2 条源交易验证 1 条目标命中并生成 Parquet/CSV。
+- 真实 AWS 预检确认 2026-07-28 transactions 分区大小 5,951,495,515 字节并成功远程探测 Schema。
+- C 盘设置接口返回 HTTP 400 且未污染现有设置。
+- Playwright + Edge 验证 1440x960、390x844 和 42% 运行态；页面无横向溢出，进度条/取消/结果清单可见。
+- `run.ps1` 重启成功，PID `11564`；健康检查 `status=ok`。
+
+#### 未完成事项
+- 未实际下载完整 5.95 GB 公网分区；真实目录/Schema/体量已核验，本地完整处理链路已通过。
+- AWS BNB 当前公开源只有 blocks/transactions；BEP-20 logs、Trace、receipts、RPC 当前状态和 ETH Adapter 留待后续数据源阶段。
+
 ### 2026-07-27 13:31 虚拟币全链路真实下载与 CSV 回退验收
 
 #### 本次任务
@@ -4927,3 +4969,24 @@ ormalizeFilterBoundary 精确时间边界处理。
 - 逐笔按交易流水号对照源消费名称8,735行，不一致0行。
 - 首行`消费名称`和`摘要说明`均为`明智出行费用`，源`类型=即时到账交易`未进入摘要。
 - 服务已重启，PID 8524，健康检查正常。
+
+## 2026-07-29 — 新增 GitHub README
+
+### 新增
+
+- 新增根目录`README.md`，以产品级中文文案介绍资金数据智能分析平台。
+- 覆盖多源接入、分阶段合并、标准化清洗、严格去重、34字段统一模型、资金流分析、PostgreSQL/MySQL导入和可审计性设计。
+- 新增GitHub可渲染的Mermaid处理流程图、技术架构表、目录结构、快速开始、配置与测试说明。
+- 补充运行时敏感数据防误提交提示以及正式调查/审计使用边界。
+- 使用真实Git远程地址作为克隆命令，未添加未经验证的CI、覆盖率或性能宣传。
+
+### 修改文件
+
+- `README.md`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 验证
+
+- Markdown标题结构、代码围栏配对、核心字段和关键章节检查通过。
+- 本次仅修改文档，无需重启服务。
