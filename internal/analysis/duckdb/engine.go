@@ -9,11 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 type Engine struct {
+	mu           sync.Mutex
 	exePath      string
 	dbPath       string
 	extensionDir string
@@ -85,6 +87,8 @@ func (e *Engine) ExecSQL(ctx context.Context, sqlText string) ([]byte, error) {
 	if !e.Available() {
 		return nil, errors.New("duckdb analysis engine is not available")
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(e.dbPath), 0755); err != nil {
 		return nil, err
 	}
@@ -96,6 +100,8 @@ func (e *Engine) ExecSQLJSON(ctx context.Context, sqlText string) ([]map[string]
 	if !e.Available() {
 		return nil, errors.New("duckdb analysis engine is not available")
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(e.dbPath), 0755); err != nil {
 		return nil, err
 	}

@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/chain"
+	"github.com/etl/backend/internal/datasource/sqd"
+	"github.com/etl/backend/internal/rpcmanager"
 )
 
 type Manager struct {
@@ -27,7 +30,22 @@ type Manager struct {
 	cancels      map[string]context.CancelFunc
 	lastPersist  map[string]time.Time
 	discoverer   *discoverer
+	sqd          *sqd.Client
 	engine       *duckdb.Engine
+	rpcManager   *rpcmanager.Manager
+}
+
+func (m *Manager) SetRPCManager(manager *rpcmanager.Manager) {
+	m.mu.Lock()
+	m.rpcManager = manager
+	m.mu.Unlock()
+}
+
+func (m *Manager) rpcConfigured(chainKey, envName string) bool {
+	m.mu.RLock()
+	manager := m.rpcManager
+	m.mu.RUnlock()
+	return (manager != nil && manager.HasConfigured(chainKey)) || strings.TrimSpace(os.Getenv(envName)) != ""
 }
 
 func NewManager(rootDir string, engine *duckdb.Engine) (*Manager, error) {
@@ -39,12 +57,16 @@ func NewManager(rootDir string, engine *duckdb.Engine) (*Manager, error) {
 		cancels:      map[string]context.CancelFunc{},
 		lastPersist:  map[string]time.Time{},
 		discoverer:   newDiscoverer(&http.Client{}),
+		sqd:          sqd.New(&http.Client{Timeout: 90 * time.Second}),
 		engine:       engine,
 	}
 	if content, err := os.ReadFile(manager.settingsPath); err == nil {
 		if err := json.Unmarshal(content, &manager.settings); err != nil {
 			return nil, fmt.Errorf("读取 Parquet 设置: %w", err)
 		}
+	}
+	if manager.settings.ReceiptBatchSize == 0 {
+		manager.settings.ReceiptBatchSize = 50
 	}
 	settings, err := validateSettings(manager.settings)
 	if err != nil {
@@ -83,37 +105,81 @@ func (m *Manager) SaveSettings(settings Settings) (Settings, error) {
 
 func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, error) {
 	chainKey := strings.ToLower(strings.TrimSpace(request.ChainKey))
-	if chainKey == "" {
-		chainKey = "bsc"
+	network, err := chain.Resolve(chainKey)
+	if err != nil {
+		return Preview{}, err
 	}
+	chainKey = network.Key
 	addresses := normalizeAddresses(request.Addresses)
 	if addresses.Valid == 0 {
 		return Preview{}, errors.New("没有可用的 EVM 地址")
 	}
-	files, err := m.discoverer.discover(ctx, chainKey, request.StartDate, request.EndDate)
+	selectedSources, err := normalizeSelectedSources(request.SelectedSource)
 	if err != nil {
 		return Preview{}, err
+	}
+	var files []SourceObject
+	if hasSelectedSource(selectedSources, "transactions") && network.Key == "bsc" {
+		files, err = m.discoverer.discover(ctx, chainKey, request.StartDate, request.EndDate)
+		if err != nil {
+			return Preview{}, err
+		}
 	}
 	settings := m.Settings()
 	free, err := diskFreeBytes(settings.DataRoot)
 	if err != nil {
 		return Preview{}, err
 	}
-	warnings := []string{
-		"AWS BNB 当前公开目录已核验为 blocks 与 transactions；本任务仅处理 transactions，不宣称包含 Transfer logs、Trace 或交易回执。",
+	warnings := []string{}
+	var sqdRange *SQDBlockRange
+	sqdAvailable := false
+	needsSQD := hasSelectedSource(selectedSources, "logs") ||
+		hasSelectedSource(selectedSources, "traces") ||
+		(hasSelectedSource(selectedSources, "transactions") && network.Key != "bsc")
+	if needsSQD {
+		if network.SQDDataset == "" {
+			return Preview{}, fmt.Errorf("%s 尚未配置 SQD 数据集", network.Name)
+		}
+		if _, err := m.sqd.Metadata(ctx, network); err != nil {
+			return Preview{}, fmt.Errorf("探测 SQD 数据集: %w", err)
+		}
+		resolved, err := m.sqd.ResolveDateRange(ctx, network, request.StartDate, request.EndDate)
+		if err != nil {
+			return Preview{}, fmt.Errorf("解析 SQD 日期区块范围: %w", err)
+		}
+		sqdRange = &SQDBlockRange{From: resolved.From, To: resolved.To}
+		sqdAvailable = true
 	}
-	if len(files) == 0 {
+	if hasSelectedSource(selectedSources, "transactions") && network.Key == "bsc" {
+		warnings = append(warnings, "原生交易来自 AWS 公共 Parquet；Transfer 事件与 Trace 由 SQD 独立采集，不混写为交易记录。")
+	} else if hasSelectedSource(selectedSources, "transactions") {
+		warnings = append(warnings, "原生交易由 SQD 按地址过滤并统一为多链 transactions 模型。")
+	}
+	if hasSelectedSource(selectedSources, "logs") {
+		warnings = append(warnings, "Token/NFT 标准事件已解析；当前保留 amount_raw，未配置或未完成代币 metadata RPC 时 symbol、decimals、换算金额保持空值。")
+	}
+	rpcConfigured := m.rpcConfigured(network.Key, network.RPCEnv)
+	if !rpcConfigured {
+		warnings = append(warnings, fmt.Sprintf("未配置 %s；Receipt、准确合约创建暂不启用，to_address 为空只保留为候选。", network.RPCEnv))
+	}
+	if hasSelectedSource(selectedSources, "transactions") && network.Key == "bsc" && len(files) == 0 {
 		warnings = append(warnings, "所选日期尚未发现 transactions Parquet，可能是数据尚未发布。")
 	}
 	return Preview{
-		ChainKey:     chainKey,
-		ChainID:      56,
-		NativeSymbol: "BNB",
-		Addresses:    addresses,
-		Files:        files,
-		TotalBytes:   totalSourceBytes(files),
-		FreeBytes:    free,
-		Warnings:     warnings,
+		ChainKey:         chainKey,
+		ChainID:          network.ID,
+		NativeSymbol:     network.NativeSymbol,
+		Addresses:        addresses,
+		SelectedSources:  selectedSources,
+		Files:            files,
+		TotalBytes:       totalSourceBytes(files),
+		FreeBytes:        free,
+		Warnings:         warnings,
+		SQDAvailable:     sqdAvailable,
+		SQDDataset:       network.SQDDataset,
+		SQDBlockRange:    sqdRange,
+		ReceiptAvailable: rpcConfigured,
+		ReceiptRPCEnv:    network.RPCEnv,
 	}, nil
 }
 
@@ -130,8 +196,11 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (*Job, error)
 	if err != nil {
 		return nil, err
 	}
-	if len(preview.Files) == 0 {
+	if len(preview.Files) == 0 && !preview.SQDAvailable {
 		return nil, errors.New("所选日期没有可下载的 transactions Parquet 文件")
+	}
+	if request.IncludeReceipts && !preview.ReceiptAvailable {
+		return nil, fmt.Errorf("Receipt 富化已勾选，但环境变量 %s 未配置", preview.ReceiptRPCEnv)
 	}
 	settings := m.Settings()
 	keepSource := settings.KeepSourceFiles
@@ -158,6 +227,10 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (*Job, error)
 		Warnings:        preview.Warnings,
 		KeepSourceFiles: keepSource,
 		ExportCSV:       exportCSV,
+		IncludeReceipts: request.IncludeReceipts,
+		SelectedSources: append([]string(nil), preview.SelectedSources...),
+		SQDDataset:      preview.SQDDataset,
+		SQDBlockRange:   preview.SQDBlockRange,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		Stages:          defaultStages(),
@@ -233,12 +306,14 @@ func (m *Manager) Retry(id string) (*Job, error) {
 	keepSource := job.KeepSourceFiles
 	exportCSV := job.ExportCSV
 	return m.Start(context.Background(), StartRequest{
-		ChainKey:   job.ChainKey,
-		Addresses:  strings.Join(job.Addresses.Addresses, "\n"),
-		StartDate:  job.StartDate,
-		EndDate:    job.EndDate,
-		KeepSource: &keepSource,
-		ExportCSV:  &exportCSV,
+		ChainKey:        job.ChainKey,
+		Addresses:       strings.Join(job.Addresses.Addresses, "\n"),
+		StartDate:       job.StartDate,
+		EndDate:         job.EndDate,
+		KeepSource:      &keepSource,
+		ExportCSV:       &exportCSV,
+		IncludeReceipts: job.IncludeReceipts,
+		SelectedSource:  append([]string(nil), job.SelectedSources...),
 	})
 }
 
@@ -352,6 +427,48 @@ func defaultStages() []Stage {
 		{Key: "download", Label: "分片下载", Status: StatusQueued},
 		{Key: "schema", Label: "Schema 探测", Status: StatusQueued},
 		{Key: "match", Label: "批量匹配", Status: StatusQueued},
+		{Key: "transactions", Label: "多链交易统一", Status: StatusQueued},
+		{Key: "logs", Label: "Transfer 日志", Status: StatusQueued},
+		{Key: "metadata", Label: "Token Metadata", Status: StatusQueued},
+		{Key: "nft", Label: "Token / NFT 解析", Status: StatusQueued},
+		{Key: "traces", Label: "Trace / 内部交易", Status: StatusQueued},
+		{Key: "receipts", Label: "Receipt 富化", Status: StatusQueued},
+		{Key: "normalize", Label: "准确合约创建", Status: StatusQueued},
+		{Key: "activity", Label: "地址统一流水", Status: StatusQueued},
+		{Key: "summary", Label: "地址画像", Status: StatusQueued},
+		{Key: "balances", Label: "余额快照", Status: StatusQueued},
 		{Key: "output", Label: "Parquet 输出", Status: StatusQueued},
 	}
+}
+
+func normalizeSelectedSources(items []string) ([]string, error) {
+	if len(items) == 0 {
+		return []string{"transactions"}, nil
+	}
+	allowed := map[string]bool{"transactions": true, "logs": true, "traces": true}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if !allowed[item] {
+			return nil, fmt.Errorf("不支持的数据源 %q", item)
+		}
+		if item != "" && !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
+	}
+	if len(result) == 0 {
+		return nil, errors.New("至少选择一个数据源")
+	}
+	return result, nil
+}
+
+func hasSelectedSource(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }

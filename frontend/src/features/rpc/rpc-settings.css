@@ -1,0 +1,61 @@
+.rpc-page { --rpc-border: #e6ebf3; --rpc-ink: #17233d; padding: 26px; min-width: 0; color: var(--rpc-ink); }
+.rpc-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+.rpc-hero h2.ant-typography { margin: 4px 0 3px; font-size: 27px; letter-spacing: -.5px; }
+.rpc-hero .ant-typography { margin-bottom: 0; color: #667085; }
+.rpc-kicker { color: #246bfd !important; font-weight: 700; font-size: 11px; letter-spacing: 1.4px; }
+.rpc-security-alert { margin-bottom: 16px; border: 1px solid #cfe0ff; background: linear-gradient(90deg, #f2f7ff, #fbfdff); }
+.rpc-metrics { margin-bottom: 16px; }
+.rpc-metric { height: 106px; border-color: var(--rpc-border); box-shadow: 0 3px 14px rgba(35, 62, 112, .045); }
+.rpc-metric .ant-card-body { height: 100%; padding: 18px; display: flex; gap: 13px; align-items: center; }
+.rpc-metric-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; font-size: 19px; }
+.rpc-metric-blue .rpc-metric-icon { color: #246bfd; background: #edf3ff; }
+.rpc-metric-green .rpc-metric-icon { color: #079b6b; background: #e9faf3; }
+.rpc-metric-orange .rpc-metric-icon { color: #e98a14; background: #fff5e8; }
+.rpc-metric-indigo .rpc-metric-icon { color: #526be8; background: #eef0ff; }
+.rpc-metric-cyan .rpc-metric-icon { color: #04aeb8; background: #e8fafb; }
+.rpc-metric-purple .rpc-metric-icon { color: #8a56d8; background: #f4edff; }
+.rpc-metric-label { display: block; color: #6d778c; font-size: 12px; white-space: nowrap; }
+.rpc-metric-label .anticon { margin-left: 3px; font-size: 11px; }
+.rpc-metric strong { display: block; margin-top: 5px; color: #141b2d; font-size: 22px; line-height: 1; }
+.rpc-metric strong small { margin-left: 5px; font-size: 11px; font-weight: 500; color: #7c879b; }
+.rpc-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: stretch; min-width: 0; }
+.rpc-node-card, .rpc-routing-card, .rpc-jobs { min-width: 0; max-width: 100%; overflow: hidden; border-color: var(--rpc-border); box-shadow: 0 5px 20px rgba(31, 49, 86, .045); }
+.rpc-node-card .ant-card-head-title .anticon, .rpc-jobs .ant-card-head-title .anticon { color: #246bfd; margin-right: 7px; }
+.rpc-node-card .ant-card-body { padding: 0; }
+.rpc-node-card .ant-table-cell { vertical-align: middle; }
+.rpc-provider, .rpc-endpoint { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rpc-provider span { color: #8791a4; font-size: 11px; text-transform: uppercase; }
+.rpc-endpoint code { display: block; max-width: 220px; overflow: hidden; color: #7d8798; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; background: none; }
+.rpc-routing-card .ant-card-body { padding: 12px; }
+.rpc-routing-list { display: flex; flex-direction: column; gap: 11px; }
+.rpc-route { overflow: hidden; border: 1px solid #e8edf5; border-radius: 9px; background: #fff; }
+.rpc-route-head { display: flex; align-items: center; gap: 7px; padding: 10px 11px; background: #f8faff; }
+.rpc-route-head > span { width: 8px; height: 8px; border-radius: 50%; }
+.rpc-route-head small { margin-left: auto; color: #8b95a8; }
+.rpc-route-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; gap: 7px; align-items: center; padding: 9px 10px; border-top: 1px solid #eef1f6; }
+.rpc-route-item > b { color: #9aa4b6; text-align: center; }
+.rpc-route-item > span { display: flex; flex-direction: column; min-width: 0; }
+.rpc-route-item > span strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.rpc-route-item > span small { color: #8c96a8; font-size: 10px; }
+.rpc-route-empty { padding: 13px; color: #9aa4b6; text-align: center; border-top: 1px solid #eef1f6; }
+.rpc-jobs { margin-top: 16px; }
+.rpc-jobs .ant-card-body { padding: 0; }
+.rpc-success { color: #08976c; font-weight: 600; }
+.rpc-failure { color: #e44f63; font-weight: 600; }
+.rpc-modal-alert { margin-bottom: 18px; }
+@media (max-width: 1280px) {
+  .rpc-workspace { grid-template-columns: 1fr; }
+  .rpc-routing-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .rpc-page { padding: 16px 12px; }
+  .rpc-hero { flex-direction: column; }
+  .rpc-hero > .ant-space { width: 100%; }
+  .rpc-hero > .ant-space .ant-btn { flex: 1; }
+  .rpc-routing-list { grid-template-columns: 1fr; }
+  .rpc-node-card .ant-card-head-wrapper, .rpc-jobs .ant-card-head-wrapper { min-width: 0; }
+  .rpc-node-card .ant-card-head-title, .rpc-jobs .ant-card-head-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rpc-metric .ant-card-body { padding: 13px; gap: 9px; }
+  .rpc-metric-icon { width: 34px; height: 34px; }
+  .rpc-metric strong { font-size: 18px; }
+}

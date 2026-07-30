@@ -1,3 +1,161 @@
+### 2026-07-30 12:26 V1.3 地址分析状态与审计信息增强
+
+#### 新增与调整
+
+- 地址类型中文化并显示检测依据或未检测原因。
+- Summary API 新增 RPC 配置状态、环境变量名和地址类型原因。
+- 页面顶部新增未配置 RPC 黄色提示条，KPI 卡片新增统计口径 Tooltip。
+- Address Activity 和 Parquet 新增 `status`，前端显示`成功/失败/未检测`。
+- 流水表补齐交易哈希、类型、方向、资产、金额和状态。
+- Token/NFT 表展示合约地址及 Metadata 中文状态。
+- 地址、合约、交易对手和交易哈希新增复制和对应链浏览器跳转。
+- 交易对手新增总方向及原生币/Token 流入流出活动计数。
+- 去重优先保留信息更完整的交易状态记录，优化移动端检测原因布局。
+
+#### 接口与数据
+
+- API 路径不变。
+- Summary 新增 `rpc_configured/rpc_env/address_type_reason`。
+- Activity 新增 `status`。
+- Counterparty 新增 `direction/native_in_count/native_out_count/token_in_count/token_out_count`。
+- 无外部数据库变化，旧 Parquet 保持兼容。
+
+#### 验证
+
+- Go 全包测试、`go vet`、后端构建和前端生产构建通过。
+- 真实 BSC 单区块 SQD 回归及新增字段审计通过。
+- 真实地址 Summary、4 条 Activity 和 2 条 Counterparty 返回值符合预期。
+- Playwright + Edge 桌面/移动端验证黄色提示、中文状态、Tooltip、剪贴板、外链、三类表格新增字段和响应式布局。
+- 服务 PID `34444`，健康检查正常。
+
+#### 边界
+
+- 当前无链 RPC，真实页面保持`未检测`；Log 事件缺少 Receipt 状态时同样显示`未检测`，不推测。
+
+### 2026-07-30 11:56 EVM 多链链上数据分析平台 V1.3
+
+#### 新增
+
+- 新增 SQD 多链 Transactions Adapter、RPC Token Metadata、原生币/Token Balance Snapshot、EOA/CONTRACT 地址类型识别。
+- 新增 Method Signature 字典、Address Activity V2、Address Summary、Token/NFT/交易对手聚合。
+- 新增 5 个 `/api/address/{address}/*` 查询接口。
+- 新增 `虚拟币 -> 链上地址分析` 页面和移动端抽屉导航。
+- Parquet 下载页扩展为 16 阶段并新增 Transactions、Metadata、Summary、Balance 统计。
+
+#### 优化与修复
+
+- 地址查询跨重试任务做业务键去重，避免同一活动重复统计。
+- DuckDB CLI 执行加入互斥，修复前端并行加载地址接口时的文件锁 500。
+- 前端 5 类数据使用并行请求，金额尾随零压缩，桌面与移动端均限制页面级溢出。
+- 未配置 RPC 时 Metadata 保持 `UNKNOWN/UNAVAILABLE`、Balance 明确跳过，不推测链上数据。
+
+#### 接口与数据
+
+- 新增 `summary/activity/tokens/nfts/counterparties` 五个地址接口。
+- 新增 `transactions-sqd`、`token_metadata`、`method_signatures`、`address_summary`、`balances` Parquet。
+- `address_activity` 新增 `amount_raw/amount/method_id/trace_depth/source`。
+- 所有 V1.3 新表包含 `chain_key/chain_id`；无外部数据库变化。
+
+#### 验证
+
+- 全部 Go 内部包测试、`go vet`、后端构建和前端生产构建通过。
+- 真实 SQD BSC 区块 `112932400` 验证 4 笔交易、4 条日志、4 条 Token Transfer、52 条 Trace 和完整 V1.3 Parquet 产物。
+- 真实地址结果为 Summary 2 笔交易/2 Token/2 对手、Activity 4、Token 2、NFT 0、Counterparty 2。
+- 五个地址接口真实并发请求全部 HTTP 200。
+- Playwright + Edge 桌面/移动端验收通过，无页面横向溢出及 console error/warn。
+- 服务最终重启 PID `30216`，健康检查正常。
+
+#### 边界
+
+- 当前未配置四条链 RPC，Token Metadata、Balance、EOA/CONTRACT 的真实 RPC 请求待环境变量可用后补做；模拟 RPC 已覆盖完整逻辑。
+- 未下载整日大分区，继续采用 finalized 单区块作有界真实验证。
+
+### 2026-07-30 11:20 EVM 完整链上数据层 V1.2 第二阶段
+
+#### 新增
+
+- 新增 BSC、Ethereum、Base、Arbitrum One 的 SQD dataset 配置。
+- 新增 SQD finalized-stream 客户端，支持日期转区块、服务端地址过滤、NDJSON 续读、限速退避和真实 Schema 探测。
+- 新增 ERC20/BEP20、ERC721、ERC1155 标准事件解析。
+- 新增 Trace 标准化和内部交易派生。
+- 新增 `logs`、`token_transfers`、`nft_transfers`、`traces`、`internal_transactions` 和 SQD `address_activity` Parquet 输出。
+- 新增真实网络单区块集成测试 `TestLiveSQDOneFinalizedBlockToParquet`，默认跳过，通过环境变量显式运行。
+
+#### 变更
+
+- `/api/crypto/parquet/preview` 与 `/api/crypto/parquet/start` 支持 `selected_sources`，API 路径不变且未传字段时保持 transactions 默认行为。
+- Receipt、合约创建、原生币活动表补齐 `chain_key`，跨表关联使用链标识与交易哈希复合键。
+- Parquet 下载前端开放 BSC、Ethereum、Base、Arbitrum，增加 Transactions、Logs、Trace 数据层选择。
+- 任务进度增加 Transfer Logs、Token/NFT、Trace/内部交易阶段；任务统计增加各链上数据表行数。
+
+#### 验证
+
+- 后端全部内部测试、`go vet ./...`、后端构建和前端生产构建通过。
+- 真实 SQD BSC 区块 `112932400` 返回 4 条目标 Transfer Log、4 条 BEP20 Transfer、52 条 Trace，生成的 6 个 Parquet 全部有效。
+- DuckDB 复核结果表的 `chain_key=bsc`，`chain_id` 类型为 `UBIGINT`。
+- Playwright 桌面/移动端 UI 检查通过，网络切换、数据层联动、12 阶段进度区和控制台健康均正常。
+- 服务已通过 `.\run.ps1` 重启，PID `7296`，健康检查和真实 SQD 预检 API 正常。
+
+#### 未完成
+
+- Token metadata RPC 富化待后续接入；当前 `amount_raw` 可审计，未知 symbol、decimals 和换算金额保持空值。
+- Ethereum、Base、Arbitrum 的原生 transactions 数据源待后续接入；当前可使用 SQD Logs/Trace。
+
+### 2026-07-30 10:43 EVM 多链分析平台 V1.1 第一阶段
+
+#### 本次任务
+- 按 V1.1 开发计划继续升级现有 Parquet 下载模块，形成可扩展 EVM 数据采集与标准化架构。
+
+#### 修改文件
+- 新增 `internal/chain/evm.go`、`internal/chain/chain_test.go`
+- 新增 `internal/datasource/datasource.go`
+- 新增 `internal/datasource/aws/transactions.go`
+- 新增 `internal/datasource/rpc/receipts.go`、`internal/datasource/rpc/receipts_test.go`
+- 新增 `internal/datasource/sqd/logs.go`
+- 新增 `internal/normalize/models.go`
+- 新增 `internal/parquetdownload/analytics.go`
+- 修改 `internal/parquetdownload/types.go`
+- 修改 `internal/parquetdownload/manager.go`
+- 修改 `internal/parquetdownload/process.go`
+- 修改 `internal/parquetdownload/s3.go`
+- 修改 `internal/parquetdownload/paths.go`
+- 修改 `internal/parquetdownload/parquetdownload_test.go`
+- 修改 `frontend/src/features/crypto/cryptoParquetApi.ts`
+- 修改 `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+- 修改 `docs/AI_HANDOFF.md`
+- 修改 `docs/CHANGELOG_AI.md`
+
+#### 新增或变更功能
+- 新增 BSC/ETH Chain Adapter，transactions 输出不再硬编码 BSC 链参数。
+- 新增 AWS transactions 数据源适配层、RPC Receipt 数据源和 SQD Logs 预留接口。
+- Receipt 先校验 RPC chain_id，再探测真实回执必需字段。
+- 新增 `transaction_receipts`、准确 `contract_creations` 和 `address_activity` Parquet 产物。
+- 只有候选交易与成功 Receipt 中非空 contractAddress 的交集才能确认为合约创建。
+- 新增 Receipt/合约创建/统一流水进度阶段和任务统计。
+- 默认并强制使用 `E:\codex\bsc_analytics`，所有临时文件也留在业务盘并在使用后删除。
+- Token Transfer 只建立类型和 SQD 接口边界，当前明确不支持。
+
+#### 接口与存储
+- API 路径不变。
+- preview 响应增加 Receipt 可用性；start 请求增加 `include_receipts`；job 增加三类统计；settings 增加 `receipt_batch_size`。
+- 无外部数据库变化。
+- 新增 `warehouse/transaction_receipts`、`warehouse/contract_creations`、`warehouse/address_activity` 链级分区目录。
+
+#### 验证结果
+- 全部后端测试、`go vet ./...`、Go 构建和前端生产构建通过。
+- 本地 DuckDB 以 3 条源交易、2 条命中验证 1 条准确合约创建和 2 条地址统一流水。
+- 模拟 RPC 验证网络校验、Receipt Schema 探测、标准化和错误网络拒绝。
+- 真实 AWS 预检继续确认 2026-07-28 分区为 5,951,495,515 字节，chain_id=56。
+- 未配置 `BSC_RPC` 的 Receipt 启动请求返回 HTTP 400。
+- Playwright + Edge 验证桌面/移动端无页面级横向溢出、无控制台错误，9 阶段进度和 Receipt 禁用提示可见。
+- `run.ps1` 重启成功，PID `13728`，健康检查正常。
+
+#### 未完成事项
+- 当前环境无 `BSC_RPC`，公共 RPC Receipt 真实批量请求待配置后执行。
+- SQD Logs、Token Transfer、Token Metadata、资产汇总属于 V1.2。
+- ETH Chain Adapter 已完成，ETH transactions 数据源尚未接入。
+- 未下载完整 5.95 GB 公网分区。
+
 ### 2026-07-30 01:57 EVM Parquet 批量下载与资金筛选接入
 
 #### 本次任务
@@ -4990,3 +5148,33 @@ ormalizeFilterBoundary 精确时间边界处理。
 
 - Markdown标题结构、代码围栏配对、核心字段和关键章节检查通过。
 - 本次仅修改文档，无需重启服务。
+
+## 2026-07-30 — EVM RPC 富化与高可用管理 V1.4
+
+### 新增与优化
+
+- 新增`internal/rpcmanager`，实现DPAPI+AES-GCM Endpoint加密、SQLite控制库、脱敏CRUD、保存前链校验。
+- 实现多节点优先级路由、RPS/并发限制、AIMD自适应限速、幂等读取重试、429/超时切换、熔断、健康检查、区块落后和请求指标。
+- 实现地址类型/原生币余额与Token Metadata缓存，以及可取消批量富化任务。
+- 新增`/api/crypto/rpc/*`和`/api/crypto/enrichment/*`接口。
+- Parquet预检、SQD Token Metadata、地址画像和地址资产查询接入受管RPC；原环境变量RPC继续兼容。
+- 前端“虚拟币”下新增“RPC节点管理”，提供六项指标、节点管理、按链路由、富化任务和进度条；桌面与移动端布局完成。
+- 地址分析增加实时当前原生币余额，地址类型和Token Metadata可由受管RPC按需补齐。
+
+### 数据结构
+
+- 新增`rpc_endpoints`、`rpc_endpoint_health`、`rpc_request_metrics`、`enrichment_jobs`和`rpc_enrichment_cache`。
+- 数据与密钥目录固定为`E:\codex\bsc_analytics\config`，拒绝C盘控制数据目录。
+
+### 验证
+
+- RPC管理器7项自动测试通过：重启解密、无明文泄露、Chain ID错配、429故障转移、超时故障转移、坏密钥、缓存和C盘拒绝。
+- `go test ./internal/...`、`go vet ./...`、后端构建、前端生产构建通过。
+- 运行服务本机模拟节点真实API闭环通过：创建、脱敏、测试、地址类型、原生币余额、缓存命中、删除。
+- Playwright/Edge桌面与移动端2项通过，无页面横向溢出和控制台错误。
+- 已执行`.\run.ps1`，PID 16092，健康检查正常。
+
+### 注意事项
+
+- 未使用或保存真实供应商密钥；需由用户在新页面录入。
+- 受管RPC当前覆盖地址类型/原生币余额、Token Metadata；Token `balanceOf`与Receipt批量仍保留既有环境变量RPC路径。

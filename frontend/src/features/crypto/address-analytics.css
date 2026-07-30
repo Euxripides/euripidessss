@@ -1,0 +1,282 @@
+.address-analytics-shell {
+  --address-ink: #17243a;
+  --address-muted: #6b7a90;
+  --address-line: #dce4ef;
+  min-width: 0;
+  color: var(--address-ink);
+}
+
+.address-analytics-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 26px 30px;
+  border: 1px solid #d9e1ed;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f7faff 0%, #eef4ff 55%, #f5fbfc 100%);
+}
+
+.address-analytics-kicker {
+  color: #4169d8;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.7px;
+}
+
+.address-analytics-hero h1 {
+  margin: 7px 0 5px;
+  color: #132238;
+  font-size: 27px;
+}
+
+.address-analytics-hero p {
+  margin: 0;
+  color: var(--address-muted);
+  font-size: 13px;
+}
+
+.address-analytics-hero > .anticon {
+  color: #4671dc;
+  font-size: 35px;
+}
+
+.address-analytics-search {
+  display: grid;
+  grid-template-columns: 190px minmax(280px, 1fr) 130px;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px solid var(--address-line);
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(29, 52, 86, 0.05);
+}
+
+.address-analytics-search .ant-select,
+.address-analytics-search .ant-input-affix-wrapper,
+.address-analytics-search .ant-btn {
+  width: 100%;
+  height: 40px;
+}
+
+.address-analytics-loading,
+.address-analytics-empty {
+  min-height: 430px;
+  padding: 30px;
+  border: 1px solid var(--address-line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.address-analytics-empty {
+  display: grid;
+  place-content: center;
+}
+
+.address-analytics-rpc-alert {
+  margin-bottom: 12px;
+  border-radius: 11px;
+}
+
+.address-analytics-identity {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  border: 1px solid var(--address-line);
+  border-radius: 11px;
+  background: #fff;
+}
+
+.address-analytics-identity > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.address-analytics-avatar {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 10px;
+  color: #fff;
+  background: #315fd5;
+  font-size: 20px;
+}
+
+.address-analytics-identity .ant-typography {
+  color: #20344f;
+  font-family: Consolas, monospace;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.address-analytics-identity small,
+.address-analytics-asset small {
+  display: block;
+  margin-top: 3px;
+  color: var(--address-muted);
+  font-size: 10px;
+}
+
+.address-analytics-address-status {
+  display: flex;
+  max-width: 440px;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 3px;
+  text-align: right;
+}
+
+.address-analytics-address-status small {
+  line-height: 1.45;
+}
+
+.address-analytics-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.address-analytics-metric {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 15px;
+  border: 1px solid var(--address-line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.address-analytics-metric > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  color: #3863c9;
+  background: #edf3ff;
+}
+
+.address-analytics-metric .ant-statistic {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.address-analytics-metric .ant-statistic-title {
+  color: var(--address-muted);
+  font-size: 10px;
+}
+
+.address-analytics-metric-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: help;
+}
+
+.address-analytics-metric-title .anticon {
+  color: #90a0b7;
+  font-size: 10px;
+}
+
+.address-analytics-metric .ant-statistic-content {
+  overflow: hidden;
+  color: #1d304a;
+  font-size: 17px;
+  text-overflow: ellipsis;
+}
+
+.address-analytics-tabs {
+  padding: 4px 18px 18px;
+  border: 1px solid var(--address-line);
+  border-radius: 11px;
+  background: #fff;
+}
+
+.address-analytics-tabs .ant-table {
+  font-size: 12px;
+}
+
+.address-analytics-asset strong {
+  color: #213854;
+}
+
+.address-analytics-identifier {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.address-analytics-identifier .ant-typography {
+  margin: 0;
+  color: #244267;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+
+.address-analytics-identifier .ant-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: #5575b9;
+}
+
+.address-analytics-range {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+  color: var(--address-muted);
+  font-size: 11px;
+}
+
+@media (max-width: 1180px) {
+  .address-analytics-metrics {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .address-analytics-hero {
+    padding: 20px;
+  }
+
+  .address-analytics-search {
+    grid-template-columns: 1fr;
+  }
+
+  .address-analytics-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .address-analytics-identity {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .address-analytics-address-status {
+    width: 100%;
+    max-width: none;
+    align-items: flex-start;
+    padding-top: 10px;
+    border-top: 1px solid var(--address-line);
+    text-align: left;
+  }
+}
+
+@media (max-width: 430px) {
+  .address-analytics-hero h1 {
+    font-size: 23px;
+  }
+
+  .address-analytics-metrics {
+    grid-template-columns: 1fr;
+  }
+}

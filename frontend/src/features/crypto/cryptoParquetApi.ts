@@ -10,6 +10,7 @@ export type ParquetSettings = {
   readonly minimum_free_gb: number;
   readonly keep_source_files: boolean;
   readonly export_csv: boolean;
+  readonly receipt_batch_size: number;
 };
 
 export type AddressSummary = {
@@ -36,10 +37,19 @@ export type ParquetPreview = {
   readonly chain_id: number;
   readonly native_symbol: string;
   readonly addresses: AddressSummary;
+  readonly selected_sources: readonly ParquetSource[];
   readonly files: readonly ParquetSourceObject[];
   readonly total_bytes: number;
   readonly free_bytes: number;
   readonly warnings: readonly string[];
+  readonly sqd_available: boolean;
+  readonly sqd_dataset?: string;
+  readonly sqd_block_range?: {
+    readonly from_block: number;
+    readonly to_block: number;
+  };
+  readonly receipt_available: boolean;
+  readonly receipt_rpc_env: string;
 };
 
 export type ParquetStage = {
@@ -80,6 +90,18 @@ export type ParquetJob = {
   readonly eta_seconds: number;
   readonly source_rows: number;
   readonly matched_rows: number;
+  readonly receipt_rows: number;
+  readonly contract_creations: number;
+  readonly transaction_rows: number;
+  readonly log_rows: number;
+  readonly token_metadata_rows: number;
+  readonly token_transfer_rows: number;
+  readonly nft_transfer_rows: number;
+  readonly trace_rows: number;
+  readonly internal_rows: number;
+  readonly activity_rows: number;
+  readonly summary_rows: number;
+  readonly balance_rows: number;
   readonly failed_files: number;
   readonly files: readonly ParquetFileTask[];
   readonly stages: readonly ParquetStage[];
@@ -88,18 +110,29 @@ export type ParquetJob = {
   readonly error?: string;
   readonly keep_source_files: boolean;
   readonly export_csv: boolean;
+  readonly include_receipts: boolean;
+  readonly selected_sources: readonly ParquetSource[];
+  readonly sqd_dataset?: string;
+  readonly sqd_block_range?: {
+    readonly from_block: number;
+    readonly to_block: number;
+  };
   readonly created_at: string;
   readonly updated_at: string;
   readonly finished_at?: string;
 };
 
+export type ParquetSource = 'transactions' | 'logs' | 'traces';
+
 export type ParquetStartPayload = {
-  readonly chain_key: 'bsc';
+  readonly chain_key: 'bsc' | 'eth' | 'base' | 'arbitrum';
   readonly addresses: string;
   readonly start_date: string;
   readonly end_date: string;
   readonly keep_source_files?: boolean;
   readonly export_csv?: boolean;
+  readonly include_receipts: boolean;
+  readonly selected_sources: readonly ParquetSource[];
 };
 
 export async function loadParquetSettings() {

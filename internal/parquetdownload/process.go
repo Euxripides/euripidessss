@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/chain"
 )
 
 type downloadResult struct {
@@ -39,6 +40,11 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 	if err != nil {
 		return
 	}
+	network, err := chain.Resolve(job.ChainKey)
+	if err != nil {
+		m.finishJob(id, StatusFailed, err)
+		return
+	}
 	targetPath := filepath.Join(settings.DataRoot, "jobs", id, "target_addresses.csv")
 	batchHash := addressBatchHash(job.Addresses.Addresses)
 	if err := writeTargetAddresses(targetPath, job.Addresses.Addresses); err != nil {
@@ -48,6 +54,13 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 	if err := ensurePipelineDiskCapacity(settings, job.Files); err != nil {
 		m.finishJob(id, StatusFailed, err)
 		return
+	}
+	if len(job.Files) == 0 {
+		m.mutate(id, func(item *Job) {
+			setStage(item, "download", StatusDone, 100, "未选择 AWS transactions")
+			setStage(item, "schema", StatusDone, 100, "由 SQD 流式 Schema 探测接管")
+			setStage(item, "match", StatusDone, 100, "由 SQD 服务端地址过滤接管")
+		})
 	}
 
 	client := &http.Client{
@@ -134,7 +147,7 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 			setStage(job, "schema", StatusRunning, stagePercent(job, "schema"), "校验源字段")
 		})
 		m.updateFile(id, result.file.URI, func(task *FileTask) { task.Status = "processing" })
-		outcome, processErr := m.processSource(ctx, settings, targetPath, result.file.SourceObject, result.localPath, batchHash, job.ExportCSV)
+		outcome, processErr := m.processSource(ctx, settings, network, targetPath, result.file.SourceObject, result.localPath, batchHash, job.ExportCSV)
 		if processErr != nil {
 			failed++
 			m.updateFile(id, result.file.URI, func(task *FileTask) {
@@ -181,7 +194,89 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 		m.finishJob(id, StatusFailed, fmt.Errorf("%d 个分区失败，可点击重试从检查点继续", failed))
 		return
 	}
+	if job.SQDBlockRange != nil {
+		sqdResult, sqdErr := m.ingestSQD(ctx, id, settings, network, *job.SQDBlockRange, job.Addresses.Addresses, job.SelectedSources)
+		if sqdErr != nil {
+			m.finishJob(id, StatusFailed, sqdErr)
+			return
+		}
+		m.mutate(id, func(item *Job) {
+			item.LogRows = sqdResult.LogRows
+			item.TransactionRows = sqdResult.TransactionRows
+			item.TokenMetadataRows = sqdResult.TokenMetadataRows
+			item.TokenTransferRows = sqdResult.TokenTransferRows
+			item.NFTTransferRows = sqdResult.NFTTransferRows
+			item.TraceRows = sqdResult.TraceRows
+			item.InternalRows = sqdResult.InternalRows
+			item.ActivityRows += sqdResult.ActivityRows
+			item.SummaryRows += sqdResult.SummaryRows
+			item.BalanceRows += sqdResult.BalanceRows
+			for _, output := range sqdResult.Outputs {
+				item.Outputs = appendUnique(item.Outputs, output)
+			}
+		})
+	}
+	if len(job.Files) > 0 {
+		analytics, analyticsErr := m.buildAnalytics(ctx, id, settings, network, targetPath)
+		if analyticsErr != nil {
+			m.finishJob(id, StatusFailed, analyticsErr)
+			return
+		}
+		m.mutate(id, func(item *Job) {
+			item.ReceiptRows = analytics.ReceiptRows
+			item.ContractCreations = analytics.ContractCreations
+			item.ActivityRows += analytics.ActivityRows
+			for _, output := range analytics.Outputs {
+				item.Outputs = appendUnique(item.Outputs, output)
+			}
+		})
+	} else {
+		m.mutate(id, func(item *Job) {
+			setStage(item, "receipts", StatusDone, 100, "未选择 transactions")
+			setStage(item, "normalize", StatusDone, 100, "原生交易标准化未选择")
+			setStage(item, "activity", StatusDone, 100, fmt.Sprintf("SQD 生成 %d 条统一活动", item.ActivityRows))
+		})
+	}
+	current, currentErr := m.Get(id)
+	if currentErr != nil {
+		m.finishJob(id, StatusFailed, currentErr)
+		return
+	}
+	var activityPaths []string
+	for _, output := range current.Outputs {
+		normalized := strings.ToLower(filepath.ToSlash(output))
+		if strings.Contains(normalized, "/warehouse/address_activity/") && strings.HasSuffix(normalized, ".parquet") {
+			activityPaths = append(activityPaths, output)
+		}
+	}
+	if len(activityPaths) > 0 {
+		summaryTemp := filepath.Join(settings.DataRoot, "tmp", "job-"+id, "summary")
+		if err := os.MkdirAll(summaryTemp, 0755); err != nil {
+			m.finishJob(id, StatusFailed, err)
+			return
+		}
+		summaryPath, summaryRows, summaryErr := m.writeAddressSummary(ctx, id, settings, network, summaryTemp, activityPaths, job.Addresses.Addresses)
+		_ = os.RemoveAll(summaryTemp)
+		if summaryErr != nil {
+			m.finishJob(id, StatusFailed, summaryErr)
+			return
+		}
+		m.mutate(id, func(item *Job) {
+			item.SummaryRows = summaryRows
+			item.Outputs = appendUnique(item.Outputs, summaryPath)
+		})
+	} else {
+		m.mutate(id, func(item *Job) { setStage(item, "summary", StatusDone, 100, "无地址活动可聚合") })
+	}
 	m.mutate(id, func(job *Job) {
+		if stagePercent(job, "transactions") == 0 {
+			setStage(job, "transactions", StatusDone, 100, "AWS transactions 已统一")
+		}
+		for _, stage := range []string{"logs", "metadata", "nft", "traces", "balances"} {
+			if stagePercent(job, stage) == 0 {
+				setStage(job, stage, StatusDone, 100, "未选择或数据源不可用")
+			}
+		}
 		job.Stage = "output"
 		setStage(job, "download", StatusDone, 100, "所有分片已校验")
 		setStage(job, "schema", StatusDone, 100, "必需字段已确认")
@@ -357,6 +452,7 @@ type processOutcome struct {
 func (m *Manager) processSource(
 	ctx context.Context,
 	settings Settings,
+	network chain.EVM,
 	targetPath string,
 	source SourceObject,
 	localPath string,
@@ -370,7 +466,7 @@ func (m *Manager) processSource(
 		return processOutcome{}, err
 	}
 	year, month := dateParts(source.SourceDate)
-	outputDir := filepath.Join(settings.DataRoot, "warehouse", "transactions", "chain=bsc", "year="+year, "month="+month, "date="+source.SourceDate)
+	outputDir := filepath.Join(settings.DataRoot, "warehouse", "transactions", "chain="+network.Key, "year="+year, "month="+month, "date="+source.SourceDate)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return processOutcome{}, err
 	}
@@ -383,7 +479,7 @@ func (m *Manager) processSource(
 		}
 	}
 	tempDir := filepath.Join(settings.DataRoot, "tmp")
-	sqlText := buildProcessSQL(settings, targetPath, localPath, outputPath, csvPath, source.SourceDate)
+	sqlText := buildProcessSQL(settings, network, targetPath, localPath, outputPath, csvPath, source.SourceDate)
 	rows, err := m.engine.ExecSQLJSON(ctx, sqlText)
 	if err != nil {
 		return processOutcome{}, err
@@ -422,7 +518,7 @@ func inspectRequiredSchema(ctx context.Context, engine *duckdb.Engine, parquetPa
 	return nil
 }
 
-func buildProcessSQL(settings Settings, targetPath, sourcePath, outputPath, csvPath, sourceDate string) string {
+func buildProcessSQL(settings Settings, network chain.EVM, targetPath, sourcePath, outputPath, csvPath, sourceDate string) string {
 	statements := []string{
 		"SET memory_limit=" + sqlString(settings.MemoryLimit),
 		"SET threads=" + strconv.Itoa(settings.DuckDBThreads),
@@ -437,8 +533,8 @@ matched AS (
   SELECT s.* FROM source s SEMI JOIN target_addresses a ON lower(s.to_address) = a.address
 )
 SELECT
-  'bsc' AS chain_key,
-  56::UINTEGER AS chain_id,
+  ` + sqlString(network.Key) + ` AS chain_key,
+  ` + strconv.FormatInt(network.ID, 10) + `::UBIGINT AS chain_id,
   hash AS tx_hash,
   nonce,
   block_hash,
@@ -450,12 +546,16 @@ SELECT
   CAST(TRY_CAST(value AS DECIMAL(38, 0)) / 1000000000000000000 AS DECIMAL(38, 18)) AS value_native,
   gas,
   gas_price AS gas_price_raw,
+  gas_price,
+  NULL::UTINYINT AS status,
+  NULL::VARCHAR AS gas_used,
   input,
   CASE WHEN input IS NOT NULL AND length(input) >= 10 THEN substr(input, 1, 10) ELSE NULL END AS method_id,
   CASE WHEN to_address IS NULL OR trim(to_address) = '' THEN true ELSE false END AS is_contract_creation_candidate,
   to_timestamp(block_timestamp) AS block_time,
   DATE ` + sqlString(sourceDate) + ` AS source_date,
   ` + sqlString(sourcePath) + ` AS source_file,
+  'AWS_TRANSACTION' AS source,
   current_timestamp AS ingested_at
 FROM matched`,
 		"COPY matched_transactions TO " + sqlString(outputPath) + " (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 250000)",

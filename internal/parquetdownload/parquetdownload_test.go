@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/chain"
 )
 
 func TestNormalizeAddresses(t *testing.T) {
@@ -36,8 +37,12 @@ func TestValidateSettingsRejectsSystemDrive(t *testing.T) {
 		t.Fatal("expected C drive rejection")
 	}
 	settings.DataRoot = `D:\bsc_analytics`
+	if _, err := validateSettings(settings); runtime.GOOS == "windows" && err == nil {
+		t.Fatal("expected non-standard data root rejection")
+	}
+	settings.DataRoot = `E:\codex\bsc_analytics`
 	if _, err := validateSettings(settings); err != nil {
-		t.Fatalf("expected D drive to pass: %v", err)
+		t.Fatalf("expected fixed analytics root to pass: %v", err)
 	}
 }
 
@@ -135,6 +140,7 @@ func TestProcessSourceWithLocalDuckDB(t *testing.T) {
 	createSQL := `COPY (
 SELECT * FROM (VALUES
  ('0xaaa', 1::BIGINT, '0xblock', 100::BIGINT, 0::INTEGER, '` + address + `', '0x2222222222222222222222222222222222222222', '1000000000000000000', 21000::BIGINT, 1::BIGINT, '0x', 1785196935::BIGINT, NULL::BIGINT, NULL::BIGINT, 0::INTEGER, NULL::BIGINT, NULL::VARCHAR, DATE '2026-07-28'),
+ ('0xccc', 3::BIGINT, '0xblock', 102::BIGINT, 2::INTEGER, '` + address + `', NULL, '0', 90000::BIGINT, 1::BIGINT, '0x6000', 1785196937::BIGINT, NULL::BIGINT, NULL::BIGINT, 0::INTEGER, NULL::BIGINT, NULL::VARCHAR, DATE '2026-07-28'),
  ('0xbbb', 2::BIGINT, '0xblock', 101::BIGINT, 1::INTEGER, '0x3333333333333333333333333333333333333333', '0x4444444444444444444444444444444444444444', '0', 21000::BIGINT, 1::BIGINT, '0x', 1785196936::BIGINT, NULL::BIGINT, NULL::BIGINT, 0::INTEGER, NULL::BIGINT, NULL::VARCHAR, DATE '2026-07-28')
 ) AS t(hash, nonce, block_hash, block_number, transaction_index, from_address, to_address, value, gas, gas_price, input, block_timestamp, max_fee_per_gas, max_priority_fee_per_gas, transaction_type, max_fee_per_blob_gas, blob_versioned_hashes, date)
 ) TO ` + sqlString(sourcePath) + ` (FORMAT PARQUET)`
@@ -146,10 +152,12 @@ SELECT * FROM (VALUES
 	}
 	settings := defaultSettings(root)
 	settings.DataRoot = testRoot
-	manager := &Manager{engine: engine}
+	manager := &Manager{engine: engine, settings: settings}
+	network, _ := chain.Resolve("bsc")
 	outcome, err := manager.processSource(
 		context.Background(),
 		settings,
+		network,
 		targetPath,
 		SourceObject{SourceDate: "2026-07-28", ETag: "test"},
 		sourcePath,
@@ -159,11 +167,87 @@ SELECT * FROM (VALUES
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.SourceRows != 2 || outcome.Matched != 1 {
+	if outcome.SourceRows != 3 || outcome.Matched != 2 {
 		t.Fatalf("unexpected outcome: %+v", outcome)
 	}
 	if err := verifyParquetFile(outcome.OutputPath); err != nil {
 		t.Fatalf("invalid output parquet: %v", err)
+	}
+	receiptPath := filepath.Join(testRoot, "receipts.parquet")
+	receiptSQL := `COPY (
+SELECT * FROM (VALUES
+ ('bsc', 56::UBIGINT, '0xaaa', 1::UINTEGER, '0x5208', '0x1', NULL::VARCHAR, 0::UINTEGER),
+ ('bsc', 56::UBIGINT, '0xccc', 1::UINTEGER, '0x15f90', '0x1', '0x5555555555555555555555555555555555555555', 0::UINTEGER)
+) AS r(chain_key, chain_id, tx_hash, status, gas_used, effective_gas_price, contract_address, logs_count)
+) TO ` + sqlString(receiptPath) + ` (FORMAT PARQUET)`
+	if output, err := engine.ExecSQL(context.Background(), receiptSQL); err != nil {
+		t.Fatalf("create receipts: %v %s", err, output)
+	}
+	contractPath, contractRows, activityPath, activityRows, err := manager.writeNormalizedAnalytics(
+		context.Background(),
+		"test-job",
+		settings,
+		network,
+		targetPath,
+		[]string{outcome.OutputPath},
+		receiptPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contractRows != 1 || activityRows != 2 {
+		t.Fatalf("unexpected normalized rows: contracts=%d activity=%d", contractRows, activityRows)
+	}
+	if err := verifyParquetFile(contractPath); err != nil {
+		t.Fatalf("invalid contract parquet: %v", err)
+	}
+	if err := verifyParquetFile(activityPath); err != nil {
+		t.Fatalf("invalid activity parquet: %v", err)
+	}
+	statusRows, err := engine.ExecSQLJSON(context.Background(), "SELECT DISTINCT status FROM read_parquet("+sqlString(activityPath)+")")
+	if err != nil || len(statusRows) != 1 || statusRows[0]["status"] != "SUCCESS" {
+		t.Fatalf("receipt status was not propagated to activity: rows=%+v err=%v", statusRows, err)
+	}
+	candidateOnlyPath, candidateOnlyRows, nativeActivityPath, nativeActivityRows, err := manager.writeNormalizedAnalytics(
+		context.Background(),
+		"test-job-without-receipts",
+		settings,
+		network,
+		targetPath,
+		[]string{outcome.OutputPath},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidateOnlyPath != "" || candidateOnlyRows != 0 || nativeActivityRows != 2 {
+		t.Fatalf(
+			"receipt-disabled flow must not confirm candidates: path=%q contracts=%d activity=%d",
+			candidateOnlyPath,
+			candidateOnlyRows,
+			nativeActivityRows,
+		)
+	}
+	if err := verifyParquetFile(nativeActivityPath); err != nil {
+		t.Fatalf("invalid receipt-disabled activity parquet: %v", err)
+	}
+	counterparties, err := manager.queryAddressCounterparties(context.Background(), network.Key, address, 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counterpartyRows := counterparties["rows"].([]map[string]any)
+	if len(counterpartyRows) == 0 || counterpartyRows[0]["direction"] == nil ||
+		counterpartyRows[0]["native_in_count"] == nil || counterpartyRows[0]["token_in_count"] == nil {
+		t.Fatalf("counterparty breakdown missing: %+v", counterpartyRows)
+	}
+}
+
+func TestAddressTypeReason(t *testing.T) {
+	if reason := addressTypeReason("UNKNOWN", false, "BSC_RPC"); !strings.Contains(reason, "未配置 BSC_RPC") {
+		t.Fatalf("unexpected unconfigured reason: %s", reason)
+	}
+	if reason := addressTypeReason("EOA", true, "BSC_RPC"); !strings.Contains(reason, "外部账户") {
+		t.Fatalf("unexpected EOA reason: %s", reason)
 	}
 }
 

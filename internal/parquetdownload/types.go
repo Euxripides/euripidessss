@@ -1,6 +1,10 @@
 package parquetdownload
 
-import "time"
+import (
+	"time"
+
+	"github.com/etl/backend/internal/datasource"
+)
 
 const (
 	StatusQueued   = "queued"
@@ -18,16 +22,18 @@ type Settings struct {
 	MinimumFreeGB       int64  `json:"minimum_free_gb"`
 	KeepSourceFiles     bool   `json:"keep_source_files"`
 	ExportCSV           bool   `json:"export_csv"`
+	ReceiptBatchSize    int    `json:"receipt_batch_size"`
 }
 
 type StartRequest struct {
-	ChainKey       string   `json:"chain_key"`
-	Addresses      string   `json:"addresses"`
-	StartDate      string   `json:"start_date"`
-	EndDate        string   `json:"end_date"`
-	KeepSource     *bool    `json:"keep_source_files,omitempty"`
-	ExportCSV      *bool    `json:"export_csv,omitempty"`
-	SelectedSource []string `json:"selected_sources,omitempty"`
+	ChainKey        string   `json:"chain_key"`
+	Addresses       string   `json:"addresses"`
+	StartDate       string   `json:"start_date"`
+	EndDate         string   `json:"end_date"`
+	KeepSource      *bool    `json:"keep_source_files,omitempty"`
+	ExportCSV       *bool    `json:"export_csv,omitempty"`
+	SelectedSource  []string `json:"selected_sources,omitempty"`
+	IncludeReceipts bool     `json:"include_receipts"`
 }
 
 type AddressSummary struct {
@@ -39,25 +45,28 @@ type AddressSummary struct {
 	InvalidItems []string `json:"invalid_items,omitempty"`
 }
 
-type SourceObject struct {
-	Key          string `json:"key"`
-	URI          string `json:"uri"`
-	DataType     string `json:"data_type"`
-	SourceDate   string `json:"source_date"`
-	SizeBytes    int64  `json:"size_bytes"`
-	ETag         string `json:"etag"`
-	LastModified string `json:"last_modified,omitempty"`
+type SourceObject = datasource.Object
+
+type SQDBlockRange struct {
+	From uint64 `json:"from_block"`
+	To   uint64 `json:"to_block"`
 }
 
 type Preview struct {
-	ChainKey     string         `json:"chain_key"`
-	ChainID      int64          `json:"chain_id"`
-	NativeSymbol string         `json:"native_symbol"`
-	Addresses    AddressSummary `json:"addresses"`
-	Files        []SourceObject `json:"files"`
-	TotalBytes   int64          `json:"total_bytes"`
-	FreeBytes    uint64         `json:"free_bytes"`
-	Warnings     []string       `json:"warnings"`
+	ChainKey         string         `json:"chain_key"`
+	ChainID          int64          `json:"chain_id"`
+	NativeSymbol     string         `json:"native_symbol"`
+	Addresses        AddressSummary `json:"addresses"`
+	SelectedSources  []string       `json:"selected_sources"`
+	Files            []SourceObject `json:"files"`
+	TotalBytes       int64          `json:"total_bytes"`
+	FreeBytes        uint64         `json:"free_bytes"`
+	Warnings         []string       `json:"warnings"`
+	SQDAvailable     bool           `json:"sqd_available"`
+	SQDDataset       string         `json:"sqd_dataset,omitempty"`
+	SQDBlockRange    *SQDBlockRange `json:"sqd_block_range,omitempty"`
+	ReceiptAvailable bool           `json:"receipt_available"`
+	ReceiptRPCEnv    string         `json:"receipt_rpc_env"`
 }
 
 type Stage struct {
@@ -83,34 +92,50 @@ type FileTask struct {
 }
 
 type Job struct {
-	ID               string         `json:"id"`
-	ChainKey         string         `json:"chain_key"`
-	ChainID          int64          `json:"chain_id"`
-	NativeSymbol     string         `json:"native_symbol"`
-	Status           string         `json:"status"`
-	Stage            string         `json:"stage"`
-	Progress         float64        `json:"progress"`
-	Addresses        AddressSummary `json:"addresses"`
-	StartDate        string         `json:"start_date"`
-	EndDate          string         `json:"end_date"`
-	TotalBytes       int64          `json:"total_bytes"`
-	DownloadedBytes  int64          `json:"downloaded_bytes"`
-	DownloadSpeedBPS float64        `json:"download_speed_bps"`
-	ETASeconds       int64          `json:"eta_seconds"`
-	SourceRows       int64          `json:"source_rows"`
-	MatchedRows      int64          `json:"matched_rows"`
-	FailedFiles      int            `json:"failed_files"`
-	Files            []*FileTask    `json:"files"`
-	Stages           []Stage        `json:"stages"`
-	Outputs          []string       `json:"outputs"`
-	Warnings         []string       `json:"warnings"`
-	Error            string         `json:"error,omitempty"`
-	KeepSourceFiles  bool           `json:"keep_source_files"`
-	ExportCSV        bool           `json:"export_csv"`
-	CreatedAt        time.Time      `json:"created_at"`
-	StartedAt        *time.Time     `json:"started_at,omitempty"`
-	UpdatedAt        time.Time      `json:"updated_at"`
-	FinishedAt       *time.Time     `json:"finished_at,omitempty"`
+	ID                string         `json:"id"`
+	ChainKey          string         `json:"chain_key"`
+	ChainID           int64          `json:"chain_id"`
+	NativeSymbol      string         `json:"native_symbol"`
+	Status            string         `json:"status"`
+	Stage             string         `json:"stage"`
+	Progress          float64        `json:"progress"`
+	Addresses         AddressSummary `json:"addresses"`
+	StartDate         string         `json:"start_date"`
+	EndDate           string         `json:"end_date"`
+	TotalBytes        int64          `json:"total_bytes"`
+	DownloadedBytes   int64          `json:"downloaded_bytes"`
+	DownloadSpeedBPS  float64        `json:"download_speed_bps"`
+	ETASeconds        int64          `json:"eta_seconds"`
+	SourceRows        int64          `json:"source_rows"`
+	MatchedRows       int64          `json:"matched_rows"`
+	ReceiptRows       int64          `json:"receipt_rows"`
+	ContractCreations int64          `json:"contract_creations"`
+	TransactionRows   int64          `json:"transaction_rows"`
+	LogRows           int64          `json:"log_rows"`
+	TokenMetadataRows int64          `json:"token_metadata_rows"`
+	TokenTransferRows int64          `json:"token_transfer_rows"`
+	NFTTransferRows   int64          `json:"nft_transfer_rows"`
+	TraceRows         int64          `json:"trace_rows"`
+	InternalRows      int64          `json:"internal_rows"`
+	ActivityRows      int64          `json:"activity_rows"`
+	SummaryRows       int64          `json:"summary_rows"`
+	BalanceRows       int64          `json:"balance_rows"`
+	FailedFiles       int            `json:"failed_files"`
+	Files             []*FileTask    `json:"files"`
+	Stages            []Stage        `json:"stages"`
+	Outputs           []string       `json:"outputs"`
+	Warnings          []string       `json:"warnings"`
+	Error             string         `json:"error,omitempty"`
+	KeepSourceFiles   bool           `json:"keep_source_files"`
+	ExportCSV         bool           `json:"export_csv"`
+	IncludeReceipts   bool           `json:"include_receipts"`
+	SelectedSources   []string       `json:"selected_sources"`
+	SQDDataset        string         `json:"sqd_dataset,omitempty"`
+	SQDBlockRange     *SQDBlockRange `json:"sqd_block_range,omitempty"`
+	CreatedAt         time.Time      `json:"created_at"`
+	StartedAt         *time.Time     `json:"started_at,omitempty"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+	FinishedAt        *time.Time     `json:"finished_at,omitempty"`
 }
 
 type UploadAddressResponse struct {

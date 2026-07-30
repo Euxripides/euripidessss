@@ -2,9 +2,12 @@
 import {
   ApartmentOutlined,
   CloudDownloadOutlined,
+  CloudServerOutlined,
   DatabaseOutlined,
   DownloadOutlined,
   FileZipOutlined,
+  FundProjectionScreenOutlined,
+  MenuOutlined,
   PlusOutlined,
   RightOutlined,
   SettingOutlined,
@@ -52,6 +55,8 @@ import { DuneDownloadPanel } from "./features/download/DuneDownloadPanel";
 import { CryptoAddressPanel } from "./features/crypto/CryptoAddressPanel";
 import { CryptoDownloadPanel } from "./features/crypto/CryptoDownloadPanel";
 import { CryptoParquetPanel } from "./features/crypto/CryptoParquetPanel";
+import { AddressAnalyticsPanel } from "./features/crypto/AddressAnalyticsPanel";
+import { RpcSettingsPage } from "./features/rpc/RpcSettingsPage";
 import { RuleExpansionDrawer } from "./features/clean/RuleExpansionDrawer";
 import { EdgeDetailModal } from "./features/flow/EdgeDetailModal";
 import { EdgeStylePanel } from "./features/flow/EdgeStylePanel";
@@ -215,6 +220,8 @@ const menuItems = [
     children: [
       { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "数据下载" },
       { key: "crypto-parquet", icon: <FileZipOutlined />, label: "Parquet下载" },
+      { key: "crypto-rpc", icon: <CloudServerOutlined />, label: "RPC节点管理" },
+      { key: "crypto-analytics", icon: <FundProjectionScreenOutlined />, label: "链上地址分析" },
       { key: "crypto-address", icon: <WalletOutlined />, label: "地址区分" },
     ],
   },
@@ -223,6 +230,7 @@ const menuItems = [
 export function App() {
   const [active, setActive] = useState("clean");
   const [sideCollapsed, setSideCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ProcessResponse | null>(null);
   const [processProgress, setProcessProgress] = useState<ProcessProgress | null>(null);
@@ -375,6 +383,7 @@ export function App() {
     const nextActive = String(item.key);
     setActive(nextActive);
     setSideCollapsed(nextActive === "graph");
+    setMobileNavOpen(false);
   };
 
   return (
@@ -390,6 +399,29 @@ export function App() {
         },
       }}
     >
+      <Button
+        className="mobile-nav-trigger"
+        type="primary"
+        icon={<MenuOutlined />}
+        aria-label="打开导航"
+        onClick={() => setMobileNavOpen(true)}
+      />
+      <Drawer
+        className="mobile-nav-drawer"
+        placement="left"
+        width={270}
+        title="资金数据智能分析平台"
+        open={mobileNavOpen}
+        onClose={() => setMobileNavOpen(false)}
+      >
+        <Menu
+          mode="inline"
+          selectedKeys={[active]}
+          defaultOpenKeys={["download", "crypto"]}
+          items={menuItems}
+          onClick={handleMenuClick}
+        />
+      </Drawer>
       <Layout className="app-shell">
         <Sider
           width={248}
@@ -483,6 +515,8 @@ export function App() {
             {active === "download-dune" && <DuneDownloadPanel />}
             {active === "crypto-download" && <CryptoDownloadPanel />}
             {active === "crypto-parquet" && <CryptoParquetPanel />}
+            {active === "crypto-rpc" && <RpcSettingsPage />}
+            {active === "crypto-analytics" && <AddressAnalyticsPanel />}
             {active === "crypto-address" && <CryptoAddressPanel />}
           </Content>
         </Layout>
@@ -564,6 +598,8 @@ export function App() {
       "download-dune": "Dune 下载",
       "crypto-download": "虚拟币数据下载",
       "crypto-parquet": "EVM Parquet 批量资金分析",
+      "crypto-rpc": "EVM RPC 节点管理",
+      "crypto-analytics": "链上地址分析",
       "crypto-address": "地址区分",
     }[key];
   }
