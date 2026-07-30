@@ -59,6 +59,7 @@ func (h *Handler) register() {
 	h.mux.HandleFunc("/addresses/upload", h.uploadAddresses)
 	h.mux.HandleFunc("/file", h.downloadFile)
 	h.mux.HandleFunc("/address/", h.address)
+	h.mux.HandleFunc("/crypto/addresses/", h.firstSeen)
 }
 
 func (h *Handler) settings(writer http.ResponseWriter, request *http.Request) {
@@ -230,6 +231,32 @@ func (h *Handler) downloadFile(writer http.ResponseWriter, request *http.Request
 	}
 	writer.Header().Set("Content-Disposition", `attachment; filename*=UTF-8''`+urlPathEscape(filepath.Base(requested)))
 	http.ServeFile(writer, request, requested)
+}
+
+func (h *Handler) firstSeen(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeMethodNotAllowed(writer)
+		return
+	}
+	// Path: /crypto/addresses/{chain}/{address}/first-seen
+	path := strings.TrimPrefix(request.URL.Path, "/crypto/addresses/")
+	parts := strings.SplitN(strings.Trim(path, "/"), "/", 3)
+	if len(parts) < 2 || parts[len(parts)-1] != "first-seen" {
+		writeError(writer, http.StatusNotFound, errors.New("接口不存在，请使用 /crypto/addresses/{chain}/{address}/first-seen"))
+		return
+	}
+	chainKey := strings.ToLower(strings.TrimSpace(parts[0]))
+	address := strings.ToLower(strings.TrimSpace(parts[1]))
+	if !isEVMAddress(address) {
+		writeError(writer, http.StatusBadRequest, errors.New("EVM 地址格式错误"))
+		return
+	}
+	resp, err := h.manager.queryFirstSeen(request.Context(), chainKey, address)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, resp)
 }
 
 func decodeJSON(request *http.Request, target any) error {

@@ -1,3 +1,87 @@
+### 2026-07-30 21:30 V1.5.0 地址首次时间开关
+
+#### 前端
+
+- **开关**：`Switch` 组件，`Form.Item name="use_first_seen"`，默认 `true`
+- **首次时间查询**：地址输入后自动 `GET /api/crypto/addresses/{chain}/{address}/first-seen`，`firstSeenFetchedRef` 缓存
+- **状态展示**：`found`(绿) / `partial`(橙) / `not_found`(灰) / `temporarily_unavailable`(黄) / `failed`(红)
+- **日期选择器**：`DatePicker showTime`，开关开启时 `disabled`；关闭时可编辑
+- **传参变更**：`searchAddress` 构建 `AddressQueryParams` 传递 `use_first_seen` / `start_time` / `end_time`
+
+#### 后端
+
+- 新增路由 `Any /api/crypto/addresses/:chain/:address/first-seen` → `HandleFirstSeen` → 反向代理到 `parquetDownload`（bsc_analytics）
+
+#### 修改文件
+
+- `frontend/src/features/crypto/addressAnalyticsApi.ts`
+- `frontend/src/features/crypto/AddressAnalyticsPanel.tsx`
+- `frontend/src/features/crypto/address-analytics.css`
+- `internal/api/handlers.go`
+- `internal/api/crypto_parquet_handlers.go`
+
+### 2026-07-30 19:30 V1.4.3 虚拟币面板描述文字精简 & 错误弹窗化
+
+#### 删除的描述文字
+
+- **CryptoParquetPanel**: header 副标题、V1.3 多链地址分析数据层 Alert（含长描述）、section 副标题（任务配置/任务监控）、AWS 分区表格头描述、SQD Alert
+- **AddressAnalyticsPanel**: header 描述段落
+- **CryptoDownloadPanel**: header 描述段落
+- **DataSourcePage**: header 描述 + 健康事件描述 + SQD/AWS/RPC 分工 Alert
+
+#### 错误处理弹窗化
+
+- `job.error` 内联 Alert → `notification.error({ placement: 'topRight', duration: 0 })`
+- `canceling` 内联 Alert → `notification.warning({ placement: 'topRight', duration: 4 })`
+- 使用 `useRef` 防重复弹窗（`lastErrorRef` / `lastCancelNotifyRef`）
+
+#### 数据覆盖提示弹窗化
+
+- `DataSourcePage` SQD/AWS/RPC 分工说明 Alert → 首次进入页面 `notification.info`（持续6秒）
+- `AddressAnalyticsPanel` 数据覆盖不完整 Alert → 首次分析地址 `notification.warning`（含 Coverage%，持续6秒）
+- 均用 `coverageNotifyRef` 防重复
+
+#### 修改文件
+
+- `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+- `frontend/src/features/crypto/AddressAnalyticsPanel.tsx`
+- `frontend/src/features/crypto/CryptoDownloadPanel.tsx`
+- `frontend/src/features/crypto/datasource/DataSourcePage.tsx`
+
+### 2026-07-30 19:05 V1.4.2 SQD Provider 高可用与任务调度修复
+
+#### 新增
+
+- 状态机新增 `NO_AVAILABLE_WORKERS` / `RECOVERING` 状态，Source/sourceRuntime 新增 Worker503Count/LastRecoveryAt/CurrentTasks
+- 错误分类细化：503 No workers 独立识别 → `StatusNoAvailableWorkers`
+- SQD Client 冷却退避机制：503→30s→60s→120s→10min 递增，cooldown 期间直接拒绝
+- Circuit Breaker：三态熔断器（CLOSED/OPEN/HALF_OPEN），集成到 postWithRetry
+- SQD Scheduler 新包：优先级队列 + 并发限制（max_parallel_streams=1, max_large_jobs=1, max_small_jobs=2）
+- Checkpoint 断点续传：SQDCheckpointStore 支持自动分块/AdvanceChunk/MarkFailed/恢复续跑
+- Manager 新增 UpdateTaskCount/Update503Count/RecordRecovery 方法
+
+#### 新增文件
+
+- `internal/datasource/sqd/circuit_breaker.go`
+- `internal/datasource/sqd/circuit_breaker_test.go`
+- `internal/datasource/sqd/scheduler/scheduler.go`
+- `internal/datasource/sqd/scheduler/scheduler_test.go`
+- `internal/parquetdownload/sqd_checkpoint.go`
+- `internal/parquetdownload/sqd_checkpoint_test.go`
+
+#### 修改文件
+
+- `internal/datasourcemanager/types.go`
+- `internal/datasourcemanager/manager.go`
+- `internal/datasource/sqd/client.go`
+
+#### 测试
+
+- 19 个新测试全部通过，零回归
+- CircuitBreaker(7)：初始状态/开放/半开恢复/半开再失败/重置/统计
+- Scheduler(6)：提交/并发限制/优先级/取消/满队/统计
+- Checkpoint(6)：创建加载/推进分块/标记失败/删除/分块算法/恢复续跑
+
 ### 2026-07-30 12:26 V1.3 地址分析状态与审计信息增强
 
 #### 新增与调整

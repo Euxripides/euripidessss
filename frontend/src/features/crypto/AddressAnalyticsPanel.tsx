@@ -13,34 +13,43 @@ import {
 import {
   Alert,
   Button,
+  DatePicker,
   Empty,
   Form,
   Input,
   Select,
   Skeleton,
   Space,
+  Spin,
   Statistic,
+  Switch,
   Table,
   Tabs,
   Tag,
   Typography,
   Tooltip,
   message,
+  notification,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ReactNode } from 'react';
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dayjs from 'dayjs';
 import {
   loadAddressActivity,
   loadAddressCounterparties,
   loadAddressNFTs,
   loadAddressSummary,
   loadAddressTokens,
+  loadFirstSeen,
   type AddressActivity,
   type AddressAsset,
   type AddressCounterparty,
+  type AddressQueryParams,
   type AddressSummary,
   type EVMChainKey,
+  type FirstSeen,
+  type FirstSeenStatus,
   type PageResult,
 } from './addressAnalyticsApi';
 import './address-analytics.css';
@@ -48,6 +57,9 @@ import './address-analytics.css';
 type SearchValues = {
   chain_key: EVMChainKey;
   address: string;
+  use_first_seen: boolean;
+  start_time?: dayjs.Dayjs | null;
+  end_time?: dayjs.Dayjs | null;
 };
 
 const chainOptions = [
@@ -67,21 +79,65 @@ export function AddressAnalyticsPanel() {
   const [nfts, setNFTs] = useState<PageResult<AddressAsset> | null>(null);
   const [counterparties, setCounterparties] = useState<PageResult<AddressCounterparty> | null>(null);
   const chainKey = summary?.chain_key ?? 'bsc';
+  const coverageNotifyRef = useRef(false);
+  const [useFirstSeen, setUseFirstSeen] = useState(true);
+  const [firstSeen, setFirstSeen] = useState<FirstSeen | null>(null);
+  const [firstSeenLoading, setFirstSeenLoading] = useState(false);
+  const firstSeenFetchedRef = useRef<string>('');
   const activityColumns = useMemo(() => buildActivityColumns(chainKey), [chainKey]);
   const assetColumns = useMemo(() => buildAssetColumns(chainKey), [chainKey]);
   const counterpartyColumns = useMemo(() => buildCounterpartyColumns(chainKey), [chainKey]);
+
+  const submitDisabled = useMemo(() => {
+    if (useFirstSeen) {
+      if (firstSeenLoading) return true;
+      if (firstSeen && (firstSeen.status === 'not_found' || firstSeen.status === 'temporarily_unavailable')) return true;
+    }
+    if (!useFirstSeen) {
+      const startVal = form.getFieldValue('start_time');
+      if (!startVal) return true;
+    }
+    return false;
+  }, [useFirstSeen, firstSeenLoading, firstSeen, form]);
+
+  const fetchFirstSeen = useCallback(async (chain: EVMChainKey, addr: string) => {
+    const cacheKey = `${chain}:${addr}`;
+    if (firstSeenFetchedRef.current === cacheKey) return;
+    firstSeenFetchedRef.current = cacheKey;
+    setFirstSeenLoading(true);
+    setFirstSeen(null);
+    try {
+      const result = await loadFirstSeen(chain, addr);
+      setFirstSeen(result);
+    } catch {
+      setFirstSeen({ status: 'failed' });
+    } finally {
+      setFirstSeenLoading(false);
+    }
+  }, []);
 
   async function searchAddress(values: SearchValues) {
     const address = values.address.trim().toLowerCase();
     setLoading(true);
     setSearched(true);
+
+    const params: AddressQueryParams = {
+      chain_key: values.chain_key,
+      address,
+      use_first_seen: values.use_first_seen,
+    };
+    if (!values.use_first_seen) {
+      params.start_time = values.start_time ? values.start_time.toISOString() : null;
+      params.end_time = values.end_time ? values.end_time.toISOString() : null;
+    }
+
     try {
       const [nextSummary, nextActivity, nextTokens, nextNFTs, nextCounterparties] = await Promise.all([
-        loadAddressSummary(values.chain_key, address),
-        loadAddressActivity(values.chain_key, address),
-        loadAddressTokens(values.chain_key, address),
-        loadAddressNFTs(values.chain_key, address),
-        loadAddressCounterparties(values.chain_key, address),
+        loadAddressSummary(params),
+        loadAddressActivity(params),
+        loadAddressTokens(params),
+        loadAddressNFTs(params),
+        loadAddressCounterparties(params),
       ]);
       setSummary(nextSummary);
       setActivity(nextActivity);
@@ -100,39 +156,122 @@ export function AddressAnalyticsPanel() {
     }
   }
 
+  useEffect(() => {
+    if (!summary || coverageNotifyRef.current) return;
+    if (summary.data_complete === false && summary.dataset_coverage) {
+      coverageNotifyRef.current = true;
+      notification.warning({
+        message: `数据覆盖尚未完整 · Coverage ${summary.dataset_coverage.coverage_percent.toFixed(2)}%`,
+        description: summary.data_status_message || '当前统计仅代表已加载数据，交易数为 0 不代表完整历史没有交易。',
+        placement: 'topRight',
+        duration: 6,
+      });
+    }
+  }, [summary]);
+
   return (
     <div className="address-analytics-shell">
       <header className="address-analytics-hero">
         <div>
           <span className="address-analytics-kicker">EVM ADDRESS INTELLIGENCE</span>
           <h1>链上地址分析</h1>
-          <p>统一查看多链交易、Token、NFT、内部转账、余额快照与资金关系。</p>
         </div>
         <BlockOutlined />
       </header>
 
       <Form<SearchValues>
         form={form}
-        initialValues={{ chain_key: 'bsc', address: '' }}
+        initialValues={{ chain_key: 'bsc', address: '', use_first_seen: true }}
         onFinish={searchAddress}
-        className="address-analytics-search"
       >
-        <Form.Item name="chain_key" noStyle>
-          <Select options={chainOptions} aria-label="EVM 网络" />
-        </Form.Item>
-        <Form.Item
-          name="address"
-          noStyle
-          rules={[
-            { required: true, message: '请输入 EVM 地址' },
-            { pattern: /^0x[0-9a-fA-F]{40}$/, message: '地址必须是 0x 开头的 40 位十六进制地址' },
-          ]}
-        >
-          <Input placeholder="输入 0x 地址" spellCheck={false} allowClear />
-        </Form.Item>
-        <Button type="primary" htmlType="submit" icon={<SearchOutlined />} loading={loading}>
-          分析地址
-        </Button>
+        <div className="address-analytics-search">
+          <Form.Item name="chain_key" noStyle>
+            <Select options={chainOptions} aria-label="EVM 网络"
+              onChange={(value: EVMChainKey) => {
+                setFirstSeen(null);
+                const addr = form.getFieldValue('address')?.trim().toLowerCase() ?? '';
+                if (/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+                  void fetchFirstSeen(value, addr);
+                }
+              }}
+            />
+          </Form.Item>
+          <Form.Item
+            name="address"
+            noStyle
+            rules={[
+              { required: true, message: '请输入 EVM 地址' },
+              { pattern: /^0x[0-9a-fA-F]{40}$/, message: '地址必须是 0x 开头的 40 位十六进制地址' },
+            ]}
+          >
+            <Input placeholder="输入 0x 地址" spellCheck={false} allowClear
+              onChange={(e) => {
+                const v = e.target.value.trim().toLowerCase();
+                if (/^0x[0-9a-fA-F]{40}$/.test(v)) {
+                  const chain = form.getFieldValue('chain_key') ?? 'bsc';
+                  void fetchFirstSeen(chain, v);
+                }
+              }}
+            />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" icon={<SearchOutlined />} loading={loading} disabled={submitDisabled}>
+            分析地址
+          </Button>
+        </div>
+
+        <div className="address-analytics-time-row">
+          <Form.Item name="use_first_seen" valuePropName="checked" noStyle>
+            <Switch onChange={(checked) => setUseFirstSeen(checked)} />
+          </Form.Item>
+          <span className="address-analytics-time-label">从地址首次出现开始分析</span>
+          <Form.Item name="start_time" noStyle
+            rules={useFirstSeen ? [] : [{ required: true, message: '关闭首次时间后必须选择开始时间' }]}
+          >
+            <DatePicker
+              showTime
+              placeholder="开始时间"
+              disabled={useFirstSeen}
+              allowClear={false}
+              className="address-analytics-time-picker"
+            />
+          </Form.Item>
+          <Form.Item name="end_time" noStyle>
+            <DatePicker
+              showTime
+              placeholder="结束时间"
+              allowClear
+              className="address-analytics-time-picker"
+            />
+          </Form.Item>
+        </div>
+
+        {useFirstSeen && firstSeen && (
+          <div className="address-analytics-first-seen">
+            {firstSeenLoading ? (
+              <span><Spin size="small" /> 查询首次出现时间…</span>
+            ) : firstSeen.status === 'found' || firstSeen.status === 'partial' ? (
+              <>
+                <Tag color={firstSeen.status === 'found' ? 'green' : 'orange'}>
+                  {firstSeen.status === 'found' ? '已确认' : '部分覆盖'}
+                </Tag>
+                <span>
+                  首次出现：{firstSeen.first_seen_time
+                    ? dayjs(firstSeen.first_seen_time).format('YYYY-MM-DD HH:mm UTC')
+                    : '未知'}
+                </span>
+                {firstSeen.first_seen_source && (
+                  <Tag>{firstSeen.first_seen_source}</Tag>
+                )}
+              </>
+            ) : firstSeen.status === 'not_found' ? (
+              <Tag color="default">未找到历史活动</Tag>
+            ) : firstSeen.status === 'temporarily_unavailable' ? (
+              <Tag color="warning">数据源暂不可用</Tag>
+            ) : (
+              <Tag color="error">查询失败</Tag>
+            )}
+          </div>
+        )}
       </Form>
 
       {loading ? (
@@ -146,15 +285,6 @@ export function AddressAnalyticsPanel() {
               showIcon
               message="RPC 尚未配置，实时状态检测未执行"
               description={`${summary.rpc_env} 未配置：地址类型显示“未检测”，Token Metadata 不推测，余额快照暂不可用。`}
-            />
-          )}
-          {summary.data_complete === false && summary.dataset_coverage && (
-            <Alert
-              className="address-analytics-rpc-alert"
-              type="warning"
-              showIcon
-              message={`历史数据未完整加载 · Coverage ${summary.dataset_coverage.coverage_percent.toFixed(2)}%`}
-              description={summary.data_status_message || '当前统计仅代表已加载数据，交易数为 0 不代表完整历史没有交易。'}
             />
           )}
           <section className="address-analytics-identity">

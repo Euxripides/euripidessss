@@ -60,6 +60,46 @@
   height: 40px;
 }
 
+/* ── 时间控制行 ── */
+.address-analytics-time-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  margin: 0 0 12px;
+  border: 1px solid var(--address-line);
+  border-radius: 11px;
+  background: #fafbfc;
+}
+
+.address-analytics-time-label {
+  font-size: 13px;
+  color: var(--address-ink);
+  white-space: nowrap;
+}
+
+.address-analytics-time-picker {
+  width: 190px;
+}
+
+/* ── 首次出现时间 ── */
+.address-analytics-first-seen {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--address-muted);
+  border: 1px solid var(--address-line);
+  border-radius: 9px;
+  background: #fff;
+}
+
+.address-analytics-first-seen .ant-tag {
+  margin: 0;
+}
+
 .address-analytics-loading,
 .address-analytics-empty {
   min-height: 430px;

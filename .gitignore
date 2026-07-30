@@ -41,6 +41,9 @@ backend/data/analysis/
 /test_import*.xlsx
 /test_big.xlsx
 
+# CodeQL database (too large for git)
+docs/codeql-db/
+
 # Browser / Playwright cache and profiles
 .playwright-mcp/
 .codex_tmp_csv_merge/
@@ -53,3 +56,8 @@ backend/data/dune/playwright_tasks/
 backend/data/dune/chrome-cdp-profile/
 backend/data/dune/node_modules/
 backend/data/dune/dune_*/
+
+# Large archives and data dumps
+*.7z
+*.zip
+backend/data/data.*

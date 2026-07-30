@@ -44,9 +44,12 @@ type sourceRuntime struct {
 	Failure         int64
 	RateLimited     int64
 	Timeout         int64
+	Worker503       int64
 	LastSuccessAt   *time.Time
 	LastFailureAt   *time.Time
+	LastRecoveryAt  *time.Time
 	LastError       string
+	CurrentTasks    int64
 	CheckedAt       *time.Time
 	AverageSpeedBPS float64
 }
@@ -265,6 +268,35 @@ func (m *Manager) SQDConfig() ConfigInput {
 	return m.configByType(TypeStream, sqd.DefaultPortal)
 }
 
+// UpdateTaskCount updates the current task count for a data source.
+// Called by the download manager when tasks start or complete.
+func (m *Manager) UpdateTaskCount(sourceID string, count int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	runtime := m.runtimeLocked(sourceID)
+	runtime.CurrentTasks = count
+}
+
+// Update503Count increments the 503 worker-unavailable counter.
+func (m *Manager) Update503Count(sourceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	runtime := m.runtimeLocked(sourceID)
+	runtime.Worker503++
+}
+
+// RecordRecovery marks a data source as having recovered from a failure.
+func (m *Manager) RecordRecovery(sourceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	runtime := m.runtimeLocked(sourceID)
+	if runtime.Status == StatusNoAvailableWorkers || runtime.Status == StatusRecovering {
+		runtime.Status = StatusHealthy
+		now := time.Now().UTC()
+		runtime.LastRecoveryAt = &now
+	}
+}
+
 func (m *Manager) AWSConfig() ConfigInput {
 	return m.configByType(TypeDataset, aws.DefaultEndpoint)
 }
@@ -373,7 +405,9 @@ func (m *Manager) getJSON(ctx context.Context, endpoint string, config storedCon
 func (m *Manager) recordResult(config storedConfig, result TestResult) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	prevStatus := ""
 	runtime := m.runtimeLocked(config.ID)
+	prevStatus = runtime.Status
 	today := time.Now().UTC().Format("2006-01-02")
 	if runtime.Today != today {
 		*runtime = sourceRuntime{Today: today, Status: StatusUnknown}
@@ -385,18 +419,30 @@ func (m *Manager) recordResult(config storedConfig, result TestResult) {
 	if result.Success {
 		runtime.Success++
 		runtime.LastSuccessAt, runtime.LastError = &result.CheckedAt, ""
+		// Transition from NO_AVAILABLE_WORKERS → RECOVERING on first success after failure
+		if prevStatus == StatusNoAvailableWorkers {
+			runtime.Status = StatusRecovering
+		}
+		// Record recovery if transitioning from failed states
+		if prevStatus == StatusRecovering || runtime.LastRecoveryAt == nil {
+			now := result.CheckedAt
+			runtime.LastRecoveryAt = &now
+		}
 	} else {
 		runtime.Failure++
 		runtime.LastFailureAt, runtime.LastError = &result.CheckedAt, result.Message
+		if result.Status == StatusNoAvailableWorkers {
+			runtime.Worker503++
+		}
 		if result.Status == StatusRateLimited {
 			runtime.RateLimited++
 		}
-		if strings.Contains(strings.ToLower(result.Message), "超时") {
+		if strings.Contains(strings.ToLower(result.Message), "超时") || result.Status == StatusUnavailable {
 			runtime.Timeout++
 		}
 	}
 	m.state.Events = append(m.state.Events, Event{
-		SourceID: config.ID, SourceName: config.Name, Status: result.Status,
+		SourceID: config.ID, SourceName: config.Name, Status: runtime.Status,
 		Message: result.Message, OccurredAt: result.CheckedAt,
 	})
 	if len(m.state.Events) > 100 {
@@ -470,8 +516,10 @@ func (m *Manager) sourceFromConfigLocked(config storedConfig) Source {
 		LatencyP95MS: p95, SuccessRate: successRate, TodayRequests: runtime.Requests,
 		SuccessCount: runtime.Success, FailureCount: runtime.Failure,
 		RateLimitedCount: runtime.RateLimited, TimeoutCount: runtime.Timeout,
-		AverageSpeedBPS: runtime.AverageSpeedBPS, LastSuccessAt: runtime.LastSuccessAt,
-		LastFailureAt: runtime.LastFailureAt, LastError: runtime.LastError, CheckedAt: runtime.CheckedAt,
+		Worker503Count: runtime.Worker503, AverageSpeedBPS: runtime.AverageSpeedBPS,
+		LastSuccessAt: runtime.LastSuccessAt, LastFailureAt: runtime.LastFailureAt,
+		LastRecoveryAt: runtime.LastRecoveryAt, LastError: runtime.LastError,
+		CurrentTasks: runtime.CurrentTasks, CheckedAt: runtime.CheckedAt,
 		Config: PublicConfig{
 			Bucket: config.Bucket, Region: config.Region, Prefix: config.Prefix,
 			CacheDirectory: config.CacheDirectory, TimeoutMS: config.TimeoutMS,
@@ -631,9 +679,15 @@ func isLoopback(host string) bool {
 func classifyStatus(err error) string {
 	message := strings.ToLower(err.Error())
 	switch {
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(message, "timeout"):
+		return StatusUnavailable
+	case strings.Contains(message, "503") && (strings.Contains(message, "no available worker") ||
+		strings.Contains(message, "no_available_worker") || strings.Contains(message, "unavailable")):
+		return StatusNoAvailableWorkers
 	case strings.Contains(message, "429") || strings.Contains(message, "rate"):
 		return StatusRateLimited
-	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(message, "timeout"):
+	case strings.Contains(message, "eof") || strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "broken pipe") || strings.Contains(message, "network"):
 		return StatusUnavailable
 	default:
 		return StatusUnavailable

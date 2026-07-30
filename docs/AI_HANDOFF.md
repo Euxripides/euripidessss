@@ -1,3 +1,111 @@
+## 2026-07-30 21:30 V1.5.0 地址首次时间开关
+
+### 本次完成
+
+- **后端 first-seen 服务**：新增 `internal/parquetdownload/firstseen.go`（327行），实现 `queryFirstSeen`、`computeFirstSeen`、DuckDB 缓存、`resolveEffectiveDateRange`
+- **EOA/Contract 区分**：EOA 取 `address_activity`/`traces`/`token_transfers` 最小区块；Contract 优先查 `traces` CREATE/CREATE2
+- **DuckDB 缓存**：自动创建 `address_first_seen` 表，支持 INSERT OR REPLACE 按 `(chain_id, address)` 主键
+- **API 路由**：`GET /api/crypto/addresses/{chain}/{address}/first-seen` → 返回 `FirstSeenResponse`（含 status/first_seen_time/first_seen_source/coverage_status）
+- **日期范围解析**：`resolveEffectiveDateRange` 支持 `use_first_seen=true` 自动解析 / `false` 手动模式校验
+- **前端提交控制**：
+  - 首次时间查询中（loading）→ 禁止提交
+  - NOT_FOUND / TEMPORARILY_UNAVAILABLE → 禁止提交（可关闭开关改手动）
+  - 手动模式未选开始时间 → 禁止提交
+  - PARTIAL 允许提交但显示警告
+  - 链切换自动重新查询
+
+### 新增/修改文件
+
+- `internal/parquetdownload/firstseen.go` — 新增：FirstSeenResponse 类型、queryFirstSeen/缓存/日期解析
+- `internal/parquetdownload/handler.go` — 新增 `/crypto/addresses/` 路由 + handler 方法
+- `frontend/src/features/crypto/addressAnalyticsApi.ts` — FirstSeen/AddressQueryParams 类型、loadFirstSeen()
+- `frontend/src/features/crypto/AddressAnalyticsPanel.tsx` — 开关/日期选择器/提交阻塞/链切换联动
+- `frontend/src/features/crypto/address-analytics.css` — 时间控制行样式
+
+### 已验证
+
+- `go build ./internal/...` ✅
+- `go test ./internal/... -count=1` 全部通过（零回归）
+- `npm run build` TypeScript + Vite ✅
+
+### 注意事项
+
+- first-seen 依赖 DuckDB warehouse 中有 `address_activity`、`traces`、`token_transfers` Parquet 数据
+- 未配置 RPC 时地址类型默认判为 EOA
+- 缓存表 `address_first_seen` 首次查询时自动创建
+
+### 本次完成
+
+- **描述文字删除**：删除虚拟币导航下所有面板页面的长描述段落和 Alert 提示，精简页面布局。
+- **错误通知弹窗化**：`CryptoParquetPanel` 中内联 `job.error` Alert 和 canceling Alert 改为右上角 `notification` 弹窗。
+- **数据源覆盖提示弹窗化**：`DataSourcePage`、`AddressAnalyticsPanel`、`CryptoParquetPanel` 三处"数据覆盖尚未完整"内联 Alert 全部改为右上角 `notification.warning/info` 弹窗，用 `useRef` 按 job/页面生命周期防重复。
+- **地址粘贴零宽字符修复**：`summarizeAddresses` 新增零宽/不可见 Unicode 字符过滤（U+200B~U+200F, U+FEFF, U+00A0, U+2028/U+2029），解决从网页复制地址时前端误判"格式不正确"的问题。
+- **效果**：页面更紧凑，错误/提示信息通过 notification 弹窗呈现。
+
+### 修改文件
+
+- `frontend/src/features/crypto/CryptoParquetPanel.tsx` — 删除 V1.3 Alert、header 描述、section 副标题、表格头描述、SQD Alert、内联错误 Alert、覆盖率不完整 Alert；新增 notification + useEffect（错误/取消/覆盖率）弹窗
+- `frontend/src/features/crypto/AddressAnalyticsPanel.tsx` — 删除 header 描述段落 + 数据覆盖不完整 Alert；新增 notification 导入 + useEffect 覆盖提示弹窗
+- `frontend/src/features/crypto/CryptoDownloadPanel.tsx` — 删除 header 描述段落
+- `frontend/src/features/crypto/datasource/DataSourcePage.tsx` — 删除 header 描述 + 健康事件描述 + SQD/AWS/RPC Alert；新增 notification 导入 + useEffect 首次弹窗提示
+
+### 已验证
+
+- `cd frontend && npm run build` TypeScript 编译 + Vite 构建通过
+
+### 注意事项
+
+- notification.error 的 `duration: 0` 表示不自动关闭，用户需手动关闭
+- `lastErrorRef` / `coverageNotifyRef` 防止重复弹窗
+- canceling 状态仅首次弹出 notification.warning，持续 4 秒
+- 数据源覆盖提示仅首次进入页面弹出，持续 6 秒
+
+## 2026-07-30 19:05 V1.4.2 SQD Provider 高可用与任务调度修复
+
+### 本次完成
+
+- **状态机扩展**：`datasourcemanager` 新增 `NO_AVAILABLE_WORKERS` 和 `RECOVERING` 两种状态。
+- **错误分类细化**：`classifyStatus` 区分 503 No workers / 429 Rate Limit / Timeout / Network 错误。
+- **503冷却退避**：`sqd.Client` 新增 cooldown 机制 — 503 触发 30s→60s→120s→10min 递增冷却，冷却期间请求直接拒绝，成功后自动重置。
+- **Circuit Breaker**：`sqd` 包新增三态熔断器（CLOSED/OPEN/HALF_OPEN），集成到 `postWithRetry` 每次请求自动检测+记录。
+- **SQD Scheduler**：新包 `sqd/scheduler` — 优先级任务队列 + 并发控制（max_parallel_streams=1, max_large_jobs=1, max_small_jobs=2）。
+- **Checkpoint 断点续传**：`parquetdownload` 新增 `SQDCheckpointStore` — 自动分块(50k blocks)、AdvanceChunk/MarkFailed、恢复续跑。
+- **健康检测增强**：`Manager` 新增 `UpdateTaskCount/Update503Count/RecordRecovery` 方法。
+- **测试**：19 个新测试覆盖 CircuitBreaker(7)、Scheduler(6)、Checkpoint(6)，全部通过。
+
+### 新增文件
+
+- `internal/datasource/sq d/circuit_breaker.go`
+- `internal/datasource/sqd/circuit_breaker_test.go`
+- `internal/datasource/sqd/scheduler/scheduler.go`
+- `internal/datasource/sqd/scheduler/scheduler_test.go`
+- `internal/parquetdownload/sqd_checkpoint.go`
+- `internal/parquetdownload/sqd_checkpoint_test.go`
+
+### 修改文件
+
+- `internal/datasourcemanager/types.go` — 新增 StatusNoAvailableWorkers/StatusRecovering + Source/sourceRuntime 字段
+- `internal/datasourcemanager/manager.go` — classifyStatus 细化 + recordResult 503追踪 + UpdateTaskCount/Update503Count/RecordRecovery
+- `internal/datasource/sqd/client.go` — cooldown 机制 + CircuitBreaker 集成 + Breaker() 公开方法
+
+### 已验证
+
+- `go test ./internal/... -count=1` 全部通过（零回归）
+- 19 个新增测试全部通过
+- `go build ./internal/...` 编译通过
+
+### 未完成事项
+
+- 前端 SQD 详情页面（数据源管理 → SQD详情 展示状态/503次数/当前任务/延迟/恢复时间）
+- `parquetdownload` 中的 `ingestSQD` 尚未集成 Scheduler 和 Checkpoint
+- 503 模拟测试需 mock HTTP server
+
+### 注意事项
+
+- Circuit Breaker 默认配置 5次连续失败→open, 30s→half_open, 2次成功→close
+- Cooldown 与 CircuitBreaker 独立工作：cooldown 针对503专项，breaker 针对通用失败
+- Checkpoint 存储路径为 `{bsc_analytics}/checkpoints/{job_id}.json`
+
 ## 2026-07-30 12:26 V1.3 地址分析状态与审计信息增强
 
 ### 本次完成

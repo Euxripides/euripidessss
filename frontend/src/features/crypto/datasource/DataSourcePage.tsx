@@ -9,8 +9,8 @@ import {
   SearchOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Drawer, Empty, Input, Segmented, Space, Spin, Tag, Tooltip, message } from 'antd';
-import { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, Drawer, Empty, Input, Segmented, Space, Spin, Tag, Tooltip, message, notification } from 'antd';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { dataSourceApi } from './api/datasource-api';
 import { MetricsCard } from './components/MetricsCard';
 import { SourceCard } from './components/SourceCard';
@@ -45,6 +45,7 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
   const [testResult, setTestResult] = useState<DataSourceTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [logSource, setLogSource] = useState<DataSourceItem | null>(null);
+  const coverageNotifyRef = useRef(false);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -63,6 +64,17 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
     const timer = window.setInterval(() => void refresh(true), 30_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    if (coverageNotifyRef.current) return;
+    coverageNotifyRef.current = true;
+    notification.info({
+      message: '数据覆盖尚未完整',
+      description: '页面中的交易数和资产数只代表已加载数据，零值不表示完整历史没有交易。',
+      placement: 'topRight',
+      duration: 6,
+    });
+  }, []);
 
   const visibleSources = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -146,7 +158,6 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
       <header className="datasource-hero">
         <div>
           <h1>数据源管理中心</h1>
-          <p>统一管理历史数据、公共数据集与实时富化节点。</p>
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>
@@ -158,13 +169,6 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
       <div className="datasource-metrics">
         {metrics.map((metric) => <MetricsCard key={metric.label} {...metric} />)}
       </div>
-
-      <Alert
-        className="datasource-policy"
-        type="info"
-        showIcon
-        message="历史交易、Logs与Trace由SQD/AWS负责；RPC仅用于Metadata、余额、Receipt补漏和地址类型。"
-      />
 
       <div className="datasource-toolbar">
         <Segmented
@@ -201,7 +205,7 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
 
       <section className="datasource-events">
         <div className="datasource-section-title">
-          <div><h2>最近健康事件</h2><p>保留最近的连接测试与状态变化，不记录API Key。</p></div>
+          <div><h2>最近健康事件</h2></div>
           <Tag>{snapshot.events.length} 条</Tag>
         </div>
         {snapshot.events.length ? snapshot.events.slice(0, 6).map((event) => <EventRow key={`${event.source_id}-${event.occurred_at}`} event={event} />)
