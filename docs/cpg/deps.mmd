@@ -2,7 +2,10 @@
 graph LR
 	github_com_etl_backend_cmd_server["server"]
 	github_com_etl_backend_internal_analysis_duckdb["duckdb"]
+	github_com_etl_backend_internal_analyticsapi["analyticsapi"]
 	github_com_etl_backend_internal_api["api"]
+	github_com_etl_backend_internal_balance["balance"]
+	github_com_etl_backend_internal_casefile["casefile"]
 	github_com_etl_backend_internal_chain["chain"]
 	github_com_etl_backend_internal_config["config"]
 	github_com_etl_backend_internal_cryptodownload["cryptodownload"]
@@ -20,6 +23,8 @@ graph LR
 	github_com_etl_backend_internal_downloader["downloader"]
 	github_com_etl_backend_internal_dunetools["dunetools"]
 	github_com_etl_backend_internal_etl["etl"]
+	github_com_etl_backend_internal_graphintel["graphintel"]
+	github_com_etl_backend_internal_investigation["investigation"]
 	github_com_etl_backend_internal_logger["logger"]
 	github_com_etl_backend_internal_model["model"]
 	github_com_etl_backend_internal_normalize["normalize"]
@@ -36,7 +41,9 @@ graph LR
 	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_config
 	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_logger
 	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_rules
+	github_com_etl_backend_internal_analyticsapi --> github_com_etl_backend_internal_analysis_duckdb
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_analyticsapi
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_config
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_cryptodownload
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_datasourcemanager
@@ -51,6 +58,12 @@ graph LR
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_scanner
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage_control
+	github_com_etl_backend_internal_balance --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_balance --> github_com_etl_backend_internal_analyticsapi
+	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_analyticsapi
+	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_balance
+	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_investigation
 	github_com_etl_backend_internal_cryptodownload --> github_com_etl_backend_internal_cryptodownload_useragent
 	github_com_etl_backend_internal_datasource --> github_com_etl_backend_internal_chain
 	github_com_etl_backend_internal_datasource --> github_com_etl_backend_internal_normalize
@@ -80,6 +93,10 @@ graph LR
 	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_provider
 	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_rules
 	github_com_etl_backend_internal_etl --> github_com_etl_backend_internal_scanner
+	github_com_etl_backend_internal_graphintel --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_graphintel --> github_com_etl_backend_internal_analyticsapi
+	github_com_etl_backend_internal_investigation --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_investigation --> github_com_etl_backend_internal_analyticsapi
 	github_com_etl_backend_internal_normalize --> github_com_etl_backend_internal_chain
 	github_com_etl_backend_internal_normalize --> github_com_etl_backend_internal_datasource_sqd
 	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_analysis_duckdb

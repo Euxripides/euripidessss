@@ -1,6 +1,6 @@
 # Funds ETL — Code Property Graph
 
-> Auto-generated. **32 packages, 2048 functions, 492 types.**
+> Auto-generated. **37 packages, 2230 functions, 573 types.**
 
 Use this as a **project map** before reading source code.
 
@@ -10,33 +10,38 @@ Use this as a **project map** before reading source code.
 
 - **`server`** — 1 fn, 0s/0i, uses: api, config, logger, rules
 
-### API / HTTP (1 pkgs, 280 funcs, 43 types)
+### API / HTTP (1 pkgs, 281 funcs, 43 types)
 
-- **`api`** — 280 fn, 41s/0i, uses: analysis/duckdb, config, cryptodownload, datasourcemanager, used-by: 1 pkg(s)
+- **`api`** — 281 fn, 41s/0i, uses: analysis/duckdb, analyticsapi, config, cryptodownload, used-by: 1 pkg(s)
 
-### ETL Pipeline (32 pkgs, 2048 funcs, 492 types)
+### ETL Pipeline (37 pkgs, 2230 funcs, 573 types)
 
 - **`cryptodownload`** — 655 fn, 132s/1i, uses: cryptodownload/useragent, used-by: 1 pkg(s)
-- **`api`** — 280 fn, 41s/0i, uses: analysis/duckdb, config, cryptodownload, datasourcemanager, used-by: 1 pkg(s)
-- **`parquetdownload`** — 186 fn, 28s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws, used-by: 2 pkg(s)
-- **`downloadengine`** — 116 fn, 52s/5i, used-by: 1 pkg(s)
+- **`api`** — 281 fn, 41s/0i, uses: analysis/duckdb, analyticsapi, config, cryptodownload, used-by: 1 pkg(s)
+- **`parquetdownload`** — 189 fn, 29s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws, used-by: 2 pkg(s)
+- **`downloadengine`** — 166 fn, 67s/5i, used-by: 1 pkg(s)
 - **`dbimport`** — 110 fn, 27s/1i, uses: model, parser, used-by: 1 pkg(s)
 - **`rpcmanager`** — 110 fn, 21s/0i, uses: chain, used-by: 4 pkg(s)
 - **`etl`** — 99 fn, 10s/0i, uses: model, parser, provider, rules, used-by: 1 pkg(s)
+- **`datasource/sqd`** — 90 fn, 25s/0i, uses: chain, used-by: 4 pkg(s)
 - **`dunetools`** — 88 fn, 16s/3i, used-by: 1 pkg(s)
 - **`parser`** — 85 fn, 7s/0i, used-by: 6 pkg(s)
 - **`datasourcemanager`** — 44 fn, 13s/0i, uses: chain, datasource/aws, datasource/sqd, rpcmanager, used-by: 2 pkg(s)
 - **`downloadengine/provider`** — 44 fn, 12s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws
-- **`datasource/sqd`** — 34 fn, 14s/0i, uses: chain, used-by: 4 pkg(s)
 - **`rules`** — 27 fn, 1s/0i, uses: parser, used-by: 5 pkg(s)
 - **`provider`** — 25 fn, 5s/1i, uses: model, parser, rules, used-by: 1 pkg(s)
-- **`analysis/duckdb`** — 21 fn, 4s/0i, used-by: 3 pkg(s)
+- **`analyticsapi`** — 23 fn, 9s/0i, uses: analysis/duckdb, used-by: 5 pkg(s)
+- **`analysis/duckdb`** — 21 fn, 4s/0i, used-by: 8 pkg(s)
+- **`casefile`** — 18 fn, 12s/0i, uses: analysis/duckdb, analyticsapi, balance, investigation
 - **`datasource/rpc`** — 17 fn, 3s/0i, uses: chain, normalize, used-by: 1 pkg(s)
 - **`downloader`** — 17 fn, 6s/0i, uses: writer, used-by: 1 pkg(s)
 - **`scanner`** — 17 fn, 2s/0i, uses: parser, rules, used-by: 2 pkg(s)
+- **`investigation`** — 13 fn, 8s/0i, uses: analysis/duckdb, analyticsapi, used-by: 1 pkg(s)
 - **`datasource/sqd/scheduler`** — 12 fn, 4s/0i
 - **`normalize`** — 12 fn, 12s/0i, uses: chain, datasource/sqd, used-by: 3 pkg(s)
+- **`balance`** — 10 fn, 11s/0i, uses: analysis/duckdb, analyticsapi, used-by: 1 pkg(s)
 - **`storage/control`** — 9 fn, 2s/0i, used-by: 1 pkg(s)
+- **`graphintel`** — 8 fn, 5s/0i, uses: analysis/duckdb, analyticsapi
 - **`storage`** — 8 fn, 2s/0i, used-by: 1 pkg(s)
 - **`writer`** — 8 fn, 1s/1i, used-by: 3 pkg(s)
 - **`logger`** — 6 fn, 1s/0i, used-by: 1 pkg(s)
@@ -57,14 +62,14 @@ Use this as a **project map** before reading source code.
 - **`storage`** — 8 fn, 2s/0i, used-by: 1 pkg(s)
 - **`writer`** — 8 fn, 1s/1i, used-by: 3 pkg(s)
 
-### Crypto / Blockchain (13 pkgs, 1160 funcs, 268 types)
+### Crypto / Blockchain (13 pkgs, 1219 funcs, 282 types)
 
 - **`cryptodownload`** — 655 fn, 132s/1i, uses: cryptodownload/useragent, used-by: 1 pkg(s)
-- **`parquetdownload`** — 186 fn, 28s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws, used-by: 2 pkg(s)
+- **`parquetdownload`** — 189 fn, 29s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws, used-by: 2 pkg(s)
 - **`rpcmanager`** — 110 fn, 21s/0i, uses: chain, used-by: 4 pkg(s)
+- **`datasource/sqd`** — 90 fn, 25s/0i, uses: chain, used-by: 4 pkg(s)
 - **`dunetools`** — 88 fn, 16s/3i, used-by: 1 pkg(s)
 - **`datasourcemanager`** — 44 fn, 13s/0i, uses: chain, datasource/aws, datasource/sqd, rpcmanager, used-by: 2 pkg(s)
-- **`datasource/sqd`** — 34 fn, 14s/0i, uses: chain, used-by: 4 pkg(s)
 - **`datasource/rpc`** — 17 fn, 3s/0i, uses: chain, normalize, used-by: 1 pkg(s)
 - **`datasource/sqd/scheduler`** — 12 fn, 4s/0i
 - **`cryptodownload/browser_stealth`** — 5 fn, 1s/0i
@@ -75,7 +80,7 @@ Use this as a **project map** before reading source code.
 
 ### Infrastructure (4 pkgs, 30 funcs, 22 types)
 
-- **`analysis/duckdb`** — 21 fn, 4s/0i, used-by: 3 pkg(s)
+- **`analysis/duckdb`** — 21 fn, 4s/0i, used-by: 8 pkg(s)
 - **`logger`** — 6 fn, 1s/0i, used-by: 1 pkg(s)
 - **`config`** — 3 fn, 2s/0i, used-by: 2 pkg(s)
 - **`model`** — 0 fn, 13s/1i, used-by: 4 pkg(s)
@@ -86,21 +91,21 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 
 | Package | Out | In | Instability | Funcs |
 |---------|-----|----|-------------|-------|
-| `api` | 15 | 1 | 0.94 █████████ | 280 |
-| `parquetdownload` | 11 | 2 | 0.85 ████████ | 186 |
+| `api` | 16 | 1 | 0.94 █████████ | 281 |
+| `parquetdownload` | 11 | 2 | 0.85 ████████ | 189 |
 | `downloadengine/provider` | 9 | 0 | 1.00 ██████████ | 44 |
 | `etl` | 5 | 1 | 0.83 ████████ | 99 |
 | `server` | 4 | 0 | 1.00 ██████████ | 1 |
+| `casefile` | 4 | 0 | 1.00 ██████████ | 18 |
 | `datasourcemanager` | 4 | 2 | 0.67 ██████ | 44 |
 | `provider` | 3 | 1 | 0.75 ███████ | 25 |
+| `balance` | 2 | 1 | 0.67 ██████ | 10 |
 | `datasource` | 2 | 3 | 0.40 ████ | 0 |
 | `datasource/aws` | 2 | 3 | 0.40 ████ | 5 |
 | `datasource/rpc` | 2 | 1 | 0.67 ██████ | 17 |
 | `dbimport` | 2 | 1 | 0.67 ██████ | 110 |
-| `normalize` | 2 | 3 | 0.40 ████ | 12 |
-| `scanner` | 2 | 2 | 0.50 █████ | 17 |
-| `cryptodownload` | 1 | 1 | 0.50 █████ | 655 |
-| `datasource/sqd` | 1 | 4 | 0.20 ██ | 34 |
+| `graphintel` | 2 | 0 | 1.00 ██████████ | 8 |
+| `investigation` | 2 | 1 | 0.67 ██████ | 13 |
 
 **Key**: `parquetdownload` (11 out) and `api` (15 out) are the most coupled.
 
@@ -146,21 +151,21 @@ Size × coupling = maintenance risk.
 
 | Package | Size | Coupling | Risk | Level |
 |---------|------|----------|------|-------|
-| `api` | 323 | 16 | 5491 | 🔴 HIGH |
-| `parquetdownload` | 217 | 13 | 3038 | 🔴 HIGH |
+| `api` | 324 | 17 | 5832 | 🔴 HIGH |
+| `parquetdownload` | 221 | 13 | 3094 | 🔴 HIGH |
 | `cryptodownload` | 805 | 2 | 2415 | 🔴 HIGH |
 | `rpcmanager` | 131 | 5 | 786 | 🔴 HIGH |
 | `etl` | 109 | 6 | 763 | 🔴 HIGH |
+| `datasource/sqd` | 118 | 5 | 708 | 🔴 HIGH |
 | `parser` | 92 | 6 | 644 | 🔴 HIGH |
 | `downloadengine/provider` | 56 | 9 | 560 | 🔴 HIGH |
 | `dbimport` | 139 | 3 | 556 | 🔴 HIGH |
+| `downloadengine` | 254 | 1 | 508 | 🔴 HIGH |
 | `datasourcemanager` | 57 | 6 | 399 | 🟡 MED |
-| `downloadengine` | 184 | 1 | 368 | 🟡 MED |
-| `datasource/sqd` | 49 | 5 | 294 | 🟡 MED |
+| `analysis/duckdb` | 25 | 8 | 225 | 🟡 MED |
+| `analyticsapi` | 32 | 6 | 224 | 🟡 MED |
 | `dunetools` | 109 | 1 | 218 | 🟡 MED |
 | `rules` | 28 | 6 | 196 | 🟢 LOW |
-| `provider` | 31 | 4 | 155 | 🟢 LOW |
-| `normalize` | 24 | 5 | 144 | 🟢 LOW |
 
 ## 7. Dependency Diagram
 

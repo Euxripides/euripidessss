@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-07-31T12:32:10.1168645Z",
+  "source_rows": 49031,
+  "parsed_rows": 49031,
+  "unique_rows": 49031,
+  "parquet_rows": 49031,
+  "duckdb_rows": 49031,
+  "duckdb_distinct": 49031,
+  "duplicate_rows": 0,
+  "consistent": true,
+  "parquet_exists": true,
+  "parquet_size": 1552334,
+  "parquet_sha256": "6dcd446209bebe5722b30a8a15ee528a1f287d7d6a02342e82827f7adecd86d3",
+  "schema_columns": [
+    "chain_id",
+    "block_number",
+    "block_time",
+    "transaction_hash",
+    "log_index",
+    "address",
+    "topic0",
+    "topic1",
+    "topic2",
+    "topic3",
+    "data"
+  ],
+  "checksum_ok": true,
+  "manifest_path": "E:\\codex\\etl\\stress-data\\bsc_real\\sqd-200k-warehouse\\integrity-manifest.json",
+  "passed": true
+}

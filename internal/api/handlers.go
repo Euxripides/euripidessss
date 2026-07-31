@@ -17,6 +17,7 @@ import (
 	"github.com/xuri/excelize/v2"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/analyticsapi"
 	"github.com/etl/backend/internal/config"
 	"github.com/etl/backend/internal/cryptodownload"
 	"github.com/etl/backend/internal/datasourcemanager"
@@ -46,6 +47,7 @@ var (
 	rpcAPI            http.Handler
 	dataSourceManager *datasourcemanager.Manager
 	dataSourceAPI     http.Handler
+	analyticsAPI      http.Handler
 )
 
 const (
@@ -168,6 +170,16 @@ func Setup(c *config.Config) {
 	} else {
 		parquetDownload = handler
 	}
+	// V2.1 RC2: 分析服务 API（基于 sqd-200k-warehouse Parquet 数据资产）
+	if analysisEngine.Available() {
+		warehouseParquet := `E:\codex\etl\stress-data\bsc_real\sqd-200k-warehouse\logs.parquet`
+		if _, err := os.Stat(warehouseParquet); err == nil {
+			analyticsAPI = analyticsapi.NewHandler(analysisEngine, warehouseParquet)
+			log.Info().Msg("analytics_api_ready")
+		} else {
+			log.Warn().Err(err).Msg("analytics_api_unavailable_warehouse")
+		}
+	}
 	if manager, err := rpcmanager.New(`E:\codex\bsc_analytics`); err != nil {
 		log.Warn().Err(err).Msg("crypto_rpc_api_unavailable")
 	} else {
@@ -246,6 +258,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/crypto/enrichment/*path", HandleCryptoRPC)
 		api.Any("/crypto/datasource/*path", HandleCryptoDataSource)
 		api.Any("/crypto/addresses/:chain/:address/first-seen", HandleFirstSeen)
+		api.Any("/analytics/*path", HandleAnalyticsAPI)
 		api.GET("/address/*path", HandleAddressAnalytics)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)

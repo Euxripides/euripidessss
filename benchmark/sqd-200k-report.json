@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-07-31T11:32:36.155315Z",
+  "address_count": 200000,
+  "chunk_count": 2000,
+  "completed_chunks": 2000,
+  "block_range": [
+    107153260,
+    107153460
+  ],
+  "raw_logs": 62805,
+  "unique_logs": 49031,
+  "duplicate_logs": 13774,
+  "dedup_ratio": 0.7806862510946581,
+  "duplicate_logs_in_chunk": 0,
+  "duplicate_logs_cross_chunk": 13774,
+  "resumed_from_checkpoint": false,
+  "duration": "31m36.616s",
+  "sqd_metrics": {
+    "sqd_request_total": 2006,
+    "sqd_success_total": 2000,
+    "sqd_failed_total": 6,
+    "sqd_retry_count": 0,
+    "sqd_503_total": 6,
+    "sqd_429_total": 0,
+    "sqd_timeout_total": 0,
+    "sqd_dns_error_total": 0,
+    "sqd_network_error_total": 0,
+    "sqd_latency_ms": 713.365,
+    "sqd_tx_total": 0,
+    "sqd_byte_total": 0,
+    "sqd_uptime_seconds": 1896.6712011
+  },
+  "sqd_workers": {
+    "current_workers": 8,
+    "tier": "NORMAL",
+    "consecutive_503": 0,
+    "consecutive_successes": 171,
+    "last_scale_at": "2026-07-31T20:02:00.6624184+08:00",
+    "scale_count": 12
+  },
+  "sqd_circuit_breaker": {
+    "state": "NORMAL",
+    "failures": 0,
+    "successes": 0,
+    "last_failure_at": "2026-07-31T20:00:56.2003603+08:00",
+    "last_success_at": "2026-07-31T20:04:12.7282308+08:00",
+    "opened_at": "0001-01-01T00:00:00Z"
+  },
+  "parquet_path": "E:\\codex\\etl\\stress-data\\bsc_real\\sqd-200k-warehouse\\logs.parquet",
+  "parquet_rows": 49031,
+  "duckdb_verified": true,
+  "passed": true
+}

@@ -14,10 +14,15 @@ import (
 type SQDCheckpointStatus string
 
 const (
-	SQDCheckpointPending    SQDCheckpointStatus = "pending"
-	SQDCheckpointInProgress SQDCheckpointStatus = "in_progress"
-	SQDCheckpointCompleted  SQDCheckpointStatus = "completed"
-	SQDCheckpointFailed     SQDCheckpointStatus = "failed"
+	SQDCheckpointPending      SQDCheckpointStatus = "pending"
+	SQDCheckpointDownloading  SQDCheckpointStatus = "downloading"
+	SQDCheckpointSuccess      SQDCheckpointStatus = "success"
+	SQDCheckpointWaitingRetry SQDCheckpointStatus = "waiting_retry"
+	SQDCheckpointFailed       SQDCheckpointStatus = "failed"
+
+	// Backward-compatible aliases
+	SQDCheckpointInProgress = SQDCheckpointDownloading
+	SQDCheckpointCompleted  = SQDCheckpointSuccess
 )
 
 // SQDBlockChunk represents a segment of block range to process.
@@ -154,11 +159,38 @@ func (s *SQDCheckpointStore) AdvanceChunk(jobID string, chunk SQDBlockChunk) err
 	cp.Manifest.UpdatedAt = time.Now().UTC()
 
 	if len(cp.PendingChunks) == 0 {
-		cp.Status = SQDCheckpointCompleted
+		cp.Status = SQDCheckpointSuccess
 	} else {
-		cp.Status = SQDCheckpointInProgress
+		cp.Status = SQDCheckpointDownloading
 	}
 
+	return s.saveLocked(cp)
+}
+
+// MarkWaitingRetry marks a chunk as needing retry (temporary failure).
+// Unlike MarkFailed, this does not mark the entire job as failed.
+func (s *SQDCheckpointStore) MarkWaitingRetry(jobID string, chunk SQDBlockChunk) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cp, err := s.loadLocked(jobID)
+	if err != nil {
+		return err
+	}
+	// Move chunk back to pending (it will be retried)
+	// Ensure it's not already in pending
+	alreadyPending := false
+	for _, c := range cp.PendingChunks {
+		if c.From == chunk.From && c.To == chunk.To {
+			alreadyPending = true
+			break
+		}
+	}
+	if !alreadyPending {
+		cp.PendingChunks = append(cp.PendingChunks, chunk)
+	}
+	cp.Status = SQDCheckpointWaitingRetry
+	cp.Manifest.UpdatedAt = time.Now().UTC()
 	return s.saveLocked(cp)
 }
 

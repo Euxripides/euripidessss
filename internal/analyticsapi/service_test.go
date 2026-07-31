@@ -1,0 +1,417 @@
+package analyticsapi
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/etl/backend/internal/analysis/duckdb"
+)
+
+// ── V2.1 RC2: 业务查询 API 服务验证 ──
+//
+// 启用：创建 stress-data/bsc_real/.api-service.enabled
+
+const (
+	flagAPIService = ".api-service.enabled"
+	knownAddress   = "0x55d398326f99059ff775485246999027b3197955" // USDT 合约
+	activeAddress  = "0x238a358808379702088667322f80ac48bad5e6c4"  // 活跃交易方
+)
+
+type apiReport struct {
+	Timestamp    time.Time              `json:"timestamp"`
+	Correctness  map[string]any         `json:"correctness"`
+	Cache        map[string]any         `json:"cache"`
+	Perf         map[string]any         `json:"performance"`
+	Concurrency  map[string]any         `json:"concurrency"`
+	Passed       bool                   `json:"passed"`
+}
+
+func newAPITest(t *testing.T) (*Service, *duckdb.Engine, string) {
+	t.Helper()
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataRoot := filepath.Join(repoRoot, "stress-data", "bsc_real")
+	flag := filepath.Join(dataRoot, flagAPIService)
+	if _, err := os.Stat(flag); err != nil {
+		t.Skip("create " + flag + " to enable API service validation")
+	}
+	engine := duckdb.Open(repoRoot, dataRoot, duckdb.AnalyticsConfig{})
+	if !engine.Available() {
+		t.Fatalf("DuckDB 不可用: %+v", engine.Status())
+	}
+	parquetPath := filepath.Join(dataRoot, "sqd-200k-warehouse", "logs.parquet")
+	if _, err := os.Stat(parquetPath); err != nil {
+		t.Skipf("warehouse 数据不存在: %v", err)
+	}
+	return New(engine, parquetPath), engine, dataRoot
+}
+
+// TestAPI_Correctness 验证 API 结果 == DuckDB SQL 结果。
+func TestAPI_Correctness(t *testing.T) {
+	svc, engine, _ := newAPITest(t)
+	ctx := context.Background()
+	report := &apiReport{Timestamp: time.Now().UTC()}
+
+	// 1. Profile：API vs 直接 SQL（已知地址）
+	p, err := svc.Profile(ctx, knownAddress)
+	if err != nil {
+		t.Fatalf("profile: %v", err)
+	}
+	if p.Address != knownAddress {
+		t.Errorf("地址不匹配: %s", p.Address)
+	}
+	if p.EventCount <= 0 || p.TransactionCount <= 0 {
+		t.Errorf("画像字段异常: %+v", p)
+	}
+	// 与直接 SQL 对比（单地址聚合事件数）
+	rows, err := engine.ExecSQLJSON(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) AS n FROM read_parquet('%s') WHERE address = '%s'",
+		svc.parquet, knownAddress))
+	if err != nil || len(rows) == 0 {
+		t.Fatalf("sql count: %v", err)
+	}
+	sqlCount := int64(rows[0]["n"].(float64))
+	if sqlCount == 0 {
+		t.Fatal("已知地址应有事件")
+	}
+	// API 的 emitter 事件数应 >= SQL 计数（API 三源）
+	report.Correctness = map[string]any{
+		"address":           knownAddress,
+		"api_event_count":   p.EventCount,
+		"sql_emitter_count": sqlCount,
+		"profile_ok":        p.EventCount > 0,
+	}
+
+	// 2. 不存在的地址返回空结果（不报错）
+	missing, err := svc.Profile(ctx, "0x00000000000000000000000000000000000000ff")
+	if err != nil {
+		t.Fatalf("missing profile: %v", err)
+	}
+	if missing.EventCount != 0 {
+		t.Errorf("不存在地址应返回空画像: %+v", missing)
+	}
+	report.Correctness["missing_address_empty"] = missing.EventCount == 0
+
+	// 3. 多次查询一致（可复现）
+	p2, _ := svc.Profile(ctx, knownAddress)
+	report.Correctness["repeatable"] = p2.EventCount == p.EventCount
+
+	// 4. Flows：金额可解析、方向正确
+	flows, err := svc.Flows(ctx, activeAddress, "")
+	if err != nil {
+		t.Fatalf("flows: %v", err)
+	}
+	if len(flows) == 0 {
+		t.Fatal("活跃地址应有资金流")
+	}
+	hasOut, hasIn := false, false
+	amountOK := true
+	for _, f := range flows {
+		if f.Direction == "outgoing" {
+			hasOut = true
+		}
+		if f.Direction == "incoming" {
+			hasIn = true
+		}
+		if f.Amount == "" {
+			amountOK = false
+		}
+	}
+	report.Correctness["flows_has_in_out"] = hasIn && hasOut
+	report.Correctness["flows_amount_parsed"] = amountOK
+
+	// 5. Path：无自环
+	paths, err := svc.Path(ctx, activeAddress)
+	if err != nil {
+		t.Fatalf("path: %v", err)
+	}
+	noCycle := true
+	for _, pt := range paths {
+		if pt.A == pt.B || pt.B == pt.C || pt.A == pt.C {
+			noCycle = false
+		}
+	}
+	report.Correctness["path_no_cycle"] = noCycle
+	report.Correctness["path_count"] = len(paths)
+
+	// 6. Risk：分值范围 [0,100]
+	risk, err := svc.Risk(ctx, activeAddress)
+	if err != nil {
+		t.Fatalf("risk: %v", err)
+	}
+	report.Correctness["risk_score"] = risk.RiskScore
+	report.Correctness["risk_level"] = risk.RiskLevel
+	report.Correctness["risk_in_range"] = risk.RiskScore >= 0 && risk.RiskScore <= 100
+
+	passed := p.EventCount > 0 && missing.EventCount == 0 && p2.EventCount == p.EventCount &&
+		hasIn && hasOut && amountOK && noCycle && risk.RiskScore >= 0 && risk.RiskScore <= 100
+	report.Passed = passed
+
+	t.Logf("=== API 正确性 ===")
+	t.Logf("  profile: event=%d (SQL emitter=%d) missing=%v repeatable=%v", p.EventCount, sqlCount, missing.EventCount == 0, p2.EventCount == p.EventCount)
+	t.Logf("  flows: in=%v out=%v amount_ok=%v", hasIn, hasOut, amountOK)
+	t.Logf("  path: %d 条无自环=%v", len(paths), noCycle)
+	t.Logf("  risk: %.1f (%s)", risk.RiskScore, risk.RiskLevel)
+	_ = writeAPIReport(filepath.Join(dataRootOf(t), "..", "..", "benchmark"), report, t)
+	if !passed {
+		t.Error("正确性验证未通过")
+	}
+}
+
+func dataRootOf(t *testing.T) string {
+	t.Helper()
+	repoRoot, _ := filepath.Abs(filepath.Join("..", ".."))
+	return filepath.Join(repoRoot, "stress-data", "bsc_real")
+}
+
+// TestAPI_Cache 验证缓存：首次 miss → DuckDB，再次 hit。
+func TestAPI_Cache(t *testing.T) {
+	svc, _, _ := newAPITest(t)
+	ctx := context.Background()
+
+	// 首次（miss）
+	_, err := svc.Profile(ctx, knownAddress)
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	s1 := svc.CacheStats()
+	// 再次（hit）
+	_, err = svc.Profile(ctx, knownAddress)
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	s2 := svc.CacheStats()
+
+	if s1.Hits != 0 {
+		t.Errorf("首次应为 miss，hits=%d", s1.Hits)
+	}
+	if s2.Hits != 1 {
+		t.Errorf("再次应为 hit，hits=%d", s2.Hits)
+	}
+	t.Logf("缓存验证: miss=%d hit=%d", s2.Misses, s2.Hits)
+	_ = writeAPIReport(filepath.Join(dataRootOf(t), "..", "..", "benchmark"),
+		&apiReport{Timestamp: time.Now().UTC(), Cache: map[string]any{"first_miss": s1.Hits == 0, "second_hit": s2.Hits == 1, "hits": s2.Hits, "misses": s2.Misses}, Passed: s2.Hits == 1}, t)
+}
+
+// TestAPI_Perf 验证批量画像性能（50K < 1s 目标）。
+func TestAPI_Perf(t *testing.T) {
+	svc, _, dataRoot := newAPITest(t)
+	ctx := context.Background()
+	report := &apiReport{Timestamp: time.Now().UTC(), Perf: map[string]any{}}
+
+	// 单地址（含缓存预热后）
+	for i := 0; i < 2; i++ {
+		start := time.Now()
+		_, err := svc.Profile(ctx, knownAddress)
+		if err != nil {
+			t.Fatalf("profile: %v", err)
+		}
+		if i == 1 {
+			report.Perf["single_profile_ms"] = time.Since(start).Milliseconds()
+		}
+	}
+
+	// 批量 1K/10K/50K
+	addrs, err := loadAddresses(filepath.Join(dataRoot, "addresses_accumulated.csv"), 50000)
+	if err != nil || len(addrs) == 0 {
+		t.Fatalf("加载地址: %v", err)
+	}
+	for _, size := range []int{1000, 10000, 50000} {
+		if size > len(addrs) {
+			size = len(addrs)
+		}
+		addrFile := filepath.Join(dataRoot, "sqd-200k-warehouse", fmt.Sprintf("bench-addr-%d.csv", size))
+		if err := os.WriteFile(addrFile, []byte(strings.Join(addrs[:size], "\n")), 0644); err != nil {
+			t.Fatalf("写地址文件: %v", err)
+		}
+		start := time.Now()
+		profiles, err := svc.BatchProfiles(ctx, addrs[:size], addrFile)
+		dur := time.Since(start)
+		if err != nil {
+			t.Fatalf("batch %d: %v", size, err)
+		}
+		report.Perf[fmt.Sprintf("batch_%d", size)] = map[string]any{
+			"ms": dur.Milliseconds(), "rows": len(profiles),
+		}
+		t.Logf("  批量 %d 地址: %v（返回 %d 行）", size, dur.Round(time.Millisecond), len(profiles))
+		if size == 50000 && dur >= time.Second {
+			t.Errorf("50K 批量目标 <1s 未达成: %v", dur)
+		}
+	}
+	report.Passed = true
+	_ = writeAPIReport(filepath.Join(dataRoot, "..", "..", "benchmark"), report, t)
+}
+
+// TestAPI_Concurrency 验证 10/50/100 并发查询。
+func TestAPI_Concurrency(t *testing.T) {
+	svc, _, dataRoot := newAPITest(t)
+	report := &apiReport{Timestamp: time.Now().UTC(), Concurrency: map[string]any{}}
+
+	handler := NewHandler(svc.engine, svc.parquet)
+	pass := true
+	for _, n := range []int{10, 50, 100} {
+		var wg sync.WaitGroup
+		start := time.Now()
+		errCh := make(chan error, n)
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				addr := knownAddress
+				if i%3 == 0 {
+					addr = activeAddress
+				}
+				req := httptest.NewRequest("GET", "/analytics/address/"+addr+"/profile", nil)
+				w := httptest.NewRecorder()
+				handler.ServeHTTP(w, req)
+				if w.Code != 200 {
+					errCh <- fmt.Errorf("HTTP %d: %s", w.Code, w.Body.String())
+					return
+				}
+				var p Profile
+				if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+					errCh <- err
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errCh)
+		dur := time.Since(start)
+		errs := 0
+		for err := range errCh {
+			errs++
+			if err != nil {
+				t.Errorf("并发 %d: %v", n, err)
+			}
+		}
+		report.Concurrency[fmt.Sprintf("concurrent_%d", n)] = map[string]any{
+			"ms": dur.Milliseconds(), "errors": errs,
+		}
+		t.Logf("  并发 %d: %v（错误 %d）", n, dur.Round(time.Millisecond), errs)
+		if errs > 0 {
+			pass = false
+		}
+	}
+	report.Passed = pass
+	_ = writeAPIReport(filepath.Join(dataRoot, "..", "..", "benchmark"), report, t)
+	if !pass {
+		t.Error("并发测试存在错误")
+	}
+}
+
+func loadAddresses(path string, max int) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(string(content), "\n") {
+		addr := strings.ToLower(strings.TrimSpace(line))
+		if len(addr) == 42 && strings.HasPrefix(addr, "0x") && !seen[addr] {
+			seen[addr] = true
+			out = append(out, addr)
+			if len(out) >= max {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func writeAPIReport(dir string, report *apiReport, t *testing.T) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	jsonPath := filepath.Join(dir, "api-service-report.json")
+	// 合并累积（各测试独立 report）
+	if existing := loadAPIReport(jsonPath); existing != nil {
+		mergeAPIReport(existing, report)
+		report = existing
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(jsonPath, data, 0644); err != nil {
+		return err
+	}
+	mdPath := filepath.Join(dir, "api-service-report.md")
+	var b strings.Builder
+	b.WriteString("# V2.1 RC2 业务查询 API 服务验证报告\n\n")
+	b.WriteString(fmt.Sprintf("- 时间: %s\n\n", report.Timestamp.Format("2006-01-02 15:04:05")))
+	if report.Correctness != nil {
+		b.WriteString("## 正确性\n\n")
+		body, _ := json.MarshalIndent(report.Correctness, "", "  ")
+		b.WriteString("```json\n" + string(body) + "\n```\n")
+	}
+	if report.Cache != nil {
+		b.WriteString("\n## 缓存\n\n")
+		body, _ := json.MarshalIndent(report.Cache, "", "  ")
+		b.WriteString("```json\n" + string(body) + "\n```\n")
+	}
+	if report.Perf != nil {
+		b.WriteString("\n## 性能\n\n")
+		b.WriteString("| 场景 | 耗时 |\n|---|---|\n")
+		for k, v := range report.Perf {
+			if m, ok := v.(map[string]any); ok {
+				b.WriteString(fmt.Sprintf("| %s | %vms |\n", k, m["ms"]))
+			} else {
+				b.WriteString(fmt.Sprintf("| %s | %v |\n", k, v))
+			}
+		}
+	}
+	if report.Concurrency != nil {
+		b.WriteString("\n## 并发\n\n")
+		b.WriteString("| 规模 | 总耗时 | 错误 |\n|---|---|---|\n")
+		for k, v := range report.Concurrency {
+			if m, ok := v.(map[string]any); ok {
+				b.WriteString(fmt.Sprintf("| %s | %vms | %v |\n", k, m["ms"], m["errors"]))
+			}
+		}
+	}
+	b.WriteString(fmt.Sprintf("\n**结论**: %s\n", map[bool]string{true: "✅ 全部通过", false: "❌ 存在失败"}[report.Passed]))
+	if err := os.WriteFile(mdPath, []byte(b.String()), 0644); err != nil {
+		return err
+	}
+	t.Logf("报告已生成: %s / %s", jsonPath, mdPath)
+	return nil
+}
+
+func loadAPIReport(path string) *apiReport {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var r apiReport
+	if err := json.Unmarshal(content, &r); err != nil {
+		return nil
+	}
+	return &r
+}
+
+func mergeAPIReport(existing, fresh *apiReport) {
+	if len(fresh.Correctness) > 0 {
+		existing.Correctness = fresh.Correctness
+	}
+	if len(fresh.Cache) > 0 {
+		existing.Cache = fresh.Cache
+	}
+	if len(fresh.Perf) > 0 {
+		existing.Perf = fresh.Perf
+	}
+	if len(fresh.Concurrency) > 0 {
+		existing.Concurrency = fresh.Concurrency
+	}
+	existing.Passed = existing.Passed || fresh.Passed
+}

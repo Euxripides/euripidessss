@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-07-31T13:47:18.0915337Z",
+  "report_structure": {
+    "assets": 2,
+    "md_ms": 0,
+    "md_parts_ok": true,
+    "status": "COMPLETED",
+    "title": "USDT 资金异常流转案件"
+  },
+  "evidence_chain": {
+    "has_large": true,
+    "items": 286,
+    "timeline_classified": 111,
+    "traceable": true,
+    "transfer": 99
+  },
+  "html_report": {
+    "bytes": 62901,
+    "path": "E:\\codex\\etl\\benchmark\\snapshots\\case-full\\case-report.html"
+  },
+  "reproducible": true,
+  "performance": {
+    "batch_100_profile_ms": 0,
+    "concurrent_10_ms": 21674,
+    "single_case_2targets_ms": 5009
+  },
+  "passed": true
+}

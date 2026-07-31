@@ -136,8 +136,8 @@ func TestCircuitBreaker_Stats(t *testing.T) {
 	cb.RecordSuccess()
 
 	stats := cb.Stats()
-	if stats.State != "CLOSED" {
-		t.Errorf("expected CLOSED in stats, got %s", stats.State)
+	if stats.State != "NORMAL" {
+		t.Errorf("expected NORMAL in stats, got %s", stats.State)
 	}
 	if stats.Failures != 0 {
 		t.Errorf("expected 0 failures after success, got %d", stats.Failures)

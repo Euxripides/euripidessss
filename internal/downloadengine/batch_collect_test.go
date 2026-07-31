@@ -46,21 +46,17 @@ func TestBatchCollect500KAddresses(t *testing.T) {
 		t.Skipf("chain: %v", err)
 	}
 
-	// 已知活跃地址作为种子
-	seeds := []string{
-		"0x55d398326f99059ff775485246999027b3197955",
-		"0x10ed43c718714eb63d5aa57b78b54704e256024e",
-		"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
-		"0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
-		"0xe9e7cea3dedca5984780bafc599bd69add087d56",
-		"0x2170ed0880ac9a755fd29b2688956bd959f933f8",
-		"0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
-		"0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+	// 动态解析最新 finalized 区块窗口（避免重复扫描旧窗口）
+	// 用近期日期（7-31）解析，若失败退回固定起点
+	blockStart := uint64(107153260)
+	if resolved, err := client.ResolveDateRange(context.Background(), network, "2026-07-31", "2026-07-31"); err == nil {
+		blockStart = resolved.From
+		t.Logf("动态区块起点: %d (7-31 finalized 窗口)", blockStart)
+	} else {
+		t.Logf("日期解析失败，使用固定起点: %d (%v)", blockStart, err)
 	}
-
-	blockStart := uint64(44500000)
 	batchSize := uint64(200)
-	maxRounds := 20
+	maxRounds := 40
 
 	file, err := os.OpenFile(outPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -76,8 +72,9 @@ func TestBatchCollect500KAddresses(t *testing.T) {
 		currentEnd := currentStart + batchSize
 
 		var newAddrs int
-		err = client.StreamLogs(context.Background(), network,
-			sqd.BlockRange{From: currentStart, To: currentEnd}, seeds,
+		// nil addresses = 全量扫描该区块窗口（过滤条件为空时返回全部交易）
+		err = client.StreamTransactions(context.Background(), network,
+			sqd.BlockRange{From: currentStart, To: currentEnd}, nil,
 			func(block sqd.Block) error {
 				for _, tx := range block.Transactions {
 					for _, a := range []string{tx.From, tx.To} {
@@ -90,14 +87,6 @@ func TestBatchCollect500KAddresses(t *testing.T) {
 							fmt.Fprintln(file, a)
 							newAddrs++
 						}
-					}
-				}
-				for _, log := range block.Logs {
-					a := strings.ToLower(log.Address)
-					if len(a) == 42 && !existing[a] {
-						existing[a] = true
-						fmt.Fprintln(file, a)
-						newAddrs++
 					}
 				}
 				return nil
