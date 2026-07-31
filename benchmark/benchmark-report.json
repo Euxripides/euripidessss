@@ -1,0 +1,246 @@
+{
+  "version": "V2.1-RC2",
+  "generated": "2026-07-31T02:57:33.2117724Z",
+  "env": {
+    "os": "windows",
+    "arch": "386",
+    "gomaxprocs": 22,
+    "num_cpu": 22,
+    "total_mem_mb": 0
+  },
+  "results": [
+    {
+      "name": "parquet_write",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 86906300,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.02915999999999999,
+        "heap_mb": 0.189968,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 1000000,
+        "rows_per_sec": 11506645.663202781,
+        "mb_per_sec": 12.130628044226942,
+        "file_size_mb": 1.054228
+      },
+      "passed": true
+    },
+    {
+      "name": "duckdb_count_all",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 52738200,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.024527999999999994,
+        "heap_mb": 0.238616,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 1000000,
+        "rows_per_sec": 18961587.6158079
+      },
+      "passed": true
+    },
+    {
+      "name": "duckdb_group_by",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 64291700,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.030560000000000004,
+        "heap_mb": 0.26948,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 1000000,
+        "rows_per_sec": 15554107.295342946
+      },
+      "passed": true
+    },
+    {
+      "name": "pipeline_addresses",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 18845900,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 6.719264,
+        "heap_mb": 6.98932,
+        "num_gc": 1
+      },
+      "app_metrics": {
+        "rows_total": 100000,
+        "rows_per_sec": 5306193.9201630065
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_L1_10K_count",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 52524800,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.024992000000000125,
+        "heap_mb": 7.01552,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 10000,
+        "rows_per_sec": 190386.25563543316
+      },
+      "passed": false
+    },
+    {
+      "name": "sim_L1_10K_group_from",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 61870400,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.032568000000000374,
+        "heap_mb": 7.049264,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 10000,
+        "rows_per_sec": 161628.1776099718
+      },
+      "passed": false
+    },
+    {
+      "name": "sim_L2_100K_count",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 54989100,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.02461599999999997,
+        "heap_mb": 7.074128,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 100000,
+        "rows_per_sec": 1818542.220185455
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_L2_100K_group_from",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 86981200,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.03140000000000054,
+        "heap_mb": 7.105552,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 100000,
+        "rows_per_sec": 1149673.7225975269
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_L3_500K_count",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 54953500,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.02461599999999997,
+        "heap_mb": 7.130416,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 100000,
+        "rows_per_sec": 1819720.3089885083
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_L3_500K_group_from",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 88482100,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.03297600000000056,
+        "heap_mb": 7.16572,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 100000,
+        "rows_per_sec": 1130172.091304343
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_parquet_500k",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 74230600,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": -6.947824000000001,
+        "heap_mb": 0.217896,
+        "num_gc": 1
+      },
+      "app_metrics": {
+        "rows_total": 500000,
+        "rows_per_sec": 6735766.65148874,
+        "mb_per_sec": 7.35435251769486,
+        "file_size_mb": 0.545918
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_crash_resume",
+      "workload": "all",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 0,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.01621599999999998,
+        "heap_mb": 0.234112,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 500,
+        "chunks_total": 1000
+      },
+      "passed": false
+    }
+  ],
+  "summary": "9/12 passed — NOT STABLE"
+}
