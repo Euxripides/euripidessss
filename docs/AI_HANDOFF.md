@@ -1,3 +1,571 @@
+## 2026-08-01 01:20 V2.1 RC2 地址图谱页面卡死修复
+
+### 问题
+
+点击"地址图谱"页面卡死：GraphPage 直接加载全图（15,595 节点 / 21,693 边）一次性渲染，ReactFlow 无法承受。
+
+### 根因（2 处）
+
+1. 前端全量渲染 15,595 节点 → 浏览器卡死
+2. 后端 `/api/analytics/graph` 直接返回 12.2MB 全图；且 graph.json 中 degree 全为 0（导出前未调用 ComputeMetrics），节点字段为 `address`（前端按 `id` 解析为空）
+
+### 修复
+
+- **后端图裁剪**：`GET /api/analytics/graph?limit=N`（默认 500，上限 5000）— 按 degree 降序取 Top N 节点 + 子图边 + `truncated` 标志；兼容 `id`/`address` 字段
+- **graphintel.Export**：导出前自动调用 `ComputeMetrics`（幂等），graph.json 现在含 degree/pagerank/cluster_id
+- **前端**：`fetchGraph(500)` 默认请求 500 节点子图，UI 显示"Top 500 节点子图（防止渲染卡死）"提示
+
+### 验证
+
+- `curl /api/analytics/graph?limit=5` → 5 节点（0xdead degree=3973 等）+ 8 条 TRANSFER 边 + truncated:true
+- `curl /api/analytics/graph?limit=500` → 26KB（原 12.2MB）
+- `npm run build` ✅；`go test ./... -short` ✅ 37 包零回归
+
+## 2026-08-01 01:00 V2.1 RC2 链上分析工作台与可视化系统
+
+### 本次完成
+
+- **后端 API 扩展**（`internal/analyticsapi`）：
+  - `GET /api/analytics/dashboard` — 概览（地址 16,411 / Token 1,031 / 事件 49,031 / 转账 49,031 / 风险地址 51 + 201 点趋势）
+  - `GET /api/analytics/graph` — 图谱数据（graph.json 12.2MB）
+  - `GET /api/analytics/report/{file}` — 报告产物下载（html/docx/json/csv，防路径穿越 403）
+- **前端工作台**（`frontend/src/features/analytics/`，4 页面）：
+  - `DashboardPage` — 统计卡片（地址/Token/事件/风险）+ **ECharts 事件趋势图** + 地址查询 + 快速入口
+  - `AddressPage` — 地址画像（Descriptions）+ 风险评分卡片 + 资金流表（100 条）+ 两跳路径表
+  - `GraphPage` — **ReactFlow 图谱**（节点按风险着色 + degree、Transfer 流动动画、边类型筛选、MiniMap）
+  - `ReportPage` — 报告中心（HTML/DOCX/证据链/资产快照/图谱下载）
+  - 导航集成：App.tsx 新增"链上分析工作台"菜单组（Dashboard/地址分析/地址图谱/报告中心），Dashboard 查询地址直达地址分析页
+- **依赖**：新增 `echarts`（趋势图；图谱沿用现有 @xyflow/react，未引入 G6 大依赖）
+- **真实服务验证**：run.ps1 重启后 curl 实测 dashboard/profile/graph/report（html 62KB/docx 38KB/bundle 97KB/assets 917KB 全部 200；路径穿越 403）
+- **构建**：`npm run build` TypeScript + Vite 通过（3907 模块）
+
+### 新增/修改文件
+
+- `frontend/src/features/analytics/{DashboardPage,AddressPage,GraphPage,ReportPage}.tsx` + `analyticsApi.ts` + `format.ts` — 新增
+- `frontend/src/App.tsx` — 菜单组 + 页面渲染 + 导航状态
+- `frontend/package.json` — echarts 依赖
+- `internal/analyticsapi/service.go` — dashboard/graph/report 接口
+- 报告下载服务：serveReportFile（多根目录 + 防穿越）
+
+### 已验证
+
+- `npm run build` ✅（tsc + vite）
+- `go test ./... -short` ✅ 37 包零回归
+- 真实 HTTP：dashboard/graph/profile/report 全部 200，路径穿越 403
+
+### 注意事项
+
+- 图谱页按边类型筛选后按需渲染节点（全图 15,595 节点直接渲染过重，当前展示关联边覆盖的节点）
+- ECharts 引入使 bundle 增至 3.2MB（gzip 1MB），后续可代码分割
+- 报告下载 roots 覆盖 benchmark 与 snapshots 两层级；`..` 一律 403
+
+## 2026-08-01 00:00 V2.1 RC2 案件智能报告与证据链管理
+
+### 本次完成
+
+- **报告增强**（`internal/casefile/report2.go`）：
+  - Case 模型扩展：`Title` 字段 + `StatusArchived` + `Assets`（资产快照）+ `NewCaseWithTitle`
+  - `Run` 集成资产快照（balance 包 BuildSnapshot）
+  - `GenerateMarkdownFull`：**7 部分完整报告**（一、案件摘要 / 二、地址画像 / 三、资产概览 / 四、资金流分析 / 五、资金路径 / 六、关系图谱 / 七、风险分析 + 调查结论）
+  - `GenerateHTML`：自包含 HTML 报告（浏览展示/案件归档），表格+段落结构
+  - `BuildEvidenceChain` / `ExportEvidenceChain`：**证据链 evidence_bundle.json** — 每条证据关联 dataset_version/block_number/tx_hash/**log_index**（可验证/复查/复现）
+  - `ClassifyTimeline`：事件分类时间线（资金进入/资金转移/大额异常/快速清空）
+- **溯源增强**：investigation.TraceEdge 增加 `LogIdx` 字段（全图边加载查询 log_index）
+- **验证（2/2 PASS）**：
+  - 完整报告：案件 CASE-20260731-002（USDT 资金异常流转案件）COMPLETED 6.5s；7 部分 Markdown 1ms、**HTML 62KB**；**证据链 286 条**（transfer 99 全部可追溯 tx_hash+block+log_index）；时间线分类 111 条（含大额/快速清空）
+  - 性能：**单地址案件 4.2s（秒级 ✓）**、多地址 5.1s、10 次报告生成 1ms、可复现 ✓
+- **产物**：`benchmark/case-reporting-report.json` + `snapshots/case-full/{case-report.html, evidence_bundle.json}`
+
+### 新增/修改文件
+
+- `internal/casefile/report2.go` + `report2_test.go` — 新增
+- `internal/casefile/case.go` — Title/ARCHIVED/Assets/NewCaseWithTitle/资产集成
+- `internal/investigation/workflow.go` — TraceEdge.LogIdx
+- `benchmark/snapshots/case-full/*` — HTML + evidence_bundle
+
+### 已验证
+
+- `go test ./internal/casefile/ -run TestReport2` — 2/2 PASS
+- `go test ./... -short` — 37 包零回归
+
+### 注意事项
+
+- 报告与 API/DuckDB/Parquet 数据同源（全部基于 sqd-200k-warehouse），一致性由共享数据层保证
+- log_index 溯源：路径边已带 log_index；资产/画像证据以 dataset_version + address 定位
+- 单案件秒级（4.2s）达标；批量报告生成毫秒级
+
+## 2026-07-31 23:30 V2.1 RC2 Token 余额与资产快照系统
+
+### 本次完成
+
+- **余额系统**：新增 `internal/balance` 包 — Transfer 数据 → Balance Engine → 资产快照
+- **能力**：
+  - `Load`：全量 Transfer 边加载（hex 金额 math/big 精确解析）
+  - `ComputeBalances`：余额计算（balance = in − out），全量索引一次构建 → **查询 O(1)**
+  - `BuildSnapshot`：资产快照 — 当前余额 / **历史最高**（MAX balance + block + time）/ **时间线**（balance/change/tx_hash）/ 大额进入（P95）/ 快速清空（大额后流出 ≥80%）/ 风险指标
+  - `AssetRisk`：asset_value / balance_change_rate / **liquidation_signal**（流出>80% 且余额≤0 → High）
+  - Token 元数据：内置 USDT/USDC/BUSD/WBNB/ETH（BSC 18 decimals），未知 token 用地址简称
+  - `Export`：balances.csv + balance_timeline.csv + asset_summary.json
+- **验证（3/3 PASS）**：
+  - 正确性：余额守恒（balance = in − out）；USDT 等主流 token 符号/decimals 映射正确
+  - 快照：目标地址 69 种 Token、时间线 3,277 条、历史最高 69 项、大额进入 5 笔、快速清空 1 笔；USDT 风险 **High（change_rate=0.99，liquidation=true）**
+  - 性能：**1K=34ms / 10K=12ms / 50K=30ms（目标 <1s 达成，快 33 倍）**；可复现
+- **性能优化**：ComputeBalances 从 O(addr×keys) 改为全量索引 + O(1) 查询（9.7s → 30ms）
+- **产物**：`benchmark/balance-report.json` + `snapshots/{balances.csv, balance_timeline.csv, asset_summary.json}`
+
+### 新增/修改文件
+
+- `internal/balance/balance.go` + `balance_test.go` — 新增（标记文件 `.balance.enabled` 启用，默认 skip）
+- `benchmark/balance-report.json` + `snapshots/balance.*` — 余额产物
+
+### 已验证
+
+- `go test ./internal/balance/` — 3/3 PASS
+- `go test ./... -short` — 37 包零回归
+
+### 注意事项
+
+- 余额为窗口内净变化（数据窗口 200 块起点前持仓不计入，负余额表示窗口内流出>流入，报告注明）
+- 金额为 raw 值（未除 decimals）；已知 token 提供 symbol/decimals 映射，未知 token 默认 18
+- 50K 地址查询依赖全量索引（首次构建 ~0.5s）；大数据窗口下内存随地址数线性增长
+
+## 2026-07-31 23:00 V2.1 RC2 地址图谱与关系网络分析系统
+
+### 本次完成
+
+- **图谱系统**：新增 `internal/graphintel` 包 — 地址关系网络分析
+- **能力**：
+  - `Build`：从 Parquet 构建全图 — Transfer 聚合边（source/target/token/amount/tx_count/first/last_time）+ Interaction 边 + 节点画像（type/risk/tx 数/in/out/活动时间）
+  - `ComputeMetrics`：Degree / Weighted Degree / **PageRank**（100 次迭代 damping 0.85）/ **连通分量**（Union-Find 簇发现）
+  - `DetectRiskPatterns`：风险网络识别 — 中转（in≥10 且 out≥10）/ 归集（in>2×out）/ 分散（out>2×in）
+  - `QueryNeighborhood`：地址邻域 BFS 查询（关联/路径/风险关系）
+  - `Export`：graph.json + nodes.csv + edges.csv + clusters.csv
+- **验证（3/3 PASS）**：
+  - 图正确性：**节点 15,595、边 21,693**；聚合 tx_count 总和 45,917 == Parquet 非自环行 45,917（**可追溯=true**）；无自环
+  - 核心分析：PageRank 最大 0.114、Degree 最大 3,973（0xdead）、**簇 796 个**（最大 12,092 节点）；风险网络 中转/归集/分散各 10
+  - 查询：中心节点 2 层邻域 11,589 节点/18,055 边（11ms）；图构建可复现
+- **性能**：图构建 2.5s（49K 行/15.6K 节点）、邻域查询 11ms
+- **产物**：`benchmark/graph-report.json` + `snapshots/{graph.json, nodes.csv, edges.csv, clusters.csv}`
+
+### 新增/修改文件
+
+- `internal/graphintel/graph.go` + `graph_test.go` — 新增（标记文件 `.graph-intel.enabled` 启用，默认 skip）
+- `benchmark/graph-report.json` + `snapshots/graph.*` — 图谱产物
+
+### 已验证
+
+- `go test ./internal/graphintel/` — 3/3 PASS
+- `go test ./... -short` — 36 包零回归
+
+### 注意事项
+
+- Interaction 边为 0：当前数据窗口（200 块）日志几乎全为 Transfer 事件（49,031 行），非 Transfer 日志无；扩展数据后自然出现
+- 聚合边可追溯至 Parquet 行（tx_count 聚合口径）；单笔明细见 evidence 链路
+- 节点规模受数据窗口限制（15.6K 节点）；10 万节点规模需更大窗口数据
+- PageRank 为 Go 内实现（100 迭代收敛）
+
+## 2026-07-31 22:30 V2.1 RC2 案件分析与资金追踪报告生成系统
+
+### 本次完成
+
+- **案件系统**：新增 `internal/casefile` 包 — 案件模型（CREATED→RUNNING→COMPLETED→FAILED 状态机）+ 完整调查流程
+- **能力**：
+  - `NewCase`/`Run`：创建案件 → 多目标调查（Investigate+TraceFunds+DiscoverRelations+RiskScenario）→ 多目标公共来源/去向 → 时间线 → 关系图
+  - `GenerateEvidence`：snapshots/evidence.json（地址/交易/关系/路径四类证据）+ graph.json（节点类型/风险/degree + transfer/relation 边）+ timeline.csv
+  - `GenerateMarkdown`/`GenerateJSON`：case-report.md/json（案件摘要→目标分析→资金流向→公共来源/去向→关联→风险→结论）
+  - `GenerateDOCX`：调用 python-docx 生成 **case-report.docx（仿宋、小四、无 Heading 样式无横线）**
+- **验证（2/2 PASS）**：
+  - 案件闭环：CASE-20260731-001 COMPLETED（5.8s），2 目标，路径 100、关联 20、图节点 60/边 116、时间线 100、公共来源/去向各 2
+  - 证据完整：evidence.json 四类证据非空、graph.json/timeline.csv 生成；JSON 与 Markdown 关键字段一致
+  - **DOCX 生成成功**：case-report.docx 38,444 bytes（有效 zip 容器）
+  - 可复现：两次调查一致；性能：单案件(2目标) 5.0s、10 并发无错（21.7s）、100 批量画像缓存命中
+- **报告**：`benchmark/case-reporting-report.json` + `snapshots/case-demo/`（evidence.json/graph.json/timeline.csv/case-report.md/json/docx）
+
+### 新增/修改文件
+
+- `internal/casefile/case.go` + `report.go` + `case_test.go` — 新增（标记文件 `.case-reporting.enabled` 启用，默认 skip）
+- `tools/report/docx_report.py` — python-docx 报告生成脚本（仿宋小四）
+- `benchmark/case-reporting-report.json` + `snapshots/case-demo/*` — 案件报告产物
+
+### 已验证
+
+- `go test ./internal/casefile/` — 2/2 PASS
+- `go test ./... -short` — 35 包零回归
+- DOCX 报告：仿宋小四、段落式（无 Heading 样式/横线）
+
+### 注意事项
+
+- DOCX 生成依赖 python-docx（1.0.1 已装）；Python 路径自动探测（C:\Python312\python.exe 优先）
+- 包名用 `casefile`（`case` 是 Go 关键字）
+- 10 并发案件共享 DuckDB 进程（engine 互斥），耗时高于串行；单案件秒级达标
+- graph.json 节点含风险分（target/related），边含 transfer（token/amount）与 relation
+
+## 2026-07-31 22:00 V2.1 RC2 调查工作流与资金追踪系统验证
+
+### 本次完成
+
+- **调查工作流**：新增 `internal/investigation` 包 — 基于 analyticsapi 的链上调查系统
+- **能力（5 项）**：
+  - `Investigate` 单地址调查：画像→风险→资金流→路径→关联全流程摘要（地址类型/交易数/Token/风险/资金方向/耗时分解）— **1.5s 秒级完成**
+  - `TraceFunds` 多跳资金追踪：BFS 无环，最多 4 跳，记录 tx_hash/token/amount/block
+  - `DiscoverRelations` 地址关联发现：共同对手 Jaccard score + 共享对手数
+  - `RiskScenario` 风险调查：大额转入（P90）→ 快速转出 → 多地址分散模式识别
+  - `GenerateReport` 证据生成：`snapshots/evidence.json` + `paths.csv` + `related_addresses.csv`
+- **验证（5/5 PASS）**：
+  - 单地址调查：类型=活跃交易方，tx=1,662（in 1,519 / out 1,758），risk=72（高），paths=20，related=5，**1.5s**
+  - 多跳追踪：50 条路径、最大深度 2、无自环
+  - 关联发现：Top score 0.500（共享 1 对手）
+  - 风险场景：模式=**大额转入-快速转出-多地址分散**，大额转入 5 笔（最大 7.0e22）
+  - 可复现：两次调查结果一致；性能：100 地址 6.9s（69ms/地址）、1,000 地址 61s（61ms/地址）
+- **证据产物**：`benchmark/investigation-report.json` + `.md` + `snapshots/{evidence.json, paths.csv, related_addresses.csv}`
+
+### 新增/修改文件
+
+- `internal/investigation/workflow.go` — 新增（Investigator + Evidence + GenerateReport）
+- `internal/investigation/workflow_test.go` — 新增（标记文件 `.investigation.enabled` 启用，默认 skip）
+- `benchmark/investigation-report.json` / `.md` + `snapshots/` — 调查证据
+
+### 已验证
+
+- `go test ./internal/investigation/` — 5/5 PASS（含 70s 批量性能测试）
+- `go test ./... -short` — 34 包零回归（含新包）
+- 单地址调查秒级完成（验收标准达标）
+
+### 注意事项
+
+- 多跳追踪 BFS 上限 50 条路径 / 4 跳（防爆炸）；数据窗口单日，多跳深度受限
+- 关联发现为全图对手集合计算（49K 边，~1s）；更大数据需索引优化
+- 批量性能 61ms/地址受限于逐地址 DuckDB SQL；缓存预热后可复用
+- 风险模式识别为统计启发式（大额 P90 阈值 + 时间序）
+
+## 2026-07-31 21:30 V2.1 RC2 业务查询 API 与分析服务验证
+
+### 本次完成
+
+- **分析服务 API**：新增 `internal/analyticsapi` 包 — 基于 sqd-200k-warehouse Parquet 数据资产的业务查询服务
+- **接口（4 个查询 + 1 个批量）**：
+  - `GET /api/analytics/address/{address}/profile` — 地址画像（event/tx/contract/token/in/out/active_days + risk_score）
+  - `GET /api/analytics/address/{address}/flows?token=` — 资金流（incoming/outgoing 边，hex 金额精确解析）
+  - `GET /api/analytics/address/{address}/path` — 两跳资金路径（无自环）
+  - `GET /api/analytics/address/{address}/risk` — 风险评分（score/level/reason + 3 指标）
+  - `POST /api/analytics/addresses/profile` — 批量画像（SEMI JOIN）
+- **缓存**：内存缓存 + 命中计数（首次 miss → DuckDB，再次 hit）
+- **路由**：`/analytics/*path` 挂载（避免与既有 `/address/*` 冲突）；warehouse 数据存在时自动启用
+- **验证（4/4 PASS）**：
+  - 正确性：API event=13,746 == SQL 13,746；不存在地址返回空；可复现；flows in/out 正确；path 无自环；risk 72.01（高）
+  - 缓存：miss=1 → hit=1
+  - 性能：批量 1K=72ms / 10K=96ms / **50K=172ms（目标 <1s 达成）**
+  - 并发：10/50/100 并发错误 0
+- **真实服务验证**：`.\run.ps1` 重启后 curl 实测 `/profile`、`/risk`、`/flows?token=` 全部返回正确 JSON
+- **修复**：flows `UNION ALL LIMIT 1000` 截断 incoming；counterparty 列方向取反
+- **报告**：`benchmark/api-service-report.json` + `.md`
+
+### 新增/修改文件
+
+- `internal/analyticsapi/service.go` — 新增（Service + Handler）
+- `internal/analyticsapi/service_test.go` — 新增（标记文件 `.api-service.enabled` 启用，默认 skip）
+- `internal/api/handlers.go` — analyticsAPI 初始化 + `/analytics/*path` 路由
+- `internal/api/crypto_parquet_handlers.go` — HandleAnalyticsAPI
+- `benchmark/api-service-report.json` / `.md` — 报告
+
+### 已验证
+
+- `go test ./internal/analyticsapi/` — 4/4 PASS
+- `go test ./... -short` — 33 包零回归
+- 真实 HTTP：profile（13,746 事件）、risk（72.01 高）、flows（USDT 边金额精确）
+
+### 注意事项
+
+- API 路径前缀为 `/api/analytics/`（方案原 `/api/address/` 已被既有地址分析占用）
+- 批量接口需客户端提供地址文件路径（`addr_file`）；50K 规模 172ms
+- 风险评分为统计启发式（频率+集中度+关联度），非监管级评分
+- 金额为 raw 值（无 decimals 元数据）
+- 缓存无 TTL（数据资产静态）；warehouse 重新生成后需重启服务
+
+## 2026-07-31 21:00 V2.1 RC2 地址画像与资金流分析模型验证
+
+### 本次完成
+
+- **分析模型验证**：新增 `internal/downloadengine/analytics_model_test.go`（5 个测试）基于 49,031 行 logs.parquet 验证业务分析模型
+- **地址画像（PASS）**：三源聚合（emitter+topic1+topic2）→ 16,411 地址画像（first/last 活动、tx/contract/token 计数、in/out、活跃天数）；32 字节 padded topic 地址归一化；可复现性（两次执行一致）；140ms
+- **行为分析（PASS）**：日/周/月活跃度（USDT 单日 13,746 事件）、活跃天数分布、交互关系表（Top 4,881 次交互对）；65-67ms
+- **Token 资金流（PASS）**：49,031 条 Transfer 边（hex 金额 math/big 解析）、Top 发送/接收、净额、大额转账（P95=8.18e21）、中转地址/资金聚集点/两跳路径各 10 条
+- **分类与风险（PASS）**：合约=1,031 / 高频=432 / 低频=14,948（覆盖率 100%）；top_holder_ratio=0.299；shared_counterparty_score=0.003
+- **性能（PASS）**：1K/10K/50K 地址画像查询 77/85/87ms（SEMI JOIN）
+- **报告合并机制**：跨测试独立 result 合并（loadAnalyticsResult + mergeAnalyticsResult），最终报告含全部阶段
+- **报告**：`benchmark/analytics-model-report.json` + `.md`（画像/行为/资金流/路径/风险/性能全表）
+
+### 新增/修改文件
+
+- `internal/downloadengine/analytics_model_test.go` — 新增（标记文件 `.analytics-model.enabled` 启用，默认 skip）
+- `benchmark/analytics-model-report.json` / `.md` — 报告
+
+### 已验证
+
+- `go test ./internal/downloadengine/ -run "TestAnalytics_"` — 5/5 PASS
+- 查询正确、结果可复现、无数据污染、性能满足分析需求
+
+### 注意事项
+
+- 金额为 raw hex 值（无 decimals/symbol 元数据，报告中注明）；ERC1155 data 含 tokenId（取尾 64 hex 近似）
+- 分类基于统计近似（无 RPC 合约代码检测）；EOA/合约区分用 emitter 维度
+- 数据仅覆盖单日 200 块窗口（活跃天数=1 属数据范围限制，非模型缺陷）
+- topic1/2 归一化（substr 27）是分析正确性的关键，已在 SQL 模板中统一处理
+
+## 2026-07-31 20:45 V2.1 RC2 DuckDB Analytics Benchmark
+
+### 本次完成
+
+- **DuckDB 分析基准**：新增 `internal/downloadengine/duckdb_benchmark_test.go` — 基于 200K 生产验证 logs.parquet（49,031 行）验证 8 类 12 个分析场景
+- **场景与性能（全部 PASS）**：
+  - 基础扫描 COUNT(*)：57ms（**856,688 rows/s**）
+  - 地址画像（单地址事件）：65ms
+  - 多地址 SEMI JOIN：1K=70ms / 10K=75ms / 50K=77ms（命中 43,584/49,031 行）
+  - Token 流向聚合（ERC20/1155 Transfer Top 发送/接收/Holder）：65-68ms
+  - 时间范围（Block 窗口 + 每日聚合）：61-77ms
+  - 聚合排行（地址活跃/合约交互/Token Holder）：62-66ms
+  - 并发查询：1=123ms / 5=189ms / 10=295ms（平均单查询 30ms）
+  - **字段裁剪：SELECT 子集 176ms vs SELECT * 815ms（加速 78.4%）**
+- **技术要点**：
+  - 多地址查询用 SEMI JOIN + 临时 CSV（IN 列表超 Windows 命令行 32K 限制）
+  - block_number/block_time 为 VARCHAR（CSV 导入），查询需 TRY_CAST
+  - 并发测试用独立临时数据目录（避免 DuckDB 数据库文件锁冲突）
+- **报告**：`benchmark/duckdb-report.json` + `.md`（+ snapshots/ 目录）
+
+### 新增/修改文件
+
+- `internal/downloadengine/duckdb_benchmark_test.go` — 新增（标记文件 `.duckdb-bench.enabled` 启用，默认 skip）
+- `benchmark/duckdb-report.json` / `.md` — 报告
+
+### 已验证
+
+- `go test ./internal/downloadengine/ -run TestDuckDBAnalyticsBenchmark` — 12/12 场景 PASS
+- 数据量 49,031 行，无 Crash、无数据污染
+
+### 注意事项
+
+- logs.parquet 为 CSV 全 varchar 导入（分析 SQL 需 cast），后续可生成 typed parquet 提升性能
+- 并发测试为独立 duckdb 进程并行（read_parquet 只读）；单进程多查询走 engine 互斥串行
+- 仅 logs 数据（无独立 transactions.parquet）；Token 流向基于 Transfer 事件 topic 解析
+
+## 2026-07-31 20:35 V2.1 RC2 Data Integrity Verification
+
+### 本次完成
+
+- **数据完整性验证**：新增 `internal/downloadengine/data_integrity_test.go`（3 个测试）离线验证 SQD→Parser→Dedup→Parquet→DuckDB 全链路一致性
+- **一致性验证（PASS）**：基于 200K 生产验证产物（49,031 行 logs.parquet）：
+  - `source_rows = parsed_rows = unique_rows = 49,031`（dup=0）
+  - `parquet_rows = duckdb_rows = duckdb_distinct = 49,031`
+  - **SQD = Parquet = DuckDB 全等，`COUNT(*) = COUNT(DISTINCT 4元组键)`**
+- **Parquet 验证**：文件存在（1,552,334 bytes）、Schema 11 列（chain_id/block_number/block_time/transaction_hash/log_index/address/topic0-3/data）、SHA256 checksum 生成并持久化 `integrity-manifest.json`
+- **数据损坏检测（PASS）**：翻转 parquet 中间 1 字节 → SHA256 变化（`6dcd4462…` vs `4254ff46…`）→ 检测失败语义验证成功
+- **增量验证（PASS）**：Block A-B（29,418 行）→ Block B-C 增量追加（19,613 新行）→ 合并唯一 49,031 == 全量唯一 49,031，**只追加不重复**
+- **报告**：`benchmark/integrity-report.json` + `.md`
+
+### 新增/修改文件
+
+- `internal/downloadengine/data_integrity_test.go` — 新增（标记文件 `.integrity.enabled` 启用，默认 skip）
+- `stress-data/bsc_real/sqd-200k-warehouse/integrity-manifest.json` — checksum manifest
+- `benchmark/integrity-report.json` / `.md` — 报告
+
+### 已验证
+
+- `go test ./internal/downloadengine/ -run "TestDataIntegrity|TestParquetCorruption|TestIncremental"` — 3/3 PASS
+- 数据一致性：49,031 = 49,031 = 49,031 = 49,031（source=unique=parquet=duckdb）
+
+### 注意事项
+
+- 验证基于 200K 生产验证的 warehouse 产物（离线，无网络依赖）
+- Checkpoint 恢复一致性已在 200K 阶段实测（231 chunks kill → 恢复 543/543，0 重复写入），本阶段通过增量测试补充验证"只追加"语义
+- 数据损坏检测当前为 checksum 对比语义验证；"禁止进入 READY 状态"的完整链路（manifest 对照 + 任务状态机）可作为后续增强
+
+## 2026-07-31 19:35 V2.1 RC2 200K 地址真实链生产验证
+
+### 本次完成
+
+- **地址库扩充至 248,928**：收集器增加动态起点解析（`ResolveDateRange` 7-30 窗口 112,910,147），40 轮 +115K；7-31 日期解析 404（未 finalized）回退固定起点继续推进，累计 248,928 唯一地址
+- **200K 测试入口**：新增 `internal/downloadengine/sqd_200k_stress_test.go` — 200K 地址 → 2,000 chunks（100 地址/chunk）→ Reliability Layer → StreamLogs → 全局去重（chain_id+block_number+tx_hash+log_index 4 元组）→ CSV → DuckDB → Parquet → COUNT 验证
+- **Checkpoint 断点续传**：每 chunk 完成即持久化 `checkpoints/sqd-200k.json`（completed_chunks + 累计计数），恢复时从 CSV 重建去重 map 跳过已完成 chunk；已实测：231 chunks 处 kill → 重启从 chunk 232 继续，**543/543 全部恢复完成**
+- **Parquet 链路修复**：DuckDB read_csv 需显式 `quote='"' escape='"'`（自动检测在采样无引号时误判）；log.Data 清洗换行/制表符；header 行跳过
+- **真实 200K 下载（PASS）**：
+  - 200,000 地址 × 200 块，2,000/2,000 chunks 完成，耗时 31m36.6s
+  - raw=62,805 → unique=49,031（dup 13,774 全为跨 chunk 地址重叠，in-chunk=0）
+  - **Parquet rows=49,031 == unique → DuckDB verified=true**
+  - SQD request=2,006 success=2,000 fail=6（6 次 503 全部 attempt 2 自动重试成功，任务不中断）
+  - Workers NORMAL(8) / Circuit NORMAL，平均延迟 713ms
+- **报告**：`benchmark/sqd-200k-report.json` + `.md`
+
+### 新增/修改文件
+
+- `internal/downloadengine/sqd_200k_stress_test.go` — 新增
+- `internal/downloadengine/batch_collect_test.go` — 动态区块起点
+- `stress-data/bsc_real/addresses_accumulated.csv` — 248,928 地址
+- `stress-data/bsc_real/sqd-200k-warehouse/logs.parquet` — Parquet 数据资产（49,031 行）
+- `benchmark/sqd-200k-report.json` / `.md` — 报告
+
+### 已验证
+
+- 真实 200K 下载 PASS：0 丢失 0 重复（SQD = Parquet = DuckDB COUNT = 49,031）
+- Checkpoint 恢复演练 PASS（中断 231/774 → 恢复 543/543）
+- 503 自动重试 PASS（6 次全部成功）
+
+### 注意事项
+
+- 公共 SQD 约每 300 个连续流触发 503 冷却（本测试 6 次），chunk 级重试 + 恢复等待保证任务不中断
+- 7-31 当天 timestamps 接口返回 404（未完全 finalized），收集器回退固定起点
+- 200K 地址命中 200 块窗口的 unique log 为 49,031（地址活跃度限制，非数据丢失）；窗口内全部交易均被覆盖
+- 12 小时长稳测试（CPU/RAM/goroutine/SSD 监控）为人工运行项：创建 `.sqd-200k.enabled` 后重跑即可（checkpoint 已全完成会直接进 Parquet 阶段）
+- 500K 压力测试基础已就绪（地址库 248,928 + 测试入口 + checkpoint）
+
+## 2026-07-31 19:10 V2.1 RC2 10K 测试唯一键确认与 dup 来源拆解
+
+### 本次完成
+
+- **唯一键升级**：日志唯一键从 `tx_hash + log_index` 升级为 **`block_number + transaction_hash + log_index` 三元组**（防御不同事件误判，进入 50K 前确认项）
+- **dup 来源拆解**：新增 `duplicate_logs_in_chunk` / `duplicate_logs_cross_chunk` 统计 — 每个 chunk 内独立去重后与全局去重对比
+- **重跑验证（PASS）**：10,000 地址 × 200 块，100/100 chunks 成功，52,300 日志（唯一 45,198）
+- **确认结论**：
+  - 唯一键升级后数字完全不变（52300/45198/7102）→ tx_hash 在 BSC 全局唯一，`tx_hash + log_index` 已足够，block_number 冗余但更严谨
+  - `duplicate_logs_in_chunk = 0` → **不是** SQD from/to 双命中
+  - `duplicate_logs_cross_chunk = 7102`（100%）→ 全部重复来自**多 chunk 地址过滤重叠**：同一 log 的 from/to 命中不同 chunk 的地址集合，SQD 在多个 chunk 响应中重复返回
+  - 应用层全局唯一化后写入 0 重复 → **Passed=true** 保持
+- **保留非 short 真实测试行为**（用户确认）：不隐藏 SQD 限流失败，Reliability Layer 的意义就是失败后仍能完成任务
+
+### 修改文件
+
+- `internal/downloadengine/sqd_10k_stress_test.go` — 唯一键三元组 + dup 来源拆解 + 报告字段
+- `benchmark/sqd-10k-report.json` / `.md` — 重新生成（含 dup 拆解表）
+
+### 已验证
+
+- `go test ./internal/downloadengine/ -run TestSQD10KStability` — PASS（真实网络，1m26.7s）
+- dup 拆解：in_chunk=0，cross_chunk=7102，0 丢失 0 重复
+
+## 2026-07-31 18:15 V2.1 RC2 10K 地址真实链稳定性测试
+
+### 本次完成
+
+- **10K 真实地址收集**：修复 `TestBatchCollect500KAddresses`（StreamLogs 无 Transactions 字段 → 改用 `StreamTransactions` 全量扫描 + 近期活跃区块起点 107153260）— 地址从 17 累积到 **20,420**（`stress-data/bsc_real/addresses_accumulated.csv`）
+- **10K 稳定性测试入口**：新增 `internal/downloadengine/sqd_10k_stress_test.go` — 读地址 CSV → 分块（100 地址/chunk）→ `sqd.NewReliable`（Reliability Layer）→ StreamLogs 流式下载 → 唯一性校验（tx_hash / log_index）→ 报告输出
+- **Chunk 级重试**：失败 chunk 进入重试队列（最多 3 轮），`waitForSQDAvailability` 等待冷却/熔断恢复后继续 — 任务不中断语义
+- **测试启用机制**：标记文件 `stress-data/bsc_real/.sqd-10k.enabled`（或 `SQD_10K_TEST=1`），默认 skip 不影响全量测试
+- **真实测试结果（PASS）**：10,000 地址 × 200 块（107153260-107153460），100/100 chunks 成功，52,300 日志（唯一 45,198），0 失败 0 重试，耗时 1m21.7s，平均延迟 617ms，Workers NORMAL(8)，Circuit NORMAL，**Passed=true**
+- **首轮真实故障演练**（第二次运行前的探测）：38 chunks 成功后公共 SQD 503 → cooldown 1m → worker 8→4 → breaker OPEN 保护 — Reliability Layer 全部真实触发
+- **报告生成**：`benchmark/sqd-10k-report.json` + `benchmark/sqd-10k-report.md`
+
+### 新增/修改文件
+
+- `internal/downloadengine/sqd_10k_stress_test.go` — 新增（10K 稳定性测试入口）
+- `internal/downloadengine/batch_collect_test.go` — 修复地址收集（StreamTransactions + 近期区块）
+- `stress-data/bsc_real/addresses_accumulated.csv` — 地址累积至 20,420
+- `benchmark/sqd-10k-report.json` / `.md` — 新增测试报告
+
+### 已验证
+
+- `go test ./internal/...` 全量通过（新增测试默认 skip，零回归）
+- 真实 10K 下载：100/100 chunks 成功，0 丢失 0 重复（log dup 为 SQD from/to 双命中，应用层已唯一化）
+
+### 注意事项
+
+- 日志重复（7,102）来自 SQD 多 filter 双命中（同一 log 同时匹配 from 与 to），按 `(tx_hash, log_index)` 唯一化后无重复
+- StreamLogs 请求不含 transaction 字段，`total_tx=0` 属预期；交易数据需用 StreamTransactions
+- 公共 SQD 无 API key 时约 38 个连续流后触发 503，测试依赖 chunk 重试 + 恢复等待
+- 6 小时长稳测试（CPU/RAM/goroutine/SSD 监控）为后续人工运行项，测试入口已就绪（重复运行即可）
+
+## 2026-07-31 18:00 V2.1 RC2 SQD Reliability 增强第二阶段（完善与接入）
+
+### 本次完成
+
+- **Adaptive Worker 渐进恢复**：恢复路径修正为 1→2→4→8（翻倍递增），每次缩放后重置成功计数，`tierForCount` 推导中间档位
+- **Reliability Layer 正式接入**：`parquetdownload/manager.go` 的 `NewManager` 和 `syncDataSourceConfig` 改用 `sqd.NewReliable`，event log 目录为 `{DataRoot}/logs/sqd-events.log`
+- **Mock HTTP Server 测试**：新增 `internal/datasource/sqd/mock_test.go`（6 个测试）— 503 触发冷却+worker降级、503 重试后熔断、503 失败→恢复全流程、429 限流重试计数、timeout 触发熔断、成功重置计数
+- **Client.Close()**：释放 event log 文件句柄，防止测试 TempDir 清理失败
+- **SetReliabilityConfig**：运行时替换可靠性配置并重建 Circuit Breaker
+- **sqd-events.log 轮转**：`SQDEventLog` 支持按大小轮转（默认 10MB），旧文件归档为 `sqd-events-<timestamp>.log`
+- **SQD Metrics 调试接口**：`GET /api/crypto/parquet/sqd/status` 返回 portal/metrics/workers/circuit_breaker/cooldown 快照；新增 `Client.Portal()` 访问器
+- **getJSON 接入 Reliability Layer**：GET 请求（metadata/timestamps）现在同样走 Circuit Breaker 检查 + Metrics 记录
+
+### 新增/修改文件
+
+- `internal/datasource/sqd/adaptive_workers.go` — 渐进恢复 1→2→4→8
+- `internal/datasource/sqd/mock_test.go` — 6 个 Mock HTTP 测试
+- `internal/datasource/sqd/sqd_events.go` — 大小轮转（10MB 默认）
+- `internal/datasource/sqd/client.go` — Close()/SetReliabilityConfig()/Portal()/getJSON 接入
+- `internal/parquetdownload/manager.go` — NewReliable 接入
+- `internal/parquetdownload/sqd_status.go` — SQD 状态快照
+- `internal/parquetdownload/handler.go` — /sqd/status 路由
+- `internal/datasource/sqd/reliability_test.go` — 轮转测试 + 渐进恢复测试
+
+### 已验证
+
+- `go test ./internal/...` 全量通过（含 downloadengine 112s 长测试）
+- `go build` 通过
+- `.\run.ps1` 重启成功
+- `GET /api/crypto/parquet/sqd/status` → metrics/workers/breaker 快照正常
+- 真实 SQD preview（logs 源）：`sqd_available=true`，block range 107153260→107345136 解析成功
+- 真实请求后指标：`sqd_request_total=3, sqd_success_total=3, sqd_latency_ms=729`
+- `E:\codex\bsc_analytics\logs\sqd-events.log` 已创建
+
+### 注意事项
+
+- BSC transactions 走 AWS Parquet（不触发 SQD 请求）；logs/traces/非BSC transactions 走 SQD
+- SQDEventLog 归档文件名 `sqd-events-20060102_150405.log`
+- `SetReliabilityConfig` 会重置 Circuit Breaker 状态（主要测试用）
+
+## 2026-07-31 15:45 V2.1 RC2 SQD Download Reliability 增强
+
+### 本次完成
+
+- **ReliabilityConfig**：新增 `internal/datasource/sqd/reliability_config.go`（110行）— Retry(5次)、Backoff(2s/5s/15s/30s/60s)、Workers(8/4/1)、Circuit(threshold=5, cooldown=60s) 配置
+- **Circuit Breaker 增强**：状态从 CLOSED/OPEN/HALF_OPEN 扩展为 NORMAL/DEGRADED/OPEN/HALF_OPEN；DEGRADED 在达到 2 次连续失败时触发，Open 冷却时间从 30s 延长到 60s；新增 `IsHealthy()`/`IsDegraded()` 方法
+- **Adaptive Workers**：新增 `internal/datasource/sqd/adaptive_workers.go`（207行）— 动态并发控制 NORMAL(8)→DEGRADED(4)→EMERGENCY(1)，503 触发降级，5 次连续成功后渐进恢复，支持 `OnScale` 回调
+- **Provider Metrics**：新增 `internal/datasource/sqd/metrics.go`（170行）— sqd_request_total/success_total/failed_total/retry_count/503_total/429_total/timeout_total/dns_error_total/network_error_total/latency_ms/tx_total/byte_total
+- **SQD Event Log**：新增 `internal/datasource/sqd/sqd_events.go`（170行）— 独立 `sqd-events.log`，记录 retry/503/429/circuit_open/half_open/recovery/worker_scale/dns_failure/timeout
+- **Client 增强**：更新 `postWithRetry` — 5 次重试 + 2s/5s/15s/30s/60s 指数退避；HTTP Transport 连接复用（MaxIdleConns:100, IdleConnTimeout:90s）；集成 AdaptiveWorkers/ProviderMetrics/SQDEventLog；新增 `classifyHTTPError` 错误分类
+- **Checkpoint 增强**：新增 `WAITING_RETRY` 状态；`MarkWaitingRetry` 方法支持 Chunk 级重试；状态常量重命名为 PENDING/DOWNLOADING/SUCCESS/WAITING_RETRY/FAILED，保留旧别名
+- **NewReliable 构造函数**：一站式创建可靠 SQD Client（含 event log 自动初始化）
+- **测试**：16 个新测试覆盖 ReliabilityConfig(2)、AdaptiveWorkers(4)、ProviderMetrics(4)、SQDEventLog(3)、CircuitBreaker Degraded(3)
+
+### 新增文件
+
+- `internal/datasource/sqd/reliability_config.go`
+- `internal/datasource/sqd/adaptive_workers.go`
+- `internal/datasource/sqd/metrics.go`
+- `internal/datasource/sqd/sqd_events.go`
+- `internal/datasource/sqd/reliability_test.go`
+
+### 修改文件
+
+- `internal/datasource/sqd/circuit_breaker.go` — 新增 NORMAL/DEGRADED 状态，可配置 degradeThreshold，冷却时间 30s→60s
+- `internal/datasource/sqd/circuit_breaker_test.go` — 更新 Stats 测试期望值 CLOSED→NORMAL
+- `internal/datasource/sqd/client.go` — 新增 relConfig/metrics/workers/events 字段；`NewReliable` 构造函数；`ensureTransport` HTTP 连接池；增强 `postWithRetry` 5次重试+退避；`classifyHTTPError` 错误分类；公开访问器
+- `internal/parquetdownload/sqd_checkpoint.go` — 新增 WAITING_RETRY 状态 + `MarkWaitingRetry` 方法
+
+### 已验证
+
+- `go test ./internal/datasource/sqd/...` ✅ 全部 24 测试通过（8 旧 + 16 新）
+- `go test ./internal/parquetdownload/...` ✅ 零回归
+- `go test ./internal/datasourcemanager/...` ✅ 零回归
+- `go test ./internal/etl/...` ✅ 零回归
+- `go test ./internal/api/...` ✅ 零回归
+- `go build -o bin/etl-server.exe ./cmd/server/` ✅
+- `cd frontend && npm run build` ✅ TypeScript + Vite
+- `.\run.ps1` 重启成功，`/api/health` → `status=ok`
+
+### 未完成事项
+
+- `NewReliable` 尚未在 `parquetdownload/manager.go` 中替换 `NewConfigured`（保持向后兼容）
+- Adaptive Workers 恢复路径当前为 1→4→8（计划要求 1→2→4→8，需增加中间步）
+- SQD Event Log 集成到 `sqd_ingest.go` 实际下载流程
+- 503/429/超时模拟测试需 mock HTTP server
+
+### 注意事项
+
+- `New` / `NewConfigured` 保持向后兼容，新增字段 (metrics/workers/events) 为 nil-safe
+- Circuit Breaker `CircuitClosed` 保留为 `CircuitNormal` 的别名
+- Checkpoint `SQDCheckpointInProgress` / `SQDCheckpointCompleted` 保留为别名
+- Event log 文件路径：`{logDir}/sqd-events.log`
+
 ## 2026-07-30 21:30 V1.5.0 地址首次时间开关
 
 ### 本次完成

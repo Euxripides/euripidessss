@@ -1,0 +1,208 @@
+{
+  "evidence_files": [
+    "snapshots/evidence.json",
+    "snapshots/paths.csv",
+    "snapshots/related_addresses.csv"
+  ],
+  "related_total": 20,
+  "risk_evidence": {
+    "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+    "risk": {
+      "risk_score": 72.01,
+      "risk_level": "高",
+      "risk_reason": "高频交易或高集中度关联",
+      "transaction_frequency": 1662,
+      "top_holder_ratio": 0.3,
+      "shared_counterparty_score": 0
+    },
+    "large_inflows_top5": [
+      {
+        "from": "0xd9c500dff816a1da21a48a732d3498bf09dc9aeb",
+        "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "token": "0x99991c6aabba5a096f24f250b73580f5179b9999",
+        "amount": "69966128337788886478389",
+        "tx_hash": "0xc4a4d59ab7580e63c3a2ef48b11fe77612f4534cb75a3656c96a049109654980",
+        "block": "107153306",
+        "block_time": "1782777620"
+      },
+      {
+        "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "token": "0xea37a8de1de2d9d10772eeb569e28bfa5cb17707",
+        "amount": "54442430443429800000000",
+        "tx_hash": "0xf8a0d23538f5c731c5368ad06b417dae222302370271be0b65c674372b40b26e",
+        "block": "107153309",
+        "block_time": "1782777622"
+      },
+      {
+        "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "token": "0x80563fc2dd549bf36f82d3bf3b970bb5b08dbddb",
+        "amount": "51375070016376600000000",
+        "tx_hash": "0x12919c59f13df3aa21ba4ccc0b4cb0dba9be803ce8720348cd57c77ad320a678",
+        "block": "107153268",
+        "block_time": "1782777603"
+      },
+      {
+        "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "token": "0x80563fc2dd549bf36f82d3bf3b970bb5b08dbddb",
+        "amount": "50362778175054358974287",
+        "tx_hash": "0xbdb4f183c2380c7206f2ad3deca0a88603598bef9a2b705bb95bf9ef6c8cc973",
+        "block": "107153331",
+        "block_time": "1782777631"
+      },
+      {
+        "from": "0x4c1079f1c260da4444a002aaabcecc7fdc2b2b73",
+        "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "token": "0x99991c6aabba5a096f24f250b73580f5179b9999",
+        "amount": "45803561656458758024289",
+        "tx_hash": "0xed26961d1a4c47f1e96d44b517b3ee367de68b737b064ea1566ea413200f016e",
+        "block": "107153381",
+        "block_time": "1782777654"
+      }
+    ],
+    "rapid_outflows_top5": [
+      {
+        "from": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "to": "0x78306b9a6834b5e78c53fa819ac4fb6bb4e8ff3d",
+        "token": "0x55d398326f99059ff775485246999027b3197955",
+        "amount": "1053380943564184956",
+        "tx_hash": "0x2b328e0770d8260ac1a8534904a73e3008c988987d85fc6071a57314280c5279",
+        "block": "107153260",
+        "block_time": "1782777600"
+      },
+      {
+        "from": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "to": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "token": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        "amount": "24135097569951395040",
+        "tx_hash": "0x2cb7a5c02331ccc5fc2ee5686a05c00df6de25d8ca9e958d70d284b3dd58bfa6",
+        "block": "107153260",
+        "block_time": "1782777600"
+      },
+      {
+        "from": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "to": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "token": "0x97693439ea2f0ecdeb9135881e49f354656a911c",
+        "amount": "202462766404120383754",
+        "tx_hash": "0xc9dad34d42bd3307bb7f8980014463b8c98a322344e6970150674217fc9e266e",
+        "block": "107153260",
+        "block_time": "1782777600"
+      },
+      {
+        "from": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "to": "0xbd97306a087ed0c46b783cfbfdcdc6c12c7a2866",
+        "token": "0x55d398326f99059ff775485246999027b3197955",
+        "amount": "9982888545774994589",
+        "tx_hash": "0xa4ed431aecffc4416390d7de88f58357a6da937942ebaf89607b76d36af0562e",
+        "block": "107153260",
+        "block_time": "1782777600"
+      },
+      {
+        "from": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "to": "0xbd97306a087ed0c46b783cfbfdcdc6c12c7a2866",
+        "token": "0x4829a1d1fb6ded1f81d26868ab8976648baf9893",
+        "amount": "9371000662036156094",
+        "tx_hash": "0x2619fcec1960567a57452f8748c67c5162d99d412c30506a8dddcd407e99675d",
+        "block": "107153260",
+        "block_time": "1782777600"
+      }
+    ],
+    "spread_targets_top5": [
+      {
+        "address": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "outgoing_count": 331,
+        "total_amount": "373060673196827808366592"
+      },
+      {
+        "address": "0x6b6e49b2e6320fa42f8ac35127e09549213197e2",
+        "outgoing_count": 141,
+        "total_amount": "1181845066272293519360"
+      },
+      {
+        "address": "0x6245517f5403b276eab78a42a78edc9b144e2c97",
+        "outgoing_count": 83,
+        "total_amount": "23771173043015759429632"
+      },
+      {
+        "address": "0x31d6ea082acc3d4e377528a721ac5c4b891726fb",
+        "outgoing_count": 75,
+        "total_amount": "12341495069229445021696"
+      },
+      {
+        "address": "0x9999b0cdd35d7f3b281ba02efc0d228486940515",
+        "outgoing_count": 74,
+        "total_amount": "67166857933395509379072"
+      }
+    ],
+    "pattern": "大额转入-快速转出-多地址分散"
+  },
+  "summary": {
+    "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+    "address_type": "活跃交易方",
+    "profile": {
+      "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "event_count": 3277,
+      "transaction_count": 1662,
+      "contract_count": 0,
+      "token_count": 69,
+      "total_in": 1393,
+      "total_out": 1599,
+      "active_days": 1,
+      "risk_score": 72.01
+    },
+    "risk": {
+      "risk_score": 72.01,
+      "risk_level": "高",
+      "risk_reason": "高频交易或高集中度关联",
+      "transaction_frequency": 1662,
+      "top_holder_ratio": 0.3,
+      "shared_counterparty_score": 0
+    },
+    "in_count": 1519,
+    "out_count": 1758,
+    "top_token": "0x55d398326f99059ff775485246999027b3197955",
+    "path_count": 20,
+    "related_count": 5,
+    "related_top5": [
+      {
+        "address": "0x6431c37b0fc3c8f4ac282154532226b1074332bc",
+        "shared_counterparty_score": 0.5,
+        "shared_counterparties": 1
+      },
+      {
+        "address": "0x7c103e10d48570e81cf3c0117aca85f0853bfa61",
+        "shared_counterparty_score": 0.5,
+        "shared_counterparties": 1
+      },
+      {
+        "address": "0x81965714e2a1ec25fb8bcb3de60a11fe6bca929a",
+        "shared_counterparty_score": 0.5,
+        "shared_counterparties": 2
+      },
+      {
+        "address": "0x3c4e5ab74afd916bd11a63a5fbd45986aa25ead9",
+        "shared_counterparty_score": 0.5,
+        "shared_counterparties": 1
+      },
+      {
+        "address": "0x810fa742697cb2ca94b9772518737acae87e6759",
+        "shared_counterparty_score": 0.5,
+        "shared_counterparties": 1
+      }
+    ],
+    "query_duration_ms": {
+      "flows_ms": "105",
+      "path_ms": "372",
+      "profile_ms": "409",
+      "relations_ms": "619",
+      "risk_ms": "0"
+    }
+  },
+  "target": "0x238a358808379702088667322f80ac48bad5e6c4",
+  "timestamp": "2026-07-31T13:39:37.4334373Z",
+  "trace_paths": 50
+}

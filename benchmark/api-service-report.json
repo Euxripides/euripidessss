@@ -1,0 +1,54 @@
+{
+  "timestamp": "2026-07-31T13:29:05.4323787Z",
+  "correctness": {
+    "address": "0x55d398326f99059ff775485246999027b3197955",
+    "api_event_count": 13746,
+    "flows_amount_parsed": true,
+    "flows_has_in_out": true,
+    "missing_address_empty": true,
+    "path_count": 20,
+    "path_no_cycle": true,
+    "profile_ok": true,
+    "repeatable": true,
+    "risk_in_range": true,
+    "risk_level": "高",
+    "risk_score": 72.01,
+    "sql_emitter_count": 13746
+  },
+  "cache": {
+    "first_miss": true,
+    "hits": 1,
+    "misses": 1,
+    "second_hit": true
+  },
+  "performance": {
+    "batch_1000": {
+      "ms": 70,
+      "rows": 1000
+    },
+    "batch_10000": {
+      "ms": 95,
+      "rows": 10000
+    },
+    "batch_50000": {
+      "ms": 173,
+      "rows": 50000
+    },
+    "single_profile_ms": 0
+  },
+  "concurrency": {
+    "concurrent_10": {
+      "errors": 0,
+      "ms": 1501
+    },
+    "concurrent_100": {
+      "errors": 0,
+      "ms": 0
+    },
+    "concurrent_50": {
+      "errors": 0,
+      "ms": 0
+    }
+  },
+  "passed": true
+}

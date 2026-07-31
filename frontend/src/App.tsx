@@ -1,10 +1,16 @@
 ﻿import { FlowPanel } from "./features/flow/FlowPanel";
+import AnalyticsDashboardPage from "./features/analytics/DashboardPage";
+import AnalyticsAddressPage from "./features/analytics/AddressPage";
+import AnalyticsGraphPage from "./features/analytics/GraphPage";
+import AnalyticsReportPage from "./features/analytics/ReportPage";
 import {
   ApartmentOutlined,
   CloudDownloadOutlined,
   CloudServerOutlined,
+  DashboardOutlined,
   DatabaseOutlined,
   DownloadOutlined,
+  FileTextOutlined,
   FileZipOutlined,
   FundProjectionScreenOutlined,
   MenuOutlined,
@@ -227,10 +233,22 @@ const menuItems = [
       { key: "crypto-address", icon: <WalletOutlined />, label: "地址区分" },
     ],
   },
+  {
+    key: "analytics",
+    icon: <FundProjectionScreenOutlined />,
+    label: "链上分析工作台",
+    children: [
+      { key: "analytics-dashboard", icon: <DashboardOutlined />, label: "Dashboard" },
+      { key: "analytics-address", icon: <WalletOutlined />, label: "地址分析" },
+      { key: "analytics-graph", icon: <ApartmentOutlined />, label: "地址图谱" },
+      { key: "analytics-report", icon: <FileTextOutlined />, label: "报告中心" },
+    ],
+  },
 ];
 
 export function App() {
   const [active, setActive] = useState("clean");
+  const [activeAddressParam, setActiveAddressParam] = useState<string | undefined>(undefined);
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -521,6 +539,10 @@ export function App() {
             {active === "crypto-datasource" && <DataSourcePage onOpenRpc={() => setActive("crypto-rpc")} />}
             {active === "crypto-analytics" && <AddressAnalyticsPanel />}
             {active === "crypto-address" && <CryptoAddressPanel />}
+            {active === "analytics-dashboard" && <AnalyticsDashboardPage onNavigate={(p, a) => { if (a) setActiveAddressParam(a); setActive(p); }} />}
+            {active === "analytics-address" && <AnalyticsAddressPage initialAddress={activeAddressParam} />}
+            {active === "analytics-graph" && <AnalyticsGraphPage />}
+            {active === "analytics-report" && <AnalyticsReportPage />}
           </Content>
         </Layout>
       </Layout>

@@ -1,0 +1,574 @@
+{
+  "timestamp": "2026-07-31T12:54:43.0757366Z",
+  "data_rows": 49031,
+  "profile_rows": 10,
+  "profile_top10": [
+    {
+      "address": "0x55d398326f99059ff775485246999027b3197955",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "transaction_count": 6286,
+      "contract_count": 6286,
+      "token_count": 1,
+      "total_in": 0,
+      "total_out": 0,
+      "active_days": 1
+    },
+    {
+      "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "transaction_count": 1662,
+      "contract_count": 0,
+      "token_count": 69,
+      "total_in": 1393,
+      "total_out": 1599,
+      "active_days": 1
+    },
+    {
+      "address": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "transaction_count": 1661,
+      "contract_count": 1661,
+      "token_count": 1,
+      "total_in": 0,
+      "total_out": 0,
+      "active_days": 1
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000000",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "transaction_count": 889,
+      "contract_count": 0,
+      "token_count": 195,
+      "total_in": 638,
+      "total_out": 387,
+      "active_days": 1
+    },
+    {
+      "address": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:29+08",
+      "transaction_count": 802,
+      "contract_count": 0,
+      "token_count": 116,
+      "total_in": 776,
+      "total_out": 783,
+      "active_days": 1
+    },
+    {
+      "address": "0x22da1810b194ca018378464a58f6ac2b10c9d244",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "transaction_count": 764,
+      "contract_count": 764,
+      "token_count": 3,
+      "total_in": 417,
+      "total_out": 232,
+      "active_days": 1
+    },
+    {
+      "address": "0x000000000000000000000000000000000000dead",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "transaction_count": 703,
+      "contract_count": 0,
+      "token_count": 102,
+      "total_in": 694,
+      "total_out": 16,
+      "active_days": 1
+    },
+    {
+      "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:30+08",
+      "transaction_count": 631,
+      "contract_count": 631,
+      "token_count": 1,
+      "total_in": 0,
+      "total_out": 0,
+      "active_days": 1
+    },
+    {
+      "address": "0x10ed43c718714eb63d5aa57b78b54704e256024e",
+      "first_activity_time": "2026-06-30 08:00:00+08",
+      "last_activity_time": "2026-06-30 08:01:29+08",
+      "transaction_count": 353,
+      "contract_count": 0,
+      "token_count": 1,
+      "total_in": 128,
+      "total_out": 230,
+      "active_days": 1
+    },
+    {
+      "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+      "first_activity_time": "2026-06-30 08:00:01+08",
+      "last_activity_time": "2026-06-30 08:01:28+08",
+      "transaction_count": 349,
+      "contract_count": 0,
+      "token_count": 23,
+      "total_in": 321,
+      "total_out": 28,
+      "active_days": 1
+    }
+  ],
+  "behavior": {
+    "active_days_distribution": [
+      {
+        "active_days": 1,
+        "n": 1031
+      }
+    ],
+    "daily_query_ms": 72,
+    "daily_top": [
+      {
+        "address": "0x55d398326f99059ff775485246999027b3197955",
+        "day": "2026-06-30",
+        "n": 13746
+      },
+      {
+        "address": "0x034ac777ecee4d87cccc224dd714076866adfadb",
+        "day": "2026-06-30",
+        "n": 4884
+      },
+      {
+        "address": "0x22da1810b194ca018378464a58f6ac2b10c9d244",
+        "day": "2026-06-30",
+        "n": 4588
+      },
+      {
+        "address": "0xec86b5b8ab7a99bca3bec9a64db0c6712b89bf77",
+        "day": "2026-06-30",
+        "n": 3725
+      },
+      {
+        "address": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+        "day": "2026-06-30",
+        "n": 2362
+      }
+    ],
+    "interaction_query_ms": 74,
+    "top_interactions": [
+      {
+        "counterparty": "0x6eb6dd5d939f701906587287f24610e35913458f",
+        "emitter": "0x034ac777ecee4d87cccc224dd714076866adfadb",
+        "interaction_count": 4881
+      },
+      {
+        "counterparty": "0x000000000000000000000000000000000000dead",
+        "emitter": "0xec86b5b8ab7a99bca3bec9a64db0c6712b89bf77",
+        "interaction_count": 3725
+      },
+      {
+        "counterparty": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "emitter": "0x22da1810b194ca018378464a58f6ac2b10c9d244",
+        "interaction_count": 3643
+      },
+      {
+        "counterparty": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "emitter": "0x22da1810b194ca018378464a58f6ac2b10c9d244",
+        "interaction_count": 1898
+      },
+      {
+        "counterparty": "0x91d621598864353e5165545bdda65044fb130088",
+        "emitter": "0x8b9659ef058b58de4ac1523a5b3194c0f203b6dc",
+        "interaction_count": 1638
+      },
+      {
+        "counterparty": "0xe441550eddd651ce61c1a903ba8e0ab07747fd20",
+        "emitter": "0x8b9659ef058b58de4ac1523a5b3194c0f203b6dc",
+        "interaction_count": 1637
+      },
+      {
+        "counterparty": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "emitter": "0x55d398326f99059ff775485246999027b3197955",
+        "interaction_count": 1459
+      },
+      {
+        "counterparty": "0xc3cf7c252f65e0d8d88537df96569ae94a7f1a6e",
+        "emitter": "0x22da1810b194ca018378464a58f6ac2b10c9d244",
+        "interaction_count": 1355
+      },
+      {
+        "counterparty": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "emitter": "0x55d398326f99059ff775485246999027b3197955",
+        "interaction_count": 1297
+      },
+      {
+        "counterparty": "0xf55dff7898930a2d28cdbc39d615b1624ac86888",
+        "emitter": "0xf55dff7898930a2d28cdbc39d615b1624ac86888",
+        "interaction_count": 939
+      }
+    ]
+  },
+  "token_flow": {
+    "edge_count": 49031,
+    "edges_query_ms": 454,
+    "large_transfers_p95": [
+      {
+        "amount": "126635705779558761041477",
+        "block": "107153260",
+        "from": "0x590ba2fb4ef8b4824ee399fbab7b5fd0d45a1e34",
+        "to": "0x8f43fb180b5ea2eb0f7ac3dec51500f4e4e70bfc",
+        "token": "0x806b1f2c24f497ae94d3df060f7b7555d226b3da"
+      },
+      {
+        "amount": "969157321261981680191081",
+        "block": "107153260",
+        "from": "0x543bba08c304391c03b9e7128cd2616f8fac2185",
+        "to": "0x917c6b63db30b0651e61be433094dc9873fc44f6",
+        "token": "0x8d9348346ff45bdac4bc4dbc06cc7c183c367083"
+      },
+      {
+        "amount": "56574638378746379150131",
+        "block": "107153260",
+        "from": "0x590ba2fb4ef8b4824ee399fbab7b5fd0d45a1e34",
+        "to": "0xfe1e2b1c1891c1ffd194ade60f5d3af6b34761bb",
+        "token": "0x806b1f2c24f497ae94d3df060f7b7555d226b3da"
+      },
+      {
+        "amount": "62075208469982061212235",
+        "block": "107153260",
+        "from": "0x3afcebe6cdc13c3dac83e4be73b892f460dfd0a2",
+        "to": "0x350431abc71b7bf376c6cb3006dd3ef2bc1b76bd",
+        "token": "0x09db6885551ab1d4a9fa484d9b4b9fe899134444"
+      },
+      {
+        "amount": "61316761125698609075494",
+        "block": "107153260",
+        "from": "0x3afcebe6cdc13c3dac83e4be73b892f460dfd0a2",
+        "to": "0x2615bd3b1c8adc2e54591cc39eb69b91b7a77c87",
+        "token": "0x09db6885551ab1d4a9fa484d9b4b9fe899134444"
+      },
+      {
+        "amount": "18435140719128200000000",
+        "block": "107153261",
+        "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "to": "0x8f0bd6b22a9000e550e5dc31313d128abe40fcbd",
+        "token": "0xa4b68d48d7bc6f04420e8077e6f74bdef809dea3"
+      },
+      {
+        "amount": "11302133875476700000000",
+        "block": "107153262",
+        "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "token": "0xea37a8de1de2d9d10772eeb569e28bfa5cb17707"
+      },
+      {
+        "amount": "9426279919404808772314",
+        "block": "107153265",
+        "from": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "to": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "token": "0x99991c6aabba5a096f24f250b73580f5179b9999"
+      },
+      {
+        "amount": "51375070016376600000000",
+        "block": "107153268",
+        "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "to": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "token": "0x80563fc2dd549bf36f82d3bf3b970bb5b08dbddb"
+      },
+      {
+        "amount": "1371263099264025157427568",
+        "block": "107153268",
+        "from": "0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0",
+        "to": "0xd36b6d646ac6e23672e9eedec558164c7f2d6deb",
+        "token": "0x0d7b0141433a43281936953228c7884ce6127777"
+      }
+    ],
+    "net_flow_top": [
+      {
+        "address": "0x000000000000000000000000000000000000dead",
+        "net": 4414
+      },
+      {
+        "address": "0xe441550eddd651ce61c1a903ba8e0ab07747fd20",
+        "net": 1515
+      },
+      {
+        "address": "0x365fb81bd4a24d6303cd2f19c349de6894d8d58a",
+        "net": 493
+      },
+      {
+        "address": "0x7ff187ff136e308178363358a4abbd581e74f74d",
+        "net": 298
+      },
+      {
+        "address": "0x22da1810b194ca018378464a58f6ac2b10c9d244",
+        "net": 296
+      },
+      {
+        "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "net": 293
+      },
+      {
+        "address": "0x5c5fe13f2435f9f8722a953cb2e7cebae3256c46",
+        "net": 238
+      },
+      {
+        "address": "0xafff514f6cdff01218c0ee2b1934f6f5a9f74f3c",
+        "net": 220
+      },
+      {
+        "address": "0xccdd127594f24bf3a6ec08e5ea793203a8941540",
+        "net": 209
+      },
+      {
+        "address": "0x82ea37296171b3f06702b0a6e0671172f79910ba",
+        "net": 209
+      }
+    ],
+    "p95_amount": 8.177e+21,
+    "top_receivers": [
+      {
+        "address": "0x000000000000000000000000000000000000dead",
+        "count": 4446
+      },
+      {
+        "address": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "count": 2376
+      },
+      {
+        "address": "0xe441550eddd651ce61c1a903ba8e0ab07747fd20",
+        "count": 1576
+      },
+      {
+        "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "count": 1519
+      },
+      {
+        "address": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "count": 979
+      },
+      {
+        "address": "0x0000000000000000000000000000000000000000",
+        "count": 858
+      },
+      {
+        "address": "0x365fb81bd4a24d6303cd2f19c349de6894d8d58a",
+        "count": 793
+      },
+      {
+        "address": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "count": 776
+      },
+      {
+        "address": "0xf55dff7898930a2d28cdbc39d615b1624ac86888",
+        "count": 755
+      },
+      {
+        "address": "0x22da1810b194ca018378464a58f6ac2b10c9d244",
+        "count": 605
+      }
+    ],
+    "top_senders": [
+      {
+        "address": "0x6eb6dd5d939f701906587287f24610e35913458f",
+        "count": 4878
+      },
+      {
+        "address": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "count": 2564
+      },
+      {
+        "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "count": 1758
+      },
+      {
+        "address": "0x91d621598864353e5165545bdda65044fb130088",
+        "count": 1584
+      },
+      {
+        "address": "0xc3cf7c252f65e0d8d88537df96569ae94a7f1a6e",
+        "count": 1496
+      },
+      {
+        "address": "0xf55dff7898930a2d28cdbc39d615b1624ac86888",
+        "count": 1078
+      },
+      {
+        "address": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "count": 989
+      },
+      {
+        "address": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+        "count": 783
+      },
+      {
+        "address": "0x0000000000000000000000000000000000000000",
+        "count": 770
+      },
+      {
+        "address": "0x5d7b61e91cb59e90f7fae8d0fe2e73976161592f",
+        "count": 742
+      }
+    ]
+  },
+  "path_analysis": {
+    "concentration_points": [
+      {
+        "Addr": "0x000000000000000000000000000000000000dead",
+        "N": 4446
+      },
+      {
+        "Addr": "0xe441550eddd651ce61c1a903ba8e0ab07747fd20",
+        "N": 1576
+      },
+      {
+        "Addr": "0x365fb81bd4a24d6303cd2f19c349de6894d8d58a",
+        "N": 793
+      },
+      {
+        "Addr": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "N": 321
+      },
+      {
+        "Addr": "0x7ff187ff136e308178363358a4abbd581e74f74d",
+        "N": 298
+      },
+      {
+        "Addr": "0xf2311c668aaa8dec48d5da577d3018eb94b3132f",
+        "N": 254
+      },
+      {
+        "Addr": "0x5c5fe13f2435f9f8722a953cb2e7cebae3256c46",
+        "N": 238
+      },
+      {
+        "Addr": "0xafff514f6cdff01218c0ee2b1934f6f5a9f74f3c",
+        "N": 220
+      },
+      {
+        "Addr": "0xccdd127594f24bf3a6ec08e5ea793203a8941540",
+        "N": 209
+      },
+      {
+        "Addr": "0x82ea37296171b3f06702b0a6e0671172f79910ba",
+        "N": 209
+      }
+    ],
+    "hub_addresses": [
+      {
+        "Addr": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "N": 4940
+      },
+      {
+        "Addr": "0x6eb6dd5d939f701906587287f24610e35913458f",
+        "N": 4881
+      },
+      {
+        "Addr": "0x000000000000000000000000000000000000dead",
+        "N": 4478
+      },
+      {
+        "Addr": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "N": 3277
+      },
+      {
+        "Addr": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "N": 1968
+      },
+      {
+        "Addr": "0xc3cf7c252f65e0d8d88537df96569ae94a7f1a6e",
+        "N": 1929
+      },
+      {
+        "Addr": "0xf55dff7898930a2d28cdbc39d615b1624ac86888",
+        "N": 1833
+      },
+      {
+        "Addr": "0x91d621598864353e5165545bdda65044fb130088",
+        "N": 1646
+      },
+      {
+        "Addr": "0xe441550eddd651ce61c1a903ba8e0ab07747fd20",
+        "N": 1637
+      },
+      {
+        "Addr": "0x0000000000000000000000000000000000000000",
+        "N": 1628
+      }
+    ],
+    "two_hop_paths": [
+      {
+        "a": "0x6eb6dd5d939f701906587287f24610e35913458f",
+        "b": "0x789e83114f8e939ecba6c8cd09daaa38d09008b0",
+        "c": "0x000000000000000000000000000000000000dead"
+      },
+      {
+        "a": "0x6eb6dd5d939f701906587287f24610e35913458f",
+        "b": "0x5add27f0cb27022e5d8b62d60aea33a60d76c9ea",
+        "c": "0x000000000000000000000000000000000000dead"
+      },
+      {
+        "a": "0x6eb6dd5d939f701906587287f24610e35913458f",
+        "b": "0x6946781111e8dcfa62b0e214d2de4b0fe49850d7",
+        "c": "0x000000000000000000000000000000000000dead"
+      },
+      {
+        "a": "0x6eb6dd5d939f701906587287f24610e35913458f",
+        "b": "0x25071967b42a6bf34ca8f94010c96a1890761ef1",
+        "c": "0x000000000000000000000000000000000000dead"
+      },
+      {
+        "a": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "b": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "c": "0x9bea74a81b3b1ab1082ef2fe233abe985a3e2ef2"
+      },
+      {
+        "a": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "b": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "c": "0x8a375e2f062cf39f988dd2661f91e0bb01bbb0e8"
+      },
+      {
+        "a": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "b": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "c": "0x9bea74a81b3b1ab1082ef2fe233abe985a3e2ef2"
+      },
+      {
+        "a": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "b": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "c": "0x8a375e2f062cf39f988dd2661f91e0bb01bbb0e8"
+      },
+      {
+        "a": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "b": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "c": "0x9bea74a81b3b1ab1082ef2fe233abe985a3e2ef2"
+      },
+      {
+        "a": "0x8bc070bedab741406f4b1eb65a72bee27894b689",
+        "b": "0xdcffeb0c30263888a48485a664ec9563a54891a1",
+        "c": "0x8a375e2f062cf39f988dd2661f91e0bb01bbb0e8"
+      }
+    ]
+  },
+  "risk": {
+    "classification": {
+      "contract": 1031,
+      "high_frequency": 432,
+      "low_frequency": 14948
+    },
+    "counterparty_pairs": 10,
+    "high_freq_threshold": 10,
+    "shared_counterparty_score": 0.002531645569620253,
+    "top_holder_ratio": 0.2994636046582774,
+    "total_in_events": 49031
+  },
+  "performance": {
+    "profile_10000_addr": {
+      "query_ms": 93,
+      "rows": 34537
+    },
+    "profile_1000_addr": {
+      "query_ms": 89,
+      "rows": 28549
+    },
+    "profile_50000_addr": {
+      "query_ms": 106,
+      "rows": 43584
+    }
+  },
+  "passed": false
+}

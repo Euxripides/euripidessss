@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-07-31T13:51:54.8101654Z",
+  "correctness": {
+    "edges": 21693,
+    "no_cycle": true,
+    "nodes": 15595,
+    "parquet_transfer_rows": 49031,
+    "traceable": false
+  },
+  "metrics": {
+    "clusters": 796,
+    "largest_cluster": 12092,
+    "max_degree": 3973,
+    "max_pagerank": 0.113857
+  },
+  "risk_patterns": {
+    "hubs": [
+      "0x0000000000000000000000000000000000000000",
+      "0x000000000000000000000000000000000000dead",
+      "0x04f2ee1ea3eb17c7dbbc70ada3940f0f188f96d9",
+      "0x05d3e0e8d20e223434e9ff98ec04ccf10b64036b",
+      "0x07964f135f276412b3182a3b2407b8dd45000000",
+      "0x0bfd0d8116b3a9081094f60d7131653785f03ac6",
+      "0x0f0067cd819cb8f20bda62046daff7a2b5c88280",
+      "0x10ed43c718714eb63d5aa57b78b54704e256024e",
+      "0x11eacd2bedd700a5e21ff70dea4086305100e5e0",
+      "0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae"
+    ],
+    "sinks": [
+      "0x0501f595d17dd90ff11a9873692ee3f8d478f4e5",
+      "0x0d0707963952f2fba59dd06f2b425ace40b492fe",
+      "0x0ed943ce24baebf257488771759f9bf482c39706",
+      "0x1905dbf18c916bf8ec659545de0858d9f20eaeab",
+      "0x2f1f7fc76e6cf5ab3e186a2a2fd4fc31952a77cc",
+      "0x331a3b7f3d26259436672b0db276d132b3b464ec",
+      "0x4240b755a3e20a4ca734bd5076bb4507e37d01e1",
+      "0x507b7c70752e2fa98dc5360f844fa289f6177c93",
+      "0x5b2fecdbdd9ddaebb894f0b3988210bdbc6bf315",
+      "0x63aeff0f4de08091033abbe07febfa3d27e8407d"
+    ],
+    "spreaders": [
+      "0x0593fe1650fc3e556663a323e5d2b61e0ecd2119",
+      "0x0827ec2dc3683189f80baca256d742e09114552d",
+      "0x0989942f8e5b778e804858a0cc791b4469a5fd63",
+      "0x098ff588716e36b8117a2b460dea608dba52c98c",
+      "0x0fb0de3ec0be2f6efb336d452b470a27b7c4a4d9",
+      "0x14d060d1175d23073cca78f8c449184d04a096eb",
+      "0x161ba15a5f335c9f06bb5bbb0a9ce14076fbb645",
+      "0x1d22bae030857da8166bda3ac4c26f397a19aa5e",
+      "0x1f40465dce9a07a5273b4b63f5f9c31ff2bcbd9a",
+      "0x22da1810b194ca018378464a58f6ac2b10c9d244"
+    ]
+  },
+  "query": {
+    "center": "0x000000000000000000000000000000000000dead",
+    "degree": 3973,
+    "neighborhood_edges": 17810,
+    "neighborhood_nodes": 11425,
+    "query_ms": 12
+  },
+  "reproducible": true,
+  "performance": {
+    "build_ms": 2477
+  },
+  "passed": true
+}

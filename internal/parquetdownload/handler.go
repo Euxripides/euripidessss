@@ -60,6 +60,7 @@ func (h *Handler) register() {
 	h.mux.HandleFunc("/file", h.downloadFile)
 	h.mux.HandleFunc("/address/", h.address)
 	h.mux.HandleFunc("/crypto/addresses/", h.firstSeen)
+	h.mux.HandleFunc("/sqd/status", h.sqdStatus)
 }
 
 func (h *Handler) settings(writer http.ResponseWriter, request *http.Request) {

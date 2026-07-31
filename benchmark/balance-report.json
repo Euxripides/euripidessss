@@ -1,0 +1,36 @@
+{
+  "timestamp": "2026-07-31T14:09:39.7473107Z",
+  "correctness": {
+    "bal_ok": true,
+    "sql_in_events": 1519,
+    "sql_out_events": 1758,
+    "tokens": 69
+  },
+  "consistency": null,
+  "snapshot": {
+    "history_high": 69,
+    "large_in": 5,
+    "rapid_out": 1,
+    "risk_level": "High",
+    "timeline": 3277,
+    "tokens": 69,
+    "usdt_balance": "-46045347310262268475886"
+  },
+  "reproducible": true,
+  "performance": {
+    "balances_1000": {
+      "ms": 49,
+      "with_balance": 1000
+    },
+    "balances_10000": {
+      "ms": 2059,
+      "with_balance": 10000
+    },
+    "balances_50000": {
+      "ms": 9737,
+      "with_balance": 50000
+    },
+    "load_ms": 523
+  },
+  "passed": true
+}

@@ -38,6 +38,13 @@ type Client struct {
 	maxCooldown    time.Duration
 
 	breaker *CircuitBreaker
+
+	// Reliability Layer (V2.1 RC2)
+	relConfig ReliabilityConfig
+	configMu  sync.Mutex // guards relConfig + breaker (SetReliabilityConfig vs postWithRetry)
+	metrics   *ProviderMetrics
+	workers   *AdaptiveWorkers
+	events    *SQDEventLog
 }
 
 type Metadata struct {
@@ -129,6 +136,7 @@ func NewConfigured(client *http.Client, portalRoot, apiKey string) *Client {
 	if client == nil {
 		client = &http.Client{Timeout: 90 * time.Second}
 	}
+	ensureTransport(client)
 	portalRoot = strings.TrimRight(strings.TrimSpace(portalRoot), "/")
 	if portalRoot == "" {
 		portalRoot = DefaultPortal
@@ -139,6 +147,68 @@ func NewConfigured(client *http.Client, portalRoot, apiKey string) *Client {
 		apiKey:      strings.TrimSpace(apiKey),
 		maxCooldown: DefaultMaxCooldown,
 		breaker:     NewCircuitBreaker(DefaultCircuitBreakerConfig()),
+		relConfig:   DefaultReliabilityConfig(),
+	}
+}
+
+// NewReliable creates a fully reliability-enabled SQD client.
+// It wires together retry, backoff, circuit breaker, adaptive workers,
+// metrics, and event logging.
+func NewReliable(client *http.Client, portalRoot, apiKey string, logDir string) (*Client, error) {
+	if client == nil {
+		client = &http.Client{Timeout: 90 * time.Second}
+	}
+	ensureTransport(client)
+	portalRoot = strings.TrimRight(strings.TrimSpace(portalRoot), "/")
+	if portalRoot == "" {
+		portalRoot = DefaultPortal
+	}
+	relConfig := DefaultReliabilityConfig()
+	var events *SQDEventLog
+	if logDir != "" {
+		var err error
+		events, err = NewSQDEventLog(logDir)
+		if err != nil {
+			return nil, fmt.Errorf("create SQD event log: %w", err)
+		}
+	}
+	metrics := NewProviderMetrics()
+	workers := NewAdaptiveWorkers(relConfig.Workers)
+	c := &Client{
+		httpClient:  client,
+		portalRoot:  portalRoot,
+		apiKey:      strings.TrimSpace(apiKey),
+		maxCooldown: DefaultMaxCooldown,
+		breaker:     NewCircuitBreaker(CircuitBreakerConfig{
+			MaxFailures:  relConfig.Circuit.Threshold,
+			OpenDuration: relConfig.Circuit.Cooldown,
+			MinSuccesses: 1,
+		}),
+		relConfig: relConfig,
+		metrics:   metrics,
+		workers:   workers,
+		events:    events,
+	}
+	// Wire adaptive workers to event log
+	if events != nil {
+		workers.OnScale(func(from, to int, reason string) {
+			events.LogWorkerScale(from, to, reason)
+		})
+	}
+	return c, nil
+}
+
+// ensureTransport ensures the HTTP client has a connection-pooling transport.
+func ensureTransport(client *http.Client) {
+	if client.Transport == nil {
+		client.Transport = &http.Transport{
+			Proxy:               http.ProxyFromEnvironment,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 20,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+			DisableCompression:  false,
+		}
 	}
 }
 
@@ -373,34 +443,86 @@ func (c *Client) stream(
 func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte) (*http.Response, error) {
 	// Check circuit breaker first
 	if err := c.breaker.Allow(); err != nil {
+		if c.metrics != nil {
+			c.metrics.RecordRequest()
+			c.metrics.RecordFailure(ErrorCircuitOpen)
+		}
 		return nil, err
 	}
 
 	// Check cooldown
 	if c.IsInCooldown() {
 		c.breaker.RecordFailure()
+		if c.metrics != nil {
+			c.metrics.RecordRequest()
+			c.metrics.RecordFailure(ErrorCooldown)
+		}
 		return nil, fmt.Errorf("%w: available at %s", ErrSQDCooldown, c.CooldownUntil().Format(time.RFC3339))
 	}
 
+	// Check adaptive worker availability
+	if c.workers != nil {
+		if c.workers.Current() <= 0 {
+			return nil, fmt.Errorf("sqd: no available workers (adaptive pool depleted)")
+		}
+	}
+
+	if c.metrics != nil {
+		c.metrics.RecordRequest()
+	}
+
+	// Get backoff intervals from config (lock-protected read)
+	c.configMu.Lock()
+	intervals := append([]time.Duration(nil), c.relConfig.Backoff.Interval...)
+	maxAttempts := c.relConfig.Retry.MaxAttempts
+	c.configMu.Unlock()
+	if len(intervals) == 0 {
+		intervals = DefaultReliabilityConfig().Backoff.Interval
+	}
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	// Total attempts = 1 (initial) + retries
+	totalAttempts := maxAttempts
+	if totalAttempts > len(intervals) {
+		totalAttempts = len(intervals)
+	}
+
 	var last error
-	for attempt := 0; attempt < 4; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
+	for attempt := 0; attempt <= totalAttempts; attempt++ {
+		req, errReq := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if errReq != nil {
 			c.breaker.RecordFailure()
-			return nil, err
+			if c.metrics != nil {
+				c.metrics.RecordFailure(classifyHTTPError(errReq))
+			}
+			return nil, errReq
 		}
 		req.Header.Set("Content-Type", "application/json")
 		c.authorize(req)
-		response, err := c.httpClient.Do(req)
-		if err == nil && (response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent) {
+
+		start := time.Now()
+		response, doErr := c.httpClient.Do(req)
+		latency := time.Since(start)
+
+		if doErr == nil && (response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent) {
 			c.resetCooldown()
 			c.breaker.RecordSuccess()
+			if c.metrics != nil {
+				c.metrics.RecordSuccess(latency)
+			}
+			if c.workers != nil {
+				c.workers.RecordSuccess()
+			}
 			return response, nil
 		}
-		if err == nil {
+
+		// Build error from response or transport error
+		var reqErr error
+		if doErr == nil {
 			message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 			response.Body.Close()
-			err = fmt.Errorf("SQD HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
+			reqErr = fmt.Errorf("SQD HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
 
 			// 503 No available workers: enter cooldown immediately
 			if response.StatusCode == http.StatusServiceUnavailable &&
@@ -408,21 +530,72 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 					strings.Contains(strings.ToLower(string(message)), "no_available_worker")) {
 				d := c.setCooldown()
 				c.breaker.RecordFailure()
+				if c.metrics != nil {
+					c.metrics.RecordFailure(Error503)
+				}
+				if c.workers != nil {
+					c.workers.Record503()
+				}
+				if c.events != nil {
+					c.events.Log503(c.workers.Current(), strings.TrimSpace(string(message)))
+				}
 				return nil, fmt.Errorf("%w: %s (cooldown %v)", ErrSQDCooldown, strings.TrimSpace(string(message)), d)
+			}
+
+			// 429 Rate Limited
+			if response.StatusCode == http.StatusTooManyRequests {
+				if c.metrics != nil {
+					c.metrics.RecordFailure(Error429)
+				}
+				if c.events != nil {
+					c.events.Log429(strings.TrimSpace(string(message)))
+				}
 			}
 
 			// Client errors (4xx except 429) are not retryable
 			if response.StatusCode != http.StatusTooManyRequests && response.StatusCode < 500 {
 				c.breaker.RecordFailure()
-				return nil, err
+				if c.metrics != nil {
+					c.metrics.RecordFailure(ErrorOther)
+				}
+				return nil, reqErr
+			}
+		} else {
+			reqErr = doErr
+			errorKind := classifyHTTPError(doErr)
+			if c.metrics != nil {
+				c.metrics.RecordFailure(errorKind)
+			}
+			if errorKind == ErrorDNS && c.events != nil {
+				c.events.LogDNSFailure(doErr)
+			}
+			if errorKind == ErrorTimeout && c.events != nil {
+				c.events.LogTimeout(latency)
 			}
 		}
-		last = err
-		// Exponential backoff for retryable errors: 1s, 2s, 4s, 8s
+
+		last = reqErr
+
+		// Don't retry if this was the last attempt
+		if attempt >= totalAttempts {
+			break
+		}
+
+		// Record retry
+		if c.metrics != nil {
+			c.metrics.RecordRetry()
+		}
+
+		// Calculate backoff
+		backoff := intervals[attempt]
+		if c.events != nil {
+			c.events.LogRetry(attempt+1, backoff, reqErr)
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(time.Duration(1<<attempt) * time.Second):
+		case <-time.After(backoff):
 		}
 	}
 	c.breaker.RecordFailure()
@@ -432,6 +605,90 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 // Breaker returns the circuit breaker for health monitoring.
 func (c *Client) Breaker() *CircuitBreaker {
 	return c.breaker
+}
+
+// Metrics returns the provider metrics tracker. May be nil if not initialized.
+func (c *Client) Metrics() *ProviderMetrics {
+	return c.metrics
+}
+
+// Workers returns the adaptive worker pool. May be nil if not initialized.
+func (c *Client) Workers() *AdaptiveWorkers {
+	return c.workers
+}
+
+// EventLog returns the SQD event logger. May be nil if not initialized.
+func (c *Client) EventLog() *SQDEventLog {
+	return c.events
+}
+
+// ReliabilityConfig returns the current reliability configuration.
+func (c *Client) ReliabilityConfig() ReliabilityConfig {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	return c.relConfig
+}
+
+// Portal returns the configured SQD portal root URL.
+func (c *Client) Portal() string {
+	return c.portalRoot
+}
+
+// SetEventLog wires an external event log into the client (useful when
+// the client is created before the log directory is known).
+func (c *Client) SetEventLog(events *SQDEventLog) {
+	c.events = events
+	if events != nil && c.workers != nil {
+		c.workers.OnScale(func(from, to int, reason string) {
+			events.LogWorkerScale(from, to, reason)
+		})
+	}
+}
+
+// SetReliabilityConfig replaces the reliability config at runtime.
+// Useful for tests and dynamic tuning. Note: rebuilding the config also
+// rebuilds the circuit breaker (state resets to NORMAL).
+func (c *Client) SetReliabilityConfig(cfg ReliabilityConfig) {
+	cfg.Validate()
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+	c.relConfig = cfg
+	c.breaker = NewCircuitBreaker(CircuitBreakerConfig{
+		MaxFailures:  cfg.Circuit.Threshold,
+		OpenDuration: cfg.Circuit.Cooldown,
+		MinSuccesses: 1,
+	})
+}
+
+// Close releases resources held by the client (e.g. the SQD event log).
+// Safe to call multiple times.
+func (c *Client) Close() {
+	if c.events != nil {
+		_ = c.events.Close()
+		c.events = nil
+	}
+}
+
+// classifyHTTPError maps a Go HTTP error to an SQDErrorKind.
+func classifyHTTPError(err error) SQDErrorKind {
+	if err == nil {
+		return ErrorNone
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	switch {
+	case strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded"):
+		return ErrorTimeout
+	case strings.Contains(lower, "no such host") || strings.Contains(lower, "dns"):
+		return ErrorDNS
+	case strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "eof"):
+		return ErrorNetwork
+	default:
+		return ErrorOther
+	}
 }
 
 func (c *Client) timestampBlock(ctx context.Context, network chain.EVM, timestamp int64) (uint64, error) {
@@ -446,19 +703,43 @@ func (c *Client) timestampBlock(ctx context.Context, network chain.EVM, timestam
 }
 
 func (c *Client) getJSON(ctx context.Context, endpoint string, target any) error {
+	// Check circuit breaker first (same protection as postWithRetry)
+	if err := c.breaker.Allow(); err != nil {
+		if c.metrics != nil {
+			c.metrics.RecordRequest()
+			c.metrics.RecordFailure(ErrorCircuitOpen)
+		}
+		return err
+	}
+	if c.metrics != nil {
+		c.metrics.RecordRequest()
+	}
+
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
 	c.authorize(request)
+	start := time.Now()
 	response, err := c.httpClient.Do(request)
+	latency := time.Since(start)
 	if err != nil {
+		if c.metrics != nil {
+			c.metrics.RecordFailure(classifyHTTPError(err))
+		}
 		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		if c.metrics != nil {
+			c.metrics.RecordFailure(ErrorOther)
+		}
 		return fmt.Errorf("SQD HTTP %d", response.StatusCode)
 	}
+	if c.metrics != nil {
+		c.metrics.RecordSuccess(latency)
+	}
+	c.breaker.RecordSuccess()
 	return json.NewDecoder(response.Body).Decode(target)
 }
 

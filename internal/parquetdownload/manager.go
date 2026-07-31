@@ -52,11 +52,22 @@ func (m *Manager) syncDataSourceConfig() {
 	}
 	sqdConfig := m.dataSources.RuntimeConfig(datasourcemanager.TypeStream)
 	if sqdConfig.Endpoint != "" {
-		m.sqd = sqd.NewConfigured(
+		// V2.1 RC2: 数据源变更时重建 Reliability Client（含 event log）
+		// 先创建新 client，成功后再关闭旧 client 的 event log 句柄，
+		// 避免句柄泄漏，且失败时保留可用旧 client
+		logDir := filepath.Join(m.settings.DataRoot, "logs")
+		reliable, err := sqd.NewReliable(
 			&http.Client{Timeout: time.Duration(sqdConfig.TimeoutMS) * time.Millisecond},
 			sqdConfig.Endpoint,
 			sqdConfig.APIKey,
+			logDir,
 		)
+		if err == nil {
+			if m.sqd != nil {
+				m.sqd.Close()
+			}
+			m.sqd = reliable
+		}
 	}
 	awsConfig := m.dataSources.RuntimeConfig(datasourcemanager.TypeDataset)
 	if awsConfig.Endpoint != "" {
@@ -106,6 +117,13 @@ func NewManager(rootDir string, engine *duckdb.Engine) (*Manager, error) {
 	if err := ensureDataDirectories(settings); err != nil {
 		return nil, err
 	}
+	// V2.1 RC2: 默认走 Reliability Layer（retry/backoff/circuit breaker/adaptive workers/metrics/event log）
+	logDir := filepath.Join(settings.DataRoot, "logs")
+	reliable, err := sqd.NewReliable(nil, sqd.DefaultPortal, "", logDir)
+	if err != nil {
+		return nil, fmt.Errorf("初始化 SQD Reliability Client: %w", err)
+	}
+	manager.sqd = reliable
 	manager.loadJobs()
 	manager.reconcileFinalManifests()
 	manager.resumePausedJobs()

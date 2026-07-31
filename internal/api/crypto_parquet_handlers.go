@@ -29,3 +29,12 @@ func HandleFirstSeen(c *gin.Context) {
 	}
 	http.StripPrefix("/api", parquetDownload).ServeHTTP(c.Writer, c.Request)
 }
+
+// HandleAnalyticsAPI 转发 /api/analytics/* 到分析服务（V2.1 RC2）。
+func HandleAnalyticsAPI(c *gin.Context) {
+	if analyticsAPI == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "分析服务不可用：warehouse 数据未就绪"})
+		return
+	}
+	http.StripPrefix("/api", analyticsAPI).ServeHTTP(c.Writer, c.Request)
+}

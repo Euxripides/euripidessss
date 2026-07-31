@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-07-31T12:42:58.0511047Z",
+  "data_file": "E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet",
+  "data_rows": 49031,
+  "scenarios": [
+    {
+      "name": "1. 基础扫描 COUNT(*)",
+      "sql": "SELECT COUNT(*) AS n FROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet')",
+      "duration": "57ms",
+      "seconds": 0.0572332,
+      "rows": 1,
+      "note": "856688 rows/s"
+    },
+    {
+      "name": "2. 地址画像（单地址事件）",
+      "sql": "SELECT block_number, transaction_hash, address, topic0, topic1, topic2\n\t\tFROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet') WHERE address = '0x55d398326f99059ff775485246999027b3197955' ORDER BY block_number DESC LIMIT 100",
+      "duration": "65ms",
+      "seconds": 0.0646552,
+      "rows": 100,
+      "note": "COUNT 查询另耗时 68ms"
+    },
+    {
+      "name": "3. 多地址 SEMI JOIN（1000 地址）",
+      "sql": "SELECT COUNT(*) AS n FROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet') t\n\t\t\tSEMI JOIN read_csv('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/bench-addr-1000.csv', header=false, columns={'addr':'VARCHAR'}) a ON t.address = a.addr",
+      "duration": "70ms",
+      "seconds": 0.0695779,
+      "rows": 28549,
+      "note": "命中 28549/49031 行"
+    },
+    {
+      "name": "3. 多地址 SEMI JOIN（10000 地址）",
+      "sql": "SELECT COUNT(*) AS n FROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet') t\n\t\t\tSEMI JOIN read_csv('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/bench-addr-10000.csv', header=false, columns={'addr':'VARCHAR'}) a ON t.address = a.addr",
+      "duration": "75ms",
+      "seconds": 0.0745705,
+      "rows": 34537,
+      "note": "命中 34537/49031 行"
+    },
+    {
+      "name": "3. 多地址 SEMI JOIN（50000 地址）",
+      "sql": "SELECT COUNT(*) AS n FROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet') t\n\t\t\tSEMI JOIN read_csv('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/bench-addr-50000.csv', header=false, columns={'addr':'VARCHAR'}) a ON t.address = a.addr",
+      "duration": "77ms",
+      "seconds": 0.0773988,
+      "rows": 43584,
+      "note": "命中 43584/49031 行"
+    },
+    {
+      "name": "4. Token 流向（Top 发送方）",
+      "sql": "SELECT topic1 AS from_addr, COUNT(*) AS n FROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet')\n\t\tWHERE topic0 IN ('0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef','0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62','0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb') GROUP BY 1 ORDER BY n DESC LIMIT 10",
+      "duration": "65ms",
+      "seconds": 0.0649856,
+      "rows": 10,
+      "note": "Top 接收方 67ms，Holder 68ms"
+    },
+    {
+      "name": "5. 时间范围（Block 窗口）",
+      "sql": "SELECT TRY_CAST(block_number AS UBIGINT) AS block_number, COUNT(*) AS n FROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet')\n\t\tWHERE TRY_CAST(block_number AS UBIGINT) BETWEEN 107153360 AND 107153560 GROUP BY 1 ORDER BY 1 LIMIT 20",
+      "duration": "61ms",
+      "seconds": 0.0607013,
+      "rows": 20,
+      "note": "每日聚合另耗时 77ms"
+    },
+    {
+      "name": "6. 聚合排行（地址活跃）",
+      "sql": "SELECT address, COUNT(*) AS n FROM read_parquet('E:/codex/etl/stress-data/bsc_real/sqd-200k-warehouse/logs.parquet') GROUP BY 1 ORDER BY n DESC LIMIT 10",
+      "duration": "62ms",
+      "seconds": 0.061692,
+      "rows": 10,
+      "note": "Holder 排行另耗时 66ms"
+    },
+    {
+      "name": "7. 并发查询（1 连接）",
+      "duration": "123ms",
+      "seconds": 0.1227106,
+      "note": "平均单查询 123ms"
+    },
+    {
+      "name": "7. 并发查询（5 连接）",
+      "duration": "189ms",
+      "seconds": 0.1887231,
+      "note": "平均单查询 38ms"
+    },
+    {
+      "name": "7. 并发查询（10 连接）",
+      "duration": "295ms",
+      "seconds": 0.2952341,
+      "note": "平均单查询 30ms"
+    },
+    {
+      "name": "8. 字段裁剪（SELECT 子集 vs SELECT *）",
+      "duration": "176ms",
+      "seconds": 0.1762975,
+      "note": "SELECT * 耗时 815ms（裁剪加速 78.4%）"
+    }
+  ],
+  "passed": true
+}
