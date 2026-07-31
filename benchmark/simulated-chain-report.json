@@ -1,0 +1,168 @@
+{
+  "version": "V2.1-RC2",
+  "generated": "2026-07-31T02:51:44.1980164Z",
+  "env": {
+    "os": "windows",
+    "arch": "386",
+    "gomaxprocs": 22,
+    "num_cpu": 22,
+    "total_mem_mb": 0
+  },
+  "results": [
+    {
+      "name": "sim_L1_10K_count",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 57522600,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.026111999999999996,
+        "heap_mb": 0.191392,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 10000,
+        "rows_per_sec": 173844.7149468209
+      },
+      "passed": false
+    },
+    {
+      "name": "sim_L1_10K_group_from",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 61130900,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.032584,
+        "heap_mb": 0.224128,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 10000,
+        "rows_per_sec": 163583.39235967406
+      },
+      "passed": false
+    },
+    {
+      "name": "sim_L2_100K_count",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 57307900,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.024616,
+        "heap_mb": 0.24928,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 100000,
+        "rows_per_sec": 1744960.1189364817
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_L2_100K_group_from",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 93615100,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.03179199999999999,
+        "heap_mb": 0.281672,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 100000,
+        "rows_per_sec": 1068203.7406358588
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_L3_500K_count",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 52366400,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.02461599999999997,
+        "heap_mb": 0.306536,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 500000,
+        "rows_per_sec": 9548107.183231996
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_L3_500K_group_from",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 198778500,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.03144800000000003,
+        "heap_mb": 0.33916,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 500000,
+        "rows_per_sec": 2515362.576938653
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_parquet_500k",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 72689600,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.025119999999999976,
+        "heap_mb": 0.36428,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 500000,
+        "rows_per_sec": 6878563.095683564,
+        "mb_per_sec": 7.51026281613876,
+        "file_size_mb": 0.545918
+      },
+      "passed": true
+    },
+    {
+      "name": "sim_crash_resume",
+      "workload": "simulated",
+      "params": {
+        "rows": 1000000
+      },
+      "duration": 0,
+      "sys_metrics": {
+        "cpu_percent": 0,
+        "memory_mb": 0.013135999999999981,
+        "heap_mb": 0.377416,
+        "num_gc": 0
+      },
+      "app_metrics": {
+        "rows_total": 500,
+        "chunks_total": 1000
+      },
+      "passed": false
+    }
+  ],
+  "summary": "5/8 passed — NOT STABLE"
+}

@@ -28,6 +28,8 @@ digraph CPG {
 		"github.com/etl/backend/internal/datasource/sqd/scheduler" [label="scheduler (12 fn)"];
 		"github.com/etl/backend/internal/datasourcemanager" [label="datasourcemanager (44 fn)"];
 		"github.com/etl/backend/internal/dbimport" [label="dbimport (110 fn)"];
+		"github.com/etl/backend/internal/downloadengine" [label="downloadengine (116 fn)"];
+		"github.com/etl/backend/internal/downloadengine/provider" [label="provider (44 fn)"];
 		"github.com/etl/backend/internal/downloader" [label="downloader (17 fn)"];
 		"github.com/etl/backend/internal/dunetools" [label="dunetools (88 fn)"];
 		"github.com/etl/backend/internal/etl" [label="etl (99 fn)"];
@@ -78,6 +80,15 @@ digraph CPG {
 	"github.com/etl/backend/internal/datasourcemanager" -> "github.com/etl/backend/internal/rpcmanager";
 	"github.com/etl/backend/internal/dbimport" -> "github.com/etl/backend/internal/model";
 	"github.com/etl/backend/internal/dbimport" -> "github.com/etl/backend/internal/parser";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/analysis/duckdb";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/chain";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/datasource";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/datasource/aws";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/datasource/sqd";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/downloadengine";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/parquetdownload";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/rpcmanager";
+	"github.com/etl/backend/internal/downloadengine/provider" -> "github.com/etl/backend/internal/writer";
 	"github.com/etl/backend/internal/downloader" -> "github.com/etl/backend/internal/writer";
 	"github.com/etl/backend/internal/etl" -> "github.com/etl/backend/internal/model";
 	"github.com/etl/backend/internal/etl" -> "github.com/etl/backend/internal/parser";

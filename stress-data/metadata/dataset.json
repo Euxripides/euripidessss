@@ -1,0 +1,37 @@
+{
+  "version": "2.1-rc2",
+  "distribution": {
+    "high_activity": 0.2,
+    "normal_eoa": 0.7,
+    "invalid": 0.03,
+    "duplicates": 0.05
+  },
+  "datasets": [
+    {
+      "size_kb": 417,
+      "name": "synthetic_10k",
+      "count": 9924,
+      "path": "synthetic/addresses_10000.csv"
+    },
+    {
+      "size_kb": 4168,
+      "name": "synthetic_100k",
+      "count": 99264,
+      "path": "synthetic/addresses_100000.csv"
+    },
+    {
+      "size_kb": 20838,
+      "name": "synthetic_500k",
+      "count": 496316,
+      "path": "synthetic/addresses_500000.csv"
+    },
+    {
+      "name": "synthetic_1m",
+      "count": 992353,
+      "path": "synthetic/addresses_1m.csv",
+      "size_mb": 40.7
+    }
+  ],
+  "bsc_real_addresses": 1,
+  "created_at": "2026-07-31T01:15:08Z"
+}
