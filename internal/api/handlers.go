@@ -18,11 +18,14 @@ import (
 
 	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/analyticsapi"
+	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/config"
 	"github.com/etl/backend/internal/cryptodownload"
 	"github.com/etl/backend/internal/datasourcemanager"
 	"github.com/etl/backend/internal/dbimport"
+	"github.com/etl/backend/internal/dynamicinvestigation"
 	"github.com/etl/backend/internal/etl"
+	"github.com/etl/backend/internal/intelligence"
 	"github.com/etl/backend/internal/model"
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/etl/backend/internal/parser"
@@ -48,6 +51,9 @@ var (
 	dataSourceManager *datasourcemanager.Manager
 	dataSourceAPI     http.Handler
 	analyticsAPI      http.Handler
+	dynamicInvestigationAPI http.Handler
+	dynamicEngine      *dynamicinvestigation.Engine
+	intelligenceAPI    http.Handler
 )
 
 const (
@@ -200,6 +206,63 @@ func Setup(c *config.Config) {
 			}
 		}
 	}
+	// V2.1 RC2: 动态地址扩展与智能采集路由引擎
+	setupDynamicInvestigation()
+	// V2.1 RC2: 全自动链上调查平台 Intelligence Layer
+	setupIntelligence()
+}
+
+// setupDynamicInvestigation 装配动态调查引擎：
+// 数据源复用 analyticsapi.Service，执行器复用 parquetdownload.Manager + SQD 客户端。
+func setupDynamicInvestigation() {
+	var source dynamicinvestigation.DiscoverySource
+	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+		source = dynamicinvestigation.NewAnalyticsSource(h.Service())
+	} else {
+		// 分析服务不可用时仍提供队列/评分 API（空源）
+		source = dynamicinvestigation.NewAnalyticsSource(nil)
+	}
+
+	var executor dynamicinvestigation.AcquisitionExecutor
+	if parquetDownload != nil {
+		manager := parquetDownload.Manager()
+		network, err := chain.Resolve("bsc")
+		if err != nil {
+			network = chain.EVM{Key: "bsc", ID: 56, Name: "BNB Smart Chain", NativeSymbol: "BNB", SQDDataset: "binance-mainnet"}
+		}
+		executor = dynamicinvestigation.NewRealExecutor(manager, network)
+	}
+
+	queueDir := filepath.Join(cfg.RootDir, "backend", "data", "dynamic_investigation")
+	queue := dynamicinvestigation.NewQueue(queueDir)
+	recognizer := dynamicinvestigation.NewRecognizer()
+	engine := dynamicinvestigation.NewEngine(queue, recognizer, source, executor, dynamicinvestigation.DefaultConfig())
+	dynamicEngine = engine
+	dynamicInvestigationAPI = dynamicinvestigation.NewHandler(engine)
+	log.Info().Str("queue", queueDir).Msg("dynamic_investigation_engine_ready")
+}
+
+// setupIntelligence 装配全自动链上调查平台（Intelligence Layer）：
+// 数据源复用 analyticsapi.Service 与 dynamicinvestigation 扩展引擎。
+func setupIntelligence() {
+	var svc *analyticsapi.Service
+	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+		svc = h.Service()
+	}
+	var expansion *intelligence.ExpansionEngine
+	if dynamicEngine != nil {
+		expansion = intelligence.NewExpansionEngine(dynamicEngine)
+	}
+	memoryDir := filepath.Join(cfg.RootDir, "backend", "data", "investigation_memory")
+	agent := intelligence.NewAgent(intelligence.AgentOptions{
+		Service:     svc,
+		Expansion:   expansion,
+		DeepSeekKey: "", // 回退环境变量 DEEPSEEK_API_KEY
+		MemoryDir:   memoryDir,
+		Config:      intelligence.DefaultConfig(),
+	})
+	intelligenceAPI = intelligence.NewHandler(agent)
+	log.Info().Str("memory", memoryDir).Msg("intelligence_engine_ready")
 }
 
 // Shutdown closes the control store
@@ -259,6 +322,8 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/crypto/datasource/*path", HandleCryptoDataSource)
 		api.Any("/crypto/addresses/:chain/:address/first-seen", HandleFirstSeen)
 		api.Any("/analytics/*path", HandleAnalyticsAPI)
+		api.Any("/dynamic-investigation/*path", HandleDynamicInvestigation)
+		api.Any("/intelligence/*path", HandleIntelligence)
 		api.GET("/address/*path", HandleAddressAnalytics)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)

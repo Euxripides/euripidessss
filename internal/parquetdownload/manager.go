@@ -194,12 +194,18 @@ func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, e
 		if _, err := m.sqd.Metadata(ctx, network); err != nil {
 			return Preview{}, fmt.Errorf("探测 SQD 数据集: %w", err)
 		}
-		resolved, err := m.sqd.ResolveDateRange(ctx, network, request.StartDate, request.EndDate)
-		if err != nil {
+		if resolved, err := m.sqd.ResolveDateRange(ctx, network, request.StartDate, request.EndDate); err != nil {
 			return Preview{}, fmt.Errorf("解析 SQD 日期区块范围: %w", err)
+		} else {
+			if request.UseFirstSeen && addresses.Valid > 0 {
+				minBlock := m.resolveMinFirstSeen(ctx, network, addresses.Addresses)
+				if minBlock > 0 && minBlock <= resolved.To {
+					resolved.From = minBlock
+				}
+			}
+			sqdRange = &SQDBlockRange{From: resolved.From, To: resolved.To}
+			sqdAvailable = true
 		}
-		sqdRange = &SQDBlockRange{From: resolved.From, To: resolved.To}
-		sqdAvailable = true
 	}
 	if hasSelectedSource(selectedSources, "transactions") && network.Key == "bsc" {
 		warnings = append(warnings, "原生交易来自 AWS 公共 Parquet；Transfer 事件与 Trace 由 SQD 独立采集，不混写为交易记录。")
@@ -275,6 +281,7 @@ func (m *Manager) Start(ctx context.Context, request StartRequest) (*Job, error)
 		Addresses:       preview.Addresses,
 		StartDate:       request.StartDate,
 		EndDate:         request.EndDate,
+		UseFirstSeen:    request.UseFirstSeen,
 		TotalBytes:      preview.TotalBytes,
 		Warnings:        preview.Warnings,
 		KeepSourceFiles: keepSource,
@@ -388,6 +395,7 @@ func (m *Manager) Retry(id string) (*Job, error) {
 		EndDate:         job.EndDate,
 		KeepSource:      &keepSource,
 		ExportCSV:       &exportCSV,
+		UseFirstSeen:    job.UseFirstSeen,
 		IncludeReceipts: job.IncludeReceipts,
 		SelectedSource:  append([]string(nil), job.SelectedSources...),
 	})

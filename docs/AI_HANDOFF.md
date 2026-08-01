@@ -1,3 +1,244 @@
+## 2026-08-01 V2.1 RC2 智能调查闭环与自主决策引擎（Investigation Loop）
+
+### 本次完成
+
+按《V2.1 RC2 智能调查闭环与自主决策引擎设计方案》补齐闭环核心模块（此前 Intelligence Layer 为单趟流程）：
+
+- **Task Queue**（`task_queue.go`，设计 §7）：7 种任务类型 `ADDRESS_PROFILE/FLOW_ANALYSIS/PATH_TRACE/ENTITY_CHECK/RISK_SCAN/EXPAND_ADDRESS/GENERATE_REPORT`，优先级顺序执行，`pending/running/done/skipped/failed` 状态流转，同轮同类型同目标幂等去重
+- **Observation Engine**（`observation.go`，§8）：发现新地址 / 新路径 / 新交易 / 风险事件，按调查记忆（已分析路径 / 已发现地址）+ 引擎内签名去重；扩展候选仅作展示、不记入已分析地址（避免决策误判重复关系）
+- **Decision Engine**（`decision_engine.go`，§9/§11）：`PathScore/RiskScore/EntityScore/ExpansionScore` 四维评分 → `EXPAND`（Top 3 候选为下一轮目标）/ `STOP`（含原因）/ `DEEP_ANALYSIS`（无候选且风险≥60 时 AI 深入后结束）；智能停止覆盖：最大轮次 / 最长运行时间 / 最大地址数 / 无新发现 / 低价值候选 / 交易所候选 / 已分析重复关系
+- **Loop Engine**（`loop_engine.go`，§5/§16）：多轮闭环 `规划→执行→观察→判断→重新规划`；每轮独立任务队列；路径跨轮合并去重（记忆）并保留 Top K；`EXPAND` 时下一轮追踪新目标；收尾 `VERIFYING`（结论固化）→ `REPORTING`（GENERATE_REPORT 任务）→ `COMPLETED`
+- **调查状态机**（§4）：新增 `RUNNING` / `VERIFYING`（保留 `TRACING` 兼容），主流程 `CREATED→PLANNING→RUNNING→ANALYZING→EXPANDING→VERIFYING→REPORTING→COMPLETED`
+- **自动扩展策略**（§10）：配置新增 `max_rounds`（默认 3）/ `max_runtime_ms`（默认 300000）/ `max_addresses`（默认 200）/ `expansion_threshold`（默认 50），`POST /config` 部分更新 + 钳制
+- **调查记忆**（§14）：新增 `CompletedTasks`（已完成任务 ID，幂等记录），JSON 持久化向前兼容
+- **报告可追踪**（§18）：Markdown/HTML 新增「六、调查过程（闭环追踪）」章节（轮次 / 每轮决策与原因 / 停止原因 / 任务统计与明细 / 观察统计），原六、七章顺延
+- **前端**（§17）：智能调查页新增「调查流程」页签——Steps（规划→执行→发现→决策→完成）、当前轮次、完成时间、停止原因、决策卡片（四维评分 / 原因 / 下一轮目标）、轮次记录、任务队列表格、观察结果列表；记忆页签新增已完成任务；STATUS_TAG 增加 RUNNING/VERIFYING
+
+### 修复（代码审查后 — 4 项 should-fix）
+
+- **共享扩展队列污染 + 配置竞争**：`ExpansionEngine.Expand` 此前返回整个共享发现队列（含其他调查条目）并每次改写共享引擎配置 → 改为仅返回本次调用新发现条目（`Depth>0` 且 `DiscoveredAt` 晚于启动时间），本地截断到 `maxAddresses`，不再写共享配置
+- **任务 Round 缺失致跨轮去重错误**：`buildQueue` 未设置 `Round`（全 0），同地址任务跨轮被错误去重并重复执行 → 全部任务显式携带 `Round`；`TaskQueue.Mark` 增加终态流转守卫（done/skipped/failed 不可再变）
+- **start 配置泄漏到全局**：`POST /start` 的 `config` 此前写入全局配置影响并发/后续调查 → 改为仅本调查生效的启动覆盖（`Investigation.cfgOverride`，不序列化），`applyConfigFields` 抽为纯函数供 `/config` 与 `/start` 共用
+- **MaxAddresses 上限可绕过**：扩展候选不记入记忆导致上限只统计已追踪地址 → `DecideInput.TotalDiscovered`（记忆地址 + 累计候选）参与上限校验
+- 新增 4 个回归测试：`TestTaskQueueTerminalGuard` / `TestLoopTasksCarryRound` / `TestStartConfigOverrideIsolated` / `TestDecideStopMaxAddresses`
+
+### 修改文件
+
+- 新增：`internal/intelligence/{task_queue,observation,decision_engine,loop_engine}.go` + `loop_engine_test.go`
+- 修改：`internal/intelligence/{types,memory,api_handler,report_agent,investigation_agent,entity_resolver}.go` — `Expander` 接口化（可注入测试 fake）、`run()` 接入闭环、`mergePaths/resolveNewEntities/runAI` 替代原单趟逻辑
+- 前端：`frontend/src/features/intelligence/{intelligenceApi.ts,IntelligencePage.tsx}`
+
+### 已验证
+
+- `go vet ./internal/...` 零警告；`go test ./... -short -count=1` 38 包零回归
+- `go test ./internal/intelligence/` 全部通过（新增 17 用例），覆盖率 67.4% → **74.2%**
+- 闭环集成测试：3 轮 `EXPAND→EXPAND→STOP`（第二轮扩展新地址并发现 F→G 路径）、无候选单轮 STOP、最大轮次 STOP、缺依赖任务 skipped 降级完成
+- 前端 `npm run build` 通过（3908 modules，仅既有 chunk size 警告）
+
+### 未完成事项与边界
+
+- **DEEP_ANALYSIS 为规则触发**（无候选且风险≥60 时 AI 深入后结束）；DeepSeek 建议直接转化为下一轮任务的「AI 驱动规划」尚未实现，规划仍由规则决策引擎驱动
+- 扩展候选实体识别依赖本地 Recognizer 标签库；真实地址扩展仍受 SQD 网络环境限制（与既有记录一致）
+- 每轮 `EXPAND_ADDRESS` 对焦点地址调用扩展引擎，真实环境下轮次越多 DuckDB/SQD 查询越多，受 max_rounds/max_runtime 钳制
+
+## 2026-08-01 15:00 V2.1 RC2 全自动链上调查平台（Intelligence Layer）
+
+### 本次完成
+
+- 新增 `internal/intelligence` 包 — 全自动链上调查平台（输入地址 → 自动完成地址理解/资金追踪/关系发现/风险判断/证据整理/分析报告）：
+  - **Investigation Planner**（planner.go）：画像/风险/资金概览 → 调查任务清单（FUND_SOURCE/FUND_FLOW/HIGH_VALUE_PATH/ENTITY_RELATION/RISK_CHECK）
+  - **Beam Search 资金追踪**（fund_tracer.go）：非简单 BFS，每层按 PathScore 排序保留 Top K 继续深入；双向（入边来源 + 出边去向）；时间维度边
+  - **Path Ranking**（path_ranker.go）：`PathScore = 金额权重 + 时间连续性 + 风险 + 关系强度 − 实体惩罚`
+  - **Risk Pattern Detector**（pattern_detector.go）：快速转移 / 多地址拆分 / 归集 / 大额进入 / 快速清空，带严重度
+  - **Entity Resolver**（entity_resolver.go）：复用 dynamicinvestigation 识别能力 + analyticsapi 画像信号
+  - **Expansion Engine**（expansion_engine.go）：复用 dynamicinvestigation 地址扩展/采集路由
+  - **AI Context Builder + DeepSeek Client**（ai_context_builder.go + deepseek_client.go）：分析摘要（非百万交易）→ DeepSeek 真实调用（api.deepseek.com，Bearer 认证），结构化解析总结/洞察/建议/风险评价
+  - **Investigation Memory**（memory.go）：调查状态/已发现地址/已分析路径/已忽略实体/结论，JSON 原子持久化
+  - **Report Agent**（report_agent.go）：Markdown（7 部分）+ HTML（自包含）+ JSON 三种报告
+  - **Investigation Agent**（investigation_agent.go）：全流程编排（规划→追踪→扩展→实体→风险→AI→报告），后台独立 context 运行
+- **REST API**（`/api/intelligence/*`，8 端点）：investigations 启动/列表/详情/报告/记忆、memories、config GET/POST（部分更新+钳制）
+- **前端工作台**（`frontend/src/features/intelligence/`）：IntelligencePage（调查列表/启动/进度轮询/资金路径表/ReactFlow 资金图谱/实体/风险/AI 助手/记忆/计划 + MD/HTML/JSON 报告下载）+ intelligenceApi.ts；App.tsx 菜单新增"智能调查"（链上分析组）
+
+### 修改文件
+
+- 新增：`internal/intelligence/{types,planner,fund_tracer,path_ranker,pattern_detector,entity_resolver,expansion_engine,ai_context_builder,deepseek_client,memory,report_agent,investigation_agent,api_handler}.go` + 4 测试文件
+- `internal/api/handlers.go` — setupIntelligence 装配（analyticsapi.Service + dynamicinvestigation 扩展引擎）+ 路由 `/api/intelligence/*path`
+- `internal/api/crypto_parquet_handlers.go` — HandleIntelligence 转发
+- `frontend/src/App.tsx` — 菜单/渲染分支/title；`frontend/src/features/intelligence/*` 新增
+
+### 已验证
+
+- `go vet` 零警告；`go test ./... -short` 38 包零回归；`go test ./internal/intelligence/` 27 用例，覆盖率 67.4%
+- 前端：`tsc --noEmit` 零错误；`npm run build` 通过（3908 modules）
+- **DeepSeek 真实调用验证**：有效密钥（sk-e7d1...）→ API 200；调查 inv-1：`ai_model=deepseek-v4-flash duration_ms=12620`，AI 总结（资金分层/洗钱特征）+ 3 洞察 + 3 建议 + 风险评价；三种报告格式全部生成（MD 4486B/HTML 6033B/JSON 14502B）
+- 端到端：0x766a... 调查 COMPLETED 100%，Beam Search 发现 3 条 4 跳资金路径（score 88），实体 8 个正确分类（wallet/contract/router/exchange），风险 MULTI_SPLIT
+
+### 修复（端到端中发现）
+
+- **后台 context 取消缺陷**：调查 goroutine 曾继承 POST /start 请求 ctx，请求返回后 DuckDB 查询全部 `context canceled`（paths=0）→ 改用 `context.Background()` 独立 ctx
+- **实体识别未接数据源**：entityResolver 曾用 nil 信号源导致全部 unknown → 接入 `dynamicinvestigation.AnalyticsSource`
+- **调查列表重复**：active+history 各存一份导致重复显示 → List 按 ID 去重
+
+### 修复（代码审查后 — 并发）
+
+- **rankPaths 无锁遍历 a.active**（并发调查 panic 风险）→ 删除死代码
+- **run 无锁写 inv 字段**（与 Get/List 锁内读竞争）→ 全部字段写入改 `setField`/`setStage`/`fail` 锁内；`addConclusions` 记忆更新改 setField
+- **Start 返回指针竞争**（json 编码与 setStage 写竞争）→ 返回防御性副本（与 Get 一致）
+- 新增 `TestAgentConcurrentSurveys` 并发测试（双调查 + 轮询 goroutine）
+
+### 未完成事项与边界
+
+- DeepSeek 密钥需通过环境变量 `DEEPSEEK_API_KEY` 配置（本次验证密钥仅会话级，未写入代码库）
+- 地址扩展（ExpansionEngine）在调查流程中已集成，但端到端时扩展结果为空（扩展依赖 SQD 真实采集，本机网络受限）— 与动态调查引擎遗留一致
+- AI 上下文含时间线但 FlowEdge 无 block_time 字段，时间线显示 `?`（timestamp 缺失）— 后续可从 Parquet 补充
+
+## 2026-08-01 12:00 V2.1 RC2 动态地址扩展与智能采集路由引擎
+
+### 本次完成
+
+- 新增 `internal/dynamicinvestigation` 包 — Dynamic Investigation Engine（任务生成层，只影响任务生成，执行复用现有下载引擎/SQD）：
+  - **地址发现队列**：状态机 `DISCOVERED → SCORING → APPROVED → ACQUIRING → COMPLETED / IGNORED`，JSON 原子持久化（`backend/data/dynamic_investigation/discovery_queue.json`，重启增量续传）
+  - **Expansion Score 评分器**：`资金金额(分档) + 风险权重 + 关联强度 + 活跃度 − 实体惩罚`，权重可配置，输出 ACQUIRE/HOLD/IGNORE 决策与分项
+  - **实体识别**：wallet / exchange / bridge / dex / router / contract / unknown；已知实体标签库（API 动态注册）+ 合约判定 + 图结构模式（归集 sink/分散 spreader/中转 hub）
+  - **智能采集路由**：普通钱包 → SQD 增量（Logs→Transfer→Transactions→Trace 数据等级逐级升级）；大型实体（exchange/bridge/dex/router）→ CSV 直链；低价值 → 仅保存关系
+  - **数据等级**：Level 0 发现 → 1 Logs → 2 Transfer → 3 Transactions → 4 Trace，`ShouldUpgrade` 边界控制
+  - **引擎主流程**：目标地址 → 分析发现关联（BFS 逐层，受 `maxDepth`/`maxAddresses`/`amountThreshold` 约束）→ 评分 → 识别 → 路由 → 任务生成 → 执行；执行失败回退 IGNORED 并记录原因
+- **REST API**（`/api/dynamic-investigation/*`，10 个端点）：start / queue 列表+详情 / approve / ignore / config GET+POST（部分更新）/ tasks / stats / entities GET+POST
+- **真实对接**：`AnalyticsSource` 适配 `analyticsapi.Service`（Flows/Profile/Risk）；`RealExecutor` 包装 `parquetdownload.Manager.Start`（CSV 直链）+ `sqd.Client.StreamLogs/StreamTraces`（增量）
+
+### 修改文件
+
+- 新增：`internal/dynamicinvestigation/{types,queue,scoring,entity,routing,engine,api_handler,real_executor,analytics_source}.go` + `*_test.go`（fakes/queue/scoring/engine/api_handler 共 27 用例）
+- `internal/api/handlers.go` — `setupDynamicInvestigation()` 装配 + 路由 `/api/dynamic-investigation/*path`
+- `internal/api/crypto_parquet_handlers.go` — `HandleDynamicInvestigation` 转发
+- `internal/parquetdownload/handler.go` — 新增 `Manager()` / `SQDClient()` 访问器
+
+### 已验证
+
+- `go vet` 零警告；`go test ./... -short` 37 包零回归；`go build ./...` 通过
+- `go test ./internal/dynamicinvestigation/` 27 用例通过，覆盖率 75.6%
+- 真实服务端到端（0xdead 目标）：发现 9 关联地址 → 评分 39.88/48.25 → 实体 exchange×1 + wallet×8 → SQD_LOGS 路由 → 真实 SQD 拉取失败（本机网络环境 Schema 探测失败，与既有记录一致）→ 优雅降级 IGNORED + 原因；config/entities/tasks 全部 200
+
+### 修复（真实验证中发现）
+
+- config 全量覆盖导致未传字段清零 → start/updateConfig 均改**部分更新**（applyConfigUpdate，只覆盖显式字段）+ **非法值钳制**（负深度/数量/权重规范化）
+- 执行失败回退 IGNORED 未记录原因 → 补 `SetIgnoredReason("采集执行失败: ...")`
+- `discoverFrom` 队列满时无限忽略 → 改为**硬上限**：Total ≥ max_addresses 立即停止，不再添加
+
+### 修复（代码审查后 — should-fix）
+
+- **config 数据竞争**：`Engine.config` 读写加 `e.mu` 保护（Config/UpdateConfig/Stats 均加锁）
+- **CSV N×N 重复下载**：同实体簇 N 个地址曾生成 N 个含全簇的任务 → `csvBatchByAddr` 去重，簇内只生成 1 个任务，成员共享 JobID
+- **异步采集语义**：真实 `parquetdownload.Manager.Start` 为异步启动，此前被误标 COMPLETED → 任务保持 running、地址停留 ACQUIRING 并关联 JobID，由下载引擎推进；同步执行器（fake）仍标 done+COMPLETED
+- **SQD 空回调丢弃数据**：此前直接调 `sqd.Client.StreamLogs` 回调丢弃 → 改为经 `parquetdownload.Manager.Start`（SelectedSource: logs/traces）真实落盘，复用下载引擎可靠性
+- **FromLevel/TargetLevel 语义**：`SetAcquisition` 不再提前提升 DataLevel；新增 `TargetLevel` 字段与 `SetDataLevel`（采集成功后才升级），任务正确记录升级前后等级
+- **approve/ignore 返回旧状态**：改为返回更新后的条目副本
+
+### 修复（安全审查后 — CRITICAL/MEDIUM/LOW）
+
+- **CRITICAL SQL 注入**：`target` 此前直接流入 analyticsapi 的 DuckDB SQL 插值 → 新增 `IsValidEVMAddress`（0x+40 位 hex 严格校验），start/queue/approve/ignore/entities 全部 API 边界强制校验；`discoverFrom` 对手地址纵深防御过滤；注入载荷端到端验证全部 400 拒绝
+- **MEDIUM 数据竞争**：`csvBatchByAddr` 由共享 `*AcquisitionTask` 指针改为**值快照** `csvBatchSnapshot`（TaskID/Status/JobID/Error），创建/Execute 后锁内回写 `updateCSVSnapshot`，消除跨 goroutine 共享指针写竞争
+- **MEDIUM e.tasks 任务竞争**：`AcquisitionTask` 可变字段私有化 + 内置 `sync.Mutex` 方法化（SetStatus/SetJobID/SetError/Touch），JSON 输出改用无锁 `TaskView` 视图（`View()` 锁内深拷贝），引擎/执行器 `Tasks()` 返回 `[]TaskView`，彻底消除共享指针写与带锁值拷贝（vet copylocks 清零）
+- **MEDIUM 请求体限制**：start 64KB、config/entities 16KB `http.MaxBytesReader`，防本地资源耗尽
+- **LOW 错误脱敏**：start 失败细节仅服务端日志（含 target），客户端返回通用 `"调查启动失败"`，不再回显 SQL/路径
+
+### 修复（最终代码审查 — should-fix）
+
+- **CSV dedup TOCTOU**：检查已批处理 + 注册簇成员合并到同一 `e.mu` 临界区，并发 `/start` 不再生成重复簇任务
+- **错误脱敏不一致**：`SetIgnoredReason`/`task.SetError` 持久化前经 `sanitizeError` 剥离绝对路径（`E:\...`/`/...` → `[path]`），`GET /queue`/`GET /tasks` 不再泄露服务端路径
+- **金额阈值桶比较**：`amountAboveThreshold` 改用 `parseAmountBig` 原始数值比较（`big.Float.Cmp`），同桶内 900K vs 阈值 999,999 正确过滤
+- 遗留（非阻塞，多次审查确认）：async completion watcher 未实现——真实执行器下任务保持 running、地址停留 ACQUIRING，由下载引擎推进；后续可在 RunOnce 加 `Manager.Get(jobID)` 轮询钩子
+
+### 未完成事项与边界
+
+- 真实 SQD 增量拉取在本机失败（`SQD HTTP 503`/Schema 探测失败）— 与既有 SQD 网络/代理环境问题同源，需网络环境就绪后重试；引擎降级行为已验证
+- 前端工作台页面未做（本次范围仅后端引擎 + API + 测试）
+
+## 2026-08-01 11:10 Parquet 分片下载卡 0 进度排查
+
+### 本次完成
+
+- 定位“分片下载进度一直为 0”根因：**本机安全/网络软件（火绒 `hrndis6`/`hrwfpdrv` 或 Anycast VPN 分应用规则）在 etl-server 到 AWS S3 的 TLS 握手阶段强制重置连接**（WSAECONNABORTED），而 curl/独立 Go 进程同一请求正常。
+  - 证据：本地代理隧道日志显示 TLS 双向字节已流通后连接被本机软件中止；`portal.sqd.dev` 不受影响；复制二进制、重启服务均复现；下载器代码与 URL/Headers 无问题。
+- 已取消卡住任务（均 0 字节，无损失），恢复原服务（`.\run.ps1 -SkipBuild`，PID 29716，health ok）。
+
+### 修改文件
+
+- 本次无代码修改；仅更新本文档与 `docs/CHANGELOG_AI.md`。
+
+### 未完成事项与边界
+
+- 需用户在火绒（安全设置 → 联网控制/网络防护）或 Anycast VPN 分应用规则中放行 `etl-server.exe`，再点击重试 `e170c084fba68a70`（或重新发起 2026-07-30 任务）。
+- 放行前不要再次发起 AWS transactions 下载，避免重复 12 分钟空转；SQD logs/traces 路径不受影响。
+- 可选代码加固（未做）：为下载 Transport 增加 `TLSHandshakeTimeout`/单次尝试截止时间，避免未来连接被外部重置时空转过久。
+
+## 2026-08-01 V2.1 RC2 链数据采集"结果与清单"弹窗化
+
+### 本次完成
+
+- `frontend/src/features/crypto/CryptoParquetPanel.tsx`（链数据采集页）：
+  - 任务监控中内嵌的"结果与清单"折叠区改为操作按钮 + Modal 弹窗
+  - 弹窗内使用 Collapse 两个可折叠面板：**分区清单**（分区文件表，含进度/记录/校验）+ **结果文件**（业务结果与审计清单下载列表，含 SHA256）
+  - 移除了 ResultFiles 组件内重复的"结果与清单"标题（原内嵌折叠区与下载区标题重复）
+
+### 修改文件
+
+- `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+
+### 已验证
+
+- `npm run build` ✅（tsc + vite，3906 模块）
+
+### 注意事项
+
+- 弹窗内容跟随当前选中任务（job），无任务时不展示
+- 分区清单表格复用原 `columns`（buildFileColumns），未改后端接口
+
+## 2026-07-31 23:26 V2.1 RC2 菜单结构调整 + 风险分析页
+
+### 本次完成
+
+- **菜单重组**（`frontend/src/App.tsx`）：按《V2.1_RC2_链上分析平台菜单结构调整方案》调整为 5 个一级菜单：
+  - 🏠 Dashboard（原 链上分析工作台/Dashboard）
+  - 📦 数据资产：数据集管理（原"数据清洗"改名）、数据下载（浏览器下载[原"数据下载"/SQD下载，含 RPC/OKLink CSV/浏览器 三源] + Dune下载 + 链数据采集[原"Parquet仓库"]）、数据源管理、RPC节点管理
+  - 🔍 链上分析：地址分析（地址画像 + 地址区分）、资金流分析（原"资金流向图"）、地址图谱、风险分析（本次新增）
+  - 📄 报告中心
+  - ⚙ 系统设置（建设中占位页）
+- **风险分析页**（新增 `frontend/src/features/analytics/RiskAnalysisPage.tsx`）：基于现有后端接口，无后端改动
+  - 风险地址总数（来自 `/api/analytics/dashboard`，事件数 ≥ 100 代理指标）
+  - 单地址风险评分：分数 + 等级 + 原因 + 交易频率/Top10 接收占比/共同对手关联度 + 地址画像
+  - 评分说明卡（60% 频率 + 40% 集中度 + 关联加分，≥60 高 / ≥30 中）
+- **系统设置占位页**（新增 `frontend/src/features/system/SystemSettingsPage.tsx`）：标注"建设中"，列出服务状态/日志/配置/系统信息
+
+### 接口
+
+- 前端新增调用：`/api/analytics/address/{address}/risk`、`/api/analytics/address/{address}/profile`、`/api/analytics/dashboard`（均为既有接口）
+- 后端零改动，API 路径未变
+
+### 修改文件
+
+- `frontend/src/App.tsx` — 菜单结构/文案/渲染分支/titleFor 调整
+- `frontend/src/features/analytics/RiskAnalysisPage.tsx` — 新增
+- `frontend/src/features/system/SystemSettingsPage.tsx` — 新增
+
+### 已验证
+
+- `npm run build` ✅（tsc + vite，3906 模块）
+- 真实服务：`/` 返回新 bundle `index-CHz8-wws.js`；`/api/analytics/address/0x000000000000000000000000000000000000dead/risk` 返回 72.01（高风险）；dashboard `risk_addresses=51`
+
+### 未完成事项
+
+- 系统设置子项（服务状态/日志/配置/系统信息）待实现
+- 风险分析目前为单地址查询；后端暂无风险地址列表接口，若需列表页需新增后端接口
+
+### 注意事项
+
+- 菜单内部 key 保持稳定（clean/graph/analytics-* 等），Dashboard 快速入口跳转不受影响；新增分组 key：assets/data-download/onchain/address-analysis
+- 2026-07-31 追加：数据下载子项"SQD下载"已改名为"浏览器下载"（crypto-download 页面与 key 不变）
+- 2026-07-31 追加：原"Parquet仓库"改名为"链数据采集"并移入"数据下载"分组（crypto-parquet 页面与 key 不变）
+- 旧的"链上地址分析"入口（AddressAnalyticsPanel）已从菜单移除，组件文件保留未删除
+- 前端 bundle 3.18MB 的 chunk 大小警告为既有问题
+
 ## 2026-08-01 01:20 V2.1 RC2 地址图谱页面卡死修复
 
 ### 问题

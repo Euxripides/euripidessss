@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -415,4 +416,136 @@ func sqlNullableString(v *string) string {
 		return "NULL"
 	}
 	return sqlString(*v)
+}
+
+// AddressLifecycle holds the block range info for an address.
+type AddressLifecycle struct {
+	Address       string
+	FirstSeenBlock uint64
+	LastSeenBlock  uint64
+	ActivityCount  int64
+}
+
+// AdaptiveGroup holds a set of addresses with a common start block.
+type AdaptiveGroup struct {
+	StartBlock uint64
+	Addresses  []string
+}
+
+// resolveAdaptiveStartBlocks groups addresses by first-seen block distribution.
+// <1000 addresses: single group with min block (simple mode).
+// >=1000 addresses: time-bucket into groups; isolate legacy outliers.
+func (m *Manager) resolveAdaptiveStartBlocks(ctx context.Context, network chain.EVM, addresses []string, maxGroupSpan uint64) []AdaptiveGroup {
+	const bucketThreshold = 1000
+
+	cycles := make([]AddressLifecycle, 0, len(addresses))
+	for _, addr := range addresses {
+		resp, err := m.queryFirstSeen(ctx, network.Key, addr)
+		if err != nil || resp == nil || resp.FirstSeenBlock == nil || *resp.FirstSeenBlock < 0 {
+			continue
+		}
+		b := uint64(*resp.FirstSeenBlock)
+		cycles = append(cycles, AddressLifecycle{
+			Address:        addr,
+			FirstSeenBlock: b,
+			ActivityCount:  0, // TODO: populate from DuckDB activity_count
+		})
+	}
+
+	if len(cycles) == 0 {
+		return nil
+	}
+
+	// Small scale: single group
+	if len(cycles) < bucketThreshold {
+		minBlock := cycles[0].FirstSeenBlock
+		for _, c := range cycles[1:] {
+			if c.FirstSeenBlock < minBlock {
+				minBlock = c.FirstSeenBlock
+			}
+		}
+		allAddrs := make([]string, len(cycles))
+		for i, c := range cycles {
+			allAddrs[i] = c.Address
+		}
+		return []AdaptiveGroup{{StartBlock: minBlock, Addresses: allAddrs}}
+	}
+
+	// Large scale: sort by first-seen block, detect gaps, isolate outliers
+	sort.Slice(cycles, func(i, j int) bool {
+		return cycles[i].FirstSeenBlock < cycles[j].FirstSeenBlock
+	})
+
+	// Detect isolated early addresses: if >90% addresses cluster together,
+	// split early ones into legacy_group.
+	const outlierRatio = 0.10
+	median := cycles[len(cycles)/2].FirstSeenBlock
+	var earlyCount int
+	for _, c := range cycles {
+		if c.FirstSeenBlock < median-maxGroupSpan {
+			earlyCount++
+		}
+	}
+
+	var groups []AdaptiveGroup
+
+	if float64(earlyCount)/float64(len(cycles)) < outlierRatio && earlyCount > 0 {
+		// Split: legacy_group for early addresses, normal_group for rest
+		var legacyAddrs, normalAddrs []string
+		legacyMin := uint64(0)
+		normalMin := uint64(0)
+		for _, c := range cycles {
+			if c.FirstSeenBlock < median-maxGroupSpan {
+				legacyAddrs = append(legacyAddrs, c.Address)
+				if legacyMin == 0 || c.FirstSeenBlock < legacyMin {
+					legacyMin = c.FirstSeenBlock
+				}
+			} else {
+				normalAddrs = append(normalAddrs, c.Address)
+				if normalMin == 0 || c.FirstSeenBlock < normalMin {
+					normalMin = c.FirstSeenBlock
+				}
+			}
+		}
+		if len(legacyAddrs) > 0 {
+			groups = append(groups, AdaptiveGroup{StartBlock: legacyMin, Addresses: legacyAddrs})
+		}
+		if len(normalAddrs) > 0 {
+			groups = append(groups, AdaptiveGroup{StartBlock: normalMin, Addresses: normalAddrs})
+		}
+	} else {
+		// Time-bucket: group consecutive addresses within maxGroupSpan
+		current := AdaptiveGroup{StartBlock: cycles[0].FirstSeenBlock}
+		for _, c := range cycles {
+			if c.FirstSeenBlock > current.StartBlock+maxGroupSpan {
+				groups = append(groups, current)
+				current = AdaptiveGroup{StartBlock: c.FirstSeenBlock}
+			}
+			current.Addresses = append(current.Addresses, c.Address)
+		}
+		groups = append(groups, current)
+	}
+
+	return groups
+}
+
+// resolveMinFirstSeen returns the minimum first-seen block across multiple addresses.
+func (m *Manager) resolveMinFirstSeen(ctx context.Context, network chain.EVM, addresses []string) uint64 {
+	var minBlock uint64
+	for _, addr := range addresses {
+		resp, err := m.queryFirstSeen(ctx, network.Key, addr)
+		if err != nil || resp == nil || resp.Status == FirstSeenNotFound {
+			continue
+		}
+		if resp.FirstSeenBlock != nil {
+			if *resp.FirstSeenBlock < 0 {
+				continue
+			}
+			b := uint64(*resp.FirstSeenBlock)
+			if minBlock == 0 || b < minBlock {
+				minBlock = b
+			}
+		}
+	}
+	return minBlock
 }

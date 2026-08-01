@@ -43,6 +43,7 @@ type StartRequest struct {
 	Addresses       string   `json:"addresses"`
 	StartDate       string   `json:"start_date"`
 	EndDate         string   `json:"end_date"`
+	UseFirstSeen    bool     `json:"use_first_seen"`
 	KeepSource      *bool    `json:"keep_source_files,omitempty"`
 	ExportCSV       *bool    `json:"export_csv,omitempty"`
 	SelectedSource  []string `json:"selected_sources,omitempty"`
@@ -177,6 +178,7 @@ type Job struct {
 	KeepSourceFiles       bool                     `json:"keep_source_files"`
 	ExportCSV             bool                     `json:"export_csv"`
 	IncludeReceipts       bool                     `json:"include_receipts"`
+	UseFirstSeen          bool                     `json:"use_first_seen"`
 	SelectedSources       []string                 `json:"selected_sources"`
 	SQDDataset            string                   `json:"sqd_dataset,omitempty"`
 	SQDBlockRange         *SQDBlockRange           `json:"sqd_block_range,omitempty"`

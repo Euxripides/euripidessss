@@ -3,6 +3,9 @@ import AnalyticsDashboardPage from "./features/analytics/DashboardPage";
 import AnalyticsAddressPage from "./features/analytics/AddressPage";
 import AnalyticsGraphPage from "./features/analytics/GraphPage";
 import AnalyticsReportPage from "./features/analytics/ReportPage";
+import AnalyticsRiskPage from "./features/analytics/RiskAnalysisPage";
+import SystemSettingsPage from "./features/system/SystemSettingsPage";
+import IntelligencePage from "./features/intelligence/IntelligencePage";
 import {
   ApartmentOutlined,
   CloudDownloadOutlined,
@@ -16,9 +19,11 @@ import {
   MenuOutlined,
   PlusOutlined,
   RightOutlined,
+  RobotOutlined,
   SettingOutlined,
   UploadOutlined,
   WalletOutlined,
+  WarningOutlined,
 } from "@ant-design/icons";
 import {
   Button,
@@ -61,7 +66,6 @@ import { DuneDownloadPanel } from "./features/download/DuneDownloadPanel";
 import { CryptoAddressPanel } from "./features/crypto/CryptoAddressPanel";
 import { CryptoDownloadPanel } from "./features/crypto/CryptoDownloadPanel";
 import { CryptoParquetPanel } from "./features/crypto/CryptoParquetPanel";
-import { AddressAnalyticsPanel } from "./features/crypto/AddressAnalyticsPanel";
 import { DataSourcePage } from "./features/crypto/datasource/DataSourcePage";
 import { RpcSettingsPage } from "./features/rpc/RpcSettingsPage";
 import { RuleExpansionDrawer } from "./features/clean/RuleExpansionDrawer";
@@ -210,40 +214,49 @@ const { Sider, Content } = Layout;
 dayjs.locale("zh-cn");
 
 const menuItems = [
-  { key: "clean", icon: <UploadOutlined />, label: "数据清洗" },
-  { key: "graph", icon: <ApartmentOutlined />, label: "资金流向图" },
+  { key: "analytics-dashboard", icon: <DashboardOutlined />, label: "Dashboard" },
   {
-    key: "download",
-    icon: <DownloadOutlined />,
-    label: "下载",
+    key: "assets",
+    icon: <DatabaseOutlined />,
+    label: "数据资产",
     children: [
-      { key: "download-dune", icon: <DatabaseOutlined />, label: "dune" },
-    ],
-  },
-  {
-    key: "crypto",
-    icon: <WalletOutlined />,
-    label: "虚拟币",
-    children: [
-      { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "数据下载" },
-      { key: "crypto-parquet", icon: <FileZipOutlined />, label: "Parquet下载" },
-      { key: "crypto-rpc", icon: <CloudServerOutlined />, label: "RPC节点管理" },
+      { key: "clean", icon: <UploadOutlined />, label: "数据集管理" },
+      {
+        key: "data-download",
+        icon: <DownloadOutlined />,
+        label: "数据下载",
+        children: [
+          { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "浏览器下载" },
+          { key: "download-dune", icon: <FileTextOutlined />, label: "Dune下载" },
+          { key: "crypto-parquet", icon: <FileZipOutlined />, label: "链数据采集" },
+        ],
+      },
       { key: "crypto-datasource", icon: <DatabaseOutlined />, label: "数据源管理" },
-      { key: "crypto-analytics", icon: <FundProjectionScreenOutlined />, label: "链上地址分析" },
-      { key: "crypto-address", icon: <WalletOutlined />, label: "地址区分" },
+      { key: "crypto-rpc", icon: <CloudServerOutlined />, label: "RPC节点管理" },
     ],
   },
   {
-    key: "analytics",
+    key: "onchain",
     icon: <FundProjectionScreenOutlined />,
-    label: "链上分析工作台",
+    label: "链上分析",
     children: [
-      { key: "analytics-dashboard", icon: <DashboardOutlined />, label: "Dashboard" },
-      { key: "analytics-address", icon: <WalletOutlined />, label: "地址分析" },
+      {
+        key: "address-analysis",
+        icon: <WalletOutlined />,
+        label: "地址分析",
+        children: [
+          { key: "analytics-address", label: "地址画像" },
+          { key: "crypto-address", label: "地址区分" },
+        ],
+      },
+      { key: "graph", icon: <ApartmentOutlined />, label: "资金流分析" },
       { key: "analytics-graph", icon: <ApartmentOutlined />, label: "地址图谱" },
-      { key: "analytics-report", icon: <FileTextOutlined />, label: "报告中心" },
+      { key: "risk", icon: <WarningOutlined />, label: "风险分析" },
+      { key: "intelligence", icon: <RobotOutlined />, label: "智能调查" },
     ],
   },
+  { key: "analytics-report", icon: <FileTextOutlined />, label: "报告中心" },
+  { key: "system-settings", icon: <SettingOutlined />, label: "系统设置" },
 ];
 
 export function App() {
@@ -437,7 +450,7 @@ export function App() {
         <Menu
           mode="inline"
           selectedKeys={[active]}
-          defaultOpenKeys={["download", "crypto"]}
+          defaultOpenKeys={["assets", "data-download", "onchain", "address-analysis"]}
           items={menuItems}
           onClick={handleMenuClick}
         />
@@ -461,7 +474,7 @@ export function App() {
           <Menu
             mode="inline"
             selectedKeys={[active]}
-            defaultOpenKeys={["download", "crypto"]}
+            defaultOpenKeys={["assets", "data-download", "onchain", "address-analysis"]}
             items={menuItems}
             onClick={handleMenuClick}
           />
@@ -537,12 +550,14 @@ export function App() {
             {active === "crypto-parquet" && <CryptoParquetPanel />}
             {active === "crypto-rpc" && <RpcSettingsPage />}
             {active === "crypto-datasource" && <DataSourcePage onOpenRpc={() => setActive("crypto-rpc")} />}
-            {active === "crypto-analytics" && <AddressAnalyticsPanel />}
             {active === "crypto-address" && <CryptoAddressPanel />}
             {active === "analytics-dashboard" && <AnalyticsDashboardPage onNavigate={(p, a) => { if (a) setActiveAddressParam(a); setActive(p); }} />}
             {active === "analytics-address" && <AnalyticsAddressPage initialAddress={activeAddressParam} />}
             {active === "analytics-graph" && <AnalyticsGraphPage />}
             {active === "analytics-report" && <AnalyticsReportPage />}
+            {active === "risk" && <AnalyticsRiskPage />}
+            {active === "intelligence" && <IntelligencePage />}
+            {active === "system-settings" && <SystemSettingsPage />}
           </Content>
         </Layout>
       </Layout>
@@ -618,15 +633,21 @@ export function App() {
 
   function titleFor(key: string) {
     return {
-      clean: "数据清洗",
-      graph: "资金流向图",
+      clean: "数据集管理",
+      graph: "资金流分析",
       "download-dune": "Dune 下载",
-      "crypto-download": "虚拟币数据下载",
-      "crypto-parquet": "EVM Parquet 批量资金分析",
+      "crypto-download": "浏览器数据下载",
+      "crypto-parquet": "链数据采集",
       "crypto-rpc": "EVM RPC 节点管理",
       "crypto-datasource": "数据源管理中心",
-      "crypto-analytics": "链上地址分析",
       "crypto-address": "地址区分",
+      "analytics-dashboard": "Dashboard",
+      "analytics-address": "地址画像",
+      "analytics-graph": "地址图谱",
+      "analytics-report": "报告中心",
+      risk: "风险分析",
+      intelligence: "智能调查",
+      "system-settings": "系统设置",
     }[key];
   }
 }
