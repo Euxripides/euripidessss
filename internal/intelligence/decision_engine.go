@@ -37,6 +37,11 @@ type DecideInput struct {
 	// TotalDiscovered 累计已发现地址数（含未记入记忆的扩展候选），
 	// 用于 max_addresses 上限校验（候选不记入记忆，防止上限被绕过）。
 	TotalDiscovered int
+	// PendingVerifications 待验证的调查假设任务数（§7/§6：AI 驱动任务生成，
+	// 规则决策引擎验证：有假设待验证且轮次未满时继续调查而非停止）。
+	PendingVerifications int
+	// VerifyTargets 假设验证任务的目标地址（下一轮焦点，最多 3 个）。
+	VerifyTargets []string
 }
 
 // Decide 作出本轮决策（EXPAND / STOP / DEEP_ANALYSIS）。
@@ -81,6 +86,16 @@ func (e *DecisionEngine) Decide(in DecideInput) Decision {
 	candidates, exchange, lowValue, analyzed := e.classifyCandidates(in)
 
 	if len(candidates) == 0 {
+		// §7/§6：存在待验证调查假设且轮次未满 → 继续调查（AI 驱动任务生成，规则引擎验证）
+		if in.PendingVerifications > 0 && in.Round < cfg.MaxRounds {
+			dec.Action = DecisionExpand
+			dec.NextTargets = append([]string(nil), in.VerifyTargets...)
+			if len(dec.NextTargets) > 3 {
+				dec.NextTargets = dec.NextTargets[:3]
+			}
+			dec.Reasons = append(dec.Reasons, fmt.Sprintf("存在 %d 个待验证调查假设，继续验证", in.PendingVerifications))
+			return dec
+		}
 		switch {
 		case len(exchange) > 0:
 			dec.Reasons = append(dec.Reasons, fmt.Sprintf("候选均为交易所地址（%d 个），停止扩展", len(exchange)))

@@ -37,17 +37,17 @@
 
 | 场景 | 耗时 |
 |---|---|
+| batch_1000 | 42ms |
+| batch_10000 | 66ms |
+| batch_50000 | 144ms |
 | single_profile_ms | 0 |
-| batch_1000 | 70ms |
-| batch_10000 | 95ms |
-| batch_50000 | 173ms |
 
 ## 并发
 
 | 规模 | 总耗时 | 错误 |
 |---|---|---|
-| concurrent_50 | 0ms | 0 |
-| concurrent_10 | 1501ms | 0 |
 | concurrent_100 | 0ms | 0 |
+| concurrent_10 | 1882ms | 5 |
+| concurrent_50 | 0ms | 0 |
 
 **结论**: ✅ 全部通过

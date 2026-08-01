@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-31T11:04:11.8303766Z",
+  "timestamp": "2026-08-01T17:16:41.7953679Z",
   "address_count": 10000,
   "chunk_count": 100,
   "block_range": [
@@ -14,36 +14,37 @@
   "duplicate_logs": 7102,
   "duplicate_logs_in_chunk": 0,
   "duplicate_logs_cross_chunk": 7102,
-  "duration": "1m26.66s",
+  "duration": "3m8.718s",
   "tx_per_second": 0,
   "sqd_metrics": {
-    "sqd_request_total": 100,
+    "sqd_request_total": 101,
     "sqd_success_total": 100,
-    "sqd_failed_total": 0,
+    "sqd_failed_total": 1,
     "sqd_retry_count": 0,
-    "sqd_503_total": 0,
+    "sqd_503_total": 1,
     "sqd_429_total": 0,
     "sqd_timeout_total": 0,
     "sqd_dns_error_total": 0,
     "sqd_network_error_total": 0,
-    "sqd_latency_ms": 705.46,
+    "sqd_latency_ms": 694.57,
     "sqd_tx_total": 0,
     "sqd_byte_total": 0,
-    "sqd_uptime_seconds": 86.6601931
+    "sqd_uptime_seconds": 188.7178256
   },
   "sqd_workers": {
     "current_workers": 8,
     "tier": "NORMAL",
     "consecutive_503": 0,
-    "consecutive_successes": 100,
-    "scale_count": 0
+    "consecutive_successes": 25,
+    "last_scale_at": "2026-08-02T01:19:18.3909271+08:00",
+    "scale_count": 2
   },
   "sqd_circuit_breaker": {
     "state": "NORMAL",
     "failures": 0,
     "successes": 0,
-    "last_failure_at": "0001-01-01T00:00:00Z",
-    "last_success_at": "2026-07-31T19:05:38.4612008+08:00",
+    "last_failure_at": "2026-08-02T01:18:13.2742739+08:00",
+    "last_success_at": "2026-08-02T01:19:49.3295535+08:00",
     "opened_at": "0001-01-01T00:00:00Z"
   },
   "passed": true

@@ -58,6 +58,80 @@ type Investigation struct {
 
 	// 启动时配置覆盖（POST /start 的 config，仅本调查生效，不序列化、不污染全局配置）
 	cfgOverride *IntelligenceConfig
+
+	// ── AI 驱动调查（V2.1 RC2 DeepSeek 驱动自主调查 Agent）──
+	Strategy     *AIStrategy       `json:"strategy,omitempty"`      // AI 调查策略
+	Hypotheses   []AIHypothesis    `json:"hypotheses,omitempty"`    // 调查假设
+	Findings     []VerifiedFinding `json:"findings,omitempty"`      // 经证据验证的 AI 发现
+	AISuggestion *AISuggestion     `json:"ai_suggestion,omitempty"` // AI 下一步建议
+}
+
+// ── AI 驱动调查（V2.1 RC2 DeepSeek 驱动自主调查 Agent）──
+
+// AITask 是 AI 生成的调查任务（结构化输出，§5/§11）。
+type AITask struct {
+	Type     string         `json:"type"`              // 对应 7 种任务类型（Task* 常量）
+	Priority float64        `json:"priority"`          // 0-1
+	Target   string         `json:"target,omitempty"`  // 作用地址
+	Reason   string         `json:"reason,omitempty"`  // 生成理由
+	Params   map[string]any `json:"params,omitempty"`
+}
+
+// AIStrategy 是 AI 调查策略（Planner Agent 输出）。
+type AIStrategy struct {
+	Strategy   string   `json:"strategy"`   // trace_outgoing / trace_incoming / entity_focus / risk_scan ...
+	Tasks      []AITask `json:"tasks"`
+	Rationale  string   `json:"rationale"`  // 策略理由
+	Confidence float64  `json:"confidence"` // 0-1
+}
+
+// AIFinding 是 AI 分析发现（AML/Forensic Analyst 输出，§11 结构化约束）。
+type AIFinding struct {
+	Type       string   `json:"type"`       // rapid_transfer / layering / smurfing / concentration ...
+	Address    string   `json:"address,omitempty"`
+	Detail     string   `json:"detail"`
+	Confidence float64  `json:"confidence"` // 0-1
+	Evidence   []string `json:"evidence"`   // tx_hash / block_number 引用
+}
+
+// EvidenceStatus 是证据验证状态（§12 Evidence Guard）。
+type EvidenceStatus string
+
+const (
+	EvidenceVerified   EvidenceStatus = "VERIFIED"   // 证据已在链上数据确认
+	EvidenceRejected   EvidenceStatus = "REJECTED"   // 证据与数据不符
+	EvidenceUnverified EvidenceStatus = "UNVERIFIED" // 缺少可验证证据
+)
+
+// VerifiedFinding 是经 Evidence Guard 验证的 AI 发现。
+type VerifiedFinding struct {
+	Finding    AIFinding     `json:"finding"`
+	Status     EvidenceStatus `json:"status"`
+	Reason     string        `json:"reason"`
+	VerifiedAt time.Time     `json:"verified_at"`
+}
+
+// AIHypothesis 是调查假设（§7 Hypothesis Agent）。
+type AIHypothesis struct {
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Confidence  float64           `json:"confidence"` // 0-1
+	Source      string            `json:"source"`     // rule / ai
+	Status      string            `json:"status"`     // proposed / verifying / evaluated
+	Tasks       []AITask          `json:"tasks"`      // 验证任务
+	Note        string            `json:"note,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	TaskIDs     []string          `json:"-"` // 验证任务入队后的 ID（状态门控用，不序列化）
+}
+
+// AISuggestion 是 AI 下一步建议（决策输入，§6：AI 建议 → Decision Engine 验证）。
+type AISuggestion struct {
+	Action     string   `json:"action"` // EXPAND / STOP / DEEP_ANALYSIS / VERIFY
+	Target     string   `json:"target,omitempty"`
+	Reasons    []string `json:"reasons"`
+	Confidence float64  `json:"confidence"`
+	Source     string   `json:"source"` // planner / hypothesis / analysis
 }
 
 // ── 调查任务队列 ──
@@ -279,13 +353,14 @@ type AIAnalysis struct {
 
 // AIContext 是发送给 DeepSeek 的上下文（分析摘要，非原始交易）。
 type AIContext struct {
-	Target      string        `json:"target"`
-	Profile     map[string]any `json:"profile"`
-	TopPaths    []string      `json:"top_paths"`
-	RiskEvents  []string      `json:"risk_events"`
-	Entities    []string      `json:"entities"`
-	Timeline    []string      `json:"timeline"`
-	Token       string        `json:"token"`
+	Target     string         `json:"target"`
+	Profile    map[string]any `json:"profile"`
+	TopPaths   []string       `json:"top_paths"`
+	RiskEvents []string       `json:"risk_events"`
+	Entities   []string       `json:"entities"`
+	Timeline   []string       `json:"timeline"`
+	History    []string       `json:"history,omitempty"` // 历史调查/AI 结论（§13 AI Memory）
+	Token      string         `json:"token"`
 }
 
 // ── 调查记忆 ──
@@ -334,10 +409,14 @@ type IntelligenceConfig struct {
 	MaxExpansion int    `json:"max_expansion"` // 扩展地址数上限
 
 	// ── 调查闭环限制（设计 §10 自动扩展策略）──
-	MaxRounds         int     `json:"max_rounds"`          // 最大调查轮次（默认 3）
-	MaxRuntimeMS      int     `json:"max_runtime_ms"`      // 最长运行时间 ms（默认 300000=5 分钟，0=不限）
-	MaxAddresses      int     `json:"max_addresses"`       // 最多发现地址数（默认 200）
+	MaxRounds          int     `json:"max_rounds"`          // 最大调查轮次（默认 3）
+	MaxRuntimeMS       int     `json:"max_runtime_ms"`      // 最长运行时间 ms（默认 300000=5 分钟，0=不限）
+	MaxAddresses       int     `json:"max_addresses"`       // 最多发现地址数（默认 200）
 	ExpansionThreshold float64 `json:"expansion_threshold"` // 扩展候选评分门槛（默认 50，0-100）
+
+	// ── AI 驱动调查（§15 DeepSeek 接口 / §17 调用限额）──
+	MaxTokens  int `json:"max_tokens"`   // DeepSeek 输出上限（默认 2000）
+	MaxAICalls int `json:"max_ai_calls"` // 单个调查最多 AI 调用次数（默认 10，≤0 时按默认）
 }
 
 // DefaultConfig 返回默认调查配置。
@@ -355,5 +434,7 @@ func DefaultConfig() IntelligenceConfig {
 		MaxRuntimeMS:      300000,
 		MaxAddresses:      200,
 		ExpansionThreshold: 50,
+		MaxTokens:         4096, // deepseek-v4-flash 含推理阶段，2000 易被推理占满致 content 截断/为空
+		MaxAICalls:        10,
 	}
 }

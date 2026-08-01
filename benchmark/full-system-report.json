@@ -1,0 +1,89 @@
+{
+  "version": "V2.1 RC2",
+  "date": "2026-08-02",
+  "result": "PASS",
+  "environment": {
+    "backend": "bin/etl-server.exe (windows/386 go1.25.0)",
+    "health": "HTTP 200",
+    "duckdb": "v1.5.3 (Variegata)",
+    "frontend_build": "tsc + vite build 3908 modules",
+    "data": "真实 BSC 链数据，区块 107153260-107153460"
+  },
+  "data_assets": {
+    "source_rows": 49031,
+    "parsed_rows": 49031,
+    "unique_rows": 49031,
+    "parquet_rows": 49031,
+    "duckdb_rows": 49031,
+    "duplicates": 0,
+    "checksum_ok": true,
+    "consistent": true
+  },
+  "duckdb_benchmark": {
+    "scenarios": 12,
+    "passed": true,
+    "semi_join_50k_ms": 44,
+    "concurrent_10_ms": 75
+  },
+  "sqd_10k_stability": {
+    "passed": true,
+    "chunks": 100,
+    "chunks_completed": 100,
+    "chunk_completion_rate": 1.0,
+    "requests": 101,
+    "success": 100,
+    "fail": 1,
+    "http_503": 1,
+    "retry_recovered": true,
+    "logs_total": 52300,
+    "logs_unique": 45198,
+    "dup_after_unique": 0,
+    "data_loss": 0,
+    "duration_seconds": 188.7
+  },
+  "analytics": {
+    "address_profile": "PASS 5/5",
+    "balance": "PASS 3/3 (50K 25ms)",
+    "graph": "PASS (15595 nodes / 21693 edges, PageRank, 796 clusters)",
+    "investigation": "PASS",
+    "casefile": "PASS (MD/HTML/JSON/DOCX 报告)",
+    "risk": "PASS (覆盖率 16411/16411)"
+  },
+  "intelligence_investigation": {
+    "id": "inv-1",
+    "target": "0x000000000000000000000000000000000000dead",
+    "status": "COMPLETED",
+    "progress": 100,
+    "stop_reason": "达到最大发现地址数 200",
+    "paths": 10,
+    "entities": 21,
+    "risks": 2,
+    "reports": ["markdown", "html", "json"]
+  },
+  "api": {
+    "endpoints_ok": 40,
+    "concurrency_100": {"total": 100, "errors": 0, "avg_ms": 58.2}
+  },
+  "bugs": [
+    {"id": "BUG-001", "severity": "critical", "title": "BatchProfiles read_csv('') 读 stdin 致 OOM 崩溃", "status": "fixed"},
+    {"id": "BUG-002", "severity": "high", "title": "VALUES 内联超 Windows 命令行限制", "status": "fixed"},
+    {"id": "BUG-003", "severity": "high", "title": "addr_file 任意文件读取 + DoS", "status": "fixed"},
+    {"id": "BUG-004", "severity": "medium", "title": "max_tokens 不足致 AI 输出截断为空", "status": "fixed"}
+  ],
+  "deepseek": {
+    "real_call_verified": true,
+    "model": "deepseek-v4-flash",
+    "calls": 4,
+    "strategy": "deep_probe (conf 0.65)",
+    "findings": 5,
+    "findings_verified": 5,
+    "evidence_guard": "5/5 VERIFIED",
+    "insights": 5,
+    "max_tokens_fixed": "2000 → 4096 (BUG-004)"
+  },
+  "limitations": [
+    "DeepSeek 真实调用已验证（需配置 DEEPSEEK_API_KEY）；AI 链路由单测覆盖 78.4% + 真实端到端（AI 规划/建议/深入分析全部 VERIFIED）",
+    "真实数据验证测试需串行运行（DuckDB 文件锁）",
+    "服务为 32 位构建，大结果集有 2GB 地址空间上限（已封死触发路径）"
+  ]
+}

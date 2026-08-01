@@ -62,8 +62,8 @@
 
 | 规模 | 查询耗时 |
 |---|---|
-| profile_1000_addr | 89ms |
-| profile_10000_addr | 93ms |
-| profile_50000_addr | 106ms |
+| profile_1000_addr | 36ms |
+| profile_10000_addr | 42ms |
+| profile_50000_addr | 47ms |
 
 **结论**: ✅ 分析模型验证通过（画像/行为/资金流/路径/分类/风险/性能）

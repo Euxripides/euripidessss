@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-31T13:39:37.4334373Z",
+  "timestamp": "2026-08-01T17:01:00.4412831Z",
   "target": "0x238a358808379702088667322f80ac48bad5e6c4",
   "summary": {
     "address": "0x238a358808379702088667322f80ac48bad5e6c4",
@@ -32,36 +32,36 @@
     "related_count": 5,
     "related_top5": [
       {
-        "address": "0x6431c37b0fc3c8f4ac282154532226b1074332bc",
+        "address": "0x6647b173123e0a7ea285617bed652a6681990f7c",
         "shared_counterparty_score": 0.5,
         "shared_counterparties": 1
       },
       {
-        "address": "0x7c103e10d48570e81cf3c0117aca85f0853bfa61",
+        "address": "0x3755fb7d413aa15d33e2f09d833381072954a914",
         "shared_counterparty_score": 0.5,
         "shared_counterparties": 1
       },
       {
-        "address": "0x81965714e2a1ec25fb8bcb3de60a11fe6bca929a",
-        "shared_counterparty_score": 0.5,
-        "shared_counterparties": 2
-      },
-      {
-        "address": "0x3c4e5ab74afd916bd11a63a5fbd45986aa25ead9",
+        "address": "0x215bbfc56e6556eb10a5a36409464a19f62e4e2e",
         "shared_counterparty_score": 0.5,
         "shared_counterparties": 1
       },
       {
-        "address": "0x810fa742697cb2ca94b9772518737acae87e6759",
+        "address": "0x37bcecfcd9406a36115025a6a1e131c586813393",
+        "shared_counterparty_score": 0.5,
+        "shared_counterparties": 1
+      },
+      {
+        "address": "0x65ec88a7eeee54a6b4cf6604d43edae415043fd2",
         "shared_counterparty_score": 0.5,
         "shared_counterparties": 1
       }
     ],
     "query_duration_ms": {
-      "flows_ms": "105",
-      "path_ms": "372",
-      "profile_ms": "409",
-      "relations_ms": "619",
+      "flows_ms": "75",
+      "path_ms": "340",
+      "profile_ms": "276",
+      "relations_ms": "588",
       "risk_ms": "0"
     }
   },
@@ -79,7 +79,8 @@
           "amount": "8042713798559235886767",
           "tx_hash": "0xb4ead84e59700341bd441d0706bfec8489d18e87ebfd7599ce758d66d97466cc",
           "block": "107153260",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "238"
         }
       ],
       "hops": 1
@@ -97,7 +98,8 @@
           "amount": "24135097569951395040",
           "tx_hash": "0x2cb7a5c02331ccc5fc2ee5686a05c00df6de25d8ca9e958d70d284b3dd58bfa6",
           "block": "107153260",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "252"
         }
       ],
       "hops": 1
@@ -115,7 +117,8 @@
           "amount": "90057069566883147459",
           "tx_hash": "0x58dce8c49b3c1b81146179193c5523d3ad9bf9465c20648f81012c5a495b6b25",
           "block": "107153261",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "245"
         }
       ],
       "hops": 1
@@ -133,7 +136,8 @@
           "amount": "256800433046636135972",
           "tx_hash": "0x9ed44f265c7553c29a71972454a86bd3677c6bc85df84e89a5729e3b5bef9be1",
           "block": "107153261",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "252"
         }
       ],
       "hops": 1
@@ -151,7 +155,8 @@
           "amount": "21446323737830284168",
           "tx_hash": "0xd76074194b8d374690513cbdddc9f221798d01cccf57dc25de131504fa40de33",
           "block": "107153326",
-          "block_time": "1782777629"
+          "block_time": "1782777629",
+          "log_index": "9"
         }
       ],
       "hops": 1
@@ -169,7 +174,8 @@
           "amount": "10416163865716548739",
           "tx_hash": "0x6b1226a315f7d4e704dee8318d0b93cc54d059faf4ac8b0c96d987a6a6f40870",
           "block": "107153345",
-          "block_time": "1782777638"
+          "block_time": "1782777638",
+          "log_index": "101"
         }
       ],
       "hops": 1
@@ -187,7 +193,8 @@
           "amount": "749840000000000031832",
           "tx_hash": "0xf078ac677dd932ab312094f4bdc158812256660f8fe64b333fdc08a95976d08a",
           "block": "107153385",
-          "block_time": "1782777656"
+          "block_time": "1782777656",
+          "log_index": "539"
         }
       ],
       "hops": 1
@@ -205,7 +212,8 @@
           "amount": "14011970176135819065",
           "tx_hash": "0x97560228ab44783775ea10343790b202a5e80d8bcdcef01934cb06279b35bdb2",
           "block": "107153260",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "506"
         }
       ],
       "hops": 1
@@ -223,7 +231,8 @@
           "amount": "1053380943564184956",
           "tx_hash": "0x2b328e0770d8260ac1a8534904a73e3008c988987d85fc6071a57314280c5279",
           "block": "107153260",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "512"
         }
       ],
       "hops": 1
@@ -241,7 +250,8 @@
           "amount": "686053012970319451347",
           "tx_hash": "0xb067709d84bd79e75c2ca20c3ab3afced280fbe9a167775ded79c0dafc257d5a",
           "block": "107153261",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "12"
         }
       ],
       "hops": 1
@@ -259,7 +269,8 @@
           "amount": "338921573713187135887",
           "tx_hash": "0x0c85d9228ea1941561063c1b0baffeb10243adfe1f6976b6be6156e1332dd6c0",
           "block": "107153267",
-          "block_time": "1782777603"
+          "block_time": "1782777603",
+          "log_index": "175"
         }
       ],
       "hops": 1
@@ -277,7 +288,8 @@
           "amount": "6128635851244634047851",
           "tx_hash": "0x571b5f92d63e580a9dc2af30709a9b7771488840fae37331fb76eef877c0e722",
           "block": "107153278",
-          "block_time": "1782777608"
+          "block_time": "1782777608",
+          "log_index": "110"
         }
       ],
       "hops": 1
@@ -295,7 +307,8 @@
           "amount": "5594448319590633103",
           "tx_hash": "0x29a34b5a3879a07cd9f10c292e136606683ba5b28fb04a7011de3d05251187c3",
           "block": "107153261",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "169"
         }
       ],
       "hops": 1
@@ -313,7 +326,8 @@
           "amount": "70183556511703480216",
           "tx_hash": "0x6e5b571222bc84d63a239a631e2d3cfb4bb729206d1cef7ccae2e7a18895ff17",
           "block": "107153261",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "320"
         }
       ],
       "hops": 1
@@ -331,7 +345,8 @@
           "amount": "77740142597543207198209",
           "tx_hash": "0xbc75ddcc7fce5f90db9b804792b6eb76f4953f40c33f2031f1ecd5f937521d88",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "15"
         }
       ],
       "hops": 1
@@ -349,7 +364,8 @@
           "amount": "5545406363412782403839",
           "tx_hash": "0xc725569c17cd532cf71d08c1700ea3128a5567be0f15a0d23eade09d15963523",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "21"
         }
       ],
       "hops": 1
@@ -367,7 +383,8 @@
           "amount": "1116315301452485281217",
           "tx_hash": "0xcefe7f0cb45a731be0111aa3249db35c7ff34c637651fd8c0e4829ef95f67414",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "29"
         }
       ],
       "hops": 1
@@ -385,7 +402,8 @@
           "amount": "253007542280199151343",
           "tx_hash": "0x902de5390ec7d9e02fef441fa88f3dfaed5aed72b6d7ba38bacc783c7a13432f",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "38"
         }
       ],
       "hops": 1
@@ -403,7 +421,8 @@
           "amount": "385732641102826409435",
           "tx_hash": "0x24743d72d46ead0f0ef869179c21160251e862afa76fcedcb8947a8210520747",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "42"
         }
       ],
       "hops": 1
@@ -421,7 +440,8 @@
           "amount": "5751143404545763290",
           "tx_hash": "0x3b6430f1c516af174d2f7a1682e7572a1e313957c3c4d33651aae756b3155c6d",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "158"
         }
       ],
       "hops": 1
@@ -439,7 +459,8 @@
           "amount": "39361325471873208434",
           "tx_hash": "0xd4f88b5d8092543e6b5139389bbe5557146ed46b59dc3a4f31cdc573e099c04f",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "191"
         }
       ],
       "hops": 1
@@ -457,7 +478,8 @@
           "amount": "23848232843436169033452",
           "tx_hash": "0x3d395304c4f242488b376128f79f894fc3abb87fa785585043a36f79916e5029",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "226"
         }
       ],
       "hops": 1
@@ -475,7 +497,8 @@
           "amount": "17011802441828499527",
           "tx_hash": "0x85a10c1331f7e0b7c79ee4092889be854f82150107c9323c8ef847fc932b44b8",
           "block": "107153262",
-          "block_time": "1782777600"
+          "block_time": "1782777600",
+          "log_index": "308"
         }
       ],
       "hops": 1
@@ -493,7 +516,8 @@
           "amount": "95040884942050149559",
           "tx_hash": "0xdce8be61864d9d52dc11d5fae29e9968948e8ea2c587662d55acc049feeac002",
           "block": "107153319",
-          "block_time": "1782777626"
+          "block_time": "1782777626",
+          "log_index": "159"
         }
       ],
       "hops": 1
@@ -511,7 +535,8 @@
           "amount": "1147471066754579127343",
           "tx_hash": "0x2d64458d168c39b2830e42fe9a5bf808642adfbd270d67ada3da0588c973be5b",
           "block": "107153362",
-          "block_time": "1782777645"
+          "block_time": "1782777645",
+          "log_index": "19"
         }
       ],
       "hops": 1
@@ -529,7 +554,8 @@
           "amount": "652105189500028035994",
           "tx_hash": "0x19800afeb13ece95b618c252736b110e908fb4481dcebdf6683f98913ca41b58",
           "block": "107153263",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "5"
         }
       ],
       "hops": 1
@@ -547,7 +573,8 @@
           "amount": "136905859359667909875",
           "tx_hash": "0xca5b62c11248d0287cff1f0efe26ba4e985cde362db2e9e35c6f736de3f068a2",
           "block": "107153263",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "45"
         }
       ],
       "hops": 1
@@ -565,7 +592,8 @@
           "amount": "35400585471367920982",
           "tx_hash": "0xd613338ad07ba94323c75350b1a1163e0c49be55744e91a374a84f47dbc956a7",
           "block": "107153263",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "301"
         }
       ],
       "hops": 1
@@ -583,7 +611,8 @@
           "amount": "298924869179432416074",
           "tx_hash": "0x96b74df47d03eb36eaf48dadbad78dd3ae371194796ee63387ca81d3b53ea7b3",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "42"
         }
       ],
       "hops": 1
@@ -601,7 +630,8 @@
           "amount": "177224492775924598379",
           "tx_hash": "0x0dc7161dcb32c8174fe6ba80369d334dfa86d95d4817bf99ad0ed31a2fab0b74",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "46"
         }
       ],
       "hops": 1
@@ -619,7 +649,8 @@
           "amount": "39820376852139723064",
           "tx_hash": "0x5e9aa76159e97a7bed1d6c1ba5a8fe8f5d0f6340b22b1049b886153a0337ae8e",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "48"
         }
       ],
       "hops": 1
@@ -637,7 +668,8 @@
           "amount": "1083531736257867265697",
           "tx_hash": "0xb1c980ba074c36a3f58a0bedbdbe2d9bc4cb27da1cd5f533b74684b58e06307b",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "136"
         }
       ],
       "hops": 1
@@ -655,7 +687,8 @@
           "amount": "4896156942111866752",
           "tx_hash": "0x51ab55515c0d757c9f3d9e5b833e120887cab811fed39f1ae6da2242e26b0879",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "157"
         }
       ],
       "hops": 1
@@ -673,7 +706,8 @@
           "amount": "205468797520897695846",
           "tx_hash": "0x2c3bcc4247105319f3c85538742452577161b1ba56571b03eea7e596e36f9632",
           "block": "107153269",
-          "block_time": "1782777604"
+          "block_time": "1782777604",
+          "log_index": "2"
         }
       ],
       "hops": 1
@@ -691,7 +725,8 @@
           "amount": "153056442602410286240",
           "tx_hash": "0x32103ed1bd5ab8c2564069686ccc4d790511375bac1ef500b4b41aeb80206549",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "247"
         }
       ],
       "hops": 1
@@ -709,7 +744,8 @@
           "amount": "1262022014531544878884",
           "tx_hash": "0x51bb16219a63ea89408f3e5476e9e3e031ca6c248594daf95126b8fdc221cfbf",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "1144"
         }
       ],
       "hops": 1
@@ -727,7 +763,8 @@
           "amount": "6611821667707908773031",
           "tx_hash": "0xae8343ade6c6964e3a2f394bf9e0569bc9ee486282fe2d94defd5bd88b158f6f",
           "block": "107153284",
-          "block_time": "1782777610"
+          "block_time": "1782777610",
+          "log_index": "33"
         }
       ],
       "hops": 1
@@ -745,7 +782,8 @@
           "amount": "165527002310141959232",
           "tx_hash": "0x1c1fa5253e8c9a145b444fdada1e65ccbd0d9bc81f5184a8793e9c856daa10b6",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "985"
         }
       ],
       "hops": 1
@@ -763,7 +801,8 @@
           "amount": "173530241607288754470",
           "tx_hash": "0x389ae10e624b7a5144fd7628618e16d552953bcd8215b1b8b40b8ba30bd6f327",
           "block": "107153264",
-          "block_time": "1782777601"
+          "block_time": "1782777601",
+          "log_index": "1154"
         }
       ],
       "hops": 1
@@ -781,7 +820,8 @@
           "amount": "989323452472657034957",
           "tx_hash": "0xe5bf58e3c0d1aab5288bf46d6637913aebc74cc3c01c8cefa42790fb75e5b11a",
           "block": "107153294",
-          "block_time": "1782777615"
+          "block_time": "1782777615",
+          "log_index": "92"
         }
       ],
       "hops": 1
@@ -799,7 +839,8 @@
           "amount": "175014491422087458792",
           "tx_hash": "0xe6734a13c06e10c4452ed23d44d2da806803603860288f0aaa71c7ebafffdfa8",
           "block": "107153265",
-          "block_time": "1782777602"
+          "block_time": "1782777602",
+          "log_index": "110"
         }
       ],
       "hops": 1
@@ -817,7 +858,8 @@
           "amount": "15272605277050679535",
           "tx_hash": "0x94e04a92829c3be87067a8326fa0d4096cac3fd35192491d60ec1c725ecdf9fb",
           "block": "107153265",
-          "block_time": "1782777602"
+          "block_time": "1782777602",
+          "log_index": "173"
         }
       ],
       "hops": 1
@@ -835,7 +877,8 @@
           "amount": "155013870570398256031",
           "tx_hash": "0xda3ef95f0d585e5dee1ec4fbc930efef72af2c8ec814b5fc343a2c0d77f73e13",
           "block": "107153265",
-          "block_time": "1782777602"
+          "block_time": "1782777602",
+          "log_index": "763"
         }
       ],
       "hops": 1
@@ -853,7 +896,8 @@
           "amount": "815172011738744307487",
           "tx_hash": "0x3f343ec0941a49999160093430a8147448496733ec4f2f0157fc40eea1804c00",
           "block": "107153265",
-          "block_time": "1782777602"
+          "block_time": "1782777602",
+          "log_index": "769"
         }
       ],
       "hops": 1
@@ -871,7 +915,8 @@
           "amount": "74217149174057063334",
           "tx_hash": "0x016b55558da6479102521c825f09739b7f843130c6c82cff3d2963edd926e6c8",
           "block": "107153266",
-          "block_time": "1782777602"
+          "block_time": "1782777602",
+          "log_index": "108"
         }
       ],
       "hops": 1
@@ -889,7 +934,8 @@
           "amount": "86973200473729409466",
           "tx_hash": "0xe4914ca64417a4d353588faf3483e5f73563f38cb0e9228ffd5e494b19db0164",
           "block": "107153266",
-          "block_time": "1782777602"
+          "block_time": "1782777602",
+          "log_index": "136"
         }
       ],
       "hops": 1
@@ -907,7 +953,8 @@
           "amount": "119800358938499123581",
           "tx_hash": "0xe3b1d2e5c7fe66537511859a54b1cdfbdb1210be7f97d57916adc307fcb9ed12",
           "block": "107153294",
-          "block_time": "1782777615"
+          "block_time": "1782777615",
+          "log_index": "76"
         }
       ],
       "hops": 1
@@ -925,7 +972,8 @@
           "amount": "12479269178199438478",
           "tx_hash": "0x3048c9c27d3c3c121cc451d4487cb1024d612eaf97298ab0f0292ec092dab36f",
           "block": "107153266",
-          "block_time": "1782777602"
+          "block_time": "1782777602",
+          "log_index": "561"
         }
       ],
       "hops": 1
@@ -943,7 +991,8 @@
           "amount": "3838058804189067276194",
           "tx_hash": "0xe14d3f7049730ba7a9d2ed45f1241b7c9444f8c9a26d414f99ca8eb3a07a115c",
           "block": "107153279",
-          "block_time": "1782777608"
+          "block_time": "1782777608",
+          "log_index": "47"
         }
       ],
       "hops": 1
@@ -961,7 +1010,8 @@
           "amount": "24473687140118657933",
           "tx_hash": "0x9624db691bf84b4d2c988b40b04c7e4fc217bc41ff50f85725edf4709c6a14d6",
           "block": "107153267",
-          "block_time": "1782777603"
+          "block_time": "1782777603",
+          "log_index": "215"
         }
       ],
       "hops": 1
@@ -985,7 +1035,8 @@
         "amount": "69966128337788886478389",
         "tx_hash": "0xc4a4d59ab7580e63c3a2ef48b11fe77612f4534cb75a3656c96a049109654980",
         "block": "107153306",
-        "block_time": "1782777620"
+        "block_time": "1782777620",
+        "log_index": "3"
       },
       {
         "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
@@ -994,7 +1045,8 @@
         "amount": "54442430443429800000000",
         "tx_hash": "0xf8a0d23538f5c731c5368ad06b417dae222302370271be0b65c674372b40b26e",
         "block": "107153309",
-        "block_time": "1782777622"
+        "block_time": "1782777622",
+        "log_index": "509"
       },
       {
         "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
@@ -1003,7 +1055,8 @@
         "amount": "51375070016376600000000",
         "tx_hash": "0x12919c59f13df3aa21ba4ccc0b4cb0dba9be803ce8720348cd57c77ad320a678",
         "block": "107153268",
-        "block_time": "1782777603"
+        "block_time": "1782777603",
+        "log_index": "151"
       },
       {
         "from": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
@@ -1012,7 +1065,8 @@
         "amount": "50362778175054358974287",
         "tx_hash": "0xbdb4f183c2380c7206f2ad3deca0a88603598bef9a2b705bb95bf9ef6c8cc973",
         "block": "107153331",
-        "block_time": "1782777631"
+        "block_time": "1782777631",
+        "log_index": "165"
       },
       {
         "from": "0x4c1079f1c260da4444a002aaabcecc7fdc2b2b73",
@@ -1021,7 +1075,8 @@
         "amount": "45803561656458758024289",
         "tx_hash": "0xed26961d1a4c47f1e96d44b517b3ee367de68b737b064ea1566ea413200f016e",
         "block": "107153381",
-        "block_time": "1782777654"
+        "block_time": "1782777654",
+        "log_index": "1"
       }
     ],
     "rapid_outflows_top5": [
@@ -1032,7 +1087,8 @@
         "amount": "1053380943564184956",
         "tx_hash": "0x2b328e0770d8260ac1a8534904a73e3008c988987d85fc6071a57314280c5279",
         "block": "107153260",
-        "block_time": "1782777600"
+        "block_time": "1782777600",
+        "log_index": "512"
       },
       {
         "from": "0x238a358808379702088667322f80ac48bad5e6c4",
@@ -1041,7 +1097,8 @@
         "amount": "24135097569951395040",
         "tx_hash": "0x2cb7a5c02331ccc5fc2ee5686a05c00df6de25d8ca9e958d70d284b3dd58bfa6",
         "block": "107153260",
-        "block_time": "1782777600"
+        "block_time": "1782777600",
+        "log_index": "252"
       },
       {
         "from": "0x238a358808379702088667322f80ac48bad5e6c4",
@@ -1050,7 +1107,8 @@
         "amount": "202462766404120383754",
         "tx_hash": "0xc9dad34d42bd3307bb7f8980014463b8c98a322344e6970150674217fc9e266e",
         "block": "107153260",
-        "block_time": "1782777600"
+        "block_time": "1782777600",
+        "log_index": "373"
       },
       {
         "from": "0x238a358808379702088667322f80ac48bad5e6c4",
@@ -1059,7 +1117,8 @@
         "amount": "9982888545774994589",
         "tx_hash": "0xa4ed431aecffc4416390d7de88f58357a6da937942ebaf89607b76d36af0562e",
         "block": "107153260",
-        "block_time": "1782777600"
+        "block_time": "1782777600",
+        "log_index": "370"
       },
       {
         "from": "0x238a358808379702088667322f80ac48bad5e6c4",
@@ -1068,7 +1127,8 @@
         "amount": "9371000662036156094",
         "tx_hash": "0x2619fcec1960567a57452f8748c67c5162d99d412c30506a8dddcd407e99675d",
         "block": "107153260",
-        "block_time": "1782777600"
+        "block_time": "1782777600",
+        "log_index": "367"
       }
     ],
     "spread_targets_top5": [
@@ -1107,27 +1167,27 @@
       "shared_counterparties": 1
     },
     {
-      "address": "0x3bbc70599cf9c7813b8121ae9b78c9753f75db53",
+      "address": "0x7d33d5c83f921526de16d693bbe21b9bc9359dbb",
       "shared_counterparty_score": 0.5,
       "shared_counterparties": 1
     },
     {
-      "address": "0x294de2ca4a3ea966a4daf764473185cc897902b6",
+      "address": "0x77b147a8c2da6ec85773cbce0f57ebd3d7735e64",
       "shared_counterparty_score": 0.5,
       "shared_counterparties": 1
     },
     {
-      "address": "0x0e4fef90c7026ae197bff3da6621aea80372ddbb",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 2
-    },
-    {
-      "address": "0x009b364e06085bf4ca21b8c6b7f5c77e9dd7b88b",
+      "address": "0x5bb59bb9371cbec158ed602d5f3cf1ad1c9b4462",
       "shared_counterparty_score": 0.5,
       "shared_counterparties": 1
     },
     {
-      "address": "0x215bbfc56e6556eb10a5a36409464a19f62e4e2e",
+      "address": "0x3ec7ea2ff48f96f44b6af6cc1cf89da08174ef01",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0x57007cc8816d7adfdd2eb11e6e95b89828c7ba74",
       "shared_counterparty_score": 0.5,
       "shared_counterparties": 1
     },
@@ -1137,67 +1197,67 @@
       "shared_counterparties": 1
     },
     {
-      "address": "0x50c34d46b87dd65333783da0bf4ec87ab36b47c4",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
-      "address": "0x7d33d5c83f921526de16d693bbe21b9bc9359dbb",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
-      "address": "0xb0b79835fdd284517c080187a2efd153279d975f",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
-      "address": "0xe301a4bfeeb3e80e8499edff8dab6c5eb8fda6d1",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
-      "address": "0x93b3803b3810cfec805e5e52c01aca6b8863c7a4",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
-      "address": "0xa017609fa051e4f0e76802a926fd780f587db0fa",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 3
-    },
-    {
-      "address": "0x3868851b2f2da5bc07c9866407f4e98b68c16f14",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
-      "address": "0xcd582352fba803135fead594fd850577067e3491",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 2
-    },
-    {
-      "address": "0x4fa6358bef7c42be8aa338d9a48ccc58eac7f4b3",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
-      "address": "0x40dce44b5c1ab12a024ab47a2ce58ecad55207a1",
-      "shared_counterparty_score": 0.5,
-      "shared_counterparties": 1
-    },
-    {
       "address": "0x0bedf215186ede87d620220a7c5e9cb14718cd3a",
       "shared_counterparty_score": 0.5,
       "shared_counterparties": 1
     },
     {
-      "address": "0x56336db9642763b34b746cf38ca2e7657f243a43",
+      "address": "0xc397874a6cf0211537a488fa144103a009a6c619",
       "shared_counterparty_score": 0.5,
-      "shared_counterparties": 4
+      "shared_counterparties": 1
     },
     {
-      "address": "0x9de9595eb017f5784a9f33ec3dfbed6147c1333f",
+      "address": "0x0cce35a0cfba2cf1f0222a70579556c881f0c681",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0x65ec88a7eeee54a6b4cf6604d43edae415043fd2",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0x24a8a547a2a27c496c926893a69eb6e5dcfe3141",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0x7c103e10d48570e81cf3c0117aca85f0853bfa61",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0xdebdca1bfec47a9495872c612353b5dd7b0fa4d1",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0xa88d6f601bea6e1b1a8e33b89b54fa205d71b359",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0xb7131f6d74aa17a62c1c671cf1de4f3278f563ab",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0xc7cd19ad0de0b5d927db9e3d19fed112612cda26",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0xbffec96e8f3b5058b1817c14e4380758fada01ef",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0x961f4a55c411d6bd7e7f0f12b015a7d89526c023",
+      "shared_counterparty_score": 0.5,
+      "shared_counterparties": 1
+    },
+    {
+      "address": "0xe301a4bfeeb3e80e8499edff8dab6c5eb8fda6d1",
       "shared_counterparty_score": 0.5,
       "shared_counterparties": 1
     }

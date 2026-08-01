@@ -180,6 +180,8 @@ func applyConfigFields(cfg *IntelligenceConfig, raw map[string]any) {
 	applyInt(raw, "max_rounds", &cfg.MaxRounds)
 	applyInt(raw, "max_runtime_ms", &cfg.MaxRuntimeMS)
 	applyInt(raw, "max_addresses", &cfg.MaxAddresses)
+	applyInt(raw, "max_tokens", &cfg.MaxTokens)
+	applyInt(raw, "max_ai_calls", &cfg.MaxAICalls)
 	applyFloat(raw, "expansion_threshold", &cfg.ExpansionThreshold)
 	applyString(raw, "min_amount", &cfg.MinAmount)
 	applyString(raw, "ai_model", &cfg.AIModel)
@@ -229,6 +231,18 @@ func applyConfigFields(cfg *IntelligenceConfig, raw map[string]any) {
 	}
 	if cfg.MaxAddresses > 100000 {
 		cfg.MaxAddresses = 100000
+	}
+	if cfg.MaxTokens < 256 {
+		cfg.MaxTokens = 256
+	}
+	if cfg.MaxTokens > 8000 {
+		cfg.MaxTokens = 8000
+	}
+	if cfg.MaxAICalls < 0 {
+		cfg.MaxAICalls = 0
+	}
+	if cfg.MaxAICalls > 50 {
+		cfg.MaxAICalls = 50
 	}
 	if cfg.ExpansionThreshold < 0 {
 		cfg.ExpansionThreshold = 0

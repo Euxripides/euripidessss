@@ -1,0 +1,14 @@
+{
+  "bug_id": "BUG-001",
+  "title": "/api/analytics/addresses/profile 空 addr_file 触发 read_csv('') 读标准输入导致服务 OOM 崩溃",
+  "severity": "critical",
+  "module": "internal/analyticsapi/service.go",
+  "root_cause": "BatchProfiles 忽略 addresses 参数，仅用 addr_file 构造 want 表；addr_file 为空时生成 read_csv('', ...) SQL，DuckDB CLI 将空路径回退为读取标准输入，LEFT JOIN parquet 产生巨大结果集，32 位进程 JSON 编码时 OOM fatal（runtime: out of memory, cannot allocate 536870912-byte block）",
+  "impact": "任何客户端 POST /api/analytics/addresses/profile（传 addresses 数组或空 body）都会使 etl-server 进程直接崩溃退出，属 DoS 级缺陷",
+  "reproduce": "POST /api/analytics/addresses/profile body={\"addresses\":[\"0x...dead\"]} → 服务 OOM 崩溃（两次稳定复现）",
+  "fix": "1) batchWantSQL 纯函数：addresses 非空时用 VALUES 内联（截断 1000）；addrFile 非空时用 read_csv；都空返回错误 2) Handler 层空参数返回 400 3) quoteSQLString 单引号转义",
+  "files_changed": ["internal/analyticsapi/service.go", "internal/analyticsapi/service_test.go"],
+  "test": "TestBatchProfiles_Validation（4 项断言全过）；真实服务复测：addresses 请求 200 正确、空参数 400、服务存活",
+  "status": "fixed",
+  "closed_at": "2026-08-02"
+}

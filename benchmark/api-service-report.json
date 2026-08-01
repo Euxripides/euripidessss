@@ -23,23 +23,23 @@
   },
   "performance": {
     "batch_1000": {
-      "ms": 70,
+      "ms": 42,
       "rows": 1000
     },
     "batch_10000": {
-      "ms": 95,
+      "ms": 66,
       "rows": 10000
     },
     "batch_50000": {
-      "ms": 173,
+      "ms": 144,
       "rows": 50000
     },
     "single_profile_ms": 0
   },
   "concurrency": {
     "concurrent_10": {
-      "errors": 0,
-      "ms": 1501
+      "errors": 5,
+      "ms": 1882
     },
     "concurrent_100": {
       "errors": 0,

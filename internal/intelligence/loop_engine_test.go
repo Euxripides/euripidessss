@@ -591,3 +591,32 @@ func TestDecideStopMaxAddresses(t *testing.T) {
 		t.Fatalf("应提示最大地址数, got %v", dec.Reasons)
 	}
 }
+
+// TestDecideContinueForHypothesisVerification 验证存在待验证假设时
+// 决策引擎继续调查而非停止（§7/§6：AI 驱动任务生成，规则引擎验证）。
+func TestDecideContinueForHypothesisVerification(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxRounds = 3
+	dec := NewDecisionEngine(cfg).Decide(DecideInput{
+		Target:               addrA,
+		Round:                1,
+		PendingVerifications: 2,
+		VerifyTargets:        []string{addrB, addrC},
+	})
+	if dec.Action != DecisionExpand {
+		t.Fatalf("有待验证假设应 EXPAND 继续, got %s（原因 %v）", dec.Action, dec.Reasons)
+	}
+	if len(dec.NextTargets) != 2 || dec.NextTargets[0] != addrB {
+		t.Fatalf("下一轮目标应为验证目标, got %v", dec.NextTargets)
+	}
+	if !hasReason(dec.Reasons, "待验证调查假设") {
+		t.Fatalf("应提示假设验证, got %v", dec.Reasons)
+	}
+	// 最后一轮仍应停止
+	dec = NewDecisionEngine(cfg).Decide(DecideInput{
+		Target: addrA, Round: 3, PendingVerifications: 2,
+	})
+	if dec.Action != DecisionStop {
+		t.Fatalf("最后一轮应 STOP, got %s", dec.Action)
+	}
+}

@@ -64,13 +64,28 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 	// 扩展候选跨轮累积（未使用的候选在后续轮次仍可被决策选中）
 	var candidates []ExpansionResult
 
-	// 1. 规划（第一轮制定总计划；后续轮次由决策确定新目标 = 增量规划）
+	// 1. 规划（AI 优先，规则回退；后续轮次由决策确定新目标 = 增量规划）
 	a.setStage(inv, InvestigationPlanning, "制定调查计划", 5)
-	plan := snap.planner.Plan(a.planInput(ctx, inv.Target))
+	planInput := a.planInput(ctx, inv.Target)
+	plan := snap.planner.Plan(planInput)
+	if snap.ai != nil && cfg.UseAI {
+		if aiPlan, strategy := snap.ai.Plan(ctx, inv, planInput); aiPlan != nil {
+			plan = aiPlan
+			if strategy != nil {
+				a.setField(inv, func(i *Investigation) { i.Strategy = strategy })
+			}
+		}
+	}
 	a.setField(inv, func(i *Investigation) { i.Plan = plan })
 
 	focus := []string{inv.Target}
 	segment := 70.0 / float64(maxRounds)
+	// 上一轮假设生成的验证任务（进入本轮队列，§7）；记录归属假设索引供状态门控
+	type pendingVerify struct {
+		task   InvestigationTask
+		hypIdx int // 指向 inv.Hypotheses 的索引（-1 = 无归属）
+	}
+	var pendingTasks []pendingVerify
 
 	for round := 1; round <= maxRounds; round++ {
 		if err := ctx.Err(); err != nil {
@@ -82,11 +97,25 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		base := 10 + float64(round-1)*segment
 		a.setStage(inv, InvestigationRunning, fmt.Sprintf("第 %d 轮：执行调查任务", round), base)
 
-		// ── 构建本轮任务队列 ──
+		// ── 构建本轮任务队列（含上一轮假设验证任务）──
 		st := &roundState{
 			focus:       focus,
 			flowsByAddr: map[string][]FundEdge{},
 		}
+		for _, pv := range pendingTasks {
+			t := queue.Enqueue(pv.task)
+			if pv.hypIdx >= 0 {
+				// 记录验证任务 ID（供假设状态门控：任务真实执行完毕才算 evaluated）
+				a.setField(inv, func(i *Investigation) {
+					if pv.hypIdx < len(i.Hypotheses) {
+						h := i.Hypotheses[pv.hypIdx]
+						h.TaskIDs = append(h.TaskIDs, t.ID)
+						i.Hypotheses[pv.hypIdx] = h
+					}
+				})
+			}
+		}
+		pendingTasks = nil
 		for _, t := range e.buildQueue(round, plan, focus, snap, cfg) {
 			queue.Enqueue(t)
 		}
@@ -146,21 +175,64 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		}
 		mem, _ = a.memories.Get(inv.ID)
 
+		// ── 调查假设（§7：规则触发 + AI 细化 → 验证任务进入下一轮）──
+		var verifyTargets []string
+		if snap.ai != nil && cfg.UseAI && (len(newObs) > 0 || len(st.newPatterns) > 0) {
+			hyps := snap.ai.Hypothesize(ctx, inv, newObs)
+			if len(hyps) > 0 {
+				existing := map[string]bool{}
+				for _, h := range inv.Hypotheses {
+					existing[h.Title] = true
+				}
+				var fresh []AIHypothesis
+				for _, h := range hyps {
+					if existing[h.Title] {
+						continue
+					}
+					vt := verifyTasks(h, round+1)
+					if len(vt) > 0 {
+						h.Status = "verifying" // 验证任务将在下一轮执行
+						for _, tk := range vt {
+							pendingTasks = append(pendingTasks, pendingVerify{task: tk, hypIdx: len(inv.Hypotheses) + len(fresh)})
+							if tk.Target != "" {
+								verifyTargets = append(verifyTargets, tk.Target)
+							}
+						}
+					} else {
+						h.Status = "evaluated"
+						h.Note = "无有效验证任务"
+					}
+					fresh = append(fresh, h)
+				}
+				if len(fresh) > 0 {
+					a.setField(inv, func(i *Investigation) { i.Hypotheses = append(i.Hypotheses, fresh...) })
+				}
+			}
+		}
+
 		// ── 决策（§9：EXPAND / STOP / DEEP_ANALYSIS）──
 		dec := decision.Decide(DecideInput{
-			Target:          inv.Target,
-			Round:           round,
-			Elapsed:         time.Since(started),
-			Paths:           merged,
-			Patterns:        inv.Patterns,
-			Entities:        inv.Entities,
-			Candidates:      candidates,
-			NewObs:          newObs,
-			Memory:          mem,
-			TotalDiscovered: len(mem.DiscoveredAt) + len(candidates),
+			Target:               inv.Target,
+			Round:                round,
+			Elapsed:              time.Since(started),
+			Paths:                merged,
+			Patterns:             inv.Patterns,
+			Entities:             inv.Entities,
+			Candidates:           candidates,
+			NewObs:               newObs,
+			Memory:               mem,
+			TotalDiscovered:      len(mem.DiscoveredAt) + len(candidates),
+			PendingVerifications: len(pendingTasks),
+			VerifyTargets:        verifyTargets,
 		})
 		a.setField(inv, func(i *Investigation) { i.Decision = &dec })
 		a.setStage(inv, InvestigationExpanding, fmt.Sprintf("第 %d 轮：决策 %s", round, dec.Action), base+16)
+		// AI 下一步建议（§6：AI 建议 → Decision Engine 验证；规则引擎为最终裁决）
+		if snap.ai != nil && cfg.UseAI {
+			if sug := snap.ai.Suggest(ctx, inv, dec); sug != nil {
+				a.setField(inv, func(i *Investigation) { i.AISuggestion = sug })
+			}
+		}
 
 		rec := RoundRecord{
 			Round:      round,
@@ -179,15 +251,52 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 			a.runAI(ctx, inv, snap, cfg) // AI 深入分析后结束
 			done = true
 		case DecisionExpand:
-			focus = dec.NextTargets // 下一轮扩展高价值地址
+			if len(dec.NextTargets) > 0 {
+				focus = dec.NextTargets // 下一轮扩展高价值地址 / 验证假设目标
+			}
 		}
 		if done {
 			break
 		}
 	}
 
-	// ── VERIFYING：验证结果并固化记忆 ──
+	// ── VERIFYING：AI 最终分析（DEEP_ANALYSIS 未触发时）→ 验证结果并固化记忆 ──
 	a.setStage(inv, InvestigationVerifying, "验证结果并固化记忆", 85)
+	if cfg.UseAI && inv.AI == nil {
+		a.runAI(ctx, inv, snap, cfg)
+	}
+	// 假设状态收尾：按验证任务真实执行结果门控（任务全部 done → 执行完毕；否则未执行）
+	taskStatus := map[string]string{}
+	for _, tk := range queue.Snapshot() {
+		taskStatus[tk.ID] = tk.Status
+	}
+	a.setField(inv, func(i *Investigation) {
+		for idx := range i.Hypotheses {
+			h := i.Hypotheses[idx]
+			if h.Status != "verifying" {
+				continue
+			}
+			h.Status = "evaluated"
+			switch {
+			case len(h.TaskIDs) == 0:
+				h.Note = "验证任务未执行（调查提前结束）"
+			default:
+				allDone := true
+				for _, id := range h.TaskIDs {
+					if taskStatus[id] != TaskDone {
+						allDone = false
+						break
+					}
+				}
+				if allDone {
+					h.Note = "验证任务已执行完毕"
+				} else {
+					h.Note = "验证任务未完成（调查提前结束）"
+				}
+			}
+			i.Hypotheses[idx] = h
+		}
+	})
 	a.addConclusions(inv)
 
 	// ── REPORTING：GENERATE_REPORT 任务 ──
@@ -223,6 +332,11 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		i.UpdatedAt = time.Now().UTC()
 		i.CompletedAt = time.Now().UTC()
 	})
+	// AI 记忆固化（§13）
+	if snap.ai != nil {
+		snap.ai.Remember(inv)
+		snap.ai.SaveMemory()
+	}
 	return nil
 }
 
@@ -439,9 +553,25 @@ func (e *LoopEngine) collectObservations(obs *ObservationEngine, round int, st *
 	return filtered
 }
 
-// runAI 运行 DeepSeek AI 分析（DEEP_ANALYSIS 决策或收尾阶段）。
+// runAI 运行 AI 深入分析（DEEP_ANALYSIS 决策或收尾阶段）。
+// AIAgent 可用时走多角色深入分析 + Evidence Guard（§8/§12）；否则回退单次分析。
 func (a *InvestigationAgent) runAI(ctx context.Context, inv *Investigation, snap agentSnapshot, cfg IntelligenceConfig) bool {
-	if !cfg.UseAI || !snap.deepseek.Configured() {
+	if !cfg.UseAI {
+		return false
+	}
+	if snap.ai != nil {
+		a.setStage(inv, InvestigationAnalyzing, "DeepSeek AI 深入分析", 80)
+		verified, analysis := snap.ai.DeepAnalyze(ctx, inv, inv.Target)
+		if analysis == nil {
+			return false
+		}
+		a.setField(inv, func(i *Investigation) { i.AI = analysis })
+		if len(verified) > 0 {
+			a.setField(inv, func(i *Investigation) { i.Findings = append(i.Findings, verified...) })
+		}
+		return true
+	}
+	if !snap.deepseek.Configured() {
 		return false
 	}
 	a.setStage(inv, InvestigationAnalyzing, "DeepSeek AI 分析", 80)

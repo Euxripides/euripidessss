@@ -1,0 +1,13 @@
+{
+  "bug_id": "BUG-003",
+  "title": "/api/analytics/addresses/profile addr_file 未校验 → 任意文件读取 + 2 个 DoS 面",
+  "severity": "high",
+  "module": "internal/analyticsapi/service.go",
+  "root_cause": "addr_file 请求体字段直接进 read_csv()：1) 可读服务器任意文件（如 backend/data/dune/auth.json 凭证）；2) 每次请求 spawn duckdb CLI 全量 JOIN 无缓存（DoS）；3) 单地址长度无限制，500×超长字符串可超 Windows 32K 命令行上限",
+  "impact": "公开端点（无认证）可被用于读取服务器任意 CSV/文本文件、反复触发高开销查询、构造超长命令行拒绝服务",
+  "fix": "1) Handler.validateAddrFile：拒绝绝对路径/..穿越/通配符，仅允许数据根目录内相对路径（NewHandler 推导 allowedDataRoot）；2) 合法相对路径解析为数据目录内绝对路径；3) batchWantSQL 跳过 >64 字符地址，全非法返回错误；4) json() 错误信息截断 300 字符防内部路径回显",
+  "files_changed": ["internal/analyticsapi/service.go", "internal/analyticsapi/service_test.go"],
+  "test": "TestValidateAddrFile（绝对/穿越/深层穿越/通配符拒绝 + 合法放行）6 断言；TestBatchProfiles_Validation 新增超长地址跳过/全非法报错；真实服务：绝对路径 400、穿越 400、合法路径 200",
+  "status": "fixed",
+  "closed_at": "2026-08-02"
+}

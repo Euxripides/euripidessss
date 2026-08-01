@@ -54,6 +54,12 @@ func (r *ReportAgent) generateMarkdown(inv *Investigation) string {
 	// 一、调查计划
 	b.WriteString("## 一、调查计划\n\n")
 	if inv.Plan != nil {
+		if inv.Strategy != nil {
+			b.WriteString(fmt.Sprintf("- AI 策略：%s（置信度 %.2f）\n", inv.Strategy.Strategy, inv.Strategy.Confidence))
+			if inv.Strategy.Rationale != "" {
+				b.WriteString(fmt.Sprintf("- 策略理由：%s\n", inv.Strategy.Rationale))
+			}
+		}
 		for _, t := range inv.Plan.Tasks {
 			b.WriteString(fmt.Sprintf("- [%s] %s\n", t.Type, t.Description))
 		}
@@ -150,8 +156,33 @@ func (r *ReportAgent) generateMarkdown(inv *Investigation) string {
 			obsCounts[ObsNewAddress], obsCounts[ObsNewPath], obsCounts[ObsNewTransaction], obsCounts[ObsRiskEvent]))
 	}
 
-	// 七、AI 分析
-	b.WriteString("\n## 七、AI 分析\n\n")
+	// 七、调查假设与已验证发现（§7/§12）
+	b.WriteString("\n## 七、调查假设与已验证发现\n\n")
+	if len(inv.Hypotheses) > 0 {
+		for _, h := range inv.Hypotheses {
+			b.WriteString(fmt.Sprintf("- [%s] %s（置信度 %.2f，来源 %s）\n", h.Status, h.Title, h.Confidence, h.Source))
+			if h.Description != "" {
+				b.WriteString(fmt.Sprintf("  - %s\n", h.Description))
+			}
+			if h.Note != "" {
+				b.WriteString(fmt.Sprintf("  - 状态说明：%s\n", h.Note))
+			}
+		}
+	} else {
+		b.WriteString("- 未生成调查假设\n")
+	}
+	if len(inv.Findings) > 0 {
+		b.WriteString("\n已验证发现（Evidence Guard）：\n")
+		for _, vf := range inv.Findings {
+			b.WriteString(fmt.Sprintf("- [%s] %s（%s，置信度 %.2f）：%s\n", vf.Status, vf.Finding.Type, shortAddr(vf.Finding.Address), vf.Finding.Confidence, vf.Finding.Detail))
+			if len(vf.Finding.Evidence) > 0 {
+				b.WriteString(fmt.Sprintf("  - 证据：%s\n", strings.Join(vf.Finding.Evidence, ", ")))
+			}
+		}
+	}
+
+	// 八、AI 分析
+	b.WriteString("\n## 八、AI 分析\n\n")
 	if inv.AI != nil {
 		b.WriteString(fmt.Sprintf("### 总结\n%s\n\n", inv.AI.Summary))
 		if len(inv.AI.Insights) > 0 {
@@ -174,8 +205,8 @@ func (r *ReportAgent) generateMarkdown(inv *Investigation) string {
 		b.WriteString("- 未启用 AI 分析\n")
 	}
 
-	// 八、证据与结论
-	b.WriteString("\n## 八、调查结论\n\n")
+	// 九、证据与结论
+	b.WriteString("\n## 九、调查结论\n\n")
 	if inv.Memory != nil && len(inv.Memory.Conclusions) > 0 {
 		for _, c := range inv.Memory.Conclusions {
 			b.WriteString(fmt.Sprintf("- %s\n", c))
