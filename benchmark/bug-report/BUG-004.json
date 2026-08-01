@@ -1,0 +1,14 @@
+{
+  "bug_id": "BUG-004",
+  "title": "max_tokens=2000 对推理模型 deepseek-v4-flash 不足 → AI 深入分析/假设输出截断为空 → 解析失败，报告 AI 章节为空",
+  "severity": "medium",
+  "module": "internal/intelligence/{types,deepseek_client}.go",
+  "root_cause": "deepseek-v4-flash 含推理阶段（reasoning_content 消耗 completion tokens）；max_tokens=2000 时推理占满额度后 content 被截断（finish_reason=length）甚至为空，ResponseParser 严格校验拒绝 → 假设生成与 AI 深入分析解析失败（ai_hypothesis_failed_keep_rule / ai_deep_analysis_parse_failed），调查报告 AI 章节总结为空、模型名为空",
+  "impact": "AI 深入分析（DEEP_ANALYSIS/收尾）与 AI 假设细化在真实调用中经常失败，报告 AI 章节内容缺失",
+  "reproduce": "配置 DEEPSEEK_API_KEY 后启动真实调查：日志 completion_tokens=2000/2001 触顶，ai_deep_analysis_parse_failed；调查报告 ## 八、AI 分析 章节为空",
+  "fix": "1) DefaultConfig.MaxTokens 2000→4096（推理模型输出额度）2) chatResponse 解析 finish_reason，content 为空或 finish_reason=length 时记录 deepseek_output_truncated_or_empty 警告日志",
+  "files_changed": ["internal/intelligence/types.go", "internal/intelligence/deepseek_client.go"],
+  "test": "intelligence 包全部测试通过；真实调查复测：ai_summary=1458 字符、5 条发现全部 VERIFIED（含 tx 证据）、5 条洞察、AI 策略 deep_probe",
+  "status": "fixed",
+  "closed_at": "2026-08-02"
+}

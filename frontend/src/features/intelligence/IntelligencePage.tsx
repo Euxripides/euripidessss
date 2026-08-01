@@ -584,22 +584,121 @@ export default function IntelligencePage() {
                   {
                     key: "ai",
                     label: "AI 助手",
-                    children: current.ai_analysis ? (
+                    children: current.ai_analysis || current.hypotheses?.length || current.findings?.length || current.ai_suggestion ? (
                       <Collapse
                         size="small"
                         items={[
                           {
+                            key: "suggestion",
+                            label: "AI 下一步建议",
+                            children: current.ai_suggestion ? (
+                              <Space direction="vertical" style={{ width: "100%" }}>
+                                <Space wrap>
+                                  <Tag color={DECISION_TAG[current.ai_suggestion.action] ?? "default"}>
+                                    {current.ai_suggestion.action}
+                                  </Tag>
+                                  <Text type="secondary">置信度 {(current.ai_suggestion.confidence ?? 0).toFixed(2)}</Text>
+                                  <Text type="secondary">来源 {current.ai_suggestion.source}</Text>
+                                </Space>
+                                <List
+                                  size="small"
+                                  dataSource={current.ai_suggestion.reasons ?? []}
+                                  renderItem={(r) => (
+                                    <List.Item>
+                                      <Text type="secondary">• {r}</Text>
+                                    </List.Item>
+                                  )}
+                                />
+                              </Space>
+                            ) : (
+                              <Text type="secondary">暂无 AI 建议</Text>
+                            ),
+                          },
+                          {
+                            key: "hypotheses",
+                            label: `调查假设 (${current.hypotheses?.length ?? 0})`,
+                            children:
+                              (current.hypotheses?.length ?? 0) > 0 ? (
+                                <List
+                                  size="small"
+                                  dataSource={current.hypotheses}
+                                  renderItem={(h) => (
+                                    <List.Item>
+                                      <Space direction="vertical" style={{ width: "100%" }}>
+                                        <Space wrap>
+                                          <Tag color={h.status === "evaluated" ? "green" : h.status === "verifying" ? "processing" : "default"}>
+                                            {h.status}
+                                          </Tag>
+                                          <Text strong>{h.title}</Text>
+                                          <Tag color={h.source === "ai" ? "purple" : "blue"}>{h.source}</Tag>
+                                          <Text type="secondary">置信度 {(h.confidence ?? 0).toFixed(2)}</Text>
+                                        </Space>
+                                        <Text type="secondary">{h.description}</Text>
+                                        {(h.tasks?.length ?? 0) > 0 && (
+                                          <Space wrap size={4}>
+                                            {h.tasks.map((t, i) => (
+                                              <Tag key={i} color="geekblue">
+                                                {t.type}
+                                              </Tag>
+                                            ))}
+                                          </Space>
+                                        )}
+                                        {h.note && <Text type="secondary">状态说明：{h.note}</Text>}
+                                      </Space>
+                                    </List.Item>
+                                  )}
+                                />
+                              ) : (
+                                <Text type="secondary">暂无调查假设</Text>
+                              ),
+                          },
+                          {
+                            key: "findings",
+                            label: `已验证发现 (${current.findings?.length ?? 0})`,
+                            children:
+                              (current.findings?.length ?? 0) > 0 ? (
+                                <List
+                                  size="small"
+                                  dataSource={current.findings}
+                                  renderItem={(vf) => (
+                                    <List.Item>
+                                      <Space direction="vertical" style={{ width: "100%" }}>
+                                        <Space wrap>
+                                          <Tag color={vf.status === "VERIFIED" ? "green" : vf.status === "REJECTED" ? "red" : "orange"}>
+                                            {vf.status}
+                                          </Tag>
+                                          <Text code>{vf.finding.type}</Text>
+                                          <Text type="secondary">置信度 {(vf.finding.confidence ?? 0).toFixed(2)}</Text>
+                                        </Space>
+                                        <Text>{vf.finding.detail}</Text>
+                                        {(vf.finding.evidence?.length ?? 0) > 0 && (
+                                          <Text type="secondary" style={{ fontSize: 12 }}>
+                                            证据：{vf.finding.evidence.join(", ")}
+                                          </Text>
+                                        )}
+                                        <Text type="secondary" style={{ fontSize: 12 }}>
+                                          {vf.reason}
+                                        </Text>
+                                      </Space>
+                                    </List.Item>
+                                  )}
+                                />
+                              ) : (
+                                <Text type="secondary">暂无已验证发现</Text>
+                              ),
+                          },
+                          {
                             key: "summary",
                             label: "资金行为总结",
-                            children: <Paragraph>{current.ai_analysis.summary}</Paragraph>,
+                            children: <Paragraph>{current.ai_analysis?.summary}</Paragraph>,
                           },
                           {
                             key: "insights",
-                            label: `洞察 (${current.ai_analysis.insights?.length ?? 0})`,
+                            label: `洞察 (${current.ai_analysis?.insights?.length ?? 0})`,
                             children: (
                               <List
                                 size="small"
-                                dataSource={current.ai_analysis.insights ?? []}
+                                dataSource={current.ai_analysis?.insights ?? []}
                                 renderItem={(i) => <List.Item>{i}</List.Item>}
                               />
                             ),
@@ -610,7 +709,7 @@ export default function IntelligencePage() {
                             children: (
                               <List
                                 size="small"
-                                dataSource={current.ai_analysis.suggestions ?? []}
+                                dataSource={current.ai_analysis?.suggestions ?? []}
                                 renderItem={(s) => <List.Item>{s}</List.Item>}
                               />
                             ),
@@ -664,18 +763,41 @@ export default function IntelligencePage() {
                     key: "plan",
                     label: "调查计划",
                     children: current.plan ? (
-                      <List
-                        size="small"
-                        dataSource={current.plan.tasks ?? []}
-                        renderItem={(t) => (
-                          <List.Item>
-                            <Space>
-                              <Tag color="blue">{t.type}</Tag>
-                              <Text>{t.description}</Text>
+                      <Space direction="vertical" style={{ width: "100%" }}>
+                        {current.strategy && (
+                          <Card size="small" title="AI 调查策略">
+                            <Space direction="vertical" style={{ width: "100%" }}>
+                              <Space wrap>
+                                <Tag color="purple">{current.strategy.strategy}</Tag>
+                                <Text type="secondary">置信度 {(current.strategy.confidence ?? 0).toFixed(2)}</Text>
+                              </Space>
+                              {current.strategy.rationale && <Text>{current.strategy.rationale}</Text>}
+                              {(current.strategy.tasks?.length ?? 0) > 0 && (
+                                <Space wrap>
+                                  {current.strategy.tasks.map((t, i) => (
+                                    <Tag key={i} color="geekblue">
+                                      {t.type}
+                                      {t.target ? ` (${t.target.slice(0, 8)}…)` : ""}
+                                    </Tag>
+                                  ))}
+                                </Space>
+                              )}
                             </Space>
-                          </List.Item>
+                          </Card>
                         )}
-                      />
+                        <List
+                          size="small"
+                          dataSource={current.plan.tasks ?? []}
+                          renderItem={(t) => (
+                            <List.Item>
+                              <Space>
+                                <Tag color="blue">{t.type}</Tag>
+                                <Text>{t.description}</Text>
+                              </Space>
+                            </List.Item>
+                          )}
+                        />
+                      </Space>
                     ) : (
                       <Text type="secondary">暂无计划</Text>
                     ),

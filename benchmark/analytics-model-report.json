@@ -121,7 +121,7 @@
         "n": 1031
       }
     ],
-    "daily_query_ms": 72,
+    "daily_query_ms": 37,
     "daily_top": [
       {
         "address": "0x55d398326f99059ff775485246999027b3197955",
@@ -149,7 +149,7 @@
         "n": 2362
       }
     ],
-    "interaction_query_ms": 74,
+    "interaction_query_ms": 40,
     "top_interactions": [
       {
         "counterparty": "0x6eb6dd5d939f701906587287f24610e35913458f",
@@ -205,7 +205,7 @@
   },
   "token_flow": {
     "edge_count": 49031,
-    "edges_query_ms": 454,
+    "edges_query_ms": 394,
     "large_transfers_p95": [
       {
         "amount": "126635705779558761041477",
@@ -312,11 +312,11 @@
         "net": 220
       },
       {
-        "address": "0xccdd127594f24bf3a6ec08e5ea793203a8941540",
+        "address": "0x82ea37296171b3f06702b0a6e0671172f79910ba",
         "net": 209
       },
       {
-        "address": "0x82ea37296171b3f06702b0a6e0671172f79910ba",
+        "address": "0xccdd127594f24bf3a6ec08e5ea793203a8941540",
         "net": 209
       }
     ],
@@ -558,15 +558,15 @@
   },
   "performance": {
     "profile_10000_addr": {
-      "query_ms": 93,
+      "query_ms": 42,
       "rows": 34537
     },
     "profile_1000_addr": {
-      "query_ms": 89,
+      "query_ms": 36,
       "rows": 28549
     },
     "profile_50000_addr": {
-      "query_ms": 106,
+      "query_ms": 47,
       "rows": 43584
     }
   },

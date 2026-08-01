@@ -309,6 +309,115 @@ func TestAPI_Concurrency(t *testing.T) {
 	}
 }
 
+// TestBatchProfiles_Validation 回归：addresses 与 addr_file 都空时拒绝；
+// addresses 走 VALUES 内联（不产生 read_csv('') 读 stdin 的 OOM 路径）。
+func TestBatchProfiles_Validation(t *testing.T) {
+	// 1. 两者都空 → 错误（修复前：read_csv('') 读标准输入 → JOIN 爆炸 → 服务 OOM）
+	if _, err := batchWantSQL(nil, ""); err == nil {
+		t.Fatal("addresses 与 addr_file 都为空时必须返回错误")
+	}
+	if _, err := batchWantSQL(nil, "  "); err == nil {
+		t.Fatal("空白 addr_file 视为缺失，必须返回错误")
+	}
+
+	// 2. addresses 内联 VALUES，禁止 read_csv
+	sql, err := batchWantSQL([]string{"0xABC", "0xDEF'"}, "")
+	if err != nil {
+		t.Fatalf("addresses 应生成 VALUES SQL: %v", err)
+	}
+	if !strings.Contains(sql, "VALUES") {
+		t.Errorf("addresses 分支应使用 VALUES 内联: %s", sql)
+	}
+	if strings.Contains(sql, "read_csv") {
+		t.Errorf("addresses 分支禁止 read_csv（空路径会读 stdin）: %s", sql)
+	}
+	if !strings.Contains(sql, "('0xabc')") || !strings.Contains(sql, "('0xdef''')") {
+		t.Errorf("地址应小写化并转义单引号: %s", sql)
+	}
+
+	// 3. addr_file 分支保留 read_csv（有真实路径，且转义防注入）
+	sql, err = batchWantSQL(nil, `E:\tmp\addr.csv`)
+	if err != nil {
+		t.Fatalf("addr_file 应生成 read_csv SQL: %v", err)
+	}
+	if !strings.Contains(sql, "read_csv('E:/tmp/addr.csv'") {
+		t.Errorf("addr_file 路径应归一化为正斜杠: %s", sql)
+	}
+	// 单引号路径必须被转义（防 SQL 注入/任意文件读取）
+	sql, err = batchWantSQL(nil, `E:\x' OR 1=1 --`)
+	if err != nil {
+		t.Fatalf("addr_file 转义: %v", err)
+	}
+	if strings.Count(sql, "'")%2 != 0 || !strings.Contains(sql, "''") {
+		t.Errorf("addr_file 单引号必须成对转义（偶数个引号）: %s", sql)
+	}
+
+	// 4. 超量截断：>500 只保留前 500（Windows 命令行 32K 限制）
+	big := make([]string, 800)
+	for i := range big {
+		big[i] = "0x1"
+	}
+	sql, err = batchWantSQL(big, "")
+	if err != nil {
+		t.Fatalf("超量地址应被截断: %v", err)
+	}
+	if strings.Count(sql, "('0x1')") != 500 {
+		t.Errorf("超量地址应截断到 500: %s", sql)
+	}
+
+	// 5. addrFile 与 addresses 同时提供时优先 addrFile（命令短，避免超长命令行）
+	sql, err = batchWantSQL([]string{"0x1"}, `E:\tmp\addr.csv`)
+	if err != nil {
+		t.Fatalf("addrFile 优先: %v", err)
+	}
+	if !strings.Contains(sql, "read_csv") || strings.Contains(sql, "VALUES") {
+		t.Errorf("addrFile 存在时应优先 read_csv 而非 VALUES: %s", sql)
+	}
+
+	// 6. 超长地址被跳过（防命令行长度 DoS）；全部非法时返回错误
+	sql, err = batchWantSQL([]string{strings.Repeat("a", 100), "0xabc"}, "")
+	if err != nil {
+		t.Fatalf("超长地址应被跳过: %v", err)
+	}
+	if strings.Contains(sql, strings.Repeat("a", 100)) || !strings.Contains(sql, "('0xabc')") {
+		t.Errorf("超长地址应跳过且保留合法地址: %s", sql)
+	}
+	if _, err := batchWantSQL([]string{strings.Repeat("a", 100)}, ""); err == nil {
+		t.Fatal("全部地址非法时应返回错误")
+	}
+}
+
+// TestValidateAddrFile 回归：addr_file 路径安全校验（防任意文件读取）。
+func TestValidateAddrFile(t *testing.T) {
+	engine := duckdb.Open(filepath.Join("..", ".."), filepath.Join("..", "..", "stress-data", "bsc_real"), duckdb.AnalyticsConfig{})
+	h := NewHandler(engine, filepath.Join("..", "..", "stress-data", "bsc_real", "sqd-200k-warehouse", "logs.parquet"))
+
+	// 合法：数据目录内相对路径
+	if err := h.validateAddrFile("sqd-200k-warehouse/bench-addr-1000.csv"); err != nil {
+		t.Errorf("合法相对路径应通过: %v", err)
+	}
+	// 空值放行（Handler 层已先校验必填）
+	if err := h.validateAddrFile(""); err != nil {
+		t.Errorf("空值应放行: %v", err)
+	}
+	// 绝对路径拒绝
+	abs, _ := filepath.Abs(".")
+	if err := h.validateAddrFile(abs); err == nil {
+		t.Error("绝对路径必须拒绝")
+	}
+	// 路径穿越拒绝
+	if err := h.validateAddrFile(`..\..\backend\data\dune\auth.json`); err == nil {
+		t.Error("路径穿越必须拒绝")
+	}
+	if err := h.validateAddrFile(`..\..\..\Windows\win.ini`); err == nil {
+		t.Error("深层穿越必须拒绝")
+	}
+	// 通配符拒绝
+	if err := h.validateAddrFile(`sqd-200k-warehouse\*.csv`); err == nil {
+		t.Error("通配符必须拒绝")
+	}
+}
+
 func loadAddresses(path string, max int) ([]string, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {

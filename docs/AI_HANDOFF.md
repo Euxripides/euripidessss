@@ -1,3 +1,98 @@
+## 2026-08-02 V2.1 RC2 全链路真实调查系统验收测试（Full System Real Data Acceptance Test）
+
+### 本次完成
+
+按《V2.1_RC2_全链路真实调查系统验收测试方案》完成全功能验收并修复 3 个 bug（详见 `benchmark/full-system-report.md` / `benchmark/bug-report/BUG-001..003.json`）：
+
+- **服务环境**：健康检查 200、DuckDB v1.5.3、前端 build 通过（3908 modules）
+- **数据资产链路（§6）**：49031 行全链路一致（source=parsed=unique=parquet=duckdb），checksum 有效，dup=0
+- **DuckDB 分析引擎（§7）**：12 场景全 PASS；50K 地址 SEMI JOIN 44ms（<1s），10 并发 75ms 无错误
+- **SQD 真实采集可靠性（§4）**：TestSQD10KStability 100/100 chunks（3m8.7s）；chunk 71 触发公共 SQD 503 → cooldown 1m → 重试成功；0 丢失 0 重复（应用层唯一化）
+- **分析模块（§8-13）**：画像 5/5、余额 3/3（50K 25ms）、图谱 PASS（15595 节点/21693 边/PageRank/796 簇）、investigation/casefile PASS
+- **智能调查闭环（§15-17）**：inv-1（0xdead）COMPLETED：10 路径（含 tx_hash/block/token/amount）/21 实体/2 风险模式/假设如实标记/三格式报告
+- **API 服务（§14）**：40+ 端点冒烟全通；100 并发错误率 0%（avg 58ms）；错误处理（400/404/500）正确
+- **DeepSeek（§18）**：`DEEPSEEK_API_KEY` 配置后**真实调用已验证**：AI 规划（deep_probe，conf 0.65 + 5 任务）、AI 建议（STOP conf 0.95）、AI 深入分析（5 条发现**全部 VERIFIED** 含 tx 证据、5 条洞察、summary 1458 字符）；4 次调用全部 200（deepseek-v4-flash）；无 key 时优雅降级，规则引擎兜底；AI 链路由单测覆盖 78.4%
+
+### 修复的 Bug（代码审查 + 安全审查驱动）
+
+| Bug | 严重度 | 根因 | 修复 |
+|-----|--------|------|------|
+| **BUG-001** | critical | `BatchProfiles` 忽略 addresses 参数、空 addr_file 生成 `read_csv('')` → DuckDB CLI 回退读标准输入 → LEFT JOIN 结果爆炸 → 32 位进程 OOM fatal（任意客户端可触发崩溃，DoS） | 拆出 `batchWantSQL` 纯函数：addresses 走 VALUES 内联（quoteSQLString 转义）、addrFile 走 read_csv、都空返回错误；Handler 空参数 400；回归 `TestBatchProfiles_Validation` |
+| **BUG-002** | high | VALUES 内联 1000 地址（≈48KB SQL）超 Windows CreateProcess 32K 命令行上限，`fork/exec too long` | addrFile 优先（命令行短）；VALUES 分支截断 500；回归断言同步（500/优先/转义） |
+| **BUG-003** | high | addr_file 请求体字段未校验直接进 read_csv：任意文件读取（如 dune/auth.json）+ 无缓存 DoS + 超长地址撑爆命令行 | `Handler.validateAddrFile`（拒绝绝对路径/`..`穿越/通配符，仅允许数据根目录内相对路径）；相对路径解析为绝对路径；>64 字符地址跳过；`json()` 错误截断 300 字符；回归 `TestValidateAddrFile` |
+| **BUG-004** | medium | `max_tokens=2000` 对推理模型 deepseek-v4-flash 不足：推理阶段占满额度后 content 被截断（finish_reason=length）甚至为空 → ResponseParser 严格校验拒绝 → AI 深入分析/假设生成失败，报告 AI 章节为空 | `DefaultConfig.MaxTokens` 2000→4096；chatResponse 解析 finish_reason + content 为空/截断时记录 `deepseek_output_truncated_or_empty` 警告；真实调查复测 AI 分析完整（5 发现全 VERIFIED） |
+
+### 修改文件
+
+- `internal/analyticsapi/service.go` — batchWantSQL / validateAddrFile / NewHandler(allowedDataRoot) / 400 预检 / json() 错误截断
+- `internal/analyticsapi/service_test.go` — TestBatchProfiles_Validation（6 项断言）+ TestValidateAddrFile（6 项断言）
+- `internal/intelligence/types.go` — DefaultConfig.MaxTokens 2000→4096（BUG-004）
+- `internal/intelligence/deepseek_client.go` — finish_reason 解析 + 截断检测日志（BUG-004）
+- `benchmark/bug-report/BUG-001..004.json` — Bug 记录闭环（§19）
+- `benchmark/full-system-report.md` / `.json` — 验收报告（§22，含 DeepSeek 真实调用验证）
+
+### 已验证
+
+- `go test ./... -short -count=1` 38 包零回归（修复后）；`go vet ./internal/...` 零警告
+- `go test ./internal/analyticsapi/ -count=1` 全过：真实数据正确性/缓存/性能（批量 50K 145ms <1s）/并发 100 零错误 + 2 个新回归
+- 真实服务复测：addresses 200 正确、空参数 400、绝对路径/穿越 400、合法 addr_file 200、600 地址正常
+- 100 并发压力：100/100 HTTP 200，错误率 0%，avg 58ms
+- SQD 10K 真实下载 PASS（503 恢复、0 丢失 0 重复）
+- **DeepSeek 真实调用端到端**：4 次调用全部 200；AI 规划 deep_probe；AI 建议 STOP conf 0.95；AI 深入分析 5 发现**全部 VERIFIED**（Evidence Guard tx 证据）+ 5 洞察 + summary 1458 字符；记忆固化完整
+
+### 未完成事项与边界
+
+- DeepSeek 真实调用已验证（需配置 `DEEPSEEK_API_KEY`）；AI 链路由单测覆盖（intelligence 78.4%）+ 真实端到端（AI 规划/建议/深入分析 5/5 VERIFIED）
+- 真实数据验证测试（标记文件 `.xxx.enabled`）启用后需**串行**运行（`go test -p 1` 或逐包），并行会因 DuckDB 文件锁冲突——测试基建已知限制，默认 `go test ./... -short` 不受影响
+- 服务为 windows/386 32 位构建，大结果集 JSON 编码有 ~2GB 地址空间上限（BUG-001 触发路径已封死；批量接口 500 地址/64 字符上限，建议后续迁移 64 位构建）
+- 公共 SQD 端点约每 300 连续流触发 503 冷却（Reliability Layer 自动恢复，本测试 1 次，行为符合预期）
+
+## 2026-08-02 V2.1 RC2 DeepSeek 驱动自主调查 Agent（AI Driven Investigation Agent）
+
+### 本次完成
+
+按《V2.1 RC2 DeepSeek驱动自主调查Agent设计方案》实现 AI 驱动调查层（此前 AI 仅负责解释，规划依赖规则）：
+
+- **Planner Agent**（`planner_agent.go`，§5）：AI 生成调查策略（strategy + 结构化任务，含优先级/理由/置信度），输出经严格 JSON 校验；AI 未配置/失败/输出非法时规则回退，调查不中断
+- **Hypothesis Agent**（`hypothesis_agent.go`，§7）：5 类风险模式规则触发假设（资金分层/多地址拆分/归集/大额进入/快速清空，各带验证任务）+ AI 细化假设；验证任务经类型/地址过滤进入下一轮任务队列
+- **Analysis Agent**（`analysis_agent.go`，§8）：DEEP_ANALYSIS 升级为多角色（AML Analyst）深入分析 → 生成结构化发现（类型/置信度/证据）→ Evidence Guard 验证
+- **Evidence Guard**（`evidence_guard.go`，§12）：AI 发现必须经链上数据验证——tx 证据命中 FlowSource 资金流 → `VERIFIED`，不匹配 → `REJECTED`，缺证据/地址/数据源 → `UNVERIFIED`；仅 VERIFIED 发现进入报告与记忆
+- **Prompt Builder**（`prompt_builder.go`，§10/§17）：多角色提示词（Investigator / AML Analyst / Forensic Analyst / Report Writer），全部要求严格 JSON 输出，`PromptVersion v1.0` 版本管理
+- **Response Parser**（`response_parser.go`，§11/§17）：JSON 提取（容忍 Markdown 围栏）+ 任务类型白名单 + 置信度钳制 0-1 + 地址归一化 + 非法输出拒绝
+- **AI Memory**（`ai_memory.go`，§13）：5 类记忆（历史调查/地址判断/风险模式/AI 结论/人工反馈），JSON 原子持久化（`backend/data/ai_memory/ai_memory.json`），目标优先摘要进上下文
+- **AIAgent 编排**（`ai_agent.go`，§3/§17）：Plan/Hypothesize/DeepAnalyze/Suggest + 每调查调用限额（`max_ai_calls`）+ 完成时记忆固化（Remember/SaveMemory）
+- **DeepSeek 客户端**（`deepseek_client.go`，§15/§17）：通用 `Chat(system,user)` + `max_tokens` 输出上限 + 请求/Token 用量结构化日志
+- **闭环集成**（`loop_engine.go`）：第 1 轮 AI 规划（`inv.strategy`）；每轮观察后生成假设→验证任务入下一轮队列→决策引擎 `PendingVerifications` 续查（§6：AI 建议 → 规则引擎验证）；决策后记录 AI 建议（`ai_suggestion`，规则引擎仍为最终裁决）；收尾 AI 最终分析（含证据验证发现）+ 假设状态收尾
+- **报告**（§18）：新增「七、调查假设与已验证发现」章节（假设状态/置信度/验证任务 + VERIFIED 发现与证据）；计划章节展示 AI 策略
+- **前端**（§16）：AI 助手页签新增「AI 下一步建议 / 调查假设（状态·置信度·来源·验证任务）/ 已验证发现（VERIFIED·证据）」面板；调查计划页签新增 AI 策略卡片
+
+### 修复（代码审查后 — 3 项 should-fix）
+
+- **AI 调用配额饥饿**：默认 `max_ai_calls=5` 在 3 轮调查下（计划+每轮假设+每轮建议+收尾深入分析）导致第 3 轮与最终 AI 分析必然被拒 → 默认提升至 **10**（8 次典型消耗内），`allowCall` 仍按调查独立计数
+- **假设状态虚假标记**：调查提前结束时验证任务被丢弃，但假设一律标记「已执行完毕」→ 假设新增 `TaskIDs`（入队时回写，不序列化），收尾按任务真实状态门控：全部 `done` → 「验证任务已执行完毕」；未入队/未完成 → 「验证任务未执行（调查提前结束）」；新增 `TestLoopHypothesisEarlyExit` 回归
+- **AI 记忆并发 last-writer-wins**：每次 Start rebuild 重建 AIMemoryStore + 并发 Save 整文件覆盖 → 代理持有**共享 AIMemoryStore 实例**（`NewAIAgentWithStore`，rebuild 复用）+ Save 加 `saveMu` 串行化
+- 附带修复：历史记忆重复注入上下文（改为仅 `ctx.History` 单路）；`NewAgent` 缺失 `MaxTokens` 透传；`callCount` 调查完成后清理（防 map 增长）；规则阈值地址判断来源标记 `rule`（非 `ai`）；`NewAIAgentWithStore` 容忍 nil 存储
+
+### 修改文件
+
+- 新增：`internal/intelligence/{planner_agent,hypothesis_agent,analysis_agent,ai_agent,prompt_builder,response_parser,evidence_guard,ai_memory}.go` + `ai_agent_test.go`
+- 修改：`internal/intelligence/{types,deepseek_client,loop_engine,investigation_agent,api_handler,report_agent,decision_engine,ai_memory}.go`
+- 前端：`frontend/src/features/intelligence/{intelligenceApi.ts,IntelligencePage.tsx}`
+
+### 已验证
+
+- `go vet ./internal/...` 零警告；`go test ./... -short -count=1` 38 包零回归
+- `go test ./internal/intelligence/` 全部通过（新增 15 用例），覆盖率 74.2% → **78.4%**
+- 闭环集成测试：AI 策略生成 → 假设验证任务执行 → `VERIFIED` 发现 → AI 建议 → 记忆固化全链路；提前结束假设如实标记（新增回归）
+- 前端 `npm run build` 通过（3908 modules）
+
+### 未完成事项与边界
+
+- 设计文档的 `internal/intelligence/aiagent/` 子目录以**同包文件**实现（避免子包与父包闭环 import 环），模块清单一一对应
+- AI 建议（Suggestion）当前为**建议性**记录：规则 Decision Engine 仍为最终裁决（§6 验证语义）；AI 建议直接改写决策动作尚未开放
+- API Key 加密存储未实现（沿用环境变量 `DEEPSEEK_API_KEY`，与本机部署一致）；人工反馈记忆（`MemUserFeedback`）类型已预留，写入入口待前端人工标注接入
+- 真实 DeepSeek 调用需网络可达 api.deepseek.com；`max_ai_calls` 默认 10 限制每调查调用次数（计划 1 + 假设/建议/深入按轮消耗）
+
 ## 2026-08-01 V2.1 RC2 智能调查闭环与自主决策引擎（Investigation Loop）
 
 ### 本次完成

@@ -135,6 +135,57 @@ export interface RoundRecord {
   finished_at: string;
 }
 
+// ── AI 驱动调查（V2.1 RC2 DeepSeek 驱动自主调查 Agent）──
+
+export interface AITask {
+  type: string;
+  priority: number;
+  target?: string;
+  reason?: string;
+}
+
+export interface AIStrategy {
+  strategy: string;
+  tasks: AITask[];
+  rationale: string;
+  confidence: number;
+}
+
+export interface AIFinding {
+  type: string;
+  address?: string;
+  detail: string;
+  confidence: number;
+  evidence: string[];
+}
+
+export interface VerifiedFinding {
+  finding: AIFinding;
+  status: string; // VERIFIED / REJECTED / UNVERIFIED
+  reason: string;
+  verified_at: string;
+}
+
+export interface AIHypothesis {
+  id: string;
+  title: string;
+  description: string;
+  confidence: number;
+  source: string; // rule / ai
+  status: string; // proposed / verifying / evaluated
+  tasks: AITask[];
+  note?: string;
+  created_at: string;
+}
+
+export interface AISuggestion {
+  action: string; // EXPAND / STOP / DEEP_ANALYSIS / VERIFY
+  target?: string;
+  reasons: string[];
+  confidence: number;
+  source: string;
+}
+
 export interface Investigation {
   id: string;
   target: string;
@@ -159,6 +210,10 @@ export interface Investigation {
   decision?: Decision;
   stop_reason?: string;
   completed_at?: string;
+  strategy?: AIStrategy;
+  hypotheses?: AIHypothesis[];
+  findings?: VerifiedFinding[];
+  ai_suggestion?: AISuggestion;
 }
 
 export interface IntelligenceConfig {
@@ -174,6 +229,8 @@ export interface IntelligenceConfig {
   max_runtime_ms: number;
   max_addresses: number;
   expansion_threshold: number;
+  max_tokens: number;
+  max_ai_calls: number;
 }
 
 export async function startInvestigation(target: string, chainId?: string, config?: Partial<IntelligenceConfig>): Promise<Investigation | null> {

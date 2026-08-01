@@ -1,0 +1,14 @@
+{
+  "bug_id": "BUG-002",
+  "title": "BatchProfiles VALUES 内联 1000 地址超 Windows 命令行 32K 限制（fork/exec too long）",
+  "severity": "high",
+  "module": "internal/analyticsapi/service.go",
+  "root_cause": "batchWantSQL 优先用 addresses 生成 VALUES 内联 SQL；1000 地址 × 约 48 字符/个 ≈ 48KB，超过 Windows CreateProcess 32767 字符命令行上限，duckdb.exe fork/exec 失败",
+  "impact": "批量画像（仅传 addresses 数组或同时传 addr_file）在 1000 地址规模必然失败；用户传超大数组时服务返回 500",
+  "reproduce": "go test ./internal/analyticsapi/ -run TestAPI_Perf（修复前失败：fork/exec duckdb.exe: The filename or extension is too long）",
+  "fix": "1) addrFile 非空时优先 read_csv（命令行短）2) VALUES 内联分支截断到 500（≈24KB 安全线）",
+  "files_changed": ["internal/analyticsapi/service.go", "internal/analyticsapi/service_test.go"],
+  "test": "TestBatchProfiles_Validation 新增 addrFile 优先与 500 截断断言；TestAPI_Perf 1000/10000/50000 全过（43/67/145ms）",
+  "status": "fixed",
+  "closed_at": "2026-08-02"
+}

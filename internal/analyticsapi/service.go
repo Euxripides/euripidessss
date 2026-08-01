@@ -5,6 +5,7 @@ package analyticsapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -25,6 +26,11 @@ const (
 	transferFilter   = "topic0 IN ('" + TransferTopic + "','" + TransferSingle + "','" + TransferBatch + "')"
 	normalizeTopic   = `CASE WHEN length(%[1]s) = 66 THEN '0x' || substr(%[1]s, 27) ELSE %[1]s END`
 )
+
+// quoteSQLString 转义 SQL 单引号字符串字面量。
+func quoteSQLString(s string) string {
+	return `'` + strings.ReplaceAll(s, `'`, `''`) + `'`
+}
 
 // Profile 是地址画像响应。
 type Profile struct {
@@ -310,14 +316,46 @@ func (s *Service) Risk(ctx context.Context, address string) (*Risk, error) {
 	return r, nil
 }
 
+// batchWantSQL 构造批量画像的 want 表子查询。
+// 优先 addr_file CSV（命令行短，避免 Windows 32K 命令行长度限制），否则内联请求体 addresses（VALUES）；
+// 两者都空返回错误——禁止用空路径 read_csv（DuckDB CLI 会把 '' 当作标准输入，导致结果集爆炸 OOM）。
+func batchWantSQL(addresses []string, addrFile string) (string, error) {
+	if strings.TrimSpace(addrFile) != "" {
+		af := strings.ReplaceAll(addrFile, "\\", "/")
+		return fmt.Sprintf("SELECT addr FROM read_csv(%s, header=false, columns={'addr':'VARCHAR'})", quoteSQLString(af)), nil
+	}
+	const maxBatch = 500 // VALUES 内联受命令行长度限制（约 48 字符/地址，500≈24KB 安全）
+	if len(addresses) > 0 {
+		if len(addresses) > maxBatch {
+			addresses = addresses[:maxBatch]
+		}
+		items := make([]string, 0, len(addresses))
+		for _, a := range addresses {
+			addr := strings.ToLower(strings.TrimSpace(a))
+			if len(addr) > 64 {
+				continue // 跳过超长非地址值（防命令行长度 DoS）
+			}
+			items = append(items, "("+quoteSQLString(addr)+")")
+		}
+		if len(items) == 0 {
+			return "", errors.New("batch profiles: no valid addresses")
+		}
+		return "SELECT * FROM (VALUES " + strings.Join(items, ",") + ") AS want(addr)", nil
+	}
+	return "", errors.New("batch profiles: addresses or addr_file required")
+}
+
 // BatchProfiles 批量查询画像（SEMI JOIN 一次 SQL）。
 func (s *Service) BatchProfiles(ctx context.Context, addresses []string, addrFile string) ([]Profile, error) {
-	af := strings.ReplaceAll(addrFile, "\\", "/")
-	sqlText := fmt.Sprintf(`WITH want AS (SELECT addr FROM read_csv('%[1]s', header=false, columns={'addr':'VARCHAR'}))
+	wantSQL, err := batchWantSQL(addresses, addrFile)
+	if err != nil {
+		return nil, err
+	}
+	sqlText := fmt.Sprintf(`WITH want AS (%[1]s)
 		SELECT a.addr AS address, COUNT(*) AS event_count
 		FROM want a
 		LEFT JOIN read_parquet('%[2]s') t ON t.address = a.addr
-		GROUP BY 1 ORDER BY 2 DESC`, af, s.parquet)
+		GROUP BY 1 ORDER BY 2 DESC`, wantSQL, s.parquet)
 	rows, err := s.engine.ExecSQLJSON(ctx, sqlText)
 	if err != nil {
 		return nil, err
@@ -453,11 +491,15 @@ func round2(v float64) float64 {
 // Handler 是 analyticsapi 的 HTTP 入口。
 type Handler struct {
 	service *Service
+	// allowedDataRoot 允许 addr_file 读取的根目录（数据仓库上级），防任意文件读取。
+	allowedDataRoot string
 }
 
 // NewHandler 创建 HTTP handler。
 func NewHandler(engine *duckdb.Engine, parquetPath string) *Handler {
-	return &Handler{service: New(engine, parquetPath)}
+	// 数据根目录 = parquet 仓库目录上一级（…/data_root/warehouse/logs.parquet）
+	root := filepath.Dir(filepath.Dir(parquetPath))
+	return &Handler{service: New(engine, parquetPath), allowedDataRoot: root}
 }
 
 // Service 暴露 Service（测试用）。
@@ -582,12 +624,49 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
+		if len(req.Addresses) == 0 && strings.TrimSpace(req.AddrFile) == "" {
+			http.Error(w, `{"detail":"addresses or addr_file required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := h.validateAddrFile(req.AddrFile); err != nil {
+			http.Error(w, `{"detail":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+		// 相对路径解析为数据目录内绝对路径（duckdb CLI 的 CWD 不是数据目录）
+		addrFile := req.AddrFile
+		if strings.TrimSpace(addrFile) != "" {
+			addrFile = filepath.Join(h.allowedDataRoot, strings.ReplaceAll(strings.TrimSpace(addrFile), "/", string(filepath.Separator)))
+		}
 		h.json(w, func() (any, error) {
-			return h.service.BatchProfiles(r.Context(), req.Addresses, req.AddrFile)
+			return h.service.BatchProfiles(r.Context(), req.Addresses, addrFile)
 		})
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// validateAddrFile 校验 addr_file 路径安全：仅允许数据根目录内相对路径。
+func (h *Handler) validateAddrFile(addrFile string) error {
+	if strings.TrimSpace(addrFile) == "" {
+		return nil
+	}
+	af := strings.ReplaceAll(strings.TrimSpace(addrFile), "/", string(filepath.Separator))
+	if filepath.IsAbs(af) {
+		return errors.New("addr_file 必须是数据目录内的相对路径")
+	}
+	cleaned := filepath.Clean(af)
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return errors.New("addr_file 不允许路径穿越")
+	}
+	if strings.ContainsAny(cleaned, "*?[") {
+		return errors.New("addr_file 不允许通配符")
+	}
+	joined := filepath.Join(h.allowedDataRoot, cleaned)
+	rel, err := filepath.Rel(h.allowedDataRoot, joined)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("addr_file 超出允许的数据目录")
+	}
+	return nil
 }
 
 func (h *Handler) json(w http.ResponseWriter, fn func() (any, error)) {
@@ -595,7 +674,12 @@ func (h *Handler) json(w http.ResponseWriter, fn func() (any, error)) {
 	v, err := fn()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"detail":"` + strings.ReplaceAll(err.Error(), `"`, `'`) + `"}`))
+		msg := err.Error()
+		if runes := []rune(msg); len(runes) > 300 {
+			msg = string(runes[:300]) + "...(truncated)"
+		}
+		body, _ := json.Marshal(map[string]string{"detail": msg})
+		_, _ = w.Write(body)
 		return
 	}
 	_ = json.NewEncoder(w).Encode(v)

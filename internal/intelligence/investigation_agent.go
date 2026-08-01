@@ -32,6 +32,10 @@ type InvestigationAgent struct {
 	deepseekKey    string // 注入的 API Key（rebuild 时保留）
 	report         *ReportAgent
 	memories       *MemoryStore
+	ai             *AIAgent        // AI 驱动调查（§3，可为 nil）
+	aiChatter      AIChatter       // AI 对话实现（NewAgent 默认 deepseek；测试可注入 fake）
+	aiMemory       *AIMemoryStore  // AI 记忆共享实例（rebuild 复用，防并发丢记忆）
+	aiMemoryDir    string          // AI 记忆持久化目录
 	cfg            IntelligenceConfig
 
 	mu      sync.Mutex
@@ -71,7 +75,7 @@ func NewAgent(opts AgentOptions) *InvestigationAgent {
 		detector:    NewPatternDetector(cfg),
 		report:      NewReportAgent(cfg),
 		contextBuilder: NewAIContextBuilder(cfg),
-		deepseek:    NewDeepSeekClient(opts.DeepSeekKey, cfg.AIModel, cfg.AITimeoutMS),
+		deepseek:    NewDeepSeekClient(opts.DeepSeekKey, cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens),
 		deepseekKey: opts.DeepSeekKey,
 		cfg:         cfg,
 		active:      make(map[string]*Investigation),
@@ -85,6 +89,10 @@ func NewAgent(opts AgentOptions) *InvestigationAgent {
 	agent.entityResolver = NewEntityResolver(nil, &entitySource)
 	agent.expansion = opts.Expansion
 	agent.memories = NewMemoryStore(opts.MemoryDir)
+	agent.aiMemoryDir = aiMemoryDir(opts.MemoryDir)
+	agent.aiMemory = NewAIMemoryStore(agent.aiMemoryDir) // 共享实例：并发调查/rebuild 复用，防 last-writer-wins 丢记忆
+	agent.aiChatter = agent.deepseek                        // 默认使用 DeepSeek；测试可注入 fake
+	agent.ai = NewAIAgentWithStore(agent.aiChatter, flowSource, cfg, agent.aiMemory)
 	return agent
 }
 
@@ -113,7 +121,7 @@ func (a *InvestigationAgent) UpdateConfig(cfg IntelligenceConfig) {
 	a.cfg = cfg
 }
 
-// rebuildSubcomponents 用当前配置重建子组件（tracer/planner/detector/report/deepseek）。
+// rebuildSubcomponents 用当前配置重建子组件（tracer/planner/detector/report/deepseek/ai）。
 // 使 POST /config 的更新对后续调查生效。必须在持锁状态下调用（重建写与快照读一致）。
 func (a *InvestigationAgent) rebuildSubcomponentsLocked() {
 	cfg := a.cfg
@@ -123,7 +131,8 @@ func (a *InvestigationAgent) rebuildSubcomponentsLocked() {
 	a.detector = NewPatternDetector(cfg)
 	a.report = NewReportAgent(cfg)
 	a.contextBuilder = NewAIContextBuilder(cfg)
-	a.deepseek = NewDeepSeekClient(a.deepseekKey, cfg.AIModel, cfg.AITimeoutMS)
+	a.deepseek = NewDeepSeekClient(a.deepseekKey, cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens)
+	a.ai = NewAIAgentWithStore(a.aiChatter, a.flowSource, cfg, a.aiMemory)
 }
 
 // Start 启动一次异步调查（立即返回调查对象，后台执行）。
@@ -143,6 +152,7 @@ func (a *InvestigationAgent) Start(ctx context.Context, target, chainID string, 
 		deepseek:       a.deepseek,
 		flowSource:     a.flowSource,
 		expansion:      a.expansion,
+		ai:             a.ai,
 	}
 	a.mu.Unlock()
 	target = strings.ToLower(strings.TrimSpace(target))
@@ -231,6 +241,7 @@ type agentSnapshot struct {
 	deepseek       *DeepSeekClient
 	flowSource     FlowSource
 	expansion      Expander
+	ai             *AIAgent
 }
 
 // run 执行调查闭环（规划 → 执行 → 观察 → 判断 → 重新规划，直到完成条件）。
