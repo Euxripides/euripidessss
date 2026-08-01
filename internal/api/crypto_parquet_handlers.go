@@ -38,3 +38,21 @@ func HandleAnalyticsAPI(c *gin.Context) {
 	}
 	http.StripPrefix("/api", analyticsAPI).ServeHTTP(c.Writer, c.Request)
 }
+
+// HandleDynamicInvestigation 转发 /api/dynamic-investigation/* 到动态调查引擎（V2.1 RC2）。
+func HandleDynamicInvestigation(c *gin.Context) {
+	if dynamicInvestigationAPI == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "动态调查引擎未就绪"})
+		return
+	}
+	http.StripPrefix("/api", dynamicInvestigationAPI).ServeHTTP(c.Writer, c.Request)
+}
+
+// HandleIntelligence 转发 /api/intelligence/* 到全自动链上调查平台（V2.1 RC2）。
+func HandleIntelligence(c *gin.Context) {
+	if intelligenceAPI == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "调查平台未就绪"})
+		return
+	}
+	http.StripPrefix("/api", intelligenceAPI).ServeHTTP(c.Writer, c.Request)
+}

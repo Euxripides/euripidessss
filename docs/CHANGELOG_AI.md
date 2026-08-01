@@ -1,3 +1,124 @@
+### 2026-08-01 V2.1 RC2 智能调查闭环与自主决策引擎
+
+#### 新增
+
+- 调查闭环（`internal/intelligence`）：**Task Queue**（7 任务类型 / 优先级 / 状态流转 / 幂等去重）、**Observation Engine**（新地址 / 新路径 / 新交易 / 风险事件，记忆去重）、**Decision Engine**（Path/Risk/Entity/Expansion 四评分 → EXPAND / STOP / DEEP_ANALYSIS；智能停止：轮次 / 时间 / 地址数 / 无新发现 / 低价值 / 交易所 / 重复关系）、**Loop Engine**（多轮 `规划→执行→观察→判断→重新规划`，收尾 VERIFYING→REPORTING→COMPLETED）
+- 状态机新增 RUNNING / VERIFYING；配置新增 `max_rounds / max_runtime_ms / max_addresses / expansion_threshold`（部分更新 + 钳制）
+- 调查记忆新增 `CompletedTasks`；报告新增「调查过程（闭环追踪）」章节（§18 可追踪）
+- 前端「调查流程」页签：Steps（规划→执行→发现→决策→完成）/ 决策卡片（四维评分 / 原因 / 下一轮目标）/ 轮次记录 / 任务队列 / 观察列表 / 停止原因
+
+#### 验证
+
+- `go test ./... -short` 38 包零回归；`go vet ./internal/...` 零警告；intelligence 覆盖率 67.4% → 74.2%
+- 闭环测试：3 轮 `EXPAND→EXPAND→STOP`、无候选单轮停止、最大轮次停止、缺依赖任务 skipped 降级
+- 前端 `npm run build` 通过（3908 modules）
+
+#### 修复（代码审查后）
+
+- 共享扩展队列污染 + 配置竞争 → Expand 仅返回本次新发现条目（Depth>0 + 时间窗），不再写共享引擎配置
+- 任务 Round 缺失致跨轮去重错误 → buildQueue 显式携带 Round；TaskQueue.Mark 终态流转守卫
+- start 配置泄漏全局 → cfgOverride 仅本调查生效（不序列化）
+- MaxAddresses 上限可绕过 → TotalDiscovered（记忆 + 候选）参与校验
+- 新增 4 个回归测试（终态守卫/任务轮次/配置隔离/地址上限）
+
+#### 修改文件
+
+- 新增 `internal/intelligence/{task_queue,observation,decision_engine,loop_engine}.go` + `loop_engine_test.go`
+- 修改 `internal/intelligence/{types,memory,api_handler,report_agent,investigation_agent,entity_resolver}.go`
+- 修改 `frontend/src/features/intelligence/{intelligenceApi.ts,IntelligencePage.tsx}`
+
+#### 未完成
+
+- AI 建议直接驱动规划（DeepSeek 输出 → 下一轮任务）尚未实现，DEEP_ANALYSIS 为规则触发
+
+### 2026-08-01 V2.1 RC2 全自动链上调查平台（Intelligence Layer）
+
+#### 新增
+
+- Intelligence Layer（`internal/intelligence`）：Investigation Planner（调查任务清单）、Beam Search 资金追踪（双向/时间维度/Top K）、Path Ranking（金额+时间连续性+风险+关系−实体惩罚）、Risk Pattern Detector（快速转移/拆分/归集/大额进入/快速清空）、Entity Resolver（复用 dynamicinvestigation）、Expansion Engine、AI Context Builder + DeepSeek Client（真实 API）、Investigation Memory（JSON 持久化）、Report Agent（Markdown/HTML/JSON）
+- REST API `/api/intelligence/*`：investigations 启动/列表/详情/报告/记忆、config
+- 前端智能调查工作台（进度/AI 助手/ReactFlow 资金图谱/报告下载）+ 菜单"智能调查"
+
+#### 修复
+
+- 后台调查继承请求 ctx 导致 DuckDB 查询 context canceled → 独立 context.Background()
+- 实体识别未接数据源（全 unknown）→ 接入 analyticsapi 画像信号
+- 调查列表 active/history 重复 → 按 ID 去重
+
+#### 验证
+
+- go test ./... -short 38 包零回归；intelligence 27 用例 67.4% 覆盖率；vet 零警告
+- DeepSeek 真实调用验证：API 200，ai_model=deepseek-v4-flash，12620ms，结构化输出（总结/洞察/建议/风险评价）
+- 端到端：调查 COMPLETED，Beam Search 3 条 4 跳路径（score 88），实体 8 个分类正确，风险 MULTI_SPLIT，三格式报告生成
+
+#### 修改文件
+
+- 新增 `internal/intelligence/*.go`（13 源文件 + 4 测试）、`frontend/src/features/intelligence/*`（2 文件）
+- `internal/api/handlers.go`、`internal/api/crypto_parquet_handlers.go`、`frontend/src/App.tsx`
+
+### 2026-08-01 V2.1 RC2 动态地址扩展与智能采集路由引擎
+
+#### 新增
+
+- Dynamic Investigation Engine（`internal/dynamicinvestigation`）：地址发现队列状态机（DISCOVERED→SCORING→APPROVED→ACQUIRING→COMPLETED/IGNORED，JSON 持久化）、Expansion Score 评分（金额+风险+关联+活跃−实体惩罚）、实体识别（wallet/exchange/bridge/dex/router/contract/unknown + 标签库）、智能采集路由（SQD 增量逐级升级 / CSV 直链 / 仅保存关系）、数据等级 0-4
+- REST API `/api/dynamic-investigation/*`：start/queue/approve/ignore/config/tasks/stats/entities
+- 真实对接：AnalyticsSource（analyticsapi.Service）+ RealExecutor（parquetdownload.Manager + sqd.Client）
+
+#### 修复
+
+- config 部分更新（不再清零未传字段）
+- 执行失败回退 IGNORED 记录原因
+- 队列满时发现受 relations_per_address 约束
+
+#### 验证
+
+- go test ./... -short 37 包零回归；go vet 零警告；dynamicinvestigation 27 用例 75.6% 覆盖率
+- 真实服务端到端：0xdead → 发现/评分/识别/路由全链路通过；SQD 拉取失败（网络环境）优雅降级
+
+#### 修改文件
+
+- 新增 `internal/dynamicinvestigation/*.go`（9 源文件 + 4 测试文件）
+- `internal/api/handlers.go`、`internal/api/crypto_parquet_handlers.go`、`internal/parquetdownload/handler.go`
+
+### 2026-08-01 V2.1 RC2 链数据采集"结果与清单"弹窗化
+
+#### 修改
+
+- 任务监控"结果与清单"改为按钮 + Modal 弹窗，弹窗内两个可折叠面板：分区清单 + 结果文件（下载列表）
+- 移除 ResultFiles 内重复标题；无输出时显示空态
+
+#### 验证
+
+- npm run build ✅
+
+#### 修改文件
+
+- `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+
+### 2026-07-31 23:26 V2.1 RC2 菜单结构调整 + 风险分析页
+
+#### 新增
+
+- 菜单重组为 5 个一级菜单：Dashboard / 数据资产（数据集管理、数据下载[浏览器下载+Dune下载+链数据采集]、数据源管理、RPC节点管理）/ 链上分析（地址画像、地址区分、资金流分析、地址图谱、风险分析）/ 报告中心 / 系统设置（建设中）
+- 风险分析页（RiskAnalysisPage）：风险地址总数 + 单地址风险评分/等级/原因/维度指标 + 评分说明
+- 系统设置占位页（SystemSettingsPage）
+
+#### 验证
+
+- npm run build ✅（3906 模块）
+- 真实服务：新 bundle 生效；0xdead 风险评分 72.01（高）；risk_addresses=51
+
+#### 修改文件
+
+- `frontend/src/App.tsx`
+- `frontend/src/features/analytics/RiskAnalysisPage.tsx`（新增）
+- `frontend/src/features/system/SystemSettingsPage.tsx`（新增）
+
+#### 未完成
+
+- 系统设置子项（服务状态/日志/配置/系统信息）待实现
+- 风险分析暂为单地址查询，无风险地址列表接口
+
 ### 2026-08-01 01:20 V2.1 RC2 地址图谱页面卡死修复
 
 #### 修复
@@ -5713,3 +5834,25 @@ ormalizeFilterBoundary 精确时间边界处理。
 - 真实SQD新任务两次受供应商503影响未完成；失败状态和Manifest收敛正确，未继续重试。
 - Playwright/Edge桌面与390px移动端通过，无溢出、控制台错误、页面异常或请求失败。
 - 已执行`.\run.ps1`，PID 21088，健康检查正常。
+### 2026-08-01 11:10 Parquet 分片下载卡 0 进度排查与恢复
+
+#### 现象
+
+- 任务 `e170c084fba68a70`（BSC 2026-07-30 transactions，6.1GiB AWS 公共 Parquet）进入“分片下载”后 `downloaded_bytes=0` 持续 12 分钟，最终 3 次重试耗尽后失败；取消/重试/服务重启后均复现。
+
+#### 诊断证据
+
+- 服务器进程能 TCP 连上 S3（多 IP：52.219.93.202 / 3.5.x），但 0 字节落盘，连接每 1-2 分钟轮换；同一 URL/Headers 用 curl 与独立 Go 程序（386 与 amd64）均秒级 206 成功。
+- 本地代理隧道抓包：etl-server 的 TLS 数据双向流通（客户端约 1.9KB，S3 回传 8-18KB 握手/证书），随后连接被“本机软件中止”（WSAECONNABORTED）强制重置，即使经 127.0.0.1 代理也重置；`portal.sqd.dev` 隧道不受影响。
+- 本机存在火绒 NDIS/WFP 驱动（`hrndis6`/`hrwfpdrv`/`sysdiag`）与 Anycast VPN（`Anycast.exe`/`anycast-service`），判定为其中之一对 etl-server 到 AWS S3 的 TLS 连接做联网控制/分应用拦截。
+
+#### 处理
+
+- 取消 3 个卡住/失败任务（`e170c084fba68a70` 失败、`bf293884c2dadb52`/`963642ed11148e6b` 取消），均 0 字节无损失。
+- 使用复制二进制 + 代理隧道做 A/B 验证后恢复原服务：`.\run.ps1 -SkipBuild`，PID 29716，`/api/health` 正常。
+
+#### 未完成
+
+- 未修改代码；需在火绒“联网控制/网络防护”或 Anycast VPN 分应用规则中放行 `etl-server.exe` 后重试下载。
+
+### 2026-08-01 V2.1 RC2 链数据采集"结果与清单"弹窗化

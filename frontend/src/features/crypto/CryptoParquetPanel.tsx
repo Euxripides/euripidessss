@@ -69,6 +69,7 @@ type TaskFormValues = {
   keep_source_files: boolean;
   export_csv: boolean;
   include_receipts: boolean;
+  use_first_seen: boolean;
 };
 
 const statusMeta: Record<string, { label: string; color: string }> = {
@@ -91,6 +92,7 @@ export function CryptoParquetPanel() {
   const [settingsForm] = Form.useForm<ParquetSettings>();
   const [settings, setSettings] = useState<ParquetSettings | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [resultsOpen, setResultsOpen] = useState(false);
   const [preview, setPreview] = useState<ParquetPreview | null>(null);
   const [previewKey, setPreviewKey] = useState('');
   const [job, setJob] = useState<ParquetJob | null>(null);
@@ -192,6 +194,7 @@ export function CryptoParquetPanel() {
         keep_source_files: loadedSettings.keep_source_files,
         export_csv: loadedSettings.export_csv,
         include_receipts: false,
+        use_first_seen: false,
       });
     } catch (error) {
       message.error(error instanceof Error ? error.message : '读取 Parquet 工作台失败');
@@ -206,6 +209,7 @@ export function CryptoParquetPanel() {
       addresses: values.addresses,
       start_date: values.dates[0].format('YYYY-MM-DD'),
       end_date: values.dates[1].format('YYYY-MM-DD'),
+      use_first_seen: values.use_first_seen ?? false,
       keep_source_files: values.keep_source_files,
       export_csv: values.export_csv,
       include_receipts: values.include_receipts,
@@ -431,6 +435,9 @@ export function CryptoParquetPanel() {
             >
               <RangePicker allowClear={false} className="crypto-parquet-date" />
             </Form.Item>
+            <Form.Item name="use_first_seen" valuePropName="checked">
+              <Switch /> <span style={{ marginLeft: 8 }}>从地址首次出现开始</span>
+            </Form.Item>
             <div className="crypto-parquet-address-label">
               <span>目标地址</span>
               <Upload
@@ -626,6 +633,9 @@ export function CryptoParquetPanel() {
                 </div>
                 <Space>
                   <Button icon={<ReloadOutlined />} onClick={() => refreshJob()} disabled={loading}>刷新</Button>
+                  <Button icon={<FolderOpenOutlined />} onClick={() => setResultsOpen(true)}>
+                    结果与清单
+                  </Button>
                   {active && job.status !== 'canceling' && (
                     <Button danger icon={<StopOutlined />} onClick={cancelTask}>
                       安全取消
@@ -638,29 +648,6 @@ export function CryptoParquetPanel() {
                   )}
                 </Space>
               </div>
-
-              {(job.files ?? []).length ? (
-                <>
-                  <div className="crypto-parquet-table-head">
-                    <div>
-                      <strong>AWS 分区任务</strong>
-                    </div>
-                    <span>{(job.files ?? []).length} 个文件</span>
-                  </div>
-                  <Table
-                    rowKey="uri"
-                    size="small"
-                    columns={columns}
-                    dataSource={[...(job.files ?? [])]}
-                    pagination={false}
-                    scroll={{ x: 740, y: 350 }}
-                  />
-                </>
-              ) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分区文件" />
-              )}
-
-              <ResultFiles job={job} />
             </>
           ) : (
             <Empty
@@ -760,21 +747,54 @@ export function CryptoParquetPanel() {
           </Space>
         </Form>
       </Modal>
+
+      <Modal
+        title="结果与清单"
+        open={resultsOpen}
+        onCancel={() => setResultsOpen(false)}
+        footer={null}
+        width={920}
+      >
+        {job && (
+          <Collapse
+            defaultActiveKey={['manifest', 'outputs']}
+            items={[
+              {
+                key: 'manifest',
+                label: `分区清单（${job.files?.length ?? 0}）`,
+                children: (job.files ?? []).length ? (
+                  <Table
+                    rowKey="uri"
+                    size="small"
+                    columns={columns}
+                    dataSource={[...(job.files ?? [])]}
+                    pagination={false}
+                    scroll={{ x: 740, y: 300 }}
+                  />
+                ) : (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分区文件" />
+                ),
+              },
+              {
+                key: 'outputs',
+                label: `结果文件（${job.outputs?.length ?? 0}）`,
+                children: <ResultFiles job={job} />,
+              },
+            ]}
+          />
+        )}
+      </Modal>
     </div>
   );
 }
 
 function ResultFiles({ job }: { job: ParquetJob }) {
-  if (!(job.outputs ?? []).length) return null;
+  if (!(job.outputs ?? []).length) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无结果文件" />;
+  }
   const checksumByPath = new Map((job.checksums ?? []).map((item) => [item.path.toLowerCase(), item]));
   return (
     <div className="crypto-parquet-results">
-      <div className="crypto-parquet-table-head">
-        <div>
-          <strong>结果与清单</strong>
-          <span>业务结果与审计清单分开下载</span>
-        </div>
-      </div>
       <div className="crypto-parquet-result-list">
         {(job.outputs ?? []).map((path) => (
           <div key={path}>

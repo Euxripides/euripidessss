@@ -176,6 +176,7 @@ export type ParquetStartPayload = {
   readonly export_csv?: boolean;
   readonly include_receipts: boolean;
   readonly selected_sources: readonly ParquetSource[];
+  readonly use_first_seen?: boolean;
 };
 
 export async function loadParquetSettings() {

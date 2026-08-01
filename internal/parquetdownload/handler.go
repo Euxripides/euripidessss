@@ -36,6 +36,11 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	h.mux.ServeHTTP(writer, request)
 }
 
+// Manager 暴露真实下载管理器（供动态调查引擎等任务生成层驱动）。
+func (h *Handler) Manager() *Manager {
+	return h.manager
+}
+
 func (h *Handler) Close() {
 	h.manager.Close()
 }

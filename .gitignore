@@ -62,6 +62,12 @@ backend/data/dune/dune_*/
 *.zip
 backend/data/data.*
 
+# Runtime download/investigation state
+backend/data/crypto_download/
+backend/data/dynamic_investigation/
+backend/data/investigation_memory/
+backend/data/crypto_parquet/
+
 # Codex local configuration
 .codex/
 
