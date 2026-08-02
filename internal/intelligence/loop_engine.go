@@ -233,6 +233,27 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 				a.setField(inv, func(i *Investigation) { i.AISuggestion = sug })
 			}
 		}
+		// AI 建议参与决策（#5 优化：防止规则过早停止；规则仍为最终裁决，仅高置信度 EXPAND 建议可延续调查）
+		if inv.AISuggestion != nil {
+			sug := inv.AISuggestion
+			// 资源上限类 STOP（最大轮次/最长运行/最大地址数）不可被 AI 覆盖——防无限循环
+			resourceLimitStop := hasStopReason(dec.Reasons, "最大") || hasStopReason(dec.Reasons, "最长")
+			if dec.Action == DecisionStop && !resourceLimitStop &&
+				strings.EqualFold(sug.Action, "EXPAND") &&
+				sug.Confidence >= 0.8 && strings.TrimSpace(sug.Target) != "" &&
+				validEVMAddress(sug.Target) {
+				dec.Action = DecisionExpand
+				dec.NextTargets = append(dec.NextTargets, strings.ToLower(sug.Target))
+				dec.Reasons = append(dec.Reasons, fmt.Sprintf("AI 建议继续扩展 %s（置信度 %.2f）", shortAddr(sug.Target), sug.Confidence))
+				a.setField(inv, func(i *Investigation) { i.Decision = &dec })
+				logger.Log.Info().Str("inv", inv.ID).Str("target", sug.Target).Float64("conf", sug.Confidence).
+					Msg("ai_suggestion_overrides_stop")
+			} else if dec.Action == DecisionExpand && strings.EqualFold(sug.Action, "STOP") && sug.Confidence >= 0.9 {
+				// AI 高置信度建议停止：记录但不覆盖规则（规则为最终裁决）
+				dec.Reasons = append(dec.Reasons, "AI 建议停止（规则仍裁决继续）")
+				a.setField(inv, func(i *Investigation) { i.Decision = &dec })
+			}
+		}
 
 		rec := RoundRecord{
 			Round:      round,

@@ -1,6 +1,6 @@
 # Funds ETL — Code Property Graph
 
-> Auto-generated. **39 packages, 2517 functions, 677 types.**
+> Auto-generated. **39 packages, 2535 functions, 679 types.**
 
 Use this as a **project map** before reading source code.
 
@@ -14,12 +14,12 @@ Use this as a **project map** before reading source code.
 
 - **`api`** — 285 fn, 41s/0i, uses: analysis/duckdb, analyticsapi, chain, config, used-by: 1 pkg(s)
 
-### ETL Pipeline (39 pkgs, 2517 funcs, 677 types)
+### ETL Pipeline (39 pkgs, 2535 funcs, 679 types)
 
 - **`cryptodownload`** — 655 fn, 132s/1i, uses: cryptodownload/useragent, used-by: 1 pkg(s)
 - **`api`** — 285 fn, 41s/0i, uses: analysis/duckdb, analyticsapi, chain, config, used-by: 1 pkg(s)
 - **`parquetdownload`** — 192 fn, 31s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws, used-by: 3 pkg(s)
-- **`intelligence`** — 179 fn, 63s/3i, uses: analyticsapi, dynamicinvestigation, logger, used-by: 1 pkg(s)
+- **`intelligence`** — 190 fn, 65s/3i, uses: analyticsapi, dynamicinvestigation, logger, used-by: 1 pkg(s)
 - **`downloadengine`** — 166 fn, 67s/5i, used-by: 1 pkg(s)
 - **`dbimport`** — 110 fn, 27s/1i, uses: model, parser, used-by: 1 pkg(s)
 - **`rpcmanager`** — 110 fn, 21s/0i, uses: chain, used-by: 4 pkg(s)
@@ -30,10 +30,10 @@ Use this as a **project map** before reading source code.
 - **`parser`** — 85 fn, 7s/0i, used-by: 6 pkg(s)
 - **`datasourcemanager`** — 44 fn, 13s/0i, uses: chain, datasource/aws, datasource/sqd, rpcmanager, used-by: 2 pkg(s)
 - **`downloadengine/provider`** — 44 fn, 12s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws
+- **`analyticsapi`** — 29 fn, 9s/0i, uses: analysis/duckdb, used-by: 7 pkg(s)
 - **`rules`** — 27 fn, 1s/0i, uses: parser, used-by: 5 pkg(s)
-- **`analyticsapi`** — 26 fn, 9s/0i, uses: analysis/duckdb, used-by: 7 pkg(s)
+- **`analysis/duckdb`** — 25 fn, 4s/0i, used-by: 8 pkg(s)
 - **`provider`** — 25 fn, 5s/1i, uses: model, parser, rules, used-by: 1 pkg(s)
-- **`analysis/duckdb`** — 21 fn, 4s/0i, used-by: 8 pkg(s)
 - **`casefile`** — 18 fn, 12s/0i, uses: analysis/duckdb, analyticsapi, balance, investigation
 - **`datasource/rpc`** — 17 fn, 3s/0i, uses: chain, normalize, used-by: 1 pkg(s)
 - **`downloader`** — 17 fn, 6s/0i, uses: writer, used-by: 1 pkg(s)
@@ -80,9 +80,9 @@ Use this as a **project map** before reading source code.
 - **`cryptodownload/useragent`** — 2 fn, 0s/0i, used-by: 1 pkg(s)
 - **`datasource`** — 0 fn, 1s/3i, uses: chain, normalize, used-by: 3 pkg(s)
 
-### Infrastructure (4 pkgs, 30 funcs, 22 types)
+### Infrastructure (4 pkgs, 34 funcs, 22 types)
 
-- **`analysis/duckdb`** — 21 fn, 4s/0i, used-by: 8 pkg(s)
+- **`analysis/duckdb`** — 25 fn, 4s/0i, used-by: 8 pkg(s)
 - **`logger`** — 6 fn, 1s/0i, used-by: 3 pkg(s)
 - **`config`** — 3 fn, 2s/0i, used-by: 2 pkg(s)
 - **`model`** — 0 fn, 13s/1i, used-by: 4 pkg(s)
@@ -101,7 +101,7 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 | `casefile` | 4 | 0 | 1.00 ██████████ | 18 |
 | `datasourcemanager` | 4 | 2 | 0.67 ██████ | 44 |
 | `dynamicinvestigation` | 4 | 2 | 0.67 ██████ | 98 |
-| `intelligence` | 3 | 1 | 0.75 ███████ | 179 |
+| `intelligence` | 3 | 1 | 0.75 ███████ | 190 |
 | `provider` | 3 | 1 | 0.75 ███████ | 25 |
 | `balance` | 2 | 1 | 0.67 ██████ | 10 |
 | `datasource` | 2 | 3 | 0.40 ████ | 0 |
@@ -147,7 +147,7 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 
 HTTP handlers down to data layer:
 
-- **BuildFlowGraph** ← `api`.HandleBuildImportedFlow ← `etl`.BuildFlowGraph
+- **BuildFlowGraph** ← `api`.HandleProcess ← `etl`.BuildFlowGraph
 - **StartTask** ← `dbimport`.StartTask
 - **CollectAddress** ← `cryptodownload`.CollectAddress
 - **FetchTokenTransfersByTimeWindow** ← `cryptodownload`.FetchTokenTransfersByTimeWindow
@@ -161,7 +161,7 @@ Size × coupling = maintenance risk.
 | `api` | 328 | 20 | 6888 | 🔴 HIGH |
 | `parquetdownload` | 226 | 14 | 3390 | 🔴 HIGH |
 | `cryptodownload` | 805 | 2 | 2415 | 🔴 HIGH |
-| `intelligence` | 253 | 4 | 1265 | 🔴 HIGH |
+| `intelligence` | 266 | 4 | 1330 | 🔴 HIGH |
 | `dynamicinvestigation` | 126 | 6 | 882 | 🔴 HIGH |
 | `rpcmanager` | 131 | 5 | 786 | 🔴 HIGH |
 | `etl` | 109 | 6 | 763 | 🔴 HIGH |
@@ -171,8 +171,8 @@ Size × coupling = maintenance risk.
 | `dbimport` | 139 | 3 | 556 | 🔴 HIGH |
 | `downloadengine` | 254 | 1 | 508 | 🔴 HIGH |
 | `datasourcemanager` | 57 | 6 | 399 | 🟡 MED |
-| `analyticsapi` | 35 | 8 | 315 | 🟡 MED |
-| `analysis/duckdb` | 25 | 8 | 225 | 🟡 MED |
+| `analyticsapi` | 38 | 8 | 342 | 🟡 MED |
+| `analysis/duckdb` | 29 | 8 | 261 | 🟡 MED |
 
 ## 7. Dependency Diagram
 

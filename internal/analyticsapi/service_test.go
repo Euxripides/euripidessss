@@ -45,6 +45,12 @@ func newAPITest(t *testing.T) (*Service, *duckdb.Engine, string) {
 	if _, err := os.Stat(flag); err != nil {
 		t.Skip("create " + flag + " to enable API service validation")
 	}
+	// 跨包并行互斥（#8 优化）：同一时刻仅一个测试进程可用真实数据
+	if release, ok := duckdb.AcquireDataLock(dataRoot); ok {
+		t.Cleanup(release)
+	} else {
+		t.Skip("其他真实数据验证测试正在运行（并行互斥），跳过")
+	}
 	engine := duckdb.Open(repoRoot, dataRoot, duckdb.AnalyticsConfig{})
 	if !engine.Available() {
 		t.Fatalf("DuckDB 不可用: %+v", engine.Status())
@@ -415,6 +421,72 @@ func TestValidateAddrFile(t *testing.T) {
 	// 通配符拒绝
 	if err := h.validateAddrFile(`sqd-200k-warehouse\*.csv`); err == nil {
 		t.Error("通配符必须拒绝")
+	}
+}
+
+// TestBatchCacheKey 回归：地址集哈希缓存键（顺序无关、大小写归一、区分 addr_file、分隔符防碰撞）。
+func TestBatchCacheKey(t *testing.T) {
+	k1 := batchCacheKey([]string{"0xABC", "0xdef"}, "")
+	k2 := batchCacheKey([]string{"0xdef", "0xabc"}, "")
+	if k1 != k2 {
+		t.Errorf("地址顺序无关: %s != %s", k1, k2)
+	}
+	k3 := batchCacheKey([]string{"0xabc"}, "")
+	k4 := batchCacheKey([]string{"0xabc"}, "file.csv")
+	if k3 == k4 {
+		t.Error("addr_file 应区分缓存键")
+	}
+	k5 := batchCacheKey([]string{"0xabc"}, "file.csv")
+	if k4 != k5 {
+		t.Error("相同 addr_file 应一致")
+	}
+	if !strings.HasPrefix(k1, "batch:") {
+		t.Errorf("键应带 batch: 前缀: %s", k1)
+	}
+	// 分隔符防碰撞：["ab","cd"] 与 ["abc","d"] 不得同键
+	k6 := batchCacheKey([]string{"ab", "cd"}, "")
+	k7 := batchCacheKey([]string{"abc", "d"}, "")
+	if k6 == k7 {
+		t.Error("拼接碰撞：['ab','cd'] 与 ['abc','d'] 不得同键")
+	}
+	// addr_file 文件版本（mtime+size）参与键：临时文件改写后键变化
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "addrs.csv")
+	if err := os.WriteFile(fp, []byte("0xabc\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ka := batchCacheKey(nil, fp)
+	if err := os.WriteFile(fp, []byte("0xabc\n0xdef\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	kb := batchCacheKey(nil, fp)
+	if ka == kb {
+		t.Error("addr_file 内容变化后缓存键应变化（mtime+size 参与）")
+	}
+	// 截断一致性：>500 地址时键与 batchWantSQL 截断语义一致（前 500 排序哈希）
+	big1 := make([]string, 600)
+	big2 := make([]string, 900)
+	for i := range big2 {
+		big2[i] = "0x1"
+		if i < 600 {
+			big1[i] = "0x1"
+		}
+	}
+	kBig := batchCacheKey(big1, "")
+	kBig2 := batchCacheKey(big2, "")
+	if kBig != kBig2 {
+		t.Error(">500 地址缓存键应只取决于前 500 个（与 batchWantSQL 截断一致）")
+	}
+	// 排序语义统一：相同集合不同顺序 → 同 key；且 batchWantSQL 对两顺序产生相同 VALUES 集
+	a1 := []string{"0x9", "0x1", "0x5"}
+	a2 := []string{"0x5", "0x9", "0x1"}
+	if batchCacheKey(a1, "") != batchCacheKey(a2, "") {
+		t.Error("相同集合不同顺序应同键")
+	}
+	sql1, err1 := batchWantSQL(a1, "")
+	sql2, err2 := batchWantSQL(a2, "")
+	if err1 != nil || err2 != nil || sql1 != sql2 {
+		t.Errorf("排序后 SQL 应与输入顺序无关: %q vs %q (%v/%v)", sql1, sql2, err1, err2)
 	}
 }
 

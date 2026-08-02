@@ -1,6 +1,6 @@
 {
-  "created_at": "2026-08-01T17:15:17Z",
+  "created_at": "2026-08-01T18:10:03Z",
   "parquet_path": "E:\\codex\\etl\\stress-data\\bsc_real\\sqd-200k-warehouse\\logs.parquet",
-  "rows": "0",
+  "rows": "49031",
   "sha256": "6dcd446209bebe5722b30a8a15ee528a1f287d7d6a02342e82827f7adecd86d3"
 }

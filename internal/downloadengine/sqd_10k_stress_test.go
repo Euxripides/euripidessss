@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/datasource/sqd"
 )
@@ -83,6 +84,12 @@ func TestSQD10KStability(t *testing.T) {
 		if _, err := os.Stat(flagPath); err != nil {
 			t.Skip("create " + flagPath + " (or set " + env10KTest + "=1) for real-chain 10K stability validation")
 		}
+	}
+	// 跨包并行互斥（#8 优化）：同一时刻仅一个测试进程可用真实数据
+	if release, ok := duckdb.AcquireDataLock(dataRoot); ok {
+		t.Cleanup(release)
+	} else {
+		t.Skip("其他真实数据验证测试正在运行（并行互斥），跳过")
 	}
 
 	// ── 1. 配置 ──

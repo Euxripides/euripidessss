@@ -248,6 +248,25 @@ export async function getInvestigation(id: string): Promise<Investigation | null
   return r.payload ?? null;
 }
 
+// subscribeInvestigation 通过 SSE 订阅调查进度（#7 优化：替代轮询）。
+// 返回取消函数；调查终态或连接断开时自动结束。
+export function subscribeInvestigation(id: string, onUpdate: (inv: Investigation) => void): () => void {
+  const source = new EventSource(`/api/intelligence/events?id=${encodeURIComponent(id)}`);
+  source.addEventListener("investigation", (ev) => {
+    try {
+      const inv = JSON.parse((ev as MessageEvent).data) as Investigation;
+      onUpdate(inv);
+      if (inv.status === "COMPLETED" || inv.status === "FAILED") {
+        source.close();
+      }
+    } catch {
+      // 忽略畸形事件
+    }
+  });
+  source.onerror = () => source.close();
+  return () => source.close();
+}
+
 export async function getReport(id: string, format: "markdown" | "html" | "json"): Promise<string> {
   const resp = await fetch(`/api/intelligence/investigations/${id}/report?format=${format}`);
   if (!resp.ok) throw new Error(`报告获取失败: ${resp.status}`);

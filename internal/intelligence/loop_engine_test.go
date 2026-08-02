@@ -573,6 +573,90 @@ func TestStartConfigOverrideIsolated(t *testing.T) {
 	}
 }
 
+// TestLoopAISuggestionOverridesStop 回归（#5 优化）：规则 STOP + AI 高置信度 EXPAND 建议
+// （带合法 target）→ 决策改为 EXPAND 延续一轮；无 target/低置信度不覆盖。
+func TestLoopAISuggestionOverridesStop(t *testing.T) {
+	src := NewFakeFlowSource()
+	src.SetFlows(addrA, []FundEdge{edge(addrA, addrB, "USDT", "1000000", 1000)})
+	exp := newFakeExpander()
+	exp.set(addrA, ExpansionResult{Address: addrF, Entity: "wallet", Score: 60, Depth: 1})
+
+	// fake AI：Suggest 返回 EXPAND 建议（带合法 target 0x...00b1，conf 0.9）
+	ai := newFakeAIChatter()
+	ai.responses["下一步动作建议"] = `{"action":"EXPAND","target":"0x00000000000000000000000000000000000000b1","reasons":["高价值路径待确认"],"confidence":0.9,"source":"analysis"}`
+
+	cfg := DefaultConfig()
+	cfg.UseAI = true
+	cfg.MaxRounds = 3
+	cfg.MaxAddresses = 10
+
+	agent := newLoopTestAgent(src, exp, cfg)
+	agent.aiChatter = ai // Start 的 rebuild 会用 aiChatter 重建 AI Agent
+	agent.ai = NewAIAgentWithStore(ai, src, cfg, nil)
+	inv, err := agent.Start(context.Background(), addrA, "bsc")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	done := waitStatus(t, agent, inv.ID, InvestigationCompleted, 8*time.Second)
+
+	if done.Decision == nil || done.Decision.Action != DecisionStop {
+		t.Fatalf("最终决策应为 STOP, got %+v", done.Decision)
+	}
+	// 第 1 轮规则为 STOP（无候选或低价值），AI 建议应将其改写为 EXPAND → 至少 2 轮
+	if len(done.Rounds) < 2 {
+		t.Fatalf("AI 建议应延续调查至至少 2 轮, got %d 轮: %+v", len(done.Rounds), done.Rounds)
+	}
+	if done.Rounds[0].Decision != DecisionExpand {
+		t.Fatalf("第 1 轮决策应被 AI 建议改写为 EXPAND, got %v", done.Rounds[0].Decision)
+	}
+	if done.AISuggestion == nil || done.AISuggestion.Action != "EXPAND" {
+		t.Fatalf("应记录 AI 建议, got %+v", done.AISuggestion)
+	}
+	// 至少一轮理由应含 AI 建议说明（AI 覆盖发生在规则 STOP 的那一轮）
+	aiOverride := false
+	for _, r := range done.Rounds {
+		if strings.Contains(r.Note, "AI 建议继续扩展") {
+			aiOverride = true
+			break
+		}
+	}
+	if !aiOverride {
+		t.Errorf("应至少有一轮含 AI 建议理由, rounds=%+v", done.Rounds)
+	}
+}
+
+// TestLoopAISuggestionLowConfidenceNoOverride 回归（#5）：低置信度或无 target 的
+// AI EXPAND 建议不覆盖规则 STOP（规则为最终裁决）。
+func TestLoopAISuggestionLowConfidenceNoOverride(t *testing.T) {
+	src := NewFakeFlowSource()
+	src.SetFlows(addrA, []FundEdge{edge(addrA, addrB, "USDT", "1000000", 1000)})
+	exp := newFakeExpander()
+
+	ai := newFakeAIChatter()
+	ai.responses["下一步动作建议"] = `{"action":"EXPAND","target":"0x00000000000000000000000000000000000000b1","reasons":["低置信度"],"confidence":0.5,"source":"analysis"}`
+
+	cfg := DefaultConfig()
+	cfg.UseAI = true
+	cfg.MaxRounds = 3
+	cfg.MaxAddresses = 10
+
+	agent := newLoopTestAgent(src, exp, cfg)
+	agent.aiChatter = ai // Start 的 rebuild 会用 aiChatter 重建 AI Agent
+	agent.ai = NewAIAgentWithStore(ai, src, cfg, nil)
+	inv, err := agent.Start(context.Background(), addrA, "bsc")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	done := waitStatus(t, agent, inv.ID, InvestigationCompleted, 8*time.Second)
+
+	if done.Decision == nil || done.Decision.Action != DecisionStop {
+		t.Fatalf("低置信度建议不应改变最终 STOP, got %+v", done.Decision)
+	}
+	if len(done.Rounds) != 1 {
+		t.Fatalf("低置信度建议应单轮结束, got %d 轮", len(done.Rounds))
+	}
+}
+
 // TestDecideStopMaxAddresses 验证 max_addresses 上限包含未记入记忆的扩展候选。
 func TestDecideStopMaxAddresses(t *testing.T) {
 	cfg := DefaultConfig()

@@ -1,11 +1,13 @@
 ﻿import { FlowPanel } from "./features/flow/FlowPanel";
-import AnalyticsDashboardPage from "./features/analytics/DashboardPage";
-import AnalyticsAddressPage from "./features/analytics/AddressPage";
-import AnalyticsGraphPage from "./features/analytics/GraphPage";
-import AnalyticsReportPage from "./features/analytics/ReportPage";
-import AnalyticsRiskPage from "./features/analytics/RiskAnalysisPage";
-import SystemSettingsPage from "./features/system/SystemSettingsPage";
-import IntelligencePage from "./features/intelligence/IntelligencePage";
+
+// 路由级代码分割（#6 优化）：重页面懒加载，减小首屏 bundle
+const AnalyticsDashboardPage = lazy(() => import("./features/analytics/DashboardPage"));
+const AnalyticsAddressPage = lazy(() => import("./features/analytics/AddressPage"));
+const AnalyticsGraphPage = lazy(() => import("./features/analytics/GraphPage"));
+const AnalyticsReportPage = lazy(() => import("./features/analytics/ReportPage"));
+const AnalyticsRiskPage = lazy(() => import("./features/analytics/RiskAnalysisPage"));
+const SystemSettingsPage = lazy(() => import("./features/system/SystemSettingsPage"));
+const IntelligencePage = lazy(() => import("./features/intelligence/IntelligencePage"));
 import {
   ApartmentOutlined,
   CloudDownloadOutlined,
@@ -44,7 +46,7 @@ import zhCN from "antd/locale/zh_CN";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
 import type { MenuProps, UploadFile } from "antd";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Controls,
   MiniMap,
@@ -551,13 +553,15 @@ export function App() {
             {active === "crypto-rpc" && <RpcSettingsPage />}
             {active === "crypto-datasource" && <DataSourcePage onOpenRpc={() => setActive("crypto-rpc")} />}
             {active === "crypto-address" && <CryptoAddressPanel />}
-            {active === "analytics-dashboard" && <AnalyticsDashboardPage onNavigate={(p, a) => { if (a) setActiveAddressParam(a); setActive(p); }} />}
-            {active === "analytics-address" && <AnalyticsAddressPage initialAddress={activeAddressParam} />}
-            {active === "analytics-graph" && <AnalyticsGraphPage />}
-            {active === "analytics-report" && <AnalyticsReportPage />}
-            {active === "risk" && <AnalyticsRiskPage />}
-            {active === "intelligence" && <IntelligencePage />}
-            {active === "system-settings" && <SystemSettingsPage />}
+            <Suspense fallback={null}>
+              {active === "analytics-dashboard" && <AnalyticsDashboardPage onNavigate={(p, a) => { if (a) setActiveAddressParam(a); setActive(p); }} />}
+              {active === "analytics-address" && <AnalyticsAddressPage initialAddress={activeAddressParam} />}
+              {active === "analytics-graph" && <AnalyticsGraphPage />}
+              {active === "analytics-report" && <AnalyticsReportPage />}
+              {active === "risk" && <AnalyticsRiskPage />}
+              {active === "intelligence" && <IntelligencePage />}
+              {active === "system-settings" && <SystemSettingsPage />}
+            </Suspense>
           </Content>
         </Layout>
       </Layout>

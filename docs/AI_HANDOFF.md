@@ -2,7 +2,7 @@
 
 ### 本次完成
 
-按《V2.1_RC2_全链路真实调查系统验收测试方案》完成全功能验收并修复 3 个 bug（详见 `benchmark/full-system-report.md` / `benchmark/bug-report/BUG-001..003.json`）：
+按《V2.1_RC2_全链路真实调查系统验收测试方案》完成全功能验收并修复 4 个 bug（详见 `benchmark/full-system-report.md` / `benchmark/bug-report/BUG-001..004.json`），随后完成 **10 项系统优化**：
 
 - **服务环境**：健康检查 200、DuckDB v1.5.3、前端 build 通过（3908 modules）
 - **数据资产链路（§6）**：49031 行全链路一致（source=parsed=unique=parquet=duckdb），checksum 有效，dup=0
@@ -89,9 +89,51 @@
 ### 未完成事项与边界
 
 - 设计文档的 `internal/intelligence/aiagent/` 子目录以**同包文件**实现（避免子包与父包闭环 import 环），模块清单一一对应
-- AI 建议（Suggestion）当前为**建议性**记录：规则 Decision Engine 仍为最终裁决（§6 验证语义）；AI 建议直接改写决策动作尚未开放
-- API Key 加密存储未实现（沿用环境变量 `DEEPSEEK_API_KEY`，与本机部署一致）；人工反馈记忆（`MemUserFeedback`）类型已预留，写入入口待前端人工标注接入
+- API Key 加密存储未实现（沿用环境变量 `DEEPSEEK_API_KEY`，评估结论：不落盘已是安全默认，单机部署引入密钥管理收益低）；人工反馈记忆（`MemUserFeedback`）类型已预留，写入入口待前端人工标注接入
 - 真实 DeepSeek 调用需网络可达 api.deepseek.com；`max_ai_calls` 默认 10 限制每调查调用次数（计划 1 + 假设/建议/深入按轮消耗）
+- **typed parquet 暂缓**：需改 sqd_ingest COPY SQL + 重新真实下载验证，属核心数据管道变更；现有全 varchar + SQL cast 已达标（50K 地址 44ms）
+- **DuckDB 嵌入式驱动不可行**：本机无 C 编译器（CGO_ENABLED=0），go-duckdb 为 CGO 依赖；替代方案 #1（64 位）+ #3（缓存）+ #4（重试）已覆盖性能痛点
+
+## 2026-08-02 V2.1 RC2 系统优化批次（10 项全部落地）
+
+### 本次完成
+
+| # | 优化 | 实现 | 验证 |
+|---|------|------|------|
+| 1 | **64 位构建** | 正式二进制 GOARCH=amd64（54MB），2GB 地址空间上限解除（BUG-001 类 OOM 风险大幅降低）；run.ps1 已默认 amd64 | amd64 服务 health 200 + 前端 200 |
+| 2 | **DuckDB 嵌入式驱动评估** | CGO 环境检查：无编译器不可行，文档化替代方案（#1/#3/#4 已覆盖） | 评估完成 |
+| 3 | **BatchProfiles 缓存** | SHA256 地址集哈希缓存（顺序无关/大小写归一/区分 addr_file），maxCachedBatches=64 防内存增长，命中返回副本 | TestBatchCacheKey + 既有回归 |
+| 4 | **AI 截断自动重试** | Chat 拆出 chat(ctx,sys,user,retried)：finish_reason=length/空 content 时 max_tokens 翻倍重试一次，二次截断防循环 | TestDeepSeekChatRetryOnTruncation（2 场景） |
+| 5 | **AI 建议驱动规划** | 规则 STOP（非资源上限类）+ AI EXPAND 建议（conf≥0.8+合法 target）→ 改写为 EXPAND 延续一轮；资源上限 STOP 不可覆盖防无限循环；规则仍为最终裁决 | TestLoopAISuggestionOverridesStop / LowConfidenceNoOverride |
+| 6 | **前端代码分割** | 7 个重页面 React.lazy + Suspense 路由级懒加载 | vite build：主 bundle 3,222→2,028KB（-37%），页面独立 chunk |
+| 7 | **SSE 进度推送** | agent 订阅器（Subscribe/Unsubscribe/notifyLocked 终态关闭，含订阅竞态修复）+ GET /intelligence/events + 前端 EventSource 替代 3s 轮询 | TestSSEEventsPush/Validation + 真实服务事件流验证 |
+| 8 | **测试锁互斥** | duckdb.AcquireDataLock（O_EXCL 独占锁文件）+ 12 个真实数据测试接入（未获锁自动 Skip） | 4 包并行 + 真实数据标记实测零冲突（修复前必失败） |
+| 9 | **typed parquet / API Key 加密评估** | 均为"暂缓/保持现状"结论，文档化记录 | 评估完成 |
+| 10 | **AI 用量统计** | DeepSeekClient 线程安全用量计数（calls/tokens/耗时/模型分布）+ ApplyConfig 复用实例跨调查累计 + GET /intelligence/ai-usage | 真实调用：4 calls / 11,527 tokens / 46.9s |
+
+### 修改文件
+
+- `internal/analyticsapi/service.go`（#3 缓存）+ `service_test.go`（TestBatchCacheKey）
+- `internal/intelligence/deepseek_client.go`（#4 重试 / #10 用量）+ `deepseek_client_test.go`（重试用例）
+- `internal/intelligence/loop_engine.go`（#5 AI 建议决策）+ `loop_engine_test.go`（2 个回归）
+- `internal/intelligence/investigation_agent.go`（#7 订阅器 / #10 Usage / ApplyConfig）
+- `internal/intelligence/api_handler.go`（#7 events 端点 / #10 ai-usage 端点）
+- `internal/intelligence/sse_test.go`（新增）
+- `internal/analysis/duckdb/engine.go`（#8 AcquireDataLock）
+- 12 个真实数据测试文件接入锁互斥（#8）
+- `frontend/src/App.tsx`（#6 懒加载）、`frontend/src/features/intelligence/intelligenceApi.ts` + `IntelligencePage.tsx`（#7 EventSource）
+
+### 已验证
+
+- `go test ./... -short -count=1` 38 包零回归；`go vet ./internal/...` 零警告
+- 前端 `tsc --noEmit` + `npm run build` 通过（主 bundle -37%）
+- 真实服务：SSE 事件流（PLANNING→RUNNING→COMPLETED）、ai-usage 统计（4 calls/11.5K tokens）、AI 建议驱动调查（扩展轮次增加）
+- 测试基建：4 包并行 + 真实数据标记零冲突（#8 核心验证）
+
+### 未完成事项与边界
+
+- typed parquet / API Key 加密 / DuckDB 嵌入式驱动：评估结论为暂缓（见上文）
+- SSE 无断线重连（EventSource 自动重连由浏览器处理，服务端无会话状态）；ai-usage 为内存统计，重启清零（日志中有完整 token 用量可回溯）
 
 ## 2026-08-01 V2.1 RC2 智能调查闭环与自主决策引擎（Investigation Loop）
 
