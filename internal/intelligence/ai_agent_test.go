@@ -367,21 +367,21 @@ func TestLoopAIAgentIntegration(t *testing.T) {
 
 	ranker := DefaultPathRanker()
 	agent := &InvestigationAgent{
-		flowSource:      src,
-		ranker:          ranker,
-		tracer:          NewFundTracer(src, ranker, cfg),
-		planner:         NewPlanner(cfg),
-		detector:        NewPatternDetector(cfg),
-		report:          NewReportAgent(cfg),
-		contextBuilder:  NewAIContextBuilder(cfg),
-		deepseek:        NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens),
-		entityResolver:  NewEntityResolver(nil, nil),
-		cfg:             cfg,
-		active:          make(map[string]*Investigation),
-		history:         make(map[string]*Investigation),
-		memories:        NewMemoryStore(""),
-		aiChatter:       ai,
-		ai:              NewAIAgent(ai, src, cfg, ""),
+		flowSource:     src,
+		ranker:         ranker,
+		tracer:         NewFundTracer(src, ranker, cfg),
+		planner:        NewPlanner(cfg),
+		detector:       NewPatternDetector(cfg),
+		report:         NewReportAgent(cfg),
+		contextBuilder: NewAIContextBuilder(cfg),
+		deepseek:       NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens),
+		entityResolver: NewEntityResolver(nil, nil),
+		cfg:            cfg,
+		active:         make(map[string]*Investigation),
+		history:        make(map[string]*Investigation),
+		memories:       NewMemoryStore(""),
+		aiChatter:      ai,
+		ai:             NewAIAgent(ai, src, cfg, ""),
 	}
 	inv, err := agent.Start(context.Background(), addrA, "bsc")
 	if err != nil {
@@ -451,21 +451,21 @@ func TestLoopHypothesisEarlyExit(t *testing.T) {
 
 	ranker := DefaultPathRanker()
 	agent := &InvestigationAgent{
-		flowSource:      src,
-		ranker:          ranker,
-		tracer:          NewFundTracer(src, ranker, cfg),
-		planner:         NewPlanner(cfg),
-		detector:        NewPatternDetector(cfg),
-		report:          NewReportAgent(cfg),
-		contextBuilder:  NewAIContextBuilder(cfg),
-		deepseek:        NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens),
-		entityResolver:  NewEntityResolver(nil, nil),
-		cfg:             cfg,
-		active:          make(map[string]*Investigation),
-		history:         make(map[string]*Investigation),
-		memories:        NewMemoryStore(""),
-		aiChatter:       ai,
-		ai:              NewAIAgent(ai, src, cfg, ""),
+		flowSource:     src,
+		ranker:         ranker,
+		tracer:         NewFundTracer(src, ranker, cfg),
+		planner:        NewPlanner(cfg),
+		detector:       NewPatternDetector(cfg),
+		report:         NewReportAgent(cfg),
+		contextBuilder: NewAIContextBuilder(cfg),
+		deepseek:       NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens),
+		entityResolver: NewEntityResolver(nil, nil),
+		cfg:            cfg,
+		active:         make(map[string]*Investigation),
+		history:        make(map[string]*Investigation),
+		memories:       NewMemoryStore(""),
+		aiChatter:      ai,
+		ai:             NewAIAgent(ai, src, cfg, ""),
 	}
 	inv, err := agent.Start(context.Background(), addrA, "bsc")
 	if err != nil {
@@ -478,5 +478,26 @@ func TestLoopHypothesisEarlyExit(t *testing.T) {
 	h := done.Hypotheses[0]
 	if h.Status != "evaluated" || !strings.Contains(h.Note, "未执行") {
 		t.Fatalf("提前结束假设应标记未执行: status=%s note=%s", h.Status, h.Note)
+	}
+}
+
+// TestParseStrategyTaskCap 验证 AI 策略任务数硬截断（MEDIUM-1）。
+func TestParseStrategyTaskCap(t *testing.T) {
+	p := NewResponseParser()
+	var sb strings.Builder
+	sb.WriteString(`{"strategy":"deep_probe","rationale":"r","confidence":0.9,"tasks":[`)
+	for i := 0; i < 12; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(fmt.Sprintf(`{"type":"FORWARD_TRACE","priority":0.5,"reason":"t%d"}`, i))
+	}
+	sb.WriteString(`]}`)
+	s, err := p.ParseStrategy(sb.String())
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(s.Tasks) != maxAITasks {
+		t.Fatalf("任务数应截断为 %d, got %d", maxAITasks, len(s.Tasks))
 	}
 }

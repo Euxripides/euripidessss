@@ -56,3 +56,12 @@ func HandleIntelligence(c *gin.Context) {
 	}
 	http.StripPrefix("/api", intelligenceAPI).ServeHTTP(c.Writer, c.Request)
 }
+
+// HandleInvestigationV2 转发 /api/investigation/* 到 V2 调查请求 API（Investigation Agent Planner V2）。
+func HandleInvestigationV2(c *gin.Context) {
+	if investigationV2API == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "调查请求引擎未就绪"})
+		return
+	}
+	http.StripPrefix("/api", investigationV2API).ServeHTTP(c.Writer, c.Request)
+}

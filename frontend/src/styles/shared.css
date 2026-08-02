@@ -4,7 +4,7 @@ body,
   margin: 0;
 }
 body {
-  background: #f5f7fb;
+  background: var(--ds-color-bg);
 }
 .topbar {
   align-items: flex-start;

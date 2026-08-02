@@ -67,6 +67,9 @@ backend/data/crypto_download/
 backend/data/dynamic_investigation/
 backend/data/investigation_memory/
 backend/data/ai_memory/
+backend/data/investigation/
+backend/data/investigation_evidence/
+backend/data/investigation_requests/
 backend/data/crypto_parquet/
 
 # Codex local configuration

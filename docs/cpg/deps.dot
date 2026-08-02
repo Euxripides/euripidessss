@@ -15,8 +15,8 @@ digraph CPG {
 		label="internal";
 		style=dashed;
 		"github.com/etl/backend/internal/analysis/duckdb" [label="duckdb (25 fn)"];
-		"github.com/etl/backend/internal/analyticsapi" [label="analyticsapi (29 fn)"];
-		"github.com/etl/backend/internal/api" [label="api (285 fn)"];
+		"github.com/etl/backend/internal/analyticsapi" [label="analyticsapi (37 fn)"];
+		"github.com/etl/backend/internal/api" [label="api (296 fn)"];
 		"github.com/etl/backend/internal/balance" [label="balance (10 fn)"];
 		"github.com/etl/backend/internal/casefile" [label="casefile (18 fn)"];
 		"github.com/etl/backend/internal/chain" [label="chain (2 fn)"];
@@ -37,9 +37,11 @@ digraph CPG {
 		"github.com/etl/backend/internal/dunetools" [label="dunetools (88 fn)"];
 		"github.com/etl/backend/internal/dynamicinvestigation" [label="dynamicinvestigation (98 fn)"];
 		"github.com/etl/backend/internal/etl" [label="etl (99 fn)"];
+		"github.com/etl/backend/internal/flow" [label="flow (29 fn)"];
 		"github.com/etl/backend/internal/graphintel" [label="graphintel (8 fn)"];
-		"github.com/etl/backend/internal/intelligence" [label="intelligence (190 fn)"];
+		"github.com/etl/backend/internal/intelligence" [label="intelligence (334 fn)"];
 		"github.com/etl/backend/internal/investigation" [label="investigation (13 fn)"];
+		"github.com/etl/backend/internal/investigationstore" [label="investigationstore (37 fn)"];
 		"github.com/etl/backend/internal/logger" [label="logger (6 fn)"];
 		"github.com/etl/backend/internal/model" [label="model (0 fn)"];
 		"github.com/etl/backend/internal/normalize" [label="normalize (12 fn)"];
@@ -59,6 +61,7 @@ digraph CPG {
 	"github.com/etl/backend/cmd/server" -> "github.com/etl/backend/internal/logger";
 	"github.com/etl/backend/cmd/server" -> "github.com/etl/backend/internal/rules";
 	"github.com/etl/backend/internal/analyticsapi" -> "github.com/etl/backend/internal/analysis/duckdb";
+	"github.com/etl/backend/internal/analyticsapi" -> "github.com/etl/backend/internal/logger";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/analysis/duckdb";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/analyticsapi";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/chain";
@@ -69,7 +72,9 @@ digraph CPG {
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/dunetools";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/dynamicinvestigation";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/etl";
+	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/flow";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/intelligence";
+	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/investigationstore";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/model";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/parquetdownload";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/parser";
@@ -117,10 +122,15 @@ digraph CPG {
 	"github.com/etl/backend/internal/etl" -> "github.com/etl/backend/internal/provider";
 	"github.com/etl/backend/internal/etl" -> "github.com/etl/backend/internal/rules";
 	"github.com/etl/backend/internal/etl" -> "github.com/etl/backend/internal/scanner";
+	"github.com/etl/backend/internal/flow" -> "github.com/etl/backend/internal/chain";
+	"github.com/etl/backend/internal/flow" -> "github.com/etl/backend/internal/investigationstore";
+	"github.com/etl/backend/internal/flow" -> "github.com/etl/backend/internal/normalize";
+	"github.com/etl/backend/internal/flow" -> "github.com/etl/backend/internal/rpcmanager";
 	"github.com/etl/backend/internal/graphintel" -> "github.com/etl/backend/internal/analysis/duckdb";
 	"github.com/etl/backend/internal/graphintel" -> "github.com/etl/backend/internal/analyticsapi";
 	"github.com/etl/backend/internal/intelligence" -> "github.com/etl/backend/internal/analyticsapi";
 	"github.com/etl/backend/internal/intelligence" -> "github.com/etl/backend/internal/dynamicinvestigation";
+	"github.com/etl/backend/internal/intelligence" -> "github.com/etl/backend/internal/investigationstore";
 	"github.com/etl/backend/internal/intelligence" -> "github.com/etl/backend/internal/logger";
 	"github.com/etl/backend/internal/investigation" -> "github.com/etl/backend/internal/analysis/duckdb";
 	"github.com/etl/backend/internal/investigation" -> "github.com/etl/backend/internal/analyticsapi";

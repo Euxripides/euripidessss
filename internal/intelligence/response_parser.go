@@ -19,15 +19,29 @@ type ResponseParser struct{}
 // NewResponseParser 创建解析器。
 func NewResponseParser() *ResponseParser { return &ResponseParser{} }
 
-// taskTypeWhitelist 是 AI 可生成的任务类型白名单（对应 TaskQueue 7 类型）。
+// maxAITasks 是单次 AI 输出允许的最大任务数（MEDIUM-1：提示注入防资源放大）。
+const maxAITasks = 8
+
+// taskTypeWhitelist 是 AI 可生成的任务类型白名单（V2 12 种 + 旧类型兼容）。
 var taskTypeWhitelist = map[string]bool{
-	TaskAddressProfile: true,
-	TaskFlowAnalysis:   true,
-	TaskPathTrace:      true,
-	TaskEntityCheck:    true,
-	TaskRiskScan:       true,
-	TaskExpandAddress:  true,
-	TaskGenerateReport: true,
+	TaskAddressProfile:  true,
+	TaskBalanceAnalysis: true,
+	TaskTokenAnalysis:   true,
+	TaskProfitDetection: true,
+	TaskForwardTrace:    true,
+	TaskBackwardTrace:   true,
+	TaskFlowGraph:       true,
+	TaskExchangeDetect:  true,
+	TaskEntityCluster:   true,
+	TaskRiskAnalysis:    true,
+	TaskIdentityLookup:  true,
+	TaskReportGenerate:  true,
+	TaskFlowAnalysis:    true,
+	TaskPathTrace:       true,
+	TaskEntityCheck:     true,
+	TaskRiskScan:        true,
+	TaskExpandAddress:   true,
+	TaskGenerateReport:  true,
 }
 
 // extractJSON 从模型输出中提取 JSON 文本（去除 Markdown 围栏与前缀）。
@@ -74,6 +88,10 @@ func (p *ResponseParser) ParseStrategy(content string) (*AIStrategy, error) {
 		valid = append(valid, t)
 	}
 	s.Tasks = valid
+	// 硬截断任务数（MEDIUM-1：AI 输出不受信任，提示注入可能要求生成大量任务）
+	if len(s.Tasks) > maxAITasks {
+		s.Tasks = s.Tasks[:maxAITasks]
+	}
 	if len(s.Tasks) == 0 {
 		return nil, fmt.Errorf("策略未包含有效任务")
 	}
@@ -127,7 +145,14 @@ func (p *ResponseParser) ParseHypotheses(content string) ([]AIHypothesis, error)
 			tasks = append(tasks, t)
 		}
 		h.Tasks = tasks
+		if len(h.Tasks) > maxAITasks {
+			h.Tasks = h.Tasks[:maxAITasks] // MEDIUM-1：假设验证任务硬截断
+		}
 		valid = append(valid, h)
+	}
+	// MEDIUM-1：假设数量硬截断（防提示注入输出大量假设）
+	if len(valid) > maxAITasks {
+		valid = valid[:maxAITasks]
 	}
 	return valid, nil
 }

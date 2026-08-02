@@ -1,0 +1,1209 @@
+/* ════════════════════════════════════════════════════════════════════
+   链上地址关系图 V2.0 UI 整改 — 全屏暗色调查工作台（设计 §5/§10/§11/§12）
+   色值严格执行设计文档 §5.3 表格，禁止散落其他色值。
+   ════════════════════════════════════════════════════════════════════ */
+
+.analytics-graph-page.analytics-graph-page,
+.flow-inspector-drawer,
+.flow-dark-dropdown {
+  --fg-page-bg: #06111e;      /* 页面背景 */
+  --fg-canvas-bg: #071522;    /* 画布背景 */
+  --fg-panel-bg: #0a1725;     /* 面板背景 */
+  --fg-panel-border: #19354e; /* 面板边框 */
+  --fg-text: #edf8ff;         /* 主文字 */
+  --fg-text-dim: #7f9db5;     /* 次文字 */
+  --fg-text-faint: #5c7a92;   /* 弱文字 */
+  --fg-accent: #26d9e8;       /* 选中地址 */
+  --fg-upstream: #3f97ff;     /* 上游来源 */
+  --fg-downstream: #f59e32;   /* 下游去向 */
+  --fg-exchange: #d7b34d;     /* 交易所公开标记 */
+  --fg-cross: #3a536c;        /* 非聚焦关系 */
+  --fg-danger: #ef5b67;       /* 危险/异常 */
+  --fg-dot: #17324a;          /* 画布点阵 */
+  --fg-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.analytics-graph-page.analytics-graph-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh; /* 图谱页隐藏应用顶条后占满全屏 */
+  min-height: 560px;
+  margin: -24px;
+  overflow: hidden;
+  background: var(--fg-page-bg);
+  color: var(--fg-text);
+}
+
+/* ── 顶部工具栏（设计 §5.2：72px）── */
+
+.flow-workspace-header {
+  display: flex;
+  flex: none;
+  height: 72px;
+  min-height: 72px;
+  align-items: center;
+  gap: 18px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--fg-panel-border);
+  background: var(--fg-panel-bg);
+}
+
+.flow-workspace-brand {
+  display: flex;
+  flex: none;
+  min-width: 148px;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.flow-workspace-brand strong {
+  color: var(--fg-text);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.flow-workspace-brand small {
+  color: var(--fg-text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.flow-workspace-search {
+  flex: 1;
+  min-width: 200px;
+  max-width: 640px;
+}
+
+.flow-workspace-search .ant-input-affix-wrapper {
+  height: 36px;
+  background: #0d1e31;
+  border-color: var(--fg-panel-border);
+  color: var(--fg-text);
+  box-shadow: none;
+}
+
+.flow-workspace-search .ant-input-affix-wrapper:hover,
+.flow-workspace-search .ant-input-affix-wrapper-focused {
+  border-color: var(--fg-accent);
+}
+
+.flow-workspace-search .ant-input,
+.flow-workspace-search .ant-input-clear-icon {
+  background: transparent;
+  color: var(--fg-text);
+}
+
+.flow-workspace-search .ant-input::placeholder {
+  color: var(--fg-text-faint);
+}
+
+.flow-workspace-search .anticon {
+  color: var(--fg-text-dim);
+}
+
+.flow-workspace-segments {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.flow-workspace-segments .ant-segmented {
+  padding: 2px;
+  background: #0d1e31;
+}
+
+.flow-workspace-segments .ant-segmented-thumb {
+  background: var(--fg-dot);
+}
+
+.flow-workspace-segments .ant-segmented-item {
+  color: var(--fg-text-dim);
+  font-size: 12px;
+}
+
+.flow-workspace-segments .ant-segmented-item:hover {
+  color: var(--fg-text);
+}
+
+.flow-workspace-segments .ant-segmented-item-selected {
+  background: var(--fg-dot);
+  color: var(--fg-text);
+  box-shadow: none;
+}
+
+.flow-workspace-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
+.flow-workspace-actions .ant-select-selector {
+  background: #0d1e31 !important;
+  border-color: var(--fg-panel-border) !important;
+  color: var(--fg-text);
+}
+
+.flow-workspace-actions .ant-select-arrow {
+  color: var(--fg-text-dim);
+}
+
+/* 下拉弹层（portal，暗色） */
+.flow-dark-dropdown.ant-select-dropdown {
+  background: var(--fg-panel-bg);
+}
+
+.flow-dark-dropdown .ant-select-item {
+  color: var(--fg-text-dim);
+}
+
+.flow-dark-dropdown .ant-select-item-option-active:not(.ant-select-item-option-disabled) {
+  background: #12283e;
+}
+
+.flow-dark-dropdown .ant-select-item-option-selected:not(.ant-select-item-option-disabled) {
+  background: var(--fg-dot);
+  color: var(--fg-text);
+}
+
+/* ── 工作区主体：画布 + Inspector 同级（设计 §5.1）── */
+
+.flow-workspace-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── 画布（设计 §5.3：暗色点阵背景）── */
+
+.flow-canvas-shell {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background-color: var(--fg-canvas-bg);
+  background-image: radial-gradient(var(--fg-dot) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.flow-canvas-shell > .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.flow-canvas-center-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.flow-canvas-center-state .ant-empty-description {
+  color: var(--fg-text-dim);
+}
+
+.flow-canvas-center-state .ant-spin {
+  color: var(--fg-accent);
+}
+
+/* 画布左上：模式标签（设计 §7.2） */
+.flow-canvas-mode-label {
+  position: absolute;
+  z-index: 5;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 8px;
+  background: rgba(10, 23, 37, 0.9);
+  font-size: 11px;
+}
+
+.flow-canvas-mode-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.flow-canvas-mode-hint {
+  color: var(--fg-text-dim);
+  white-space: nowrap;
+}
+
+/* 画布右上：计数徽章（设计 §7.2） */
+.flow-canvas-count-badge {
+  position: absolute;
+  z-index: 5;
+  top: 14px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 8px;
+  background: rgba(10, 23, 37, 0.9);
+  color: var(--fg-text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-canvas-count-badge strong {
+  color: var(--fg-text);
+}
+
+.flow-canvas-truncated {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(245, 158, 50, 0.16);
+  color: var(--fg-downstream);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* 底部图例：常驻（设计 §5.1：左右 16px、高 36px） */
+.flow-legend {
+  position: absolute;
+  z-index: 5;
+  bottom: 12px;
+  left: 50%;
+  display: flex;
+  height: 36px;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 8px;
+  background: rgba(10, 23, 37, 0.92);
+  color: var(--fg-text-dim);
+  font-size: 11px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.flow-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.flow-legend-item i.line {
+  width: 14px;
+  height: 2.5px;
+  border-radius: 2px;
+}
+
+.flow-legend-item i.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* 左下控制器（暗色） */
+.flow-canvas-shell .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 8px;
+  background: var(--fg-panel-bg);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.flow-canvas-shell .react-flow__controls-button {
+  width: 30px;
+  height: 30px;
+  border-bottom-color: var(--fg-panel-border);
+  background: var(--fg-panel-bg);
+  color: var(--fg-text-dim);
+}
+
+.flow-canvas-shell .react-flow__controls-button:hover {
+  background: #12283e;
+  color: var(--fg-accent);
+}
+
+.flow-canvas-shell .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+/* 画布右下：退出聚焦（设计 §7.4） */
+.flow-exit-focus {
+  position: absolute;
+  z-index: 5;
+  right: 14px;
+  bottom: 12px;
+}
+
+/* ── 节点（设计 §10：390×64、圆角 9px、完整地址）── */
+
+.focus-address-node {
+  position: relative;
+  display: grid;
+  width: 390px;
+  height: 64px;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 10px 16px;
+  border: 1px solid #2f5473;
+  border-radius: 9px;
+  background: var(--fg-panel-bg);
+  color: var(--fg-text);
+  text-align: left;
+  contain: layout paint;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.focus-address-node.relation-selected,
+.focus-address-node.is-selected {
+  border-color: var(--fg-accent);
+  box-shadow: 0 0 0 1px var(--fg-accent), 0 0 18px rgb(38 217 232 / 24%);
+}
+
+.focus-address-node.relation-upstream {
+  border-color: var(--fg-upstream);
+}
+
+.focus-address-node.relation-downstream {
+  border-color: var(--fg-downstream);
+}
+
+.focus-address-node.relation-exchange {
+  border-color: var(--fg-exchange);
+}
+
+.focus-address-node.relation-global {
+  border-color: #2f5473;
+}
+
+.focus-address-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-cross);
+}
+
+.focus-address-node.relation-selected .focus-address-dot {
+  background: var(--fg-accent);
+  box-shadow: 0 0 8px rgb(38 217 232 / 70%);
+}
+
+.focus-address-node.relation-upstream .focus-address-dot {
+  background: var(--fg-upstream);
+}
+
+.focus-address-node.relation-downstream .focus-address-dot {
+  background: var(--fg-downstream);
+}
+
+.focus-address-node.relation-exchange .focus-address-dot {
+  background: var(--fg-exchange);
+}
+
+.focus-address-main {
+  min-width: 0;
+}
+
+.focus-address-text {
+  display: block;
+  font: 500 12px/1.35 var(--fg-mono);
+  overflow-wrap: anywhere;
+  color: var(--fg-text);
+}
+
+.focus-address-role {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--fg-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.focus-address-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.focus-address-risk {
+  min-width: 26px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-address-risk.risk {
+  color: var(--fg-danger);
+  background: rgba(239, 91, 103, 0.14);
+}
+
+.focus-address-risk.warning {
+  color: var(--fg-downstream);
+  background: rgba(245, 158, 50, 0.14);
+}
+
+.focus-address-risk.normal {
+  color: var(--fg-accent);
+  background: rgba(38, 217, 232, 0.12);
+}
+
+.focus-address-flow {
+  font-size: 10px;
+  color: var(--fg-text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.focus-selected-label {
+  position: absolute;
+  top: -9px;
+  right: 12px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--fg-accent);
+  color: #04121f;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.focus-address-node .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--fg-panel-bg);
+  background: #2f5473;
+}
+
+.focus-address-node.relation-selected .react-flow__handle {
+  background: var(--fg-accent);
+}
+
+.focus-address-node.relation-upstream .react-flow__handle {
+  background: var(--fg-upstream);
+}
+
+.focus-address-node.relation-downstream .react-flow__handle {
+  background: var(--fg-downstream);
+}
+
+/* ── 边（设计 §11）── */
+
+.react-flow__edge-path,
+.react-flow__connection-path {
+  vector-effect: non-scaling-stroke;
+}
+
+.analytics-flow-edge-label {
+  display: inline-flex;
+  height: 22px;
+  min-width: 148px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 5px;
+  background: rgba(10, 23, 37, 0.94);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  color: var(--fg-text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.analytics-flow-edge-label strong {
+  color: var(--fg-text);
+  font-weight: 600;
+}
+
+/* 聚焦模式流向动画（设计 §11.4）：只动 dashoffset，不重建 path */
+.focus-flow-edge .react-flow__edge-path {
+  stroke-dasharray: 8 10;
+  animation: flow-dash 1.7s linear infinite;
+}
+
+@keyframes flow-dash {
+  to {
+    stroke-dashoffset: -36;
+  }
+}
+
+/* 视口交互中暂停动画/滤镜（设计 §12.4） */
+.flow-workspace-interacting .focus-flow-edge .react-flow__edge-path {
+  animation-play-state: paused;
+}
+
+.flow-workspace-interacting .focus-address-node {
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-flow-edge .react-flow__edge-path {
+    animation: none;
+  }
+}
+
+/* ── Inspector（设计 §5.4：宽 360–390px）── */
+
+.flow-inspector {
+  display: flex;
+  flex: none;
+  width: 372px;
+  min-height: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--fg-panel-border);
+  background: var(--fg-panel-bg);
+}
+
+.flow-inspector-header {
+  display: flex;
+  flex: none;
+  height: 46px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 0 16px;
+  border-bottom: 1px solid var(--fg-panel-border);
+}
+
+.flow-inspector-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.flow-inspector-title {
+  color: var(--fg-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.flow-inspector-empty {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  padding: 24px;
+}
+
+.flow-inspector-empty .ant-empty-description {
+  color: var(--fg-text-dim);
+  font-size: 12px;
+}
+
+.flow-inspector-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.flow-inspector-section {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(25, 53, 78, 0.6);
+}
+
+.flow-inspector-section-title {
+  margin: 0 0 10px;
+  color: var(--fg-text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.flow-inspector-address-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.flow-inspector-address {
+  flex: 1;
+  min-width: 0;
+  font: 500 11px/1.5 var(--fg-mono);
+  color: var(--fg-text);
+  overflow-wrap: anywhere;
+}
+
+.flow-inspector-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.flow-inspector-role {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.flow-inspector-role.risk {
+  color: var(--fg-danger);
+  background: rgba(239, 91, 103, 0.14);
+}
+
+.flow-inspector-role.warning {
+  color: var(--fg-downstream);
+  background: rgba(245, 158, 50, 0.14);
+}
+
+.flow-inspector-role.normal {
+  color: var(--fg-accent);
+  background: rgba(38, 217, 232, 0.12);
+}
+
+.flow-inspector-source {
+  font-size: 10px;
+  color: var(--fg-text-faint);
+}
+
+.flow-metrics-grid,
+.flow-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.flow-metric-cell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid rgba(25, 53, 78, 0.55);
+  border-radius: 8px;
+  background: rgba(13, 30, 49, 0.6);
+}
+
+.flow-metric-cell span {
+  font-size: 10px;
+  color: var(--fg-text-dim);
+}
+
+.flow-metric-cell strong {
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--fg-text);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-metric-cell strong.positive {
+  color: var(--fg-accent);
+}
+
+.flow-metric-cell strong.negative {
+  color: var(--fg-danger);
+}
+
+.flow-assets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.flow-asset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid rgba(25, 53, 78, 0.55);
+  border-radius: 8px;
+  background: rgba(13, 30, 49, 0.6);
+}
+
+.flow-asset-symbol {
+  width: 64px;
+  color: var(--fg-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.flow-asset-balance {
+  flex: 1;
+  color: var(--fg-text);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.flow-asset-balance.failed {
+  color: var(--fg-danger);
+}
+
+.flow-asset-status {
+  min-width: 24px;
+  color: var(--fg-danger);
+  font-size: 10px;
+  text-align: right;
+}
+
+.flow-assets-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 8px;
+  color: var(--fg-text-dim);
+  font-size: 10px;
+}
+
+.flow-assets-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--fg-text-dim);
+  font-size: 11px;
+}
+
+.flow-asset-state {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.flow-asset-state.fresh {
+  color: var(--fg-accent);
+  background: rgba(38, 217, 232, 0.12);
+}
+
+.flow-asset-state.cached {
+  color: var(--fg-upstream);
+  background: rgba(63, 151, 255, 0.14);
+}
+
+.flow-asset-state.stale,
+.flow-asset-state.partial {
+  color: var(--fg-downstream);
+  background: rgba(245, 158, 50, 0.14);
+}
+
+.flow-asset-state.failed {
+  color: var(--fg-danger);
+  background: rgba(239, 91, 103, 0.14);
+}
+
+.flow-inspector-tabs {
+  padding-bottom: 4px;
+}
+
+.flow-inspector-tabs .ant-tabs-nav {
+  margin-bottom: 10px;
+}
+
+.flow-inspector-tabs .ant-tabs-nav::before {
+  border-bottom-color: var(--fg-panel-border);
+}
+
+.flow-inspector-tabs .ant-tabs-tab {
+  color: var(--fg-text-dim);
+  font-size: 12px;
+  padding: 6px 0;
+}
+
+.flow-inspector-tabs .ant-tabs-tab:hover {
+  color: var(--fg-text);
+}
+
+.flow-inspector-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--fg-text);
+}
+
+.flow-inspector-tabs .ant-tabs-ink-bar {
+  background: var(--fg-accent);
+}
+
+.flow-neighbor-list {
+  display: flex;
+  max-height: 300px;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.flow-neighbor-item {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(25, 53, 78, 0.55);
+  border-radius: 8px;
+  background: rgba(13, 30, 49, 0.6);
+  color: var(--fg-text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.flow-neighbor-item:hover {
+  border-color: var(--fg-accent);
+  background: rgba(23, 50, 74, 0.7);
+}
+
+.flow-neighbor-dir {
+  margin-top: 1px;
+  font-size: 11px;
+}
+
+.flow-neighbor-dir.is-in {
+  color: var(--fg-upstream);
+}
+
+.flow-neighbor-dir.is-out {
+  color: var(--fg-downstream);
+}
+
+.flow-neighbor-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.flow-neighbor-address {
+  display: block;
+  font: 500 10px/1.4 var(--fg-mono);
+  color: var(--fg-text);
+  overflow-wrap: anywhere;
+}
+
+.flow-neighbor-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--fg-text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-tx-list {
+  display: flex;
+  max-height: 320px;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.flow-tx-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(25, 53, 78, 0.55);
+  border-radius: 8px;
+  background: rgba(13, 30, 49, 0.6);
+}
+
+.flow-tx-dir {
+  margin-top: 1px;
+  font-size: 11px;
+}
+
+.flow-tx-dir.is-in {
+  color: var(--fg-upstream);
+}
+
+.flow-tx-dir.is-out {
+  color: var(--fg-downstream);
+}
+
+.flow-tx-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.flow-tx-hash {
+  display: block;
+  overflow: hidden;
+  font: 500 10px/1.4 var(--fg-mono);
+  color: var(--fg-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-tx-meta {
+  display: block;
+  margin-top: 3px;
+  color: var(--fg-text-dim);
+  font-size: 10px;
+}
+
+.flow-tx-amount {
+  color: var(--fg-text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-evidence h4 {
+  margin: 0 0 8px;
+  color: var(--fg-exchange);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.flow-evidence ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.flow-evidence li {
+  margin: 6px 0;
+  color: var(--fg-text-dim);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.flow-evidence-note {
+  margin: 10px 0 0;
+  color: var(--fg-text-faint);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-inspector-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--fg-panel-border);
+}
+
+.flow-inspector-footer .ant-btn {
+  flex: 1;
+}
+
+/* 工作区暗色按钮（Header / Inspector / 画布） */
+.flow-workspace-header .ant-btn,
+.flow-inspector .ant-btn,
+.flow-canvas-shell .flow-exit-focus {
+  background: #0d1e31;
+  border-color: var(--fg-panel-border);
+  color: var(--fg-text);
+}
+
+.flow-workspace-header .ant-btn:hover,
+.flow-inspector .ant-btn:hover,
+.flow-canvas-shell .flow-exit-focus:hover {
+  border-color: var(--fg-accent);
+  color: var(--fg-accent);
+}
+
+.flow-inspector .ant-btn.ant-btn-primary.ant-btn-background-ghost {
+  border-color: var(--fg-accent);
+  color: var(--fg-accent);
+}
+
+/* 960–1279px：Inspector 可折叠（设计 §5.5）；≥1280 dock 模式同样支持折叠 */
+.flow-inspector-collapsible,
+.flow-inspector-dock {
+  position: relative;
+  display: flex;
+  min-height: 0;
+}
+
+.flow-inspector-collapsible .flow-inspector,
+.flow-inspector-dock .flow-inspector {
+  height: 100%;
+}
+
+.flow-inspector-collapsible .flow-inspector {
+  width: 340px;
+}
+
+.flow-inspector-collapse-toggle {
+  position: absolute;
+  z-index: 6;
+  top: 12px;
+  left: -13px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 50%;
+  background: var(--fg-panel-bg);
+  color: var(--fg-text-dim);
+  cursor: pointer;
+}
+
+.flow-inspector-collapse-toggle:hover {
+  border-color: var(--fg-accent);
+  color: var(--fg-accent);
+}
+
+.flow-inspector-collapse-bar {
+  display: flex;
+  flex: none;
+  width: 34px;
+  justify-content: center;
+  padding-top: 14px;
+  border-left: 1px solid var(--fg-panel-border);
+  background: var(--fg-panel-bg);
+}
+
+.flow-inspector-collapse-bar button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 50%;
+  background: #0d1e31;
+  color: var(--fg-text-dim);
+  cursor: pointer;
+}
+
+.flow-inspector-collapse-bar button:hover {
+  border-color: var(--fg-accent);
+  color: var(--fg-accent);
+}
+
+/* ── 底部状态栏（V2.0 图谱统计，暗色）── */
+
+.flow-workspace-statusbar {
+  flex: none;
+  border-top: 1px solid var(--fg-panel-border);
+  background: var(--fg-panel-bg);
+}
+
+.analytics-graph-statsbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  min-height: 38px;
+  align-items: center;
+  padding: 4px 16px;
+  color: var(--fg-text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.analytics-graph-statsbar strong {
+  color: var(--fg-text);
+}
+
+.analytics-graph-statsbar .muted {
+  opacity: 0.65;
+}
+
+.analytics-graph-statsbar .positive {
+  color: var(--fg-accent);
+}
+
+.analytics-graph-statsbar .negative {
+  color: var(--fg-danger);
+}
+
+.analytics-graph-statsbar .truncated {
+  color: var(--fg-downstream);
+  font-weight: 600;
+}
+
+.analytics-graph-statsbar .complete {
+  color: var(--fg-accent);
+}
+
+/* ── Drawer（768–959px，暗色）── */
+
+.flow-inspector-drawer .ant-drawer-content {
+  background: var(--fg-panel-bg);
+}
+
+.flow-inspector-drawer .flow-inspector {
+  width: 100%;
+  height: 100%;
+  border-left: none;
+}
+
+/* ── 响应式（设计 §5.5）── */
+
+@media (max-width: 1279px) {
+  /* 960–1279px：Inspector 默认 340px、可折叠（见 .flow-inspector-collapsible） */
+}
+
+@media (max-width: 767px) {
+  .analytics-graph-page.analytics-graph-page {
+    height: 100vh;
+    min-height: 480px;
+    margin: -18px -12px;
+  }
+
+  /* 顶栏两行 */
+  .flow-workspace-header {
+    height: auto;
+    min-height: 0;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    padding: 10px 12px;
+  }
+
+  .flow-workspace-brand {
+    min-width: 0;
+  }
+
+  .flow-workspace-actions {
+    margin-left: auto;
+  }
+
+  .flow-workspace-search {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .flow-workspace-segments {
+    flex: 1 1 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .flow-canvas-mode-label {
+    gap: 6px;
+    padding: 5px 10px;
+  }
+
+  .flow-canvas-mode-hint {
+    display: none;
+  }
+
+  .flow-canvas-count-badge {
+    padding: 5px 10px;
+  }
+
+  .flow-legend {
+    right: 12px;
+    bottom: 10px;
+    left: 12px;
+    justify-content: flex-start;
+    overflow-x: auto;
+    gap: 12px;
+    padding: 0 12px;
+    transform: none;
+  }
+
+  .flow-exit-focus {
+    right: 12px;
+    bottom: 52px;
+  }
+}

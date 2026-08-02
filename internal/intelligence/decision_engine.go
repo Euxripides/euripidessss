@@ -2,6 +2,7 @@ package intelligence
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -58,12 +59,14 @@ func (e *DecisionEngine) Decide(in DecideInput) Decision {
 		MadeAt: now,
 	}
 
-	// ── 停止条件（§10 限制 + §11 智能停止）──
+	// ── 停止条件（§10 限制 + §11 智能停止；V2.1 StopCode 枚举）──
 	if cfg.MaxRuntimeMS > 0 && in.Elapsed >= time.Duration(cfg.MaxRuntimeMS)*time.Millisecond {
+		dec.StopCode = StopBudgetLimit
 		dec.Reasons = append(dec.Reasons, fmt.Sprintf("超过最长运行时间（%dms）", cfg.MaxRuntimeMS))
 		return dec
 	}
 	if in.Round >= cfg.MaxRounds {
+		dec.StopCode = StopBudgetLimit
 		dec.Reasons = append(dec.Reasons, fmt.Sprintf("达到最大调查轮次 %d", cfg.MaxRounds))
 		return dec
 	}
@@ -73,11 +76,13 @@ func (e *DecisionEngine) Decide(in DecideInput) Decision {
 			total = in.TotalDiscovered
 		}
 		if total >= cfg.MaxAddresses {
+			dec.StopCode = StopBudgetLimit
 			dec.Reasons = append(dec.Reasons, fmt.Sprintf("达到最大发现地址数 %d", cfg.MaxAddresses))
 			return dec
 		}
 	}
 	if in.Round > 1 && len(in.NewObs) == 0 {
+		dec.StopCode = StopNoValue
 		dec.Reasons = append(dec.Reasons, "本轮无新发现，停止低价值路径")
 		return dec
 	}
@@ -98,10 +103,13 @@ func (e *DecisionEngine) Decide(in DecideInput) Decision {
 		}
 		switch {
 		case len(exchange) > 0:
+			dec.StopCode = StopTargetFound // 已发现交易所入口等目标
 			dec.Reasons = append(dec.Reasons, fmt.Sprintf("候选均为交易所地址（%d 个），停止扩展", len(exchange)))
 		case len(analyzed) > 0:
+			dec.StopCode = StopNoValue
 			dec.Reasons = append(dec.Reasons, "候选均为已分析/已忽略地址（重复关系），停止扩展")
 		case len(lowValue) > 0:
+			dec.StopCode = StopLowConf
 			dec.Reasons = append(dec.Reasons, fmt.Sprintf("候选评分低于门槛 %.0f（低价值地址），停止扩展", cfg.ExpansionThreshold))
 		default:
 			if dec.Scores.RiskScore >= 60 {
@@ -109,6 +117,7 @@ func (e *DecisionEngine) Decide(in DecideInput) Decision {
 				dec.Reasons = append(dec.Reasons, fmt.Sprintf("风险较高（%.0f），进入深入分析", dec.Scores.RiskScore))
 				return dec
 			}
+			dec.StopCode = StopNoValue
 			dec.Reasons = append(dec.Reasons, "无高价值扩展候选")
 		}
 		return dec
@@ -163,6 +172,22 @@ func (e *DecisionEngine) scores(in DecideInput) DecisionScores {
 			s.ExpansionScore = c.Score
 		}
 	}
+	// ── V2 六维（设计 §9）：行为/图/身份/资金 ──
+	// BehaviorScore：本轮观察活跃度（每类观察 10 分，封顶 100）
+	s.BehaviorScore = math.Min(100, float64(len(in.NewObs))*10)
+	// GraphScore：路径与扩展候选取高（叠加路径数量加成）
+	s.GraphScore = math.Min(100, math.Max(s.PathScore, s.ExpansionScore))
+	// IdentityScore：带标签实体占比
+	if len(in.Entities) > 0 {
+		labeled := 0
+		for _, ent := range in.Entities {
+			if ent.Label != "" {
+				labeled++
+			}
+		}
+		s.IdentityScore = float64(labeled) / float64(len(in.Entities)) * 100
+	}
+	// FundScore：决策层无余额/获利信号，由 InvestigationScorer（有 Profile）计算填充
 	return s
 }
 

@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/logger"
 )
 
 const (
@@ -33,6 +34,20 @@ const (
 // quoteSQLString 转义 SQL 单引号字符串字面量。
 func quoteSQLString(s string) string {
 	return `'` + strings.ReplaceAll(s, `'`, `''`) + `'`
+}
+
+// validEVMLikeAddress 校验 EVM 地址格式（0x + 40 hex，大小写均可）。
+func validEVMLikeAddress(addr string) bool {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	if len(addr) != 42 || !strings.HasPrefix(addr, "0x") {
+		return false
+	}
+	for _, c := range addr[2:] {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
 }
 
 // Profile 是地址画像响应。
@@ -212,7 +227,8 @@ func (s *Service) Flows(ctx context.Context, address string, token string) ([]Fl
 	}
 	tokenClause := ""
 	if token != "" {
-		tokenClause = fmt.Sprintf("AND address = '%s'", strings.ToLower(token))
+		// quoteSQLString 转义：token 来自 URL query，未做格式校验，防止 SQL 注入
+		tokenClause = "AND address = " + quoteSQLString(strings.ToLower(token))
 	}
 	norm1 := fmt.Sprintf(normalizeTopic, "topic1", "topic1")
 	norm2 := fmt.Sprintf(normalizeTopic, "topic2", "topic2")
@@ -636,6 +652,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.json(w, func() (any, error) { return h.service.DashboardOverview(r.Context()) })
 		return
 	}
+	// ── V2.0 统计体系（设计 §19）──
+	if r.URL.Path == "/analytics/flow-stats" && r.Method == http.MethodGet {
+		chain := r.URL.Query().Get("chain")
+		if chain == "" {
+			chain = "bsc"
+		}
+		chainID := int64(56)
+		if v := r.URL.Query().Get("chain_id"); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				chainID = n
+			}
+		}
+		token := r.URL.Query().Get("token")
+		h.json(w, func() (any, error) { return h.service.FlowStats(r.Context(), chain, chainID, token) })
+		return
+	}
+	if r.URL.Path == "/analytics/address-stats" && r.Method == http.MethodGet {
+		address := strings.ToLower(r.URL.Query().Get("address"))
+		if !validEVMLikeAddress(address) {
+			http.Error(w, `{"detail":"address 不是合法的 EVM 地址"}`, http.StatusBadRequest)
+			return
+		}
+		token := r.URL.Query().Get("token")
+		h.json(w, func() (any, error) { return h.service.AddressStats(r.Context(), address, token) })
+		return
+	}
 	if r.URL.Path == "/analytics/graph" {
 		limit := 500
 		if v := r.URL.Query().Get("limit"); v != "" {
@@ -654,6 +696,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) >= 3 && parts[0] == "address" {
 		address := parts[1]
+		// 安全校验（对齐 /analytics/address-stats）：防止脏地址进入 SQL 拼接
+		if !validEVMLikeAddress(address) {
+			http.Error(w, `{"detail":"address 不是合法的 EVM 地址"}`, http.StatusBadRequest)
+			return
+		}
 		switch parts[2] {
 		case "profile":
 			h.json(w, func() (any, error) { return h.service.Profile(r.Context(), address) })
@@ -727,6 +774,15 @@ func (h *Handler) validateAddrFile(addrFile string) error {
 
 func (h *Handler) json(w http.ResponseWriter, fn func() (any, error)) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	defer func() {
+		if r := recover(); r != nil {
+			// 记录服务端日志便于定位，但不向客户端泄露 panic 内部信息（路径/状态等）
+			logger.Log.Error().Msgf("analyticsapi handler panic: %v", r)
+			w.WriteHeader(http.StatusInternalServerError)
+			body, _ := json.Marshal(map[string]string{"detail": "内部错误"})
+			_, _ = w.Write(body)
+		}
+	}()
 	v, err := fn()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)

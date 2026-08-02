@@ -1,3 +1,409 @@
+### 2026-08-02 地址详情可折叠/展开 + panic 日志
+
+#### 新增
+
+1. 右侧地址详情（Inspector）支持折叠/展开：≥1280 dock 模式与 960–1279 可折叠模式统一——Inspector 头部新增「收起」按钮，折叠后显示左侧展开条（34px），画布占满；展开恢复。移动端 Drawer 不受影响（自带遮罩关闭）。
+2. analyticsapi panic recover 补充服务端日志（logger.Log.Error），客户端仍只返回泛化「内部错误」。
+
+#### 修改
+
+- frontend/src/features/analytics/GraphPage.tsx（dock 模式折叠状态统一）、flowInspector.tsx（header 收起按钮 + onCollapse prop）、graph-page.css（.flow-inspector-dock 容器 + header-actions）、tools/graph_ui_acceptance.py（+3 折叠断言）、internal/analyticsapi/service.go（recover 日志）
+
+#### 接口
+
+- 无 API 变更；FlowInspectorProps 新增可选 onCollapse
+
+#### 已验证
+
+- npm run build 通过；Playwright 51/51 PASS（新增：1440px 折叠后展开条出现/画布占满/展开后恢复）；go test ./internal/... -short 41 包全部 ok；run.ps1 重启（PID 25468）
+
+#### 未完成与注意事项
+
+- 无
+
+
+
+#### 新增
+
+1. 进入地址关系图时隐藏应用顶部横条（app-header，含全局搜索框），图谱页占满 100vh 全屏；其他页面顶部横条保留。
+2. 搜索功能合并：图谱页搜索框在地址不在当前数据集时，message 提示「未在当前数据集中找到该地址 — 点击前往地址详情页」，点击跳转地址详情页（App 抽取 openAddressDetail 回调传入 GraphPage 的 onOpenAddress prop）。
+3. 顺带修复既有问题：antd v5 静态 message/notification/Modal 在 React 19 下静默失效（无任何提示渲染），引入官方补丁 `@ant-design/v5-patch-for-react-19`（main.tsx 一行 import，全项目 message 恢复）。
+4. 安全加固（security_review 发现并修复）：SQL 注入链——前端 openAddressDetail 加 `/^0x[0-9a-f]{40}$/` 校验；后端 `/api/analytics/address/{address}/profile|flows|path|risk` 路由加 validEVMLikeAddress 校验（非法 400，curl 实测注入 payload 返回 400）；Flows token 改用 quoteSQLString 转义；json() panic recover 泛化为「内部错误」不再泄露内部信息；新增 route_security_test.go（6 payload × 4 端点回归）。
+
+#### 修改
+
+- frontend/src/App.tsx（header 条件渲染 + openAddressDetail 回调 + 传参）、frontend/src/features/analytics/GraphPage.tsx（onOpenAddress prop + 数据集外地址提示）、graph-page.css（height 100vh）、main.tsx（补丁 import）、package.json（新增依赖）、tools/graph_ui_acceptance.py（+4 断言）
+
+#### 接口
+
+- 无 API/数据库变更；新增前端组件 prop `GraphPageProps.onOpenAddress`
+
+#### 已验证
+
+- npm run build 通过；Playwright 验收 48/48 PASS（新增：其他页保留顶条/图谱页隐藏顶条/高度≈100vh/数据集外地址提示）；go test ./internal/... -short 40 包全部 ok
+
+#### 未完成与注意事项
+
+- 新增依赖 @ant-design/v5-patch-for-react-19（antd 官方 React 19 兼容补丁，评估充分）；如后续升级 antd v6 可移除
+- 移动端（<768）app-header 同样隐藏；图谱页内工具栏的 72px 顶栏保留（品牌/搜索/方向/深度）
+
+
+
+#### 新增
+
+1. 品牌标题「盘古资金流向追踪」改为「资金流向追踪」（flowWorkspaceHeader.tsx，副标题「链上事实 · FIFO 案涉归因」保留）。
+2. 进入地址关系图自动收起左侧导航（App.tsx）：handleMenuClick 按目标页设置 sideCollapsed（点击「地址关系图」收起、其他页面恢复展开）；新增 useEffect 兜底覆盖非菜单入口（如 Dashboard 导航）；Sider 折叠到 collapsedWidth=72，内容区占满。
+
+#### 修改
+
+- frontend/src/App.tsx、frontend/src/features/analytics/flowWorkspaceHeader.tsx、tools/graph_ui_acceptance.py（新增「品牌标题=资金流向追踪」「侧栏收起(72px)」两条断言）
+
+#### 接口
+
+- 无 API 变更；无数据库变更
+
+#### 已验证
+
+- npm run build 通过；Playwright 验收 44/44 PASS（原 42 项无回归 + 2 项新断言）；go test ./internal/... -short 40 包全部 ok
+
+#### 未完成与注意事项
+
+- 无
+
+
+
+#### 新增
+
+1. 全屏暗色工作台：移除白色大标题/PageHeader/白色 Card，页面重构为「72px 顶部工具栏 + 画布/Inspector 同级主体 + 底部统计状态栏」，色值严格执行设计 §5.3（页面 #06111e、画布 #071522、面板 #0a1725、边框 #19354e、主文字 #edf8ff、次文字 #7f9db5、选中 #26d9e8、上游 #3f97ff、下游 #f59e32、交易所 #d7b34d、非聚焦 #3a536c、危险 #ef5b67）。
+2. 顶部工具栏（flowWorkspaceHeader.tsx）：品牌区「盘古资金流向追踪 / 链上事实 · FIFO 案涉归因」+ 完整地址搜索（Enter=定位，失败不清空视图）+ 方向/深度 Segmented 分段按钮（全局视图/上游/下游/前后；1层/2层/全部）+ 关系类型/返回全局操作区。
+3. 画布（flowCanvasShell.tsx）：暗色点阵背景（radial-gradient #17324a 22px）、左上聚焦模式标签、右上「当前显示 N 个地址 · M 组关系」计数徽章（含截断标记）、底部常驻图例（选中/上游/下游/交易所公开标记/未聚焦/风险）、右下退出聚焦按钮、暗色左下控制器；模块级 NODE_TYPES/EDGE_TYPES + React.memo 节点/边（§12 抗闪烁）。
+4. 节点视觉：390×64px 圆角 9px、完整地址（overflow-wrap:anywhere 不截断）、角色标签（核心节点/上游来源/下游去向）、选中态青色发光 +「已选择」徽章、风险分与图边流入/流出；关系语义色（selected/upstream/downstream/exchange/global）。
+5. 边视觉：三次贝塞尔曲线 + 箭头指向真实接收方 + EdgeLabelRenderer 金额/笔数标签（如 469,465.987425 USDT · 4 笔）、vector-effect non-scaling-stroke、聚焦模式 dash 流向动画（CSS stroke-dashoffset）、视口交互 140ms 暂停动画（flow-workspace-interacting 类）、prefers-reduced-motion 关闭动画。
+6. 右侧 Inspector（flowInspector.tsx，372px）：地址详情（完整地址+复制/角色/标签来源）、图边归因流入/流出/净流量/关联交易/上下游计数、实时资产（useAddressAssets 状态徽章/刷新/失败不显示 0）、Tabs（相邻地址点击换中心 / 交易记录 fetchFlows / 统计 addressStats / 证据边界说明）、底部保存快照/加入调查/退出聚焦。
+7. 响应式（设计 §5.5）：≥1280 常驻 372px；960–1279 可折叠（默认 340px + 折叠条）；768–959 Drawer 画布占满；<768 顶栏两行 + 分段横向滚动 + 全屏 Drawer（聚焦自动打开）。
+8. 布局修正（渲染层）：聚焦图按边方向重算带符号层号（signFocusLayers），上游节点正确放左侧（负层）、下游右侧（正层），BFS 节点/边集合与 graphUpgrade.ts 逻辑零改动。
+9. 视觉验收工具 `tools/graph_ui_acceptance.py`（Playwright + msedge）：41 项断言（六种视口结构/语义色/40 次滚轮 DOM 稳定/控制台零错误），截图输出 docs/screenshots/graph-workspace-{global,focus,inspector,mobile}.png + visual-report.json。
+
+#### 修改
+
+- 新增：frontend/src/features/analytics/{flowWorkspaceGraph,flowWorkspaceHeader,flowCanvasShell,flowInspector}.tsx、tools/graph_ui_acceptance.py、tools/screenshot_verify.py
+- 重写：frontend/src/features/analytics/GraphPage.tsx（工作台编排器：状态/数据/聚焦/资产/快照/调查联动）、graph-page.css（全量暗色样式）
+- 保留未动：graphUpgrade.ts（BFS/方向/深度）、FlowGraphStatsBar.tsx、useAddressAssets.ts、flowStatsApi/flowAssetApi/analyticsApi.ts、全部后端
+
+#### 接口
+
+- 无 API 变更；新增页面内交互（点击节点/相邻地址即聚焦换中心）
+
+#### 数据库
+
+- 无变更
+
+#### 已验证
+
+- `npx tsc -b --noEmit` 零错误；`npm run build` 通过；`go test ./internal/... -short -count=1` 40 包全部 ok
+- Playwright 视觉验收 41/41 PASS + 4 张截图（真实 DuckDB 数据：全局 600 节点、聚焦 0xdead/0x238a… 子图、上游 95/下游 67 节点语义色正确、移动端全屏 Drawer、40 次滚轮 DOM 数量不变、控制台零错误）
+
+#### 未完成与注意事项
+
+- 交易哈希定位未接入（无哈希→地址后端接口），输入哈希时提示改用 EVM 地址
+- 交易所金色节点为预留语义位：当前数据集无公开标签证据字段，不会误标「充值/归集」
+- 实时资产依赖 BSC_RPC 环境变量（未配置时 Inspector 显示失败状态与重试按钮）
+- 全局 app-header（66px 白色）保留为应用外壳，暗色工作台覆盖其下内容区
+- 修复过程中发现并修复：workspaceMode 未 memo 导致 React #185 无限更新崩溃；Drawer portal 在 .analytics-graph-page 外导致 CSS 变量失效（现对 .flow-inspector-drawer 同定义）；buildFocusGraph 层号恒正导致上游节点错放右侧（渲染层 signFocusLayers 修正，未改 BFS）
+
+
+#### 新增
+
+1. Phase 1 关系图升级：聚焦搜索/方向/深度筛选、聚焦子图从完整数据 BFS 计算、增强节点与边标签、truncated 完整性标记、模块级 nodeTypes。
+2. Phase 2 统计体系：/api/analytics/flow-stats（图统计）+ /api/analytics/address-stats（地址统计含 Top-N 集中度/活跃度/主导 Token，金额 Go 侧 big.Int 解析）+ 前端统计栏/地址统计面板。
+3. Phase 3 实时资产：internal/flow AssetService（缓存 TTL/并发去重/批量限制/错误脱敏/失败不报 0）+ 三端点 + 前端资产面板（状态判定/AbortController 取消）。
+4. Phase 4 快照与联动：余额快照存储（balance-snapshots/）+ 历史对比 + 保存/查询 API + 前端保存快照/加入调查按钮。
+
+#### 修改
+
+- 新增：internal/flow/*（2 文件+2 测试）、internal/api/flow_assets_handlers.go、internal/analyticsapi/stats.go+测试、frontend analytics 6 个新文件
+- 修改：internal/analyticsapi/service.go、internal/api/handlers.go、frontend GraphPage.tsx/graph-page.css
+
+#### 接口
+
+- POST /api/flow/address-assets、/batch、/refresh；POST /api/flow/balance-snapshot；GET /api/flow/balance-snapshots；GET /api/analytics/flow-stats、/address-stats
+
+#### 已验证
+
+- go build/vet 零错误；go test 40 包全通过；npm run build+tsc 零错误；真实数据端到端（图统计/地址统计/非法地址 400/资产降级）
+
+#### 安全加固（多轮 review + security_review 迭代）
+
+- SQL 注入防护：token EVM 地址校验 + quoteSQLString 双重防护（curl 实测注入返回 400）；金额 Go 侧 big.Int 解析
+- 全局并发信号量（容量 8）：单地址/batch/refresh/snapshot 四端点全覆盖（acquire/defer release 配对，snapshot force_refresh 绕过缺口已堵），信号量满立即 429+retry_after
+- 五端点 chain 白名单（bsc/eth）+ tokens 格式校验 + ≤20 上限（handler 层纵深一致）；批量 ≤50 地址
+- 快照 key ValidKey 防路径穿越；RPC 错误 120-rune 脱敏；flowRows 查询失败直接返回错误（消除 200+空金额歧义）
+- ETH USDT/USDC 6 位小数配置化（decimalsOf 回退 18，修复硬编码 18 导致余额失真）；BatchAssets 注释如实（50×23=1150）
+- 历史对比 Compare 先于 Save（diff 不再恒为 0）；dead code 清理（maxInt64/覆盖分支/重复注释）
+
+#### 未完成
+
+- 实时资产 RPC 需 BSC_RPC 环境变量（未配置时优雅降级）；真实 BSC 验收待 RPC；缓存首期内存（AssetStore 接口预留迁移）；统计金额 20 万行上限
+### 2026-08-02 Investigation Agent Runtime V2（执行引擎：Executor Pool + Re-plan + 恢复 + 事件日志 + /runtime API）
+
+#### 新增
+
+1. 任务模型扩展：Dependencies 依赖门控、MaxRetries/RetryCount 失败自动重试、TimeoutSec/StartedAt 执行超时与 heartbeat（TaskQueue Next/Mark/IsExpired）。
+2. 状态机扩展：WAITING/STOPPED + RuntimeController（生命周期状态流转、终态不可回退、任务统计视图、启动即同步）。
+3. Executor Pool：Executor 接口（Type/Execute/Validate）+ ExecutorRegistry 注册表，12 种执行器（18 类型含别名）闭包包装，executeTask 改注册表分发。
+4. Re-plan 触发器：高价值资金/新实体/新路径 → 增量规划 → TaskQueue 去重合并 + MaxTasks 预算封顶；与 dynamicAppend 双通道融合。
+5. 恢复机制：TaskStore 补 Runtime 字段落盘；RecoverTasks heartbeat 超时标记 failed 可重试。
+6. Runtime 日志：runtime-events.log（task_created/executed/retried/failed/replanned JSON 行）。
+7. /runtime API：start（恢复执行）/status（controller 状态）/tasks（任务视图含新字段）。
+
+#### 修改
+
+- internal/intelligence/：runtime_controller.go、executor.go、executor_registry.go、replan.go、runtime_event.go 新增；types/task_queue/loop_engine/investigation_agent/investigation_handler 修改
+- internal/investigationstore/records.go（TaskRecord 补 Runtime 字段）；internal/api/handlers.go（EventLog 装配）
+- frontend intelligenceApi.ts（InvestigationTask 可选字段）；新增 6 个测试文件
+
+#### 接口
+
+- POST /api/investigation/{id}/runtime/start、GET /{id}/runtime/status、GET /{id}/runtime/tasks
+- InvestigationTask JSON 新增 dependencies/max_retries/retry_count/timeout_sec/started_at；Investigation 新增 replans
+
+#### 数据库
+
+- 无；runtime-events.log 新增于 backend/data/logs/；tasks/ 记录补字段
+
+#### 已验证
+
+- go build ./...、go vet ./...、gofmt 零问题；go test ./internal/... -short 39 包全部通过（新增 24 个测试用例）
+
+#### 未完成与注意事项
+
+- STOPPED 无取消 UI（预留）；Re-plan 增量规划用规则规划器（AI 仅首轮）；heartbeat 恢复需显式调用 /runtime/start；依赖失败阻塞下游为设计语义。
+### 2026-08-02 Investigation Storage Layer V1（统一 JSON 存储层 + 旧数据迁移）
+
+#### 新增
+
+1. 新包 `internal/investigationstore`：统一 `Store[T]` 接口（Save/Get/List/Delete/Exists）+ 泛型 `JSONStore[T]`（原子写 temp+fsync+rename、单文件锁、schema_version envelope 校验、加载时 ID/关联校验、ValidKey 路径穿越防护、MoveToArchive）。
+2. Index 索引存储（indexes/evidence-index.json、memory-index.json，地址→ID，原子写 + Bulk 批量重建/自愈）。
+3. Lifecycle 生命周期归档（active≤5 / history≤200，超出移入 archive/，loadAll 跳过）。
+4. ScoreProfileStore（score-profile/profiles.json 权重持久化，scorer 优先读配置回退内置默认）。
+5. PlanStore/TaskStore（plans/、tasks/ 目录）与 Memory 记录类型（memory/address|entity|case 分目录）。
+6. `MigrateLegacyInvestigationData`：启动时一次性幂等迁移旧目录（investigation_requests/、investigation_evidence/、investigation_memory/knowledge.json → data/investigation/），不删除旧文件。
+
+#### 修改
+
+- internal/intelligence/：request_store.go、evidence_store.go、investigation_memory.go 迁移复用 JSONStore；investigation_agent.go/loop_engine.go 接入 plan/task 落盘与评分权重；investigation_score.go 新增 SetProfileStore；migrate_legacy.go 新增
+- internal/api/handlers.go：setupIntelligence 装配新目录 + 迁移 + 启动归档
+- 新增测试：investigationstore 17 用例 + migrate_legacy 5 用例；crash recovery 知识写入改为确定性轮询等待
+
+#### 接口
+
+- 无 API 变更；存储布局改为 backend/data/investigation/{requests,plans,tasks,evidence,memory,score-profile,indexes,archive}
+
+#### 数据库
+
+- 无；新目录 backend/data/investigation/（envelope 格式，schema_version=1）
+
+#### 已验证
+
+- go build ./...、go vet ./... 零错误零告警；go test ./internal/... -short 39 包全部通过
+
+#### 未完成与注意事项
+
+- DuckDB Adapter（Phase 4）未实现，接口已预留（Store[T] 可换实现）；旧目录迁移后保留未删（备份）；MemoryStore（调查状态记忆）仍用旧 investigation_memory/ 目录。
+### 2026-08-02 Investigation Agent Planner V2.1（证据体系/获利可信度/预算与停止策略/跨案件记忆）
+
+#### 新增
+
+1. Evidence Layer：六类证据模型 + EvidenceStore 原子持久化（investigation_evidence/）+ 提取器（路径/风险/观察/获利，含可信度与去重）+ GET /api/investigation/{id}/evidence + 前端证据链 Tab。
+2. Profit Detection V2：估算金额（稳定币净额）+ 置信度（依据权重，无 oracle 封顶 0.85）+ 依据明细 ✓/✗/?（流入/流出/时间窗口/历史价格）。
+3. Prompt Security：PlanPrompt 四段隔离（SYSTEM/CONTEXT/USER OBJECTIVE/CONSTRAINTS），用户输入定界符包裹并声明不可信。
+4. Investigation Budget：MaxTasks=50 总任务预算（TaskQueue.TotalCount + 三处入队检查）+ GET /api/investigation/{id}/budget。
+5. Stop Strategy：StopCode 枚举（TARGET_FOUND/NO_VALUE/LOW_CONFIDENCE/BUDGET_LIMIT/USER_CANCEL/ERROR）接入决策引擎与终态。
+6. Score Profile：按调查模式动态加权六维评分（fund_trace/risk_scan/identity_lookup 三套权重，其余平均）。
+7. Memory Layer：跨案件知识记忆（CASE_ADDRESS/ADDRESS_ENTITY/ADDRESS_LINK，knowledge.json 原子写），调查完成自动写入 + GET /api/investigation/memory/search。
+8. Crash Recovery 测试：完成/重载/中断三场景一致性。
+
+#### 修改
+
+- internal/intelligence/：evidence.go、evidence_store.go、evidence_extractor.go、investigation_memory.go 新增；types/v2_tasks/prompt_builder/report_agent/investigation_agent/loop_engine/decision_engine/investigation_score/investigation_handler/task_queue/api_handler 修改
+- internal/api/handlers.go；frontend/src/features/intelligence/（EvidenceViewer 新增 + 4 文件修改）
+- 新增 5 个测试文件
+
+#### 接口
+
+- GET /api/investigation/{id}/evidence、/{id}/budget、/memory/search?address=
+- Investigation JSON 新增 evidence/stop_code；ProfitReport 新增 estimate_usd/confidence/checklist
+
+#### 数据库
+
+- 无；新增 investigation_evidence/ 与 investigation_memory/knowledge.json
+
+#### 已验证
+
+- go test ./internal/... -short 全过；tsc 0 错误；npm run build 通过
+- 真实 0xdead 端到端：score 60.3、stopCode=LOW_CONFIDENCE、profitConf=0.75、证据 59 条、budget 50/10、memory 2 条、报告 V2.1 章节齐全
+
+#### 未完成与注意事项
+
+- USER_CANCEL 预留；Profit 估算为稳定币口径；调查运行时状态不持久化（重启后请求保持 started 可重发起）。
+### 2026-08-02 Investigation Agent Planner V2（调查请求 + 意图分析 + 12 任务类型 + 六维评分）
+
+#### 新增
+
+1. 调查请求模型（`InvestigationRequest`）：目标地址 + 链 + 调查目的（objective）+ 期望结果（expected_result[]）+ 调查模式（mode：auto/fund_trace/profit_analyze/exchange_entry/identity_lookup/risk_scan），RequestStore JSON 文件持久化（`backend/data/investigation_requests/`，原子写）。
+2. Intent Analyzer 规则引擎：目的关键词 + 期望结果映射为结构化意图（方向 in/out/both、8 类目标集合、auto 模式推断、意图摘要）。
+3. V2 API 入口 `/api/investigation/*`：POST create（校验→意图分析→持久化→启动调查→回填 investigation_id）、GET requests、GET {id}、GET {id}/plan、GET {id}/tasks；现有 `/api/intelligence/*` 保持不变。
+4. 任务类型扩展至 12 种：BALANCE_ANALYSIS/TOKEN_ANALYSIS/PROFIT_DETECTION/FORWARD_TRACE/BACKWARD_TRACE/FLOW_GRAPH/EXCHANGE_DETECTION/ENTITY_CLUSTER/RISK_ANALYSIS/IDENTITY_LOOKUP/REPORT_GENERATE（旧 7 种保留，别名映射）。
+5. 规则 Planner 升级：mode 驱动任务序列（按意图方向过滤），任务带优先级与预计时长（任务数×2 分钟）；Task Scheduler 第 1 轮按计划任务执行（旧类型归一化）。
+6. PlannerAgent 提示词升级：AIContext 注入调查目的/期望结果/模式，PlanPrompt 新增"用户调查请求"段落，AI 任务白名单扩展至 18 项。
+7. 6 个新任务执行器：BALANCE（Profile 信号）、TOKEN（Flows 聚合）、PROFIT（结构性启发式：买卖对账 + 稳定币沉淀，无价格 oracle 标注估算口径）、FORWARD/BACKWARD_TRACE（TraceDirection 单方向 Beam Search）、EXCHANGE（对手方实体过滤）、CLUSTER（实体归并）、IDENTITY（标签查找）、FLOW_GRAPH（图规模摘要）。
+8. 动态任务追加（设计 §8）：获利检测命中 → 追加来源追踪；发现交易所 → 追加身份线索（队列去重幂等）。
+9. 六维 Investigation Score：Fund（余额 >100万+30/>1000万+50、获利+30、沉淀+20）/Behavior/Risk/Entity/Graph/Identity，总分六维平均 0-100；DecisionScores 扩展四字段（旧字段保留）；每轮决策后刷新 inv.Score。
+10. 报告增强：Markdown 报告新增调查请求、调查价值评分、获利与沉淀检测章节，计划章节补模式与预计时长。
+11. 前端：InvestigationRequestInput（模式/目的/期望结果 + 常用模板）、PlanPreview（计划任务/优先级）、AgentTimeline（轮次+观察时间线）、InvestigationRequestSummary/InvestigationScorePanel（六维评分），IntelligencePage 启动与详情区集成。
+
+#### 修改
+
+- `internal/intelligence/`：request.go、request_store.go、intent_analyzer.go、investigation_handler.go、investigation_agent.go（StartWithRequest）、planner.go、prompt_builder.go、response_parser.go、ai_context_builder.go、types.go、loop_engine.go、decision_engine.go、fund_tracer.go、report_agent.go、investigation_score.go、v2_tasks.go
+- `internal/api/`：handlers.go（路由 `/investigation/*path`）、crypto_parquet_handlers.go（HandleInvestigationV2）
+- `frontend/src/features/intelligence/`：intelligenceApi.ts、IntelligencePage.tsx、intelligence.css、新增 investigationRequestInput.tsx / investigationPlanView.tsx / investigationResultSummary.tsx
+- 新增测试：request_store_test.go、investigation_handler_test.go、intent_analyzer 测试、planner_test.go、prompt_builder_test.go、investigation_score_test.go、v2_tasks_test.go、report_v2_test.go
+
+#### 接口
+
+- `POST /api/investigation/create`：`{address, chain?, objective, expected_result?, mode?}` → 202 `{request, investigation}`
+- `GET /api/investigation/requests`、`GET /api/investigation/{id}`、`GET /api/investigation/{id}/plan`、`GET /api/investigation/{id}/tasks`
+- `Investigation` JSON 新增 `request`/`investigation_score`/`profit_report`（omitempty 向后兼容）
+
+#### 数据库
+
+- 无数据库变更；新增文件持久化目录 `backend/data/investigation_requests/`
+
+#### 已验证
+
+- `go test ./internal/... -count=1 -short`：全部包通过
+- `go test ./internal/intelligence/ ./internal/api/ -count=1`：V2 全部新测试通过
+- `cd frontend && npx tsc --noEmit`：0 错误；`npm run build`：通过
+- `.\run.ps1` 重启（PID 30824）；真实 0xdead 地址端到端：create→plan（7 任务/profit_analyze/预计 14 分钟）→tasks（10 任务含动态追加来源追踪）→detail（评分 62，获利+30）→report（V2 章节齐全，15547 字节）
+
+#### 未完成与注意事项
+
+- PROFIT_DETECTION 无链上历史价格 oracle，为结构性启发式（买卖对账 + 沉淀检测），输出标注估算口径，非精确盈亏金额。
+- `internal/downloadengine` 非 short 真实数据测试（real_500k）耗时超 2 分钟，全量测试请使用 `-short`。
+- 前端仍存在既有大 chunk 警告（与本次改动无关）。
+### 2026-08-02 地址关系图谱左到右资金路径布局
+
+#### 新增
+
+1. 有向 BFS 左到右分层布局：上游/流入在左，下游/流出在右，最多 3 层。
+2. 主干关系裁剪：每节点每侧最多 3 个高权重分支，关系去重，发现边优先，交叉边降权。
+3. 核心地址节点：地址/合约图标、关联数、风险分、核心状态及左右方向 Handle。
+4. 图谱规模切换：桌面 24/36/60，移动端固定 24；保留完整 500 节点 / 2802 边统计。
+
+#### 修改
+
+- `GraphPage.tsx`：删除固定 9 列索引网格和全边直接渲染，改为左到右分层子图及设计系统页面结构。
+- `graph-page.css`：新增关系画布、方向节点、风险状态、工具栏、图例、MiniMap 和移动端样式。
+- API、数据库、后端和依赖均无变化。
+
+#### 验证
+
+- `cd frontend && npm run build` 通过（3324 modules）。
+- Playwright + Edge：
+  - 桌面默认 24 节点 / 36 边 / 4 横向层级；
+  - 移动端 24 节点 / 36 边 / 440px 画布；
+  - 拖拽、缩放、关系筛选、节点数量切换均正常；
+  - 无页面级横向溢出，无控制台错误。
+- 已对照用户问题截图和最终桌面/移动截图完成视觉检查。
+
+#### 注意事项
+
+- 页面默认展示核心子图，不再尝试同时渲染 500 节点和全部 2802 条边。
+- 本轮未修改后端，不需要执行 `run.ps1`。
+
+### 2026-08-02 仪表盘地址关系图谱 React Flow 迁移
+
+#### 新增
+
+1. React Flow 仪表盘关系图预览：确定性同心布局、风险节点、方向边、Transfer 动画、缩放控件、缩略图和风险图例。
+2. 响应式图谱密度：桌面 Top 12，移动端 Top 8，完整数据由独立图谱页面承载。
+
+#### 修改
+
+- `DashboardPage.tsx`：删除 ECharts 初始化、resize 和 dispose 逻辑，改为 React Flow 节点/边模型及交互画布。
+- `dashboard.css`：新增轻量圆形地址节点、风险状态、React Flow 控件、MiniMap 和图例样式。
+- `package.json` / `package-lock.json`：移除未使用的 `echarts` 依赖。
+- API、数据库和后端无变化。
+
+#### 验证
+
+- `cd frontend && npm run build` 通过（3323 modules）；Dashboard chunk 约 1,127.63 kB → 10.03 kB。
+- 源码及依赖清单无 `echarts` / `ReactECharts` 残留。
+- Playwright + Edge 在 `1440x960`、`390x844` 验证 React Flow 实例、节点、边、拖拽、缩放、无横向溢出和无控制台错误。
+- 运行时图谱区域 ECharts canvas 数量为 0。
+
+#### 注意事项
+
+- Vite 主入口既有大 chunk 警告仍存在，未影响本轮图谱功能。
+- 本轮未修改后端，不需要执行 `run.ps1`。
+
+### 2026-08-02 链上分析详情页旧 Ant Card 迁移（Phase 3/4）
+
+#### 新增
+
+1. 新增设计系统 `DetailPanel`，支持标题、说明、操作区、紧凑模式、自定义样式与响应式 Header。
+2. 新增地址画像、风险分析、智能调查三个详情页的独立响应式样式。
+
+#### 修改
+
+- 地址画像：以查询、身份、指标、风险、资金流水、两跳路径重组页面，并行加载四类数据。
+- 风险分析：以风险概览、单地址评分、行为画像、评分口径重组页面，并行加载风险与画像。
+- 智能调查：启动调查、历史任务、调查详情、轮次决策、任务队列、调查观察和 AI 策略全部由旧 Ant `Card` 迁移至 `DetailPanel`。
+- 移动端智能调查的描述信息和评分改为响应式列数，任务、路径和实体表在组件内部滚动。
+- 无 API、数据库和后端变更；无新增依赖。
+
+#### 验证
+
+- `cd frontend && npm run build` 通过（3917 modules）。
+- Playwright + 系统 Edge 在 `1440x960`、`390x844` 真实运行页面验证地址画像、风险分析、智能调查：
+  - 三页 `.ant-card` 均为 0；
+  - 三页页面级横向溢出均为 0；
+  - 浏览器控制台错误均为 0；
+  - 真实地址查询和已有智能调查详情打开正常。
+- 已完成设计概念与最终桌面/移动截图的人工视觉检查。
+
+#### 注意事项
+
+- Vite 既有大 chunk 警告仍存在，未影响本轮构建与交互验证。
+- 本轮未修改后端，不需要执行 `run.ps1` 重启。
+
+### 2026-08-02 链上分析前端 Design System 与 UI 重构
+
+#### 新增
+
+1. 新增统一设计 Token：背景、Surface、文字、边框、数据/成功/警告/风险语义色、间距、圆角、阴影、字体和 300ms 页面动效。
+2. 新增 `PageHeader`、`MetricCard`、`Section`、`StatusDot` 复用组件。
+3. Dashboard 接入真实分析概览、关系图、Parquet 任务和智能调查任务，形成数据资产、实时任务、风险概览、关系图谱、最近调查五类工作区。
+4. 应用 Header 新增全局地址/交易哈希搜索、EVM 多链上下文和 `/api/health` 状态。
+
+#### 修改
+
+- `frontend/src/App.tsx`：导航压平为仪表盘、数据资产、地址分析、调查工作台、风险分析，系统入口固定在侧栏底部；默认进入仪表盘。
+- `frontend/src/styles/{layout,shared,responsive}.css`：重构桌面/移动应用壳层。
+- `frontend/src/features/analytics/DashboardPage.tsx`：从旧统计卡/快速入口页重写为调查工作台。
+- 地址、图谱、风险、报告、智能调查和数据源页面接入统一容器与视觉规范。
+- 无 API、数据库和后端代码变更；无新增依赖。
+
+#### 验证
+
+- `cd frontend && npm run build` 通过（3914 modules）。
+- Playwright + Edge：1440x960 Dashboard 无横向溢出、无控制台错误；390x844 逐页验证仪表盘、地址画像、地址关系图、风险分析、智能调查、案件报告、数据源管理，均无页面级横向溢出。
+
+#### 未完成
+
+- Phase 3/4 可继续将地址、风险和智能调查页面内部的旧 Ant Card 逐个迁移到 Design System；本次已完成壳层、Dashboard 与统一容器。
+- Dashboard ECharts 懒加载 chunk 仍有 Vite 大小提示，后续可做按需引入专项。
+
 ### 2026-08-02 V2.1 RC2 系统优化批次（10 项全部落地）
 
 #### 新增
@@ -5969,3 +6375,16 @@ ormalizeFilterBoundary 精确时间边界处理。
 - 未修改代码；需在火绒“联网控制/网络防护”或 Anycast VPN 分应用规则中放行 `etl-server.exe` 后重试下载。
 
 ### 2026-08-01 V2.1 RC2 链数据采集"结果与清单"弹窗化
+
+## 2026-08-02
+
+### 新增
+
+- 新增 `docs/加密货币交互式资金流向图技术设计与实施指南.md`，用于在 ETL 现有 ReactFlow/Go/DuckDB 架构上实现完整地址聚焦式资金流向图。
+- 文档包含前端布局尺寸与颜色、完整数据契约、聚焦接口、上下游 BFS、确定性分层布局、节点/边组件、资金流动画、交易证据、性能预算、测试矩阵、分阶段实施和回滚方案。
+- 增加针对“放大时地址和线条闪烁”的工程级约束与参考代码：viewport 与业务状态解耦、稳定引用、交互动画暂停、非缩放线宽和滚轮压力测试。
+
+### 边界
+
+- 本次仅新增文档，没有修改 ETL 前端或后端实现。
+- 实际实现后仍需执行前端构建、Go 单元测试、真实会话接口核验和浏览器快速缩放回归。

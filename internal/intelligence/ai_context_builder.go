@@ -23,12 +23,21 @@ func NewAIContextBuilder(cfg IntelligenceConfig) *AIContextBuilder {
 // Build 从调查结果构建 AI 上下文（分析摘要）。
 func (b *AIContextBuilder) Build(inv *Investigation) *AIContext {
 	ctx := &AIContext{
-		Target:   inv.Target,
-		Profile:  map[string]any{},
-		TopPaths: []string{},
+		Target:     inv.Target,
+		Profile:    map[string]any{},
+		TopPaths:   []string{},
 		RiskEvents: []string{},
-		Entities: []string{},
-		Timeline: []string{},
+		Entities:   []string{},
+		Timeline:   []string{},
+	}
+	// V2：注入调查请求（目的/期望结果/模式），AI 规划围绕用户目标（设计 §3/§4）
+	if inv.Request != nil {
+		ctx.Objective = inv.Request.Objective
+		ctx.ExpectedResult = inv.Request.ExpectedResult
+		ctx.Mode = string(inv.Request.Mode)
+		if inv.Request.Intent != nil {
+			ctx.Profile["intent"] = inv.Request.Intent.Summary
+		}
 	}
 
 	// 画像摘要

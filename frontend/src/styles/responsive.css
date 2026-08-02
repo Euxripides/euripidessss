@@ -18,18 +18,32 @@
   .mobile-nav-trigger {
     position: fixed;
     z-index: 900;
-    top: 12px;
+    top: 13px;
     left: 12px;
     display: inline-flex;
     width: 40px;
     height: 40px;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 8px 22px rgba(37, 61, 92, 0.2);
+    box-shadow: none;
+  }
+
+  .app-header {
+    height: 66px;
+    gap: 10px;
+    padding: 0 12px 0 62px;
+  }
+
+  .app-header-search {
+    width: 100%;
+  }
+
+  .app-header-context {
+    display: none;
   }
 
   .content {
-    padding: 64px 14px 14px;
+    padding: 18px 12px;
   }
 
   .upload-grid,

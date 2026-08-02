@@ -110,6 +110,25 @@ func (t *FundTracer) Trace(ctx context.Context, address string, maxHops, beamWid
 	return append(outPaths, inPaths...), nil
 }
 
+// TraceDirection 沿单方向 Beam Search 追踪（V2 FORWARD/BACKWARD_TRACE 执行器）：
+// outgoing=true 沿出边追踪资金去向；outgoing=false 沿入边追踪资金来源。
+func (t *FundTracer) TraceDirection(ctx context.Context, address string, maxHops, beamWidth int, outgoing bool) ([]FundPath, error) {
+	if t.source == nil {
+		return nil, nil
+	}
+	address = strings.ToLower(address)
+	if maxHops <= 0 {
+		maxHops = t.cfg.MaxHops
+	}
+	if maxHops > 8 {
+		maxHops = 8
+	}
+	if beamWidth <= 0 {
+		beamWidth = t.cfg.BeamWidth
+	}
+	return t.beamSearch(ctx, address, maxHops, beamWidth, outgoing)
+}
+
 // beamSearch 执行单方向 Beam Search。
 // outgoing=true 沿出边（A→B→C）；outgoing=false 沿入边（C→B→A 反向）。
 func (t *FundTracer) beamSearch(ctx context.Context, start string, maxHops, beamWidth int, outgoing bool) ([]FundPath, error) {

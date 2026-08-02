@@ -1,0 +1,38 @@
+:root {
+  --ds-color-bg: #f8fafc;
+  --ds-color-surface: #ffffff;
+  --ds-color-surface-subtle: #f6f8fb;
+  --ds-color-sidebar: #071529;
+  --ds-color-sidebar-hover: #102844;
+  --ds-color-sidebar-selected: #0f4c99;
+  --ds-color-text: #111827;
+  --ds-color-text-secondary: #64748b;
+  --ds-color-text-tertiary: #94a3b8;
+  --ds-color-border: #e2e8f0;
+  --ds-color-border-strong: #cbd5e1;
+  --ds-color-primary: #1769e0;
+  --ds-color-primary-soft: #eaf2ff;
+  --ds-color-success: #0f9f6e;
+  --ds-color-success-soft: #e8f8f1;
+  --ds-color-warning: #d97706;
+  --ds-color-warning-soft: #fff5e5;
+  --ds-color-risk: #e5484d;
+  --ds-color-risk-soft: #fff0f0;
+  --ds-radius-sm: 6px;
+  --ds-radius-md: 10px;
+  --ds-radius-lg: 12px;
+  --ds-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --ds-shadow-md: 0 8px 24px rgba(15, 23, 42, 0.06);
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 20px;
+  --ds-space-6: 24px;
+  --ds-space-8: 32px;
+  --ds-motion-fast: 160ms;
+  --ds-motion-page: 300ms;
+  --ds-font-ui: "Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  --ds-font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+}
+
