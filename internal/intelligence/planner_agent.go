@@ -93,6 +93,10 @@ func (p *PlannerAgent) planFromStrategy(input PlanInput, s *AIStrategy) *Investi
 			Priority:    priority,
 		})
 	}
+	// MEDIUM-1：防御性硬截断（即使 strategy 未经 parser 截断）
+	if len(plan.Tasks) > maxAITasks {
+		plan.Tasks = plan.Tasks[:maxAITasks]
+	}
 	if len(plan.Tasks) == 0 {
 		return p.fallback.Plan(input)
 	}

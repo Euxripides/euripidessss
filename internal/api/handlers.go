@@ -25,7 +25,9 @@ import (
 	"github.com/etl/backend/internal/dbimport"
 	"github.com/etl/backend/internal/dynamicinvestigation"
 	"github.com/etl/backend/internal/etl"
+	"github.com/etl/backend/internal/flow"
 	"github.com/etl/backend/internal/intelligence"
+	"github.com/etl/backend/internal/investigationstore"
 	"github.com/etl/backend/internal/model"
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/etl/backend/internal/parser"
@@ -37,23 +39,24 @@ import (
 )
 
 var (
-	cfg               *config.Config
-	store             *storage.FileStorage
-	dbStore           *dbimport.Store
-	dbService         *dbimport.Service
-	dbExportManager   *dbimport.ExportManager
-	controlStore      *control.Store
-	analysisEngine    *duckdb.Engine
-	cryptoDownload    http.Handler
-	parquetDownload   *parquetdownload.Handler
-	rpcManager        *rpcmanager.Manager
-	rpcAPI            http.Handler
-	dataSourceManager *datasourcemanager.Manager
-	dataSourceAPI     http.Handler
-	analyticsAPI      http.Handler
+	cfg                     *config.Config
+	store                   *storage.FileStorage
+	dbStore                 *dbimport.Store
+	dbService               *dbimport.Service
+	dbExportManager         *dbimport.ExportManager
+	controlStore            *control.Store
+	analysisEngine          *duckdb.Engine
+	cryptoDownload          http.Handler
+	parquetDownload         *parquetdownload.Handler
+	rpcManager              *rpcmanager.Manager
+	rpcAPI                  http.Handler
+	dataSourceManager       *datasourcemanager.Manager
+	dataSourceAPI           http.Handler
+	analyticsAPI            http.Handler
 	dynamicInvestigationAPI http.Handler
-	dynamicEngine      *dynamicinvestigation.Engine
-	intelligenceAPI    http.Handler
+	dynamicEngine           *dynamicinvestigation.Engine
+	intelligenceAPI         http.Handler
+	investigationV2API      http.Handler // V2 调查请求入口（/api/investigation/*）
 )
 
 const (
@@ -206,6 +209,18 @@ func Setup(c *config.Config) {
 			}
 		}
 	}
+	// V2.0 实时资产服务（Provider Router 复用 rpcManager，设计 §13/§15）
+	if rpcManager != nil {
+		flowAssetsService = flow.NewAssetService(rpcManager)
+		// V2.0 余额快照存储（设计 §8/§31：backend/data/investigation/balance-snapshots/）
+		snapDir := filepath.Join(cfg.RootDir, "backend", "data", "investigation", "balance-snapshots")
+		if err := flow.EnsureSnapshotDir(cfg.RootDir); err == nil {
+			balanceSnapshotStore = flow.NewBalanceSnapshotStore(snapDir)
+		}
+		log.Info().Str("snapshots", snapDir).Msg("flow_assets_api_ready")
+	} else {
+		log.Warn().Msg("flow_assets_api_unavailable_no_rpc")
+	}
 	// V2.1 RC2: 动态地址扩展与智能采集路由引擎
 	setupDynamicInvestigation()
 	// V2.1 RC2: 全自动链上调查平台 Intelligence Layer
@@ -253,16 +268,50 @@ func setupIntelligence() {
 	if dynamicEngine != nil {
 		expansion = intelligence.NewExpansionEngine(dynamicEngine)
 	}
-	memoryDir := filepath.Join(cfg.RootDir, "backend", "data", "investigation_memory")
+	dataRoot := filepath.Join(cfg.RootDir, "backend", "data")
+	// ── V1 Storage Layer：一次性迁移旧数据目录（幂等，不删旧文件）──
+	invRoot := filepath.Join(dataRoot, "investigation")
+	if migrated, err := intelligence.MigrateLegacyInvestigationData(dataRoot); err != nil {
+		log.Warn().Err(err).Msg("investigation_legacy_migrate_error")
+	} else if migrated > 0 {
+		log.Info().Int("migrated", migrated).Msg("investigation_legacy_migrated")
+	}
+	// ── V1 Storage Layer：新布局存储（requests/plans/tasks/evidence/memory/score-profile/indexes）──
+	requests := intelligence.NewRequestStore(filepath.Join(invRoot, "requests"))
+	evidenceStore := intelligence.NewEvidenceStore(filepath.Join(invRoot, "evidence"))
+	knowledgeStore := intelligence.NewInvestigationMemoryStore(filepath.Join(invRoot, "memory"))
+	planStore := investigationstore.NewPlanStore(filepath.Join(invRoot, "plans"))
+	taskStore := investigationstore.NewTaskStore(filepath.Join(invRoot, "tasks"))
+	profileStore := investigationstore.NewScoreProfileStore(filepath.Join(invRoot, "score-profile", "profiles.json"))
+	// ── V1 Lifecycle：启动时归档超出上限的请求（active ≤ 5 / history ≤ 200）──
+	if archived, err := requests.Archive(5, 200); err != nil {
+		log.Warn().Err(err).Msg("investigation_request_archive_error")
+	} else if archived > 0 {
+		log.Info().Int("archived", archived).Msg("investigation_requests_archived")
+	}
+	// ── V2 调查请求存储（先于 agent 创建，供调查终态同步请求状态）──
+	memoryDir := filepath.Join(dataRoot, "investigation_memory") // 调查状态记忆（旧目录保留）
+	// ── Runtime V2（设计 §13）：运行时事件日志（backend/data/logs/runtime-events.log）──
+	eventLog := intelligence.NewRuntimeEventLog(filepath.Join(dataRoot, "logs", "runtime-events.log"))
 	agent := intelligence.NewAgent(intelligence.AgentOptions{
-		Service:     svc,
-		Expansion:   expansion,
-		DeepSeekKey: "", // 回退环境变量 DEEPSEEK_API_KEY
-		MemoryDir:   memoryDir,
-		Config:      intelligence.DefaultConfig(),
+		Service:         svc,
+		Expansion:       expansion,
+		DeepSeekKey:     "", // 回退环境变量 DEEPSEEK_API_KEY
+		MemoryDir:       memoryDir,
+		RequestStore:    requests,
+		EvidenceStore:   evidenceStore,
+		KnowledgeMemory: knowledgeStore,
+		Plans:           planStore,
+		Tasks:           taskStore,
+		Profile:         profileStore,
+		EventLog:        eventLog, // Runtime V2：运行时事件日志（backend/data/logs/）
+		Config:          intelligence.DefaultConfig(),
 	})
 	intelligenceAPI = intelligence.NewHandler(agent)
-	log.Info().Str("memory", memoryDir).Msg("intelligence_engine_ready")
+	// ── V2 调查请求入口（设计 §14）：请求持久化 + 意图分析 + 启动调查 ──
+	intentAnalyzer := intelligence.NewIntentAnalyzer()
+	investigationV2API = intelligence.NewInvestigationHandler(agent, requests, intentAnalyzer)
+	log.Info().Str("root", invRoot).Msg("intelligence_engine_ready")
 }
 
 // Shutdown closes the control store
@@ -314,6 +363,13 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/flow/direction-rules", HandleSaveFlowDirectionRules)
 		api.POST("/flow/direction-check", HandleCheckFlowDirectionValues)
 		api.POST("/flow/values", HandleFlowFieldValues)
+		// ── V2.0 实时资产（设计 §15）──
+		api.POST("/flow/address-assets", handleAddressAssets)
+		api.POST("/flow/address-assets/batch", handleAddressAssetsBatch)
+		api.POST("/flow/address-assets/refresh", handleAddressAssetsRefresh)
+		// ── V2.0 余额快照（设计 §8）──
+		api.POST("/flow/balance-snapshot", handleBalanceSnapshotSave)
+		api.GET("/flow/balance-snapshots", handleBalanceSnapshotCompare)
 		api.POST("/crypto/address-classify", HandleCryptoAddressClassify)
 		api.Any("/crypto/download/*path", HandleCryptoDownload)
 		api.Any("/crypto/parquet/*path", HandleCryptoParquet)
@@ -324,6 +380,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/analytics/*path", HandleAnalyticsAPI)
 		api.Any("/dynamic-investigation/*path", HandleDynamicInvestigation)
 		api.Any("/intelligence/*path", HandleIntelligence)
+		api.Any("/investigation/*path", HandleInvestigationV2)
 		api.GET("/address/*path", HandleAddressAnalytics)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)

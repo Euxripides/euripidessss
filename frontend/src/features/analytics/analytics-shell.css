@@ -1,0 +1,109 @@
+.analytics-page {
+  max-width: 1680px;
+  margin: 0 auto;
+}
+
+.analytics-query-panel {
+  margin-bottom: var(--ds-space-3);
+}
+
+.analytics-query-panel .ds-detail-body {
+  padding: var(--ds-space-3);
+}
+
+.analytics-query-row {
+  display: flex;
+  width: 100%;
+  max-width: 720px;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.analytics-query-row .ant-input-affix-wrapper {
+  height: 38px;
+  min-width: 0;
+  flex: 1;
+}
+
+.analytics-page-alert {
+  margin-bottom: var(--ds-space-3);
+}
+
+.analytics-page > h4.ant-typography {
+  margin: 0 0 20px;
+  color: var(--ds-color-text);
+  font-size: 26px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.analytics-page .ant-card {
+  border-color: var(--ds-color-border);
+  border-radius: var(--ds-radius-lg);
+  box-shadow: var(--ds-shadow-sm);
+}
+
+.analytics-page .ant-tabs-nav {
+  margin-bottom: var(--ds-space-4);
+}
+
+.analytics-page .ant-table {
+  font-size: 12px;
+}
+
+.analytics-graph-page {
+  height: calc(100vh - 114px);
+  min-height: 620px;
+}
+
+@media (max-width: 760px) {
+  .analytics-page > h4.ant-typography {
+    font-size: 23px;
+  }
+
+  .analytics-page .ant-row {
+    row-gap: 12px !important;
+  }
+
+  .analytics-page .ant-col {
+    max-width: 100% !important;
+    flex: 0 0 100% !important;
+  }
+
+  .analytics-page > .ant-space,
+  .analytics-page .ant-card-body > .ant-space {
+    display: flex;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .analytics-page > .ant-space .ant-space-item:first-child,
+  .analytics-page .ant-card-body > .ant-space .ant-space-item:first-child {
+    min-width: 0;
+    flex: 1 1 220px;
+  }
+
+  .analytics-page .ant-input[style*="width: 420px"],
+  .analytics-page .ant-input-affix-wrapper[style*="width: 420px"] {
+    width: 100% !important;
+  }
+
+  .analytics-page .ant-table-wrapper {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .analytics-page .ant-descriptions-view {
+    overflow-x: auto;
+  }
+
+  .analytics-query-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .analytics-graph-page {
+    height: auto;
+    min-height: calc(100vh - 100px);
+  }
+}

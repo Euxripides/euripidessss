@@ -1,0 +1,230 @@
+.intelligence-start-panel {
+  margin-bottom: var(--ds-space-3);
+}
+
+.intelligence-start-row {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) 128px auto;
+  gap: var(--ds-space-2);
+  align-items: center;
+}
+
+.intelligence-start-row .ant-input-affix-wrapper,
+.intelligence-start-row .ant-select-selector,
+.intelligence-start-row .ant-btn {
+  min-height: 38px;
+}
+
+.intelligence-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.27fr) minmax(680px, 0.73fr);
+  gap: var(--ds-space-3);
+  align-items: start;
+}
+
+.intelligence-layout > .ds-detail-panel,
+.intelligence-detail > .ds-detail-panel {
+  margin-top: 0;
+}
+
+.intelligence-list-panel .ds-detail-body {
+  padding: var(--ds-space-2);
+}
+
+.intelligence-list-panel .ant-list-pagination {
+  margin: var(--ds-space-3) var(--ds-space-2);
+}
+
+.intelligence-list-item {
+  margin: 2px 0;
+  padding: 10px !important;
+  border: 1px solid transparent !important;
+  border-radius: var(--ds-radius-sm);
+  cursor: pointer;
+  transition:
+    border-color var(--ds-motion-fast) ease,
+    background var(--ds-motion-fast) ease;
+}
+
+.intelligence-list-item:hover {
+  background: var(--ds-color-surface-subtle);
+}
+
+.intelligence-list-item-active {
+  border-color: #cfe0fb !important;
+  background: var(--ds-color-primary-soft);
+}
+
+.intelligence-list-item .ant-list-item-meta-title {
+  margin-bottom: 3px !important;
+}
+
+.intelligence-list-item code {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+}
+
+.intelligence-detail-panel > .ds-detail-body {
+  padding-top: var(--ds-space-4);
+}
+
+.intelligence-detail-panel > .ds-detail-body > .ant-progress {
+  margin-bottom: 4px;
+}
+
+.intelligence-detail-panel > .ds-detail-body > .ant-typography {
+  display: block;
+  margin-bottom: var(--ds-space-3);
+  font-size: 11px;
+}
+
+.intelligence-detail-panel .ant-tabs-nav {
+  margin-top: var(--ds-space-2);
+}
+
+.intelligence-detail-panel .ant-tabs-tab {
+  padding-block: 10px;
+  font-size: 12px;
+}
+
+.intelligence-detail-panel .ant-tabs-content-holder {
+  min-width: 0;
+}
+
+.intelligence-detail-panel .ant-tabs-tabpane > .ant-space {
+  width: 100%;
+}
+
+.intelligence-detail-panel .ds-detail-panel {
+  border-color: #e8edf4;
+  box-shadow: none;
+}
+
+.intelligence-detail-panel .ds-detail-panel + .ds-detail-panel {
+  margin-top: var(--ds-space-3);
+}
+
+.intelligence-detail-panel .ant-table-wrapper {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.intelligence-detail-panel .react-flow {
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-md);
+  background: #fbfcfe;
+}
+
+.intelligence-detail-panel .ant-collapse {
+  border-color: var(--ds-color-border);
+  background: transparent;
+}
+
+.intelligence-detail-panel .ant-collapse-item {
+  border-color: var(--ds-color-border);
+}
+
+.intelligence-detail-panel .ant-collapse-header {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.intelligence-empty-detail .ds-detail-body {
+  display: flex;
+  min-height: 300px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--ds-space-3);
+  color: var(--ds-color-primary);
+  font-size: 36px;
+}
+
+.intelligence-empty-detail .ant-typography {
+  font-size: 12px;
+}
+
+@media (max-width: 1160px) {
+  .intelligence-layout {
+    grid-template-columns: minmax(240px, 0.34fr) minmax(560px, 0.66fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .intelligence-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .intelligence-start-row {
+    grid-template-columns: minmax(0, 1fr) 120px;
+  }
+
+  .intelligence-start-row .ant-btn {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .intelligence-start-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .intelligence-start-row .ant-btn {
+    grid-column: auto;
+  }
+
+  .intelligence-detail-panel > .ds-detail-header {
+    flex-direction: column;
+  }
+
+  .intelligence-detail-panel > .ds-detail-header .ds-detail-extra {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .intelligence-detail-panel > .ds-detail-header .ant-btn {
+    flex: 1;
+  }
+
+  .intelligence-detail-panel .ant-steps {
+    overflow-x: auto;
+    padding-bottom: var(--ds-space-2);
+  }
+
+  .intelligence-detail-panel .ant-tabs-nav-wrap {
+    overflow-x: auto;
+  }
+}
+
+
+/* ── V2 调查请求输入（设计 §11）── */
+.investigation-request-input {
+  margin-top: var(--ds-space-3, 12px);
+  padding: var(--ds-space-3, 12px);
+  background: var(--ds-bg-subtle, #fafafa);
+  border: 1px dashed var(--ds-border, #d9d9d9);
+  border-radius: var(--ds-radius-md, 8px);
+}
+
+.investigation-request-input .ant-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+/* ── V2 六维评分（设计 §9）── */
+.investigation-score-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2, 8px);
+}
+
+.investigation-score-row .ant-progress {
+  margin: 0;
+}
+
+@media (max-width: 576px) {
+  .investigation-score-row .ant-progress {
+    min-width: 0;
+  }
+}

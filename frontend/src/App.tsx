@@ -22,6 +22,7 @@ import {
   PlusOutlined,
   RightOutlined,
   RobotOutlined,
+  SearchOutlined,
   SettingOutlined,
   UploadOutlined,
   WalletOutlined,
@@ -34,6 +35,7 @@ import {
   Dropdown,
   Drawer,
   Form,
+  Input,
   Layout,
   Menu,
   Space,
@@ -216,56 +218,54 @@ const { Sider, Content } = Layout;
 dayjs.locale("zh-cn");
 
 const menuItems = [
-  { key: "analytics-dashboard", icon: <DashboardOutlined />, label: "Dashboard" },
+  { key: "analytics-dashboard", icon: <DashboardOutlined />, label: "仪表盘" },
   {
     key: "assets",
     icon: <DatabaseOutlined />,
     label: "数据资产",
     children: [
       { key: "clean", icon: <UploadOutlined />, label: "数据集管理" },
-      {
-        key: "data-download",
-        icon: <DownloadOutlined />,
-        label: "数据下载",
-        children: [
-          { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "浏览器下载" },
-          { key: "download-dune", icon: <FileTextOutlined />, label: "Dune下载" },
-          { key: "crypto-parquet", icon: <FileZipOutlined />, label: "链数据采集" },
-        ],
-      },
+      { key: "crypto-parquet", icon: <FileZipOutlined />, label: "Parquet 数据" },
+      { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "浏览器下载" },
+      { key: "download-dune", icon: <FileTextOutlined />, label: "Dune 下载" },
       { key: "crypto-datasource", icon: <DatabaseOutlined />, label: "数据源管理" },
-      { key: "crypto-rpc", icon: <CloudServerOutlined />, label: "RPC节点管理" },
     ],
   },
   {
-    key: "onchain",
-    icon: <FundProjectionScreenOutlined />,
-    label: "链上分析",
+    key: "address-analysis",
+    icon: <WalletOutlined />,
+    label: "地址分析",
     children: [
-      {
-        key: "address-analysis",
-        icon: <WalletOutlined />,
-        label: "地址分析",
-        children: [
-          { key: "analytics-address", label: "地址画像" },
-          { key: "crypto-address", label: "地址区分" },
-        ],
-      },
-      { key: "graph", icon: <ApartmentOutlined />, label: "资金流分析" },
-      { key: "analytics-graph", icon: <ApartmentOutlined />, label: "地址图谱" },
-      { key: "risk", icon: <WarningOutlined />, label: "风险分析" },
-      { key: "intelligence", icon: <RobotOutlined />, label: "智能调查" },
+      { key: "analytics-address", label: "地址画像" },
+      { key: "crypto-address", label: "地址区分" },
     ],
   },
-  { key: "analytics-report", icon: <FileTextOutlined />, label: "报告中心" },
+  {
+    key: "investigation-workspace",
+    icon: <ApartmentOutlined />,
+    label: "调查工作台",
+    children: [
+      { key: "intelligence", icon: <RobotOutlined />, label: "智能调查" },
+      { key: "graph", icon: <FundProjectionScreenOutlined />, label: "资金路径" },
+      { key: "analytics-graph", icon: <ApartmentOutlined />, label: "地址关系图" },
+      { key: "analytics-report", icon: <FileTextOutlined />, label: "案件报告" },
+    ],
+  },
+  { key: "risk", icon: <WarningOutlined />, label: "风险分析" },
+];
+
+const systemMenuItems = [
+  { key: "crypto-rpc", icon: <CloudServerOutlined />, label: "RPC 管理" },
   { key: "system-settings", icon: <SettingOutlined />, label: "系统设置" },
 ];
 
 export function App() {
-  const [active, setActive] = useState("clean");
+  const [active, setActive] = useState("analytics-dashboard");
   const [activeAddressParam, setActiveAddressParam] = useState<string | undefined>(undefined);
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [serviceHealthy, setServiceHealthy] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ProcessResponse | null>(null);
   const [processProgress, setProcessProgress] = useState<ProcessProgress | null>(null);
@@ -295,6 +295,24 @@ export function App() {
 
   const modals = useFlowModals();
   const flowOps = useFlowOperations({ networkMode, updateTransferStatus, setMappingModalOpen: modals.setMappingModalOpen });
+
+  useEffect(() => {
+    let activeRequest = true;
+    const checkHealth = async () => {
+      try {
+        const response = await fetch("/api/health", { cache: "no-store" });
+        if (activeRequest) setServiceHealthy(response.ok);
+      } catch {
+        if (activeRequest) setServiceHealthy(false);
+      }
+    };
+    void checkHealth();
+    const timer = window.setInterval(checkHealth, 30_000);
+    return () => {
+      activeRequest = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     flowOps.nodeConnectionForm.resetFields();
@@ -417,8 +435,33 @@ export function App() {
   const handleMenuClick: MenuProps["onClick"] = (item) => {
     const nextActive = String(item.key);
     setActive(nextActive);
-    setSideCollapsed(nextActive === "graph");
+    // 进入地址关系图自动收起左侧导航（画布全屏）；其他页面恢复展开
+    setSideCollapsed(nextActive === "analytics-graph");
     setMobileNavOpen(false);
+  };
+
+  // 地址关系图全屏：无论从菜单还是其他入口（Dashboard 导航等）进入，
+  // 均自动收起左侧导航；离开该页不强制恢复（保留用户手动状态）
+  useEffect(() => {
+    if (active === "analytics-graph") setSideCollapsed(true);
+  }, [active]);
+
+  // 全局搜索 → 地址详情页（图谱页搜索框合并复用同一入口）
+  const openAddressDetail = (address: string) => {
+    const normalized = address.trim().toLowerCase();
+    // 与图谱页搜索框（graphUpgrade.isValidAddress）一致的 EVM 地址校验，
+    // 防止脏输入进入后端请求路径
+    if (!/^0x[0-9a-f]{40}$/.test(normalized)) {
+      void message.warning("请输入有效的 EVM 地址（0x + 40 位十六进制）");
+      return;
+    }
+    setActiveAddressParam(normalized);
+    setActive("analytics-address");
+    setMobileNavOpen(false);
+  };
+
+  const runGlobalSearch = () => {
+    openAddressDetail(globalQuery);
   };
 
   return (
@@ -427,10 +470,15 @@ export function App() {
       theme={{
         algorithm: theme.defaultAlgorithm,
         token: {
-          colorPrimary: "#3b5bdb",
-          colorInfo: "#3b5bdb",
-          borderRadius: 8,
-          fontFamily: '"Microsoft YaHei", "PingFang SC", system-ui, sans-serif',
+          colorPrimary: "#1769e0",
+          colorInfo: "#1769e0",
+          colorSuccess: "#0f9f6e",
+          colorWarning: "#d97706",
+          colorError: "#e5484d",
+          colorBgLayout: "#f8fafc",
+          colorBorder: "#e2e8f0",
+          borderRadius: 10,
+          fontFamily: '"Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif',
         },
       }}
     >
@@ -444,44 +492,72 @@ export function App() {
       <Drawer
         className="mobile-nav-drawer"
         placement="left"
-        width={270}
-        title="资金数据智能分析平台"
+        width={286}
+        title="链上分析"
         open={mobileNavOpen}
         onClose={() => setMobileNavOpen(false)}
       >
         <Menu
           mode="inline"
           selectedKeys={[active]}
-          defaultOpenKeys={["assets", "data-download", "onchain", "address-analysis"]}
+          defaultOpenKeys={["assets", "address-analysis", "investigation-workspace"]}
           items={menuItems}
           onClick={handleMenuClick}
         />
+        <div className="mobile-system-menu">
+          <Menu mode="inline" selectedKeys={[active]} items={systemMenuItems} onClick={handleMenuClick} />
+        </div>
       </Drawer>
       <Layout className="app-shell">
         <Sider
-          width={248}
-          collapsedWidth={0}
-          collapsible
+          width={212}
+          collapsedWidth={72}
           collapsed={sideCollapsed}
-          onCollapse={setSideCollapsed}
           className="side"
         >
           <div className="brand">
-            <div className="brand-mark">资</div>
+            <div className="brand-mark">链</div>
             <div>
-              <strong>资金数据智能分析平台</strong>
-              <span>ETL &middot; Flow Intelligence</span>
+              <strong>链上分析</strong>
+              <span>Investigation OS</span>
             </div>
           </div>
           <Menu
             mode="inline"
             selectedKeys={[active]}
-            defaultOpenKeys={["assets", "data-download", "onchain", "address-analysis"]}
+            defaultOpenKeys={["assets", "address-analysis", "investigation-workspace"]}
             items={menuItems}
             onClick={handleMenuClick}
           />
+          <div className="side-system">
+            <Menu mode="inline" selectedKeys={[active]} items={systemMenuItems} onClick={handleMenuClick} />
+          </div>
         </Sider>
-        <Layout>
+        <Layout className="app-main">
+          {/* 地址关系图为沉浸式全屏工作台：隐藏顶部横条（搜索功能已并入图谱页搜索框） */}
+          {active !== "analytics-graph" ? (
+            <header className="app-header">
+              <div className="app-header-search">
+                <Input
+                  allowClear
+                  prefix={<SearchOutlined />}
+                  placeholder="搜索地址 / 交易哈希"
+                  value={globalQuery}
+                  onChange={(event) => setGlobalQuery(event.target.value)}
+                  onPressEnter={runGlobalSearch}
+                  aria-label="全局搜索地址或交易哈希"
+                />
+              </div>
+              <div className="app-header-context">
+                <span className="app-header-page">{titleFor(active)}</span>
+                <span className="app-network">EVM 多链</span>
+                <span className={`app-health ${serviceHealthy === false ? "app-health-down" : ""}`}>
+                  <i />
+                  {serviceHealthy === null ? "检测中" : serviceHealthy ? "数据服务正常" : "数据服务异常"}
+                </span>
+              </div>
+            </header>
+          ) : null}
           <Content className={`content ${active === "graph" ? "content-graph" : ""}`}>
             {active === "clean" && (
               <section className="topbar">
@@ -556,7 +632,7 @@ export function App() {
             <Suspense fallback={null}>
               {active === "analytics-dashboard" && <AnalyticsDashboardPage onNavigate={(p, a) => { if (a) setActiveAddressParam(a); setActive(p); }} />}
               {active === "analytics-address" && <AnalyticsAddressPage initialAddress={activeAddressParam} />}
-              {active === "analytics-graph" && <AnalyticsGraphPage />}
+              {active === "analytics-graph" && <AnalyticsGraphPage onOpenAddress={openAddressDetail} />}
               {active === "analytics-report" && <AnalyticsReportPage />}
               {active === "risk" && <AnalyticsRiskPage />}
               {active === "intelligence" && <IntelligencePage />}
@@ -645,10 +721,10 @@ export function App() {
       "crypto-rpc": "EVM RPC 节点管理",
       "crypto-datasource": "数据源管理中心",
       "crypto-address": "地址区分",
-      "analytics-dashboard": "Dashboard",
+      "analytics-dashboard": "仪表盘",
       "analytics-address": "地址画像",
       "analytics-graph": "地址图谱",
-      "analytics-report": "报告中心",
+      "analytics-report": "案件报告",
       risk: "风险分析",
       intelligence: "智能调查",
       "system-settings": "系统设置",

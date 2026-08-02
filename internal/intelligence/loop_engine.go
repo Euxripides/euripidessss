@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/etl/backend/internal/analyticsapi"
 	"github.com/etl/backend/internal/logger"
 )
 
@@ -30,19 +31,29 @@ func (e *skipError) Error() string { return e.reason }
 func errSkipped(reason string) error { return &skipError{reason: reason} }
 
 // LoopEngine 执行多轮调查闭环。无状态（依赖全部经参数传入）。
-type LoopEngine struct{}
+type LoopEngine struct {
+	executors *ExecutorRegistry // 执行器注册表（懒加载，设计 §6/§7）
+}
 
 // NewLoopEngine 创建闭环引擎。
 func NewLoopEngine() *LoopEngine { return &LoopEngine{} }
 
+// registry 返回执行器注册表（首次调用时构建）。
+func (e *LoopEngine) registry() *ExecutorRegistry {
+	if e.executors == nil {
+		e.executors = defaultExecutors()
+	}
+	return e.executors
+}
+
 // roundState 是单轮执行中累积的状态。
 type roundState struct {
-	focus        []string
-	flowsByAddr  map[string][]FundEdge
-	newPaths     []FundPath
+	focus         []string
+	flowsByAddr   map[string][]FundEdge
+	newPaths      []FundPath
 	newCandidates []ExpansionResult
-	newEntities  []EntityInfo
-	newPatterns  []RiskPattern
+	newEntities   []EntityInfo
+	newPatterns   []RiskPattern
 }
 
 // Run 执行完整调查闭环：
@@ -61,12 +72,27 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 	queue := NewTaskQueue()
 	obsEngine := NewObservationEngine()
 	decision := NewDecisionEngine(cfg)
+	scorer := NewInvestigationScorer() // V2 六维评分（设计 §9）
+	if a.profile != nil {
+		scorer.SetProfileStore(a.profile) // V1 Storage Layer：持久化评分权重
+	}
 	// 扩展候选跨轮累积（未使用的候选在后续轮次仍可被决策选中）
 	var candidates []ExpansionResult
 
 	// 1. 规划（AI 优先，规则回退；后续轮次由决策确定新目标 = 增量规划）
 	a.setStage(inv, InvestigationPlanning, "制定调查计划", 5)
+	// Runtime V2 安全（should-fix 修复）：规划前立即检查让位/终态——若 setStage(Planning)
+	// 被降级为 WAITING（resumeRun 接管执行权）或调查已终态（resumeRun 收尾完成），
+	// 立即中止主循环，避免在 AI 规划期间与 resumeRun 并行写 active（last-writer-wins
+	// 导致 Tasks/Strategy 快照丢失）或复活终态调查重复执行任务
+	if isYielding(a.Controller(inv.ID).State()) {
+		return nil
+	}
 	planInput := a.planInput(ctx, inv.Target)
+	// V2：注入调查意图（objective/expected_result/mode 分析结果），驱动模式化任务序列
+	if inv.Request != nil && inv.Request.Intent != nil {
+		planInput.Intent = inv.Request.Intent
+	}
 	plan := snap.planner.Plan(planInput)
 	if snap.ai != nil && cfg.UseAI {
 		if aiPlan, strategy := snap.ai.Plan(ctx, inv, planInput); aiPlan != nil {
@@ -77,6 +103,7 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		}
 	}
 	a.setField(inv, func(i *Investigation) { i.Plan = plan })
+	a.persistPlan(inv, plan) // V1 Storage Layer：计划落盘
 
 	focus := []string{inv.Target}
 	segment := 70.0 / float64(maxRounds)
@@ -91,6 +118,13 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Runtime V2 安全（MEDIUM 修复）：主循环被让位（调查进入 WAITING 等待
+		// 恢复执行完成）或已终态（resumeRun 收尾完成）时中止主循环，执行权归
+		// resumeRun，防双队列并发执行与终态复活
+		if isYielding(a.Controller(inv.ID).State()) {
+			a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+			return nil
+		}
 		roundStarted := time.Now().UTC()
 		done := false
 		a.setField(inv, func(i *Investigation) { i.Round = round })
@@ -103,6 +137,10 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 			flowsByAddr: map[string][]FundEdge{},
 		}
 		for _, pv := range pendingTasks {
+			// V2.1 预算：累计任务数达到上限不再入队（防动态任务无限扩张）
+			if cfg.MaxTasks > 0 && queue.TotalCount() >= cfg.MaxTasks {
+				break
+			}
 			t := queue.Enqueue(pv.task)
 			if pv.hypIdx >= 0 {
 				// 记录验证任务 ID（供假设状态门控：任务真实执行完毕才算 evaluated）
@@ -117,33 +155,87 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		}
 		pendingTasks = nil
 		for _, t := range e.buildQueue(round, plan, focus, snap, cfg) {
+			// V2.1 预算：累计任务数达到上限不再入队
+			if cfg.MaxTasks > 0 && queue.TotalCount() >= cfg.MaxTasks {
+				break
+			}
 			queue.Enqueue(t)
 		}
 		a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+		a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
 
 		// ── 执行任务 ──
 		for {
+			// Runtime V2 安全（should-fix 修复）：任务循环内轮内被让位
+			// （setStage(Running) 降级 WAITING，resumeRun 接管）或调查已终态时
+			// 立即中止，防主循环执行完本轮剩余任务与 resumeRun 双队列并发/终态复活
+			if isYielding(a.Controller(inv.ID).State()) {
+				a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+				return nil
+			}
 			t := queue.Next()
 			if t == nil {
+				// Runtime V2（设计 §5）：依赖失败/跳过的等待任务标记 skipped，
+				// 避免调查完成时残留永久阻塞的 pending 任务
+				blocked := queue.Snapshot()
+				changed := false
+				for i := range blocked {
+					if blocked[i].Status == TaskPending && queue.BlockedByFailedDep(blocked[i].ID) {
+						queue.Mark(blocked[i].ID, TaskSkipped, "依赖失败，任务跳过", "")
+						changed = true
+					}
+				}
+				if changed {
+					a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+					a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
+					continue                                 // 重新取任务（可能有依赖已满足的新任务）
+				}
 				break
 			}
+			a.eventLog.TaskCreated(inv.ID, t) // Runtime V2：任务创建事件
 			queue.Mark(t.ID, TaskRunning, "", "")
 			a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+			a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
 			result, err := e.executeTask(ctx, a, snap, t, plan, inv, st, cfg)
+			// ── Runtime V2（设计 §11）：运行期 heartbeat watchdog ──
+			// 执行器返回后检查是否超过 TimeoutSec（以执行耗时计），超时视为失败（可重试）
+			if err == nil && t.TimeoutSec > 0 && time.Since(time.Unix(t.StartedAt, 0)).Seconds() > float64(t.TimeoutSec) {
+				markRes := queue.Mark(t.ID, TaskFailed, "", "执行超时（超过 "+itoa(t.TimeoutSec)+"s）")
+				logger.Log.Warn().Str("inv", inv.ID).Str("task", t.Type).Msg("intelligence_task_timeout")
+				if markRes != nil && markRes.Status == TaskPending {
+					a.eventLog.TaskRetried(inv.ID, markRes, markRes.RetryCount)
+				} else if markRes != nil {
+					a.eventLog.TaskFailed(inv.ID, markRes, "执行超时")
+				}
+				a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+				a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
+				continue
+			}
 			if err != nil {
 				var skip *skipError
 				if errors.As(err, &skip) {
 					queue.Mark(t.ID, TaskSkipped, skip.reason, "")
 				} else {
-					queue.Mark(t.ID, TaskFailed, "", err.Error())
+					markRes := queue.Mark(t.ID, TaskFailed, "", err.Error())
 					logger.Log.Warn().Str("inv", inv.ID).Str("task", t.Type).Err(err).Msg("intelligence_task_failed")
+					// Runtime V2：失败→重试判定（Mark 内部 RetryCount<MaxRetries 时回到 pending）
+					if markRes != nil && markRes.Status == TaskPending {
+						a.eventLog.TaskRetried(inv.ID, markRes, markRes.RetryCount)
+					} else if markRes != nil {
+						a.eventLog.TaskFailed(inv.ID, markRes, err.Error())
+					}
 				}
 				a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
-				continue // 单任务失败不阻断调查
+				a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
+				continue                                 // 单任务失败不阻断调查
 			}
 			queue.Mark(t.ID, TaskDone, result, "")
 			a.memories.RecordCompletedTask(inv.ID, t.ID)
+			a.eventLog.TaskExecuted(inv.ID, t, result) // Runtime V2：执行成功事件
 			a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+			a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
+			// ── V2 动态调整（设计 §8）：任务结果触发追加任务（获利→来源追踪；交易所→身份线索）──
+			e.dynamicAppend(queue, inv, st, round, cfg.MaxTasks)
 		}
 
 		// ── 合并本轮结果 ──
@@ -161,6 +253,19 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		}
 		a.setField(inv, func(i *Investigation) { i.Paths = merged })
 
+		// ── Runtime V2（设计 §9）：Re-plan 触发器（高价值资金/新实体/新路径 → 增量规划合并）──
+		if signals := e.evaluateReplan(ctx, a, snap, queue, inv, st, plan, round, cfg.MaxTasks); len(signals) > 0 {
+			a.setField(inv, func(i *Investigation) { i.Replans = append(i.Replans, signals...) })
+			a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+			a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：Re-plan 新任务落盘
+			for _, s := range signals {
+				a.eventLog.Replanned(inv.ID, s.Reason, s.Round, s.NewTasks) // Runtime V2：事件日志
+				logger.Log.Info().Str("inv", inv.ID).Int("round", s.Round).
+					Str("reason", string(s.Reason)).Int("new_tasks", s.NewTasks).
+					Msg("intelligence_replanned")
+			}
+		}
+
 		// ── 观察（§8：新地址/新路径/新交易/风险事件）──
 		a.setStage(inv, InvestigationAnalyzing, fmt.Sprintf("第 %d 轮：观察与评分", round), base+8)
 		newObs := e.collectObservations(obsEngine, round, st, mem)
@@ -174,6 +279,18 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 			}
 		}
 		mem, _ = a.memories.Get(inv.ID)
+
+		// ── V2.1 Evidence Layer（设计 §1）：从本轮结果提取证据（路径/风险/观察/获利）──
+		// 锁内读取 inv 字段并追加（避免与 setField/Get 的锁内读写竞争）
+		a.setField(inv, func(i *Investigation) {
+			evs := extractEvidence(i.Evidence, i.ID, merged, i.Patterns, newObs, i.Profit, 100)
+			if len(evs) > 0 {
+				if a.evidence != nil {
+					_ = a.evidence.Add(i.ID, evs...)
+				}
+				i.Evidence = append(i.Evidence, evs...)
+			}
+		})
 
 		// ── 调查假设（§7：规则触发 + AI 细化 → 验证任务进入下一轮）──
 		var verifyTargets []string
@@ -227,6 +344,29 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 		})
 		a.setField(inv, func(i *Investigation) { i.Decision = &dec })
 		a.setStage(inv, InvestigationExpanding, fmt.Sprintf("第 %d 轮：决策 %s", round, dec.Action), base+16)
+
+		// ── V2 六维调查评分（设计 §9）：每轮决策后刷新 inv.Score ──
+		var prof *analyticsapi.Profile
+		if a.svc != nil {
+			prof, _ = a.svc.Profile(ctx, inv.Target) // svc 有缓存，轮询成本低
+		}
+		profitDetected := inv.Profit != nil && (strings.Contains(inv.Profit.Kind, "profit") || inv.Profit.Detected)
+		holdingDetected := inv.Profit != nil && strings.Contains(inv.Profit.Kind, "holding")
+		var mode InvestigationMode
+		if inv.Request != nil {
+			mode = inv.Request.Mode // V2.1 Score Profile：按模式加权
+		}
+		score := scorer.Compute(ScoreInput{
+			Profile:         prof,
+			RiskScore:       dec.Scores.RiskScore,
+			Entities:        inv.Entities,
+			Paths:           merged,
+			Candidates:      candidates,
+			ProfitDetected:  profitDetected,
+			HoldingDetected: holdingDetected,
+			Mode:            mode,
+		})
+		a.setField(inv, func(i *Investigation) { i.Score = score })
 		// AI 下一步建议（§6：AI 建议 → Decision Engine 验证；规则引擎为最终裁决）
 		if snap.ai != nil && cfg.UseAI {
 			if sug := snap.ai.Suggest(ctx, inv, dec); sug != nil {
@@ -266,7 +406,10 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 
 		switch dec.Action {
 		case DecisionStop:
-			a.setField(inv, func(i *Investigation) { i.StopReason = strings.Join(dec.Reasons, "；") })
+			a.setField(inv, func(i *Investigation) {
+				i.StopReason = strings.Join(dec.Reasons, "；")
+				i.StopCode = dec.StopCode // V2.1 Stop Strategy 枚举
+			})
 			done = true
 		case DecisionDeepAnalysis:
 			a.runAI(ctx, inv, snap, cfg) // AI 深入分析后结束
@@ -331,6 +474,7 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 	})
 	queue.Mark(genTask.ID, TaskRunning, "", "")
 	a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+	a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
 	cur, ok := a.Get(inv.ID)
 	if !ok {
 		return fmt.Errorf("调查已不存在: %s", inv.ID)
@@ -344,6 +488,7 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 	}
 	a.memories.RecordCompletedTask(inv.ID, genTask.ID)
 	a.setField(inv, func(i *Investigation) { i.Tasks = queue.Snapshot() })
+	a.persistTasks(inv.ID, queue.Snapshot()) // V1 Storage Layer：任务落盘
 
 	// ── COMPLETED ──
 	a.setField(inv, func(i *Investigation) {
@@ -361,9 +506,36 @@ func (e *LoopEngine) Run(ctx context.Context, a *InvestigationAgent, inv *Invest
 	return nil
 }
 
-// buildQueue 构建一轮的任务队列（7 种任务类型，设计 §7）。
+// buildQueue 构建一轮的任务队列。
+// V2：第 1 轮按计划任务序列执行（意图/AI 驱动，设计 §7 Task Scheduler），
+// 无计划任务时回退旧固定队列。
 func (e *LoopEngine) buildQueue(round int, plan *InvestigationPlan, focus []string, snap agentSnapshot, cfg IntelligenceConfig) []InvestigationTask {
 	var tasks []InvestigationTask
+	if round == 1 && plan != nil && len(plan.Tasks) > 0 {
+		// ── V2：计划驱动（归一化类型，优先级按计划）──
+		for i, pt := range plan.Tasks {
+			tasks = append(tasks, InvestigationTask{
+				ID:          "p" + itoa(i+1),
+				Type:        normalizeTaskType(pt.Type),
+				Description: pt.Description,
+				Priority:    pt.Priority,
+				Target:      focus[0],
+				Round:       round,
+			})
+		}
+		// 地址扩展始终保留（决策引擎需要扩展候选）
+		if snap.expansion != nil {
+			tasks = append(tasks, InvestigationTask{
+				Type:        TaskExpandAddress,
+				Description: fmt.Sprintf("地址扩展（上限 %d）", cfg.MaxExpansion),
+				Priority:    3,
+				Target:      focus[0],
+				Round:       round,
+			})
+		}
+		return applyRuntimeDefaults(tasks, cfg)
+	}
+	// ── 旧固定队列（无计划任务 / 后续轮次）──
 	if round == 1 {
 		tasks = append(tasks, InvestigationTask{
 			Type:        TaskAddressProfile,
@@ -413,104 +585,90 @@ func (e *LoopEngine) buildQueue(round int, plan *InvestigationPlan, focus []stri
 			Round:       round,
 		})
 	}
+	return applyRuntimeDefaults(tasks, cfg)
+}
+
+// isYielding 判断主循环是否应让位中止：调查处于 WAITING（resumeRun 接管执行权）
+// 或已终态（resumeRun 收尾完成，防主循环复活终态调查重复执行任务）。
+func isYielding(state RuntimeState) bool {
+	return state == RuntimeWaiting || isRuntimeTerminal(state)
+}
+
+// applyRuntimeDefaults 为任务注入 Runtime V2 默认超时/重试配置（设计 §5/§11）。
+// 显式配置了 TimeoutSec/MaxRetries 的任务保持原值。
+func applyRuntimeDefaults(tasks []InvestigationTask, cfg IntelligenceConfig) []InvestigationTask {
+	for i := range tasks {
+		if tasks[i].TimeoutSec == 0 {
+			tasks[i].TimeoutSec = cfg.TaskTimeoutSec
+		}
+		if tasks[i].MaxRetries == 0 {
+			tasks[i].MaxRetries = cfg.TaskMaxRetries
+		}
+	}
 	return tasks
 }
 
 // executeTask 执行单个任务，返回结果摘要。skipError 表示因缺少依赖跳过。
+// Runtime V2（设计 §7）：经 ExecutorRegistry 分发（Validate 前置校验 + Execute）。
 func (e *LoopEngine) executeTask(ctx context.Context, a *InvestigationAgent, snap agentSnapshot, t *InvestigationTask, plan *InvestigationPlan, inv *Investigation, st *roundState, cfg IntelligenceConfig) (string, error) {
-	switch t.Type {
-	case TaskAddressProfile:
-		if a.svc == nil {
-			return "", errSkipped("无画像数据源")
-		}
-		profile, err := a.svc.Profile(ctx, t.Target)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("交易 %d 笔（入 %d / 出 %d）", profile.TransactionCount, profile.TotalIn, profile.TotalOut), nil
-
-	case TaskFlowAnalysis:
-		if snap.flowSource == nil {
-			return "", errSkipped("无资金流数据源")
-		}
-		flows, err := snap.flowSource.Flows(ctx, t.Target)
-		if err != nil {
-			return "", err
-		}
-		st.flowsByAddr[t.Target] = flows
-		return fmt.Sprintf("%d 条资金边", len(flows)), nil
-
-	case TaskPathTrace:
-		if snap.tracer == nil {
-			return "", errSkipped("无追踪器")
-		}
-		paths, err := snap.tracer.Trace(ctx, t.Target, plan.MaxHops, plan.BeamWidth)
-		if err != nil {
-			return "", err
-		}
-		st.newPaths = append(st.newPaths, paths...)
-		return fmt.Sprintf("发现 %d 条候选路径", len(paths)), nil
-
-	case TaskEntityCheck:
-		addrSet := map[string]bool{inv.Target: true}
-		for _, addr := range st.focus {
-			addrSet[strings.ToLower(addr)] = true
-		}
-		for _, p := range inv.Paths {
-			for _, n := range p.Path.Nodes {
-				addrSet[n] = true
-			}
-		}
-		addresses := make([]string, 0, len(addrSet))
-		for addr := range addrSet {
-			addresses = append(addresses, addr)
-		}
-		infos := a.resolveNewEntities(ctx, addresses, inv.Entities)
-		st.newEntities = append(st.newEntities, infos...)
-		return fmt.Sprintf("识别 %d 个新实体", len(infos)), nil
-
-	case TaskRiskScan:
-		flows := st.flowsByAddr[t.Target]
-		if len(flows) == 0 {
-			return "无资金流，跳过风险扫描", nil
-		}
-		patterns := snap.detector.Detect(t.Target, flows)
-		seen := map[string]bool{}
-		for _, p := range inv.Patterns {
-			seen[string(p.Type)+"|"+strings.ToLower(p.Address)] = true
-		}
-		var fresh []RiskPattern
-		for _, p := range patterns {
-			key := string(p.Type) + "|" + strings.ToLower(p.Address)
-			if !seen[key] {
-				seen[key] = true
-				fresh = append(fresh, p)
-			}
-		}
-		st.newPatterns = append(st.newPatterns, fresh...)
-		return fmt.Sprintf("%d 个风险模式", len(fresh)), nil
-
-	case TaskExpandAddress:
-		if snap.expansion == nil {
-			return "", errSkipped("无扩展引擎")
-		}
-		cands, err := snap.expansion.Expand(ctx, t.Target, cfg.MaxExpansion)
-		if err != nil {
-			return "", err
-		}
-		st.newCandidates = append(st.newCandidates, cands...)
-		// 候选实体即时识别（供决策过滤交易所地址）
-		var addrs []string
-		for _, c := range cands {
-			addrs = append(addrs, c.Address)
-		}
-		st.newEntities = append(st.newEntities, a.resolveNewEntities(ctx, addrs, inv.Entities)...)
-		return fmt.Sprintf("%d 个扩展候选", len(cands)), nil
-
-	case TaskGenerateReport:
-		return "", errSkipped("报告在调查收尾阶段生成")
+	exec, ok := e.registry().Get(t.Type)
+	if !ok {
+		return "", fmt.Errorf("未知任务类型: %s", t.Type)
 	}
-	return "", fmt.Errorf("未知任务类型: %s", t.Type)
+	// Validate 前置校验：数据源缺失 → 跳过（errSkipped 保持降级语义）
+	if err := exec.Validate(a, snap); err != nil {
+		return "", err
+	}
+	res, err := exec.Execute(ctx, a, snap, t, plan, inv, st)
+	if err != nil {
+		return "", err
+	}
+	if res.Status == "SKIPPED" {
+		return "", errSkipped(res.Summary)
+	}
+	return res.Summary, nil
+}
+
+// dynamicAppend 按任务结果动态追加任务（V2 设计 §8 动态重新规划）：
+// - 获利/沉淀检测命中 → 追加来源追踪（追查获利资金源头）；
+// - 发现交易所实体 → 追加身份线索（识别交易所归属）。
+// 幂等：按任务类型全局去重——依赖 TaskQueue.Snapshot 返回全部任务（含 done/skipped/failed
+// 终态任务），因此同轮与跨轮都不会重复追加同一类型任务。
+// V2.1 预算：累计任务数达到 maxTasks 上限时不再追加。
+func (e *LoopEngine) dynamicAppend(q *TaskQueue, inv *Investigation, st *roundState, round, maxTasks int) {
+	if inv == nil || q == nil {
+		return
+	}
+	if maxTasks > 0 && q.TotalCount() >= maxTasks {
+		return
+	}
+	existing := map[string]bool{}
+	for _, tk := range q.Snapshot() {
+		existing[tk.Type] = true
+	}
+	if inv.Profit != nil && inv.Profit.Detected && !existing[TaskBackwardTrace] {
+		q.Enqueue(InvestigationTask{
+			Type:        TaskBackwardTrace,
+			Description: "动态追加：追查获利/沉淀资金源头",
+			Priority:    2,
+			Target:      inv.Target,
+			Round:       round,
+		})
+	}
+	if !existing[TaskIdentityLookup] {
+		for _, ent := range st.newEntities {
+			if ent.Entity == "exchange" {
+				q.Enqueue(InvestigationTask{
+					Type:        TaskIdentityLookup,
+					Description: "动态追加：交易所实体身份线索",
+					Priority:    2,
+					Target:      inv.Target,
+					Round:       round,
+				})
+				break
+			}
+		}
+	}
 }
 
 // mergePaths 合并新路径（按签名去重 + 记忆去重），重排并保留 Top K。

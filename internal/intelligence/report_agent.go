@@ -51,6 +51,35 @@ func (r *ReportAgent) generateMarkdown(inv *Investigation) string {
 	b.WriteString(fmt.Sprintf("- 时间：%s\n", inv.CreatedAt.Format("2006-01-02 15:04:05")))
 	b.WriteString(fmt.Sprintf("- 状态：%s\n\n", inv.Status))
 
+	// ── V2 调查请求（设计 §3/§4）──
+	if inv.Request != nil {
+		b.WriteString("## 调查请求\n\n")
+		if inv.Request.Objective != "" {
+			b.WriteString(fmt.Sprintf("- 调查目的：%s\n", inv.Request.Objective))
+		}
+		if len(inv.Request.ExpectedResult) > 0 {
+			b.WriteString(fmt.Sprintf("- 期望结果：%s\n", strings.Join(inv.Request.ExpectedResult, "、")))
+		}
+		b.WriteString(fmt.Sprintf("- 调查模式：%s\n", inv.Request.Mode))
+		if inv.Request.Intent != nil {
+			b.WriteString(fmt.Sprintf("- 意图分析：%s\n\n", inv.Request.Intent.Summary))
+		} else {
+			b.WriteString("\n")
+		}
+	}
+
+	// ── V2 六维调查价值评分（设计 §9-11）──
+	if inv.Score != nil {
+		b.WriteString("## 调查价值评分\n\n")
+		b.WriteString(fmt.Sprintf("- 总分：**%.1f**\n", inv.Score.Total))
+		b.WriteString(fmt.Sprintf("- 资金价值 %.1f / 行为价值 %.1f / 风险价值 %.1f\n", inv.Score.Fund, inv.Score.Behavior, inv.Score.Risk))
+		b.WriteString(fmt.Sprintf("- 实体价值 %.1f / 图价值 %.1f / 身份价值 %.1f\n", inv.Score.Entity, inv.Score.Graph, inv.Score.Identity))
+		if inv.Score.FundDetail != nil {
+			b.WriteString(fmt.Sprintf("- 资金分项：余额 %v + 获利 %v + 沉淀 %v = %v\n", inv.Score.FundDetail.BalancePoints, inv.Score.FundDetail.ProfitPoints, inv.Score.FundDetail.HoldingPoints, inv.Score.FundDetail.Total))
+		}
+		b.WriteString("\n")
+	}
+
 	// 一、调查计划
 	b.WriteString("## 一、调查计划\n\n")
 	if inv.Plan != nil {
@@ -59,6 +88,13 @@ func (r *ReportAgent) generateMarkdown(inv *Investigation) string {
 			if inv.Strategy.Rationale != "" {
 				b.WriteString(fmt.Sprintf("- 策略理由：%s\n", inv.Strategy.Rationale))
 			}
+		}
+		if inv.Plan.Mode != "" {
+			b.WriteString(fmt.Sprintf("- 计划模式：%s", inv.Plan.Mode))
+			if inv.Plan.EstimatedMinutes > 0 {
+				b.WriteString(fmt.Sprintf("（预计 %d 分钟）", inv.Plan.EstimatedMinutes))
+			}
+			b.WriteString("\n")
 		}
 		for _, t := range inv.Plan.Tasks {
 			b.WriteString(fmt.Sprintf("- [%s] %s\n", t.Type, t.Description))
@@ -104,6 +140,34 @@ func (r *ReportAgent) generateMarkdown(inv *Investigation) string {
 		b.WriteString("- 未发现显著风险模式\n")
 	}
 
+	// ── V2.1 获利/沉淀检测（设计 §10/V2.1 §2：估算 + 可信度 + 依据）──
+	if inv.Profit != nil {
+		b.WriteString("\n## 获利与沉淀检测\n\n")
+		b.WriteString(fmt.Sprintf("- 检测结果：%s\n", inv.Profit.Summary))
+		if inv.Profit.EstimateUSD > 0 {
+			b.WriteString(fmt.Sprintf("- 估算金额：**%.0f**（稳定币净额估算）\n", inv.Profit.EstimateUSD))
+		}
+		if inv.Profit.Confidence > 0 {
+			b.WriteString(fmt.Sprintf("- 可信度：**%.0f%%**\n", inv.Profit.Confidence*100))
+		}
+		if len(inv.Profit.Checklist) > 0 {
+			b.WriteString("- 依据明细：\n")
+			for _, c := range inv.Profit.Checklist {
+				mark := "✗"
+				if !c.Present {
+					mark = "?"
+				} else if c.OK {
+					mark = "✓"
+				}
+				b.WriteString(fmt.Sprintf("  - %s %s\n", mark, c.Label))
+			}
+		}
+		if inv.Profit.Tokens != nil && len(inv.Profit.Tokens) > 0 {
+			b.WriteString(fmt.Sprintf("- 涉及 Token：%s\n", strings.Join(inv.Profit.Tokens, "、")))
+		}
+		b.WriteString(fmt.Sprintf("- 估算口径：%s\n", inv.Profit.EstimateNote))
+	}
+
 	// 五、地址扩展
 	b.WriteString("\n## 五、地址扩展\n\n")
 	if len(inv.Expansions) > 0 {
@@ -132,7 +196,11 @@ func (r *ReportAgent) generateMarkdown(inv *Investigation) string {
 		}
 	}
 	if inv.StopReason != "" {
-		b.WriteString(fmt.Sprintf("- 停止原因：%s\n", inv.StopReason))
+		if inv.StopCode != "" {
+			b.WriteString(fmt.Sprintf("- 停止原因：[%s] %s\n", inv.StopCode, inv.StopReason))
+		} else {
+			b.WriteString(fmt.Sprintf("- 停止原因：%s\n", inv.StopReason))
+		}
 	}
 	if len(inv.Tasks) > 0 {
 		taskCounts := map[string]int{}

@@ -1,0 +1,324 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  color: var(--ds-color-text);
+  background: var(--ds-color-bg);
+  font-family: var(--ds-font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: var(--ds-font-ui);
+}
+
+.ds-page {
+  width: 100%;
+  min-width: 0;
+  animation: ds-page-enter var(--ds-motion-page) ease-out both;
+}
+
+.ds-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ds-space-5);
+  margin-bottom: var(--ds-space-6);
+}
+
+.ds-page-header h1 {
+  margin: 0;
+  color: var(--ds-color-text);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.ds-page-header p {
+  max-width: 760px;
+  margin: 7px 0 0;
+  color: var(--ds-color-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.ds-page-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.ds-metric-card {
+  display: flex;
+  min-width: 0;
+  min-height: 112px;
+  align-items: center;
+  gap: var(--ds-space-4);
+  padding: var(--ds-space-5);
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-color-surface);
+  box-shadow: var(--ds-shadow-sm);
+  transition:
+    border-color var(--ds-motion-fast) ease,
+    box-shadow var(--ds-motion-fast) ease,
+    transform var(--ds-motion-fast) ease;
+}
+
+.ds-metric-card:hover {
+  border-color: var(--ds-color-border-strong);
+  box-shadow: var(--ds-shadow-md);
+  transform: translateY(-2px);
+}
+
+.ds-metric-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: none;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 21px;
+}
+
+.ds-tone-blue .ds-metric-icon {
+  color: var(--ds-color-primary);
+  background: var(--ds-color-primary-soft);
+}
+
+.ds-tone-green .ds-metric-icon {
+  color: var(--ds-color-success);
+  background: var(--ds-color-success-soft);
+}
+
+.ds-tone-amber .ds-metric-icon {
+  color: var(--ds-color-warning);
+  background: var(--ds-color-warning-soft);
+}
+
+.ds-tone-red .ds-metric-icon {
+  color: var(--ds-color-risk);
+  background: var(--ds-color-risk-soft);
+}
+
+.ds-tone-neutral .ds-metric-icon {
+  color: var(--ds-color-text-secondary);
+  background: var(--ds-color-surface-subtle);
+}
+
+.ds-metric-copy {
+  min-width: 0;
+}
+
+.ds-metric-copy > span,
+.ds-metric-copy > strong,
+.ds-metric-copy > small {
+  display: block;
+}
+
+.ds-metric-copy > span {
+  color: var(--ds-color-text-secondary);
+  font-size: 12px;
+}
+
+.ds-metric-copy > strong {
+  overflow: hidden;
+  margin-top: 7px;
+  color: var(--ds-color-text);
+  font-size: 25px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-metric-copy > small {
+  margin-top: 5px;
+  color: var(--ds-color-text-tertiary);
+  font-size: 11px;
+}
+
+.ds-section {
+  min-width: 0;
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-color-surface);
+  box-shadow: var(--ds-shadow-sm);
+}
+
+.ds-section-header {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-4);
+  padding: var(--ds-space-4) var(--ds-space-5);
+  border-bottom: 1px solid var(--ds-color-border);
+}
+
+.ds-section-header h2 {
+  margin: 0;
+  color: var(--ds-color-text);
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.ds-section-header p {
+  margin: 4px 0 0;
+  color: var(--ds-color-text-tertiary);
+  font-size: 11px;
+}
+
+.ds-detail-panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-color-surface);
+  box-shadow: var(--ds-shadow-sm);
+}
+
+.ds-detail-header {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-4);
+  padding: var(--ds-space-4) var(--ds-space-5);
+  border-bottom: 1px solid var(--ds-color-border);
+}
+
+.ds-detail-header h2 {
+  margin: 0;
+  color: var(--ds-color-text);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.ds-detail-header p {
+  margin: 4px 0 0;
+  color: var(--ds-color-text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ds-detail-extra {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.ds-detail-body {
+  min-width: 0;
+  padding: var(--ds-space-5);
+}
+
+.ds-detail-panel-small .ds-detail-header {
+  min-height: 50px;
+  padding: var(--ds-space-3) var(--ds-space-4);
+}
+
+.ds-detail-panel-small .ds-detail-body {
+  padding: var(--ds-space-4);
+}
+
+.ds-detail-panel + .ds-detail-panel {
+  margin-top: var(--ds-space-3);
+}
+
+.ds-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ds-color-text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ds-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ds-color-text-tertiary);
+}
+
+.ds-status-success i {
+  background: var(--ds-color-success);
+}
+
+.ds-status-warning i {
+  background: var(--ds-color-warning);
+}
+
+.ds-status-risk i {
+  background: var(--ds-color-risk);
+}
+
+@keyframes ds-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-page,
+  .ds-metric-card {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .ds-page-header {
+    flex-direction: column;
+    margin-bottom: var(--ds-space-5);
+  }
+
+  .ds-page-header h1 {
+    font-size: 23px;
+  }
+
+  .ds-page-actions {
+    width: 100%;
+  }
+
+  .ds-page-actions .ant-btn {
+    flex: 1;
+  }
+
+  .ds-metric-card {
+    min-height: 96px;
+    padding: var(--ds-space-4);
+  }
+
+  .ds-detail-header {
+    align-items: flex-start;
+    padding: var(--ds-space-4);
+  }
+
+  .ds-detail-extra {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .ds-detail-body {
+    padding: var(--ds-space-4);
+  }
+}

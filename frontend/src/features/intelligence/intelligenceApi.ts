@@ -99,6 +99,12 @@ export interface InvestigationTask {
   result?: string;
   error?: string;
   round: number;
+  // Runtime V2（设计 §5 任务模型扩展，向后兼容可选）
+  dependencies?: string[];
+  max_retries?: number;
+  retry_count?: number;
+  timeout_sec?: number;
+  started_at?: number;
 }
 
 export interface Observation {
@@ -116,6 +122,11 @@ export interface DecisionScores {
   risk_score: number;
   entity_score: number;
   expansion_score: number;
+  // V2 六维评分（设计 §9）
+  behavior_score?: number;
+  graph_score?: number;
+  identity_score?: number;
+  fund_score?: number;
 }
 
 export interface Decision {
@@ -214,6 +225,175 @@ export interface Investigation {
   hypotheses?: AIHypothesis[];
   findings?: VerifiedFinding[];
   ai_suggestion?: AISuggestion;
+  // ── V2 调查请求与六维评分（设计 §4/§9）──
+  request?: InvestigationRequest;
+  investigation_score?: InvestigationScore;
+  // ── V2.1 Evidence Layer（设计 §1）──
+  evidence?: Evidence[];
+  profit_report?: ProfitReport;
+}
+
+// ── V2 调查请求（Investigation Agent Planner V2 §3/§4）──
+
+export type InvestigationMode =
+  | "auto"
+  | "fund_trace"
+  | "profit_analyze"
+  | "exchange_entry"
+  | "identity_lookup"
+  | "risk_scan";
+
+export const INVESTIGATION_MODES: { value: InvestigationMode; label: string }[] = [
+  { value: "auto", label: "自动推断" },
+  { value: "fund_trace", label: "资金追踪" },
+  { value: "profit_analyze", label: "获利分析" },
+  { value: "exchange_entry", label: "交易所入口" },
+  { value: "identity_lookup", label: "身份线索" },
+  { value: "risk_scan", label: "风险扫描" },
+];
+
+// 期望结果选项（设计 §4）
+export const EXPECTED_RESULT_OPTIONS = [
+  "资金流图",
+  "资金去向",
+  "资金来源",
+  "交易所入口",
+  "关联钱包",
+  "获利检测",
+  "身份线索",
+  "风险扫描",
+];
+
+// 调查目的模板（快速填充）
+export const OBJECTIVE_TEMPLATES = [
+  "这是一个大额获利地址，寻找最终资金沉淀",
+  "识别该地址的交易所入口与提现路径",
+  "追踪资金来源与上游关联钱包",
+  "检测是否存在洗钱/拆分风险模式",
+  "查找地址身份线索与实体归属",
+];
+
+export interface InvestigationIntent {
+  direction: string; // in / out / both / unknown
+  goals: string[];
+  mode: InvestigationMode;
+  summary: string;
+}
+
+export interface InvestigationRequest {
+  id: string;
+  investigation_id?: string;
+  address: string;
+  chain_id: string;
+  objective: string;
+  expected_result: string[];
+  mode: InvestigationMode;
+  intent?: InvestigationIntent;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FundScoreDetail {
+  balance_points: number;
+  profit_points: number;
+  holding_points: number;
+  total: number;
+}
+
+// ── V2.1 Profit Detection V2（设计 §2：估算 + 可信度 + 依据）──
+
+export interface ProfitChecklistItem {
+  ok: boolean;
+  label: string;
+  present: boolean;
+}
+
+export interface ProfitReport {
+  detected: boolean;
+  kind: string;
+  tokens?: string[];
+  estimate_usd?: number;
+  confidence: number;
+  checklist?: ProfitChecklistItem[];
+  summary: string;
+  estimate_note: string;
+}
+
+export interface InvestigationScore {
+  total: number;
+  fund: number;
+  behavior: number;
+  risk: number;
+  entity: number;
+  graph: number;
+  identity: number;
+  fund_detail?: FundScoreDetail;
+}
+
+// ── V2.1 Evidence Layer（设计 §1）──
+
+export type EvidenceType = "TRANSACTION" | "ADDRESS" | "TIME" | "PATH" | "RISK" | "PROFIT";
+
+export interface Evidence {
+  id: string;
+  investigation_id: string;
+  task_id?: string;
+  evidence_type: EvidenceType;
+  address?: string;
+  tx_hash?: string;
+  block_number?: number;
+  token?: string;
+  amount?: string;
+  detail: string;
+  confidence: number;
+  created_at: string;
+}
+
+export const EVIDENCE_TYPE_LABEL: Record<EvidenceType, string> = {
+  TRANSACTION: "交易证据",
+  ADDRESS: "地址证据",
+  TIME: "时间证据",
+  PATH: "路径证据",
+  RISK: "风险证据",
+  PROFIT: "获利证据",
+};
+
+// getInvestigationEvidence 查询调查证据链（V2.1）。
+export async function getInvestigationEvidence(id: string): Promise<{ total: number; evidence: Evidence[] } | null> {
+  const r = await getJson<{ total: number; evidence: Evidence[] }>(`/api/investigation/${id}/evidence`, "调查证据加载失败");
+  return r.payload ?? null;
+}
+
+export interface CreateInvestigationInput {
+  address: string;
+  chain?: string;
+  objective?: string;
+  expected_result?: string[];
+  mode?: InvestigationMode;
+}
+
+export interface CreateInvestigationResult {
+  request: InvestigationRequest;
+  investigation: Investigation;
+}
+
+// createInvestigation 通过 V2 入口创建调查请求并启动调查。
+export async function createInvestigation(input: CreateInvestigationInput): Promise<CreateInvestigationResult | null> {
+  const r = await postJson<CreateInvestigationResult>("/api/investigation/create", input, "创建调查失败");
+  return r.payload ?? null;
+}
+
+// getInvestigationPlan 查询调查计划（V2 端点）。
+export async function getInvestigationPlan(id: string): Promise<{ status: string; plan?: InvestigationPlan } | null> {
+  const r = await getJson<{ status: string; plan?: InvestigationPlan }>(`/api/investigation/${id}/plan`, "调查计划加载失败");
+  return r.payload ?? null;
+}
+
+// getInvestigationTasks 查询调查任务（V2 端点）。
+export async function getInvestigationTasks(id: string): Promise<{ status: string; tasks: InvestigationTask[] } | null> {
+  const r = await getJson<{ status: string; tasks: InvestigationTask[] }>(`/api/investigation/${id}/tasks`, "调查任务加载失败");
+  return r.payload ?? null;
 }
 
 export interface IntelligenceConfig {

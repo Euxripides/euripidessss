@@ -1,14 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Button,
-  Card,
-  Col,
   Collapse,
   Descriptions,
   Input,
   List,
   Progress,
-  Row,
   Select,
   Space,
   Steps,
@@ -35,16 +32,23 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
-  startInvestigation,
   listInvestigations,
   getInvestigation,
   getReport,
   subscribeInvestigation,
+  createInvestigation,
   type Investigation,
+  type InvestigationMode,
   type RankedPath,
 } from "./intelligenceApi";
+import { InvestigationRequestInput } from "./investigationRequestInput";
+import { AgentTimeline, PlanPreview } from "./investigationPlanView";
+import { InvestigationRequestSummary, InvestigationScorePanel, ProfitReportPanel } from "./investigationResultSummary";
+import { EvidenceViewer } from "./investigationEvidenceViewer";
+import { DetailPanel, PageHeader } from "../../design-system/DesignSystem";
+import "./intelligence.css";
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 const SEVERITY_COLOR: Record<string, string> = {
   high: "red",
@@ -112,6 +116,10 @@ function flowStepIndex(status: string): number {
 export default function IntelligencePage() {
   const [target, setTarget] = useState("");
   const [chainId, setChainId] = useState("bsc");
+  // ── V2 调查请求输入（设计 §3：目的/期望结果/模式）──
+  const [objective, setObjective] = useState("");
+  const [expectedResult, setExpectedResult] = useState<string[]>([]);
+  const [mode, setMode] = useState<InvestigationMode>("auto");
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [current, setCurrent] = useState<Investigation | null>(null);
   const [loading, setLoading] = useState(false);
@@ -169,9 +177,20 @@ export default function IntelligencePage() {
       message.warning("请输入目标地址");
       return;
     }
+    if (!objective.trim() && expectedResult.length === 0) {
+      message.warning("请填写调查目的或至少选择一个期望结果");
+      return;
+    }
     setLoading(true);
     try {
-      const inv = await startInvestigation(addr, chainId);
+      const result = await createInvestigation({
+        address: addr,
+        chain: chainId,
+        objective: objective.trim(),
+        expected_result: expectedResult,
+        mode,
+      });
+      const inv = result?.investigation;
       if (!inv) throw new Error("启动失败");
       message.success(`调查已启动: ${inv.id}`);
       setTarget("");
@@ -277,20 +296,25 @@ export default function IntelligencePage() {
   ];
 
   return (
-    <div style={{ padding: 16 }}>
-      <Title level={4}>
-        <RobotOutlined /> 全自动链上调查工作台
-      </Title>
+    <div className="ds-page analytics-page intelligence-page">
+      <PageHeader
+        title="智能调查"
+        description="启动多轮链上调查，持续接收实时进度，并在同一工作区核验证据、路径、实体、风险与 AI 结论。"
+      />
 
       {/* 启动调查 */}
-      <Card size="small" style={{ marginBottom: 16 }}>
-        <Space wrap>
+      <DetailPanel
+        size="small"
+        className="intelligence-start-panel"
+        title="启动调查"
+        description="输入目标地址、调查目的与期望结果，系统将按意图规划、执行、验证并生成报告。"
+      >
+        <div className="intelligence-start-row">
           <Input
             placeholder="输入目标地址（0x...）"
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             onPressEnter={handleStart}
-            style={{ width: 420 }}
             prefix={<SearchOutlined />}
             allowClear
           />
@@ -306,15 +330,27 @@ export default function IntelligencePage() {
             ]}
           />
           <Button type="primary" icon={<ThunderboltOutlined />} loading={loading} onClick={handleStart}>
-            启动全自动调查
+            启动智能调查
           </Button>
-        </Space>
-      </Card>
+        </div>
+        <InvestigationRequestInput
+          mode={mode}
+          onModeChange={setMode}
+          objective={objective}
+          onObjectiveChange={setObjective}
+          expectedResult={expectedResult}
+          onExpectedResultChange={setExpectedResult}
+        />
+      </DetailPanel>
 
-      <Row gutter={16}>
+      <div className="intelligence-layout">
         {/* 左：调查列表 */}
-        <Col span={8}>
-          <Card size="small" title="调查记录" style={{ marginBottom: 16 }}>
+        <DetailPanel
+          size="small"
+          title="调查记录"
+          description={`${investigations.length} 个历史任务`}
+          className="intelligence-list-panel"
+        >
             <List
               size="small"
               dataSource={investigations}
@@ -322,7 +358,7 @@ export default function IntelligencePage() {
               renderItem={(inv) => (
                 <List.Item
                   onClick={() => loadDetail(inv.id)}
-                  style={{ cursor: "pointer" }}
+                  className={current?.id === inv.id ? "intelligence-list-item intelligence-list-item-active" : "intelligence-list-item"}
                 >
                   <List.Item.Meta
                     title={
@@ -340,14 +376,14 @@ export default function IntelligencePage() {
                 </List.Item>
               )}
             />
-          </Card>
-        </Col>
+        </DetailPanel>
 
         {/* 右：调查详情 */}
-        <Col span={16}>
+        <div className="intelligence-detail">
           {current ? (
-            <Card
+            <DetailPanel
               size="small"
+              className="intelligence-detail-panel"
               title={
                 <Space>
                   <Text strong>{current.id}</Text>
@@ -375,6 +411,12 @@ export default function IntelligencePage() {
               </Text>
               {current.error && <Text type="danger">错误：{current.error}</Text>}
 
+              {/* ── V2 调查请求摘要 + 六维价值评分（设计 §11/§9）── */}
+              <InvestigationRequestSummary inv={current} />
+              <InvestigationScorePanel inv={current} />
+              {/* ── V2.1 获利与沉淀检测（估算/可信度/依据）── */}
+              <ProfitReportPanel inv={current} />
+
               <Tabs
                 size="small"
                 items={[
@@ -388,7 +430,10 @@ export default function IntelligencePage() {
                           current={flowStepIndex(current.status)}
                           items={FLOW_STEPS.map((s) => ({ title: s }))}
                         />
-                        <Descriptions size="small" column={2} bordered>
+                        {/* ── V2 计划预览 + 执行时间线（设计 §12/§13）── */}
+                        <PlanPreview inv={current} />
+                        <AgentTimeline inv={current} />
+                        <Descriptions size="small" column={{ xs: 1, md: 2 }} bordered>
                           <Descriptions.Item label="当前轮次">{current.round ?? 0}</Descriptions.Item>
                           <Descriptions.Item label="完成时间">
                             {current.completed_at ? new Date(current.completed_at).toLocaleString() : "-"}
@@ -398,7 +443,7 @@ export default function IntelligencePage() {
                           </Descriptions.Item>
                         </Descriptions>
                         {current.decision && (
-                          <Card size="small" title={"本轮决策"}>
+                          <DetailPanel size="small" title="本轮决策">
                             <Space direction="vertical" style={{ width: "100%" }}>
                               <Space wrap>
                                 <Tag color={DECISION_TAG[current.decision.action] ?? "default"}>
@@ -406,7 +451,7 @@ export default function IntelligencePage() {
                                 </Tag>
                                 <Text type="secondary">第 {current.decision.round} 轮</Text>
                               </Space>
-                              <Descriptions size="small" column={4} bordered>
+                              <Descriptions size="small" column={{ xs: 2, md: 4 }} bordered>
                                 <Descriptions.Item label="路径分">
                                   {current.decision.scores?.path_score?.toFixed(1)}
                                 </Descriptions.Item>
@@ -440,10 +485,10 @@ export default function IntelligencePage() {
                                 </Space>
                               )}
                             </Space>
-                          </Card>
+                          </DetailPanel>
                         )}
                         {(current.rounds?.length ?? 0) > 0 && (
-                          <Card size="small" title={`轮次记录 (${current.rounds!.length})`}>
+                          <DetailPanel size="small" title={`轮次记录 (${current.rounds!.length})`}>
                             <List
                               size="small"
                               dataSource={current.rounds}
@@ -457,15 +502,16 @@ export default function IntelligencePage() {
                                 </List.Item>
                               )}
                             />
-                          </Card>
+                          </DetailPanel>
                         )}
                         {(current.tasks?.length ?? 0) > 0 && (
-                          <Card size="small" title={`任务队列 (${current.tasks!.length})`}>
+                          <DetailPanel size="small" title={`任务队列 (${current.tasks!.length})`}>
                             <Table
                               size="small"
                               rowKey={(t) => t.id}
                               pagination={{ pageSize: 8, size: "small" }}
                               dataSource={current.tasks}
+                              scroll={{ x: 720 }}
                               columns={[
                                 {
                                   title: "类型",
@@ -497,10 +543,10 @@ export default function IntelligencePage() {
                                 { title: "轮次", dataIndex: "round", key: "round", width: 60 },
                               ]}
                             />
-                          </Card>
+                          </DetailPanel>
                         )}
                         {(current.observations?.length ?? 0) > 0 && (
-                          <Card size="small" title={`调查观察 (${current.observations!.length})`}>
+                          <DetailPanel size="small" title={`调查观察 (${current.observations!.length})`}>
                             <List
                               size="small"
                               dataSource={current.observations}
@@ -515,7 +561,7 @@ export default function IntelligencePage() {
                                 </List.Item>
                               )}
                             />
-                          </Card>
+                          </DetailPanel>
                         )}
                       </Space>
                     ),
@@ -530,6 +576,7 @@ export default function IntelligencePage() {
                         columns={pathColumns}
                         dataSource={current.paths ?? []}
                         pagination={{ pageSize: 5, size: "small" }}
+                        scroll={{ x: 540 }}
                       />
                     ),
                   },
@@ -549,6 +596,16 @@ export default function IntelligencePage() {
                     ),
                   },
                   {
+                    key: "evidence",
+                    label: `证据链 (${current.evidence?.length ?? 0})`,
+                    children: (
+                      <EvidenceViewer
+                        investigationId={current.id}
+                        done={current.status === "COMPLETED" || current.status === "FAILED"}
+                      />
+                    ),
+                  },
+                  {
                     key: "entities",
                     label: `实体 (${current.entities?.length ?? 0})`,
                     children: (
@@ -558,6 +615,7 @@ export default function IntelligencePage() {
                         columns={entityColumns}
                         dataSource={current.entities ?? []}
                         pagination={{ pageSize: 8, size: "small" }}
+                        scroll={{ x: 680 }}
                       />
                     ),
                   },
@@ -570,7 +628,7 @@ export default function IntelligencePage() {
                         dataSource={current.patterns ?? []}
                         renderItem={(p) => (
                           <List.Item>
-                            <Space>
+                            <Space wrap>
                               <Tag color={SEVERITY_COLOR[p.severity] ?? "blue"}>{p.severity}</Tag>
                               <Text code>{p.type}</Text>
                               <Text>{p.detail}</Text>
@@ -764,7 +822,7 @@ export default function IntelligencePage() {
                     children: current.plan ? (
                       <Space direction="vertical" style={{ width: "100%" }}>
                         {current.strategy && (
-                          <Card size="small" title="AI 调查策略">
+                          <DetailPanel size="small" title="AI 调查策略">
                             <Space direction="vertical" style={{ width: "100%" }}>
                               <Space wrap>
                                 <Tag color="purple">{current.strategy.strategy}</Tag>
@@ -782,7 +840,7 @@ export default function IntelligencePage() {
                                 </Space>
                               )}
                             </Space>
-                          </Card>
+                          </DetailPanel>
                         )}
                         <List
                           size="small"
@@ -803,14 +861,15 @@ export default function IntelligencePage() {
                   },
                 ]}
               />
-            </Card>
+            </DetailPanel>
           ) : (
-            <Card size="small">
-              <Text type="secondary">选择左侧调查记录查看详情，或输入地址启动新调查。</Text>
-            </Card>
+            <DetailPanel size="small" className="intelligence-empty-detail">
+              <RobotOutlined />
+              <Text type="secondary">选择调查记录查看详情，或输入地址启动新调查。</Text>
+            </DetailPanel>
           )}
-        </Col>
-      </Row>
+        </div>
+      </div>
     </div>
   );
 }

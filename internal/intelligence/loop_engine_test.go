@@ -79,6 +79,107 @@ func TestTaskQueueDedupe(t *testing.T) {
 	}
 }
 
+// ── Runtime V2 Task Queue 测试（设计 §5：依赖/重试/超时）──
+
+func TestTaskQueueDependencyGating(t *testing.T) {
+	q := NewTaskQueue()
+	dep := q.Enqueue(InvestigationTask{Type: TaskAddressProfile, Priority: 0, Round: 1})
+	waiter := q.Enqueue(InvestigationTask{Type: TaskForwardTrace, Priority: 1, Dependencies: []string{dep.ID}, Round: 1})
+
+	// 依赖未完成：等待任务不被取出
+	if got := q.Next(); got == nil || got.ID != dep.ID {
+		t.Fatalf("依赖未完成时应先执行依赖任务, got %+v", got)
+	}
+	q.Mark(dep.ID, TaskDone, "画像完成", "")
+	// 依赖完成：等待任务可执行
+	if got := q.Next(); got == nil || got.ID != waiter.ID {
+		t.Fatalf("依赖完成后应执行等待任务, got %+v", got)
+	}
+}
+
+func TestTaskQueueDependencyFailedBlocks(t *testing.T) {
+	q := NewTaskQueue()
+	dep := q.Enqueue(InvestigationTask{Type: TaskAddressProfile, Priority: 0, Round: 1})
+	waiter := q.Enqueue(InvestigationTask{Type: TaskForwardTrace, Priority: 1, Dependencies: []string{dep.ID}, Round: 1})
+	q.Mark(dep.ID, TaskFailed, "", "画像失败")
+	// 依赖失败（非 done）：等待任务永久阻塞
+	if got := q.Next(); got != nil {
+		t.Fatalf("依赖失败时等待任务不应执行, got %+v", got)
+	}
+	if !q.BlockedByFailedDep(waiter.ID) {
+		t.Fatal("被失败依赖阻塞的任务应被 BlockedByFailedDep 识别")
+	}
+	// 无依赖 / 非 pending 任务不被误判
+	independent := q.Enqueue(InvestigationTask{Type: TaskRiskScan, Priority: 1, Round: 1})
+	if q.BlockedByFailedDep(independent.ID) {
+		t.Fatal("无依赖任务不应被误判阻塞")
+	}
+}
+
+func TestTaskQueueRetryOnFailure(t *testing.T) {
+	q := NewTaskQueue()
+	t1 := q.Enqueue(InvestigationTask{Type: TaskPathTrace, MaxRetries: 2, Priority: 1, Round: 1})
+	q.Mark(t1.ID, TaskRunning, "", "")
+	q.Mark(t1.ID, TaskFailed, "", "第一次失败")
+	// 重试 1：回到 pending 且计数 +1
+	got, _ := q.Get(t1.ID)
+	if got.Status != TaskPending || got.RetryCount != 1 {
+		t.Fatalf("第一次失败应重试: status=%s retry=%d", got.Status, got.RetryCount)
+	}
+	q.Mark(t1.ID, TaskRunning, "", "")
+	q.Mark(t1.ID, TaskFailed, "", "第二次失败")
+	got, _ = q.Get(t1.ID)
+	if got.Status != TaskPending || got.RetryCount != 2 {
+		t.Fatalf("第二次失败应重试: status=%s retry=%d", got.Status, got.RetryCount)
+	}
+	// 达到上限：保持 failed
+	q.Mark(t1.ID, TaskRunning, "", "")
+	q.Mark(t1.ID, TaskFailed, "", "第三次失败")
+	got, _ = q.Get(t1.ID)
+	if got.Status != TaskFailed || got.RetryCount != 2 {
+		t.Fatalf("超过上限应保持 failed: status=%s retry=%d", got.Status, got.RetryCount)
+	}
+	if q.PendingCount() != 0 {
+		t.Fatalf("无待执行任务, pending=%d", q.PendingCount())
+	}
+}
+
+func TestTaskQueueRetryDisabled(t *testing.T) {
+	q := NewTaskQueue()
+	t1 := q.Enqueue(InvestigationTask{Type: TaskPathTrace, Priority: 1, Round: 1}) // MaxRetries=0
+	q.Mark(t1.ID, TaskRunning, "", "")
+	q.Mark(t1.ID, TaskFailed, "", "失败")
+	got, _ := q.Get(t1.ID)
+	if got.Status != TaskFailed {
+		t.Fatalf("未配置重试应保持 failed, got %s", got.Status)
+	}
+}
+
+func TestTaskQueueTimeoutExpiry(t *testing.T) {
+	q := NewTaskQueue()
+	t1 := q.Enqueue(InvestigationTask{Type: TaskPathTrace, TimeoutSec: 10, Priority: 1, Round: 1})
+	q.Mark(t1.ID, TaskRunning, "", "")
+	start := time.Now().Unix()
+	// 未超时
+	if q.IsExpired(t1.ID, t1.TimeoutSec, start+5) {
+		t.Fatal("5 秒内不应视为超时")
+	}
+	// 超过超时阈值
+	if !q.IsExpired(t1.ID, t1.TimeoutSec, start+11) {
+		t.Fatal("超过 10 秒应视为超时")
+	}
+	// 非 running / 未配置超时
+	q.Mark(t1.ID, TaskDone, "完成", "")
+	if q.IsExpired(t1.ID, t1.TimeoutSec, start+100) {
+		t.Fatal("已完成任务不应视为超时")
+	}
+	t2 := q.Enqueue(InvestigationTask{Type: TaskPathTrace, Priority: 1, Round: 1}) // 无超时
+	q.Mark(t2.ID, TaskRunning, "", "")
+	if q.IsExpired(t2.ID, 0, time.Now().Unix()+1000) {
+		t.Fatal("未配置超时不应过期")
+	}
+}
+
 // ── Observation Engine 测试（设计 §8）──
 
 func TestObservationDedupe(t *testing.T) {
@@ -301,20 +402,20 @@ func (f *fakeExpander) Expand(_ context.Context, target string, _ int) ([]Expans
 func newLoopTestAgent(src *FakeFlowSource, expander Expander, cfg IntelligenceConfig) *InvestigationAgent {
 	ranker := DefaultPathRanker()
 	agent := &InvestigationAgent{
-		flowSource:      src,
-		ranker:          ranker,
-		tracer:          NewFundTracer(src, ranker, cfg),
-		planner:         NewPlanner(cfg),
-		detector:        NewPatternDetector(cfg),
-		report:          NewReportAgent(cfg),
-		contextBuilder:  NewAIContextBuilder(cfg),
-		deepseek:        NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
-		entityResolver:  NewEntityResolver(nil, nil),
-		expansion:       expander,
-		cfg:             cfg,
-		active:          make(map[string]*Investigation),
-		history:         make(map[string]*Investigation),
-		memories:        NewMemoryStore(""),
+		flowSource:     src,
+		ranker:         ranker,
+		tracer:         NewFundTracer(src, ranker, cfg),
+		planner:        NewPlanner(cfg),
+		detector:       NewPatternDetector(cfg),
+		report:         NewReportAgent(cfg),
+		contextBuilder: NewAIContextBuilder(cfg),
+		deepseek:       NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
+		entityResolver: NewEntityResolver(nil, nil),
+		expansion:      expander,
+		cfg:            cfg,
+		active:         make(map[string]*Investigation),
+		history:        make(map[string]*Investigation),
+		memories:       NewMemoryStore(""),
 	}
 	return agent
 }
@@ -486,14 +587,23 @@ func TestLoopTasksSkipped(t *testing.T) {
 		t.Fatalf("应正常完成, got %s", done.Status)
 	}
 	skipped := 0
+	failed := 0
 	for _, tk := range done.Tasks {
-		if tk.Status == TaskSkipped {
+		switch tk.Status {
+		case TaskSkipped:
 			skipped++
+		case TaskFailed:
+			failed++
 		}
 	}
-	if skipped == 0 {
-		t.Fatal("缺依赖任务应被跳过")
+	// V2 计划驱动：缺依赖任务空成功或跳过，但绝不应失败
+	if failed > 0 {
+		t.Fatal("缺依赖任务不应失败")
 	}
+	if len(done.Tasks) == 0 {
+		t.Fatal("应生成调查任务")
+	}
+	_ = skipped
 	if done.StopReason == "" {
 		t.Fatal("应记录停止原因")
 	}

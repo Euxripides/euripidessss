@@ -71,9 +71,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	var req struct {
-		Target   string             `json:"target"`
-		ChainID  string             `json:"chain_id,omitempty"`
-		Config   map[string]any     `json:"config,omitempty"`
+		Target  string         `json:"target"`
+		ChainID string         `json:"chain_id,omitempty"`
+		Config  map[string]any `json:"config,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.json(w, http.StatusBadRequest, map[string]string{"detail": "请求格式错误: " + err.Error()})
@@ -251,6 +251,7 @@ func applyConfigFields(cfg *IntelligenceConfig, raw map[string]any) {
 	applyInt(raw, "max_rounds", &cfg.MaxRounds)
 	applyInt(raw, "max_runtime_ms", &cfg.MaxRuntimeMS)
 	applyInt(raw, "max_addresses", &cfg.MaxAddresses)
+	applyInt(raw, "max_tasks", &cfg.MaxTasks)
 	applyInt(raw, "max_tokens", &cfg.MaxTokens)
 	applyInt(raw, "max_ai_calls", &cfg.MaxAICalls)
 	applyFloat(raw, "expansion_threshold", &cfg.ExpansionThreshold)
@@ -309,6 +310,12 @@ func applyConfigFields(cfg *IntelligenceConfig, raw map[string]any) {
 	}
 	if cfg.MaxAddresses > 100000 {
 		cfg.MaxAddresses = 100000
+	}
+	if cfg.MaxTasks < 1 {
+		cfg.MaxTasks = 1
+	}
+	if cfg.MaxTasks > 200 {
+		cfg.MaxTasks = 200
 	}
 	if cfg.MaxTokens < 256 {
 		cfg.MaxTokens = 256

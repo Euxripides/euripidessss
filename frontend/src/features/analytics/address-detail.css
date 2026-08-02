@@ -1,0 +1,164 @@
+.address-identity-panel {
+  margin-bottom: var(--ds-space-3);
+}
+
+.address-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+}
+
+.address-full-value {
+  display: block;
+  max-width: 520px;
+  overflow: hidden;
+  color: var(--ds-color-text-secondary);
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.address-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ds-space-3);
+}
+
+.address-metrics .ds-metric-card {
+  min-height: 96px;
+  border-color: #e8edf4;
+  box-shadow: none;
+}
+
+.address-activity {
+  margin-top: var(--ds-space-5);
+  padding-top: var(--ds-space-4);
+  border-top: 1px solid var(--ds-color-border);
+}
+
+.address-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.34fr) minmax(640px, 0.66fr);
+  gap: var(--ds-space-3);
+  align-items: start;
+  margin-bottom: var(--ds-space-3);
+}
+
+.address-detail-grid > .ds-detail-panel {
+  margin-top: 0;
+}
+
+.address-risk-content {
+  display: grid;
+  gap: var(--ds-space-3);
+}
+
+.address-risk-score {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.address-risk-score strong {
+  font-size: 46px;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.address-risk-score span,
+.address-risk-content p {
+  color: var(--ds-color-text-secondary);
+}
+
+.address-risk-content p {
+  min-height: 36px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.risk-text-red {
+  color: var(--ds-color-risk);
+}
+
+.risk-text-amber {
+  color: var(--ds-color-warning);
+}
+
+.risk-text-green {
+  color: var(--ds-color-success);
+}
+
+.address-risk-signals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--ds-space-2);
+  padding-top: var(--ds-space-3);
+  border-top: 1px solid var(--ds-color-border);
+}
+
+.address-risk-signals small,
+.address-risk-signals strong {
+  display: block;
+}
+
+.address-risk-signals small {
+  color: var(--ds-color-text-tertiary);
+  font-size: 10px;
+}
+
+.address-risk-signals strong {
+  margin-top: 4px;
+  color: var(--ds-color-text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-count {
+  color: var(--ds-color-text-tertiary);
+  font-size: 11px;
+}
+
+.address-detail-page .ant-table-wrapper {
+  max-width: 100%;
+}
+
+.address-detail-page .ant-table-cell code {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+}
+
+.analytics-empty-panel .ds-detail-body {
+  padding: 72px 24px;
+}
+
+.analytics-empty-panel .ant-empty-image {
+  height: auto;
+  color: var(--ds-color-primary);
+  font-size: 36px;
+}
+
+@media (max-width: 1180px) {
+  .address-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .address-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .address-full-value {
+    max-width: 160px;
+  }
+
+  .address-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .address-risk-signals {
+    grid-template-columns: repeat(3, minmax(72px, 1fr));
+  }
+}

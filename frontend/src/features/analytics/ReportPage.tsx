@@ -64,7 +64,7 @@ const reports: ReportItem[] = [
 
 export default function ReportPage() {
   return (
-    <div style={{ padding: 16 }}>
+    <div className="ds-page analytics-page">
       <Title level={4}>报告中心</Title>
       <Text type="secondary">
         已生成的调查产物（基于 sqd-200k-v2 数据资产）。报告文件由后端分析管线生成，可直接下载归档。
