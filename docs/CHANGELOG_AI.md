@@ -1,3 +1,36 @@
+### 2026-08-02 V2.1 RC2 系统优化批次（10 项全部落地）
+
+#### 新增
+
+1. **64 位构建**：正式二进制 GOARCH=amd64（54MB），解除 32 位 2GB 地址空间上限（BUG-001 类 OOM 风险大幅降低）
+2. **BatchProfiles 缓存**：SHA256 地址集哈希（顺序无关/大小写归一/区分 addr_file），64 条上限防内存增长
+3. **AI 输出截断自动重试**：finish_reason=length/空 content 时 max_tokens 翻倍重试一次（防循环）
+4. **AI 建议驱动规划**：规则 STOP（非资源上限类）+ AI EXPAND 建议（conf≥0.8+合法 target）→ 延续调查；资源上限 STOP 不可覆盖
+5. **前端代码分割**：7 个重页面 React.lazy + Suspense，主 bundle 3,222→2,028KB（-37%）
+6. **SSE 进度推送**：GET /api/intelligence/events + 前端 EventSource 替代 3s 轮询（含订阅竞态修复）
+7. **测试锁互斥**：duckdb.AcquireDataLock（O_EXCL），12 个真实数据测试接入，跨包并行零冲突
+8. **AI 用量统计**：GET /api/intelligence/ai-usage（calls/tokens/耗时/模型分布，跨调查累计）
+
+#### 评估结论（暂缓）
+
+- DuckDB 嵌入式驱动：无 C 编译器（CGO 不可用），替代方案已覆盖
+- typed parquet：核心管道变更 + 需重新真实下载验证，暂缓
+- API Key 加密：环境变量不落盘已是安全默认，保持现状
+
+#### 验证
+
+- `go test ./... -short -count=1` 38 包零回归；vet 零警告
+- 前端 build 通过（bundle -37%）
+- 真实服务：SSE 事件流验证、ai-usage 真实统计（4 calls/11,527 tokens/46.9s）、AI 建议驱动调查验证
+- 新增测试：TestBatchCacheKey / TestDeepSeekChatRetryOnTruncation / TestLoopAISuggestion×2 / TestSSE×2
+
+#### 修改文件
+
+- `internal/analyticsapi/service.go` + `service_test.go`
+- `internal/intelligence/{deepseek_client,loop_engine,investigation_agent,api_handler}.go` + `{deepseek_client_test,sse_test,loop_engine_test}.go`
+- `internal/analysis/duckdb/engine.go` + 12 个测试文件
+- `frontend/src/App.tsx`、`frontend/src/features/intelligence/{intelligenceApi,IntelligencePage}.tsx`
+
 ### 2026-08-02 V2.1 RC2 全链路真实调查系统验收测试（Full System Real Data Acceptance Test）
 
 #### 本次完成

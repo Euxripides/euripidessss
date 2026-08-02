@@ -3,7 +3,7 @@
 - 版本：V2.1 RC2
 - 日期：2026-08-02
 - 数据：真实 BSC 链数据（stress-data/bsc_real，区块 107153260-107153460）
-- 结论：**通过**（除 DeepSeek 真实调用因外部 API Key 缺失优雅降级）
+- 结论：**通过**（DeepSeek 真实调用已验证；无 API Key 时优雅降级）
 
 ## 1. 服务环境验收
 
@@ -101,5 +101,5 @@ TestSQD10KStability：**100/100 chunks 完成率 100%**（3m8.7s），真实 BSC
 ## 11. 交付物
 
 - benchmark/full-system-report.md / .json（本报告）
-- benchmark/bug-report/BUG-001..003.json（Bug 记录闭环）
+- benchmark/bug-report/BUG-001..004.json（Bug 记录闭环）
 - benchmark/integrity-report.json / duckdb-report.json / analytics-model-report.json / balance-report.json / sqd-10k-report.json / api-service-report.json（各模块验证报告）

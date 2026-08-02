@@ -1,13 +1,13 @@
 {
-  "timestamp": "2026-08-01T17:15:17.290896Z",
+  "timestamp": "2026-08-01T18:10:03.5483753Z",
   "source_rows": 49031,
   "parsed_rows": 49031,
   "unique_rows": 49031,
-  "parquet_rows": 0,
+  "parquet_rows": 49031,
   "duckdb_rows": 49031,
   "duckdb_distinct": 49031,
   "duplicate_rows": 0,
-  "consistent": false,
+  "consistent": true,
   "parquet_exists": true,
   "parquet_size": 1552334,
   "parquet_sha256": "6dcd446209bebe5722b30a8a15ee528a1f287d7d6a02342e82827f7adecd86d3",
@@ -26,5 +26,5 @@
   ],
   "checksum_ok": true,
   "manifest_path": "E:\\codex\\etl\\stress-data\\bsc_real\\sqd-200k-warehouse\\integrity-manifest.json",
-  "passed": false
+  "passed": true
 }

@@ -310,3 +310,52 @@ func duckDBCommand(ctx context.Context, exePath string, args ...string) *exec.Cm
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	return cmd
 }
+
+// AcquireDataLock 跨包独占数据目录（真实数据验证测试并行互斥，#8 优化）。
+// 多个测试进程（go test ./... 并行跑各包）同时打开同一 flow.duckdb 会文件锁冲突；
+// 本函数用 O_EXCL 独占锁文件保证同一时刻仅一个测试进程执行真实数据验证。
+// 若锁文件残留（进程被 kill）且记录 PID 已不存在，则清除后重试一次。
+// 返回 (release, true) 表示获得锁；false 表示其他进程正在使用 → 调用方应 t.Skip。
+func AcquireDataLock(dataRoot string) (release func(), ok bool) {
+	lockPath := filepath.Join(dataRoot, ".real-data.lock")
+	pid := os.Getpid()
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "%d\n", pid)
+			_ = f.Close()
+			// release 前校验锁文件 PID 仍属本进程（security review MEDIUM：
+			// 防误删其他进程刚获取的锁导致双持锁并发写 flow.duckdb）
+			return func() {
+				if data, err := os.ReadFile(lockPath); err == nil {
+					var cur int
+					if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &cur); err == nil && cur == pid {
+						_ = os.Remove(lockPath)
+					}
+				}
+			}, true
+		}
+		if attempt == 0 && reclaimStaleLock(lockPath) {
+			continue // 残留锁已清除，重试
+		}
+		return nil, false
+	}
+	return nil, false
+}
+
+// reclaimStaleLock 读取锁文件记录的 PID，进程不存在则删除残留锁（防测试永久 Skip）。
+func reclaimStaleLock(lockPath string) bool {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return false
+	}
+	var pid int
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); err != nil || pid <= 0 {
+		return false
+	}
+	if processAlive(pid) {
+		return false // 进程存在 → 锁有效
+	}
+	_ = os.Remove(lockPath)
+	return true
+}

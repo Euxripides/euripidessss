@@ -44,6 +44,12 @@ func newInvestigationTest(t *testing.T) (*Investigator, *analyticsapi.Service, s
 	if _, err := os.Stat(filepath.Join(dataRoot, flagInvestigation)); err != nil {
 		t.Skip("create " + filepath.Join(dataRoot, flagInvestigation) + " to enable investigation validation")
 	}
+	// 跨包并行互斥（#8 优化）：同一时刻仅一个测试进程可用真实数据
+	if release, ok := duckdb.AcquireDataLock(dataRoot); ok {
+		t.Cleanup(release)
+	} else {
+		t.Skip("其他真实数据验证测试正在运行（并行互斥），跳过")
+	}
 	engine := duckdb.Open(repoRoot, dataRoot, duckdb.AnalyticsConfig{})
 	if !engine.Available() {
 		t.Fatalf("DuckDB 不可用: %+v", engine.Status())

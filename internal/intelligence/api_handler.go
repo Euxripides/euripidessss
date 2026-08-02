@@ -2,6 +2,7 @@ package intelligence
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -52,6 +53,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.report(w, r, parts[1])
 	case len(parts) == 3 && parts[0] == "investigations" && parts[2] == "memory" && r.Method == http.MethodGet:
 		h.memory(w, r, parts[1])
+	case len(parts) == 1 && parts[0] == "events" && r.Method == http.MethodGet:
+		h.events(w, r)
+	case len(parts) == 1 && parts[0] == "ai-usage" && r.Method == http.MethodGet:
+		h.aiUsage(w, r)
 	case len(parts) == 1 && parts[0] == "memories" && r.Method == http.MethodGet:
 		h.memories(w, r)
 	case len(parts) == 1 && parts[0] == "config" && r.Method == http.MethodGet:
@@ -136,6 +141,72 @@ func (h *Handler) report(w http.ResponseWriter, r *http.Request, id string) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(out.Content))
 	}
+}
+
+// events 提供调查进度 SSE 推送（#7 优化：前端 EventSource 实时订阅，替代轮询）。
+// 参数：id=调查 ID；先推当前快照，此后每次状态变更推送最新调查对象，终态后关闭连接。
+func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		h.json(w, http.StatusBadRequest, map[string]string{"detail": "缺少调查 id 参数"})
+		return
+	}
+	inv, ok := h.agent.Get(id)
+	if !ok {
+		h.json(w, http.StatusNotFound, map[string]string{"detail": "调查不存在"})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.json(w, http.StatusInternalServerError, map[string]string{"detail": "当前连接不支持 SSE"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	writeInvestigationEvent(w, inv)
+	flusher.Flush()
+	if inv.Status == InvestigationCompleted || inv.Status == InvestigationFailed {
+		return
+	}
+	ch := h.agent.Subscribe(id)
+	if ch == nil {
+		// 订阅超限（security review MEDIUM：防连接耗尽 DoS）
+		h.json(w, http.StatusTooManyRequests, map[string]string{"detail": "该调查的实时订阅已满，请稍后重试"})
+		return
+	}
+	defer h.agent.Unsubscribe(id, ch)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case inv, ok := <-ch:
+			if !ok {
+				return // 终态，channel 已关闭
+			}
+			writeInvestigationEvent(w, inv)
+			flusher.Flush()
+		}
+	}
+}
+
+// aiUsage 返回 AI 调用用量统计（#10 优化：成本可观测）。
+func (h *Handler) aiUsage(w http.ResponseWriter, _ *http.Request) {
+	usage := h.agent.Usage()
+	h.json(w, http.StatusOK, map[string]any{
+		"configured": usage.Configured,
+		"usage":      usage.Usage,
+	})
+}
+
+// writeInvestigationEvent 以 SSE 格式写一条调查快照（data: 单行 JSON）。
+func writeInvestigationEvent(w http.ResponseWriter, inv *Investigation) {
+	body, err := json.Marshal(inv)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "event: investigation\ndata: %s\n\n", body)
 }
 
 func (h *Handler) memory(w http.ResponseWriter, _ *http.Request, id string) {
@@ -225,6 +296,13 @@ func applyConfigFields(cfg *IntelligenceConfig, raw map[string]any) {
 	}
 	if cfg.MaxRuntimeMS > 3600000 {
 		cfg.MaxRuntimeMS = 3600000
+	}
+	// ai_timeout_ms 钳制（security review MEDIUM：无上限会使 context 超时失效，慢响应长时间占 goroutine）
+	if cfg.AITimeoutMS < 1000 {
+		cfg.AITimeoutMS = 1000
+	}
+	if cfg.AITimeoutMS > 120000 {
+		cfg.AITimeoutMS = 120000
 	}
 	if cfg.MaxAddresses < 1 {
 		cfg.MaxAddresses = 1

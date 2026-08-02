@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/etl/backend/internal/logger"
@@ -28,11 +29,30 @@ type AIChatter interface {
 
 // DeepSeekClient 是 DeepSeek API 客户端。
 type DeepSeekClient struct {
-	apiKey     string
-	model      string
-	maxTokens  int
+	apiKey    string
 	httpClient *http.Client
-	endpoint   string
+	endpoint  string
+
+	// cfgMu 保护 model/maxTokens/timeoutMS（ApplyConfig 与并发 Chat 读写，review should-fix）
+	cfgMu     sync.Mutex
+	model     string
+	maxTokens int
+	timeoutMS int
+
+	// usageMu 保护用量统计（#10 优化：AI 调用成本可观测）
+	usageMu sync.Mutex
+	usage   AIUsage
+}
+
+// AIUsage 是 DeepSeek 调用用量统计（#10 优化）。
+type AIUsage struct {
+	TotalCalls        int            `json:"total_calls"`
+	TotalPromptTokens int            `json:"total_prompt_tokens"`
+	TotalCompletionTokens int        `json:"total_completion_tokens"`
+	TotalTokens       int            `json:"total_tokens"`
+	TotalDurationMS   int64          `json:"total_duration_ms"`
+	ByModel           map[string]int `json:"by_model"`
+	LastCallAt        string         `json:"last_call_at,omitempty"`
 }
 
 // NewDeepSeekClient 创建客户端。apiKey 为空时回退读 DEEPSEEK_API_KEY 环境变量。
@@ -55,14 +75,45 @@ func NewDeepSeekClient(apiKey, model string, timeoutMS int, maxTokens ...int) *D
 		apiKey:     apiKey,
 		model:      model,
 		maxTokens:  tokens,
-		httpClient: &http.Client{Timeout: time.Duration(timeoutMS) * time.Millisecond},
+		timeoutMS:  timeoutMS,
+		// Timeout 置 0：请求超时完全由 chat() 内 context.WithTimeout 按快照精确控制
+		// （httpClient.Timeout 固定值会导致 ApplyConfig 放宽超时不生效）
+		httpClient: &http.Client{},
 		endpoint:   "https://api.deepseek.com/chat/completions",
+		usage:      AIUsage{ByModel: map[string]int{}},
 	}
 }
 
 // Configured 返回是否已配置 API Key。
 func (c *DeepSeekClient) Configured() bool {
 	return c.apiKey != ""
+}
+
+// ApplyConfig 更新模型/超时/输出上限（#10 优化：复用客户端实例保留用量统计；cfgMu 保护并发读写）。
+func (c *DeepSeekClient) ApplyConfig(model string, timeoutMS, maxTokens int) {
+	c.cfgMu.Lock()
+	defer c.cfgMu.Unlock()
+	if model != "" {
+		c.model = model
+	}
+	if timeoutMS > 0 {
+		c.timeoutMS = timeoutMS
+	}
+	if maxTokens > 0 {
+		c.maxTokens = maxTokens
+	}
+}
+
+// Usage 返回用量统计快照（#10 优化；ByModel 深拷贝防锁外遍历与锁内写并发崩溃）。
+func (c *DeepSeekClient) Usage() AIUsage {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	usage := c.usage
+	usage.ByModel = make(map[string]int, len(c.usage.ByModel))
+	for k, v := range c.usage.ByModel {
+		usage.ByModel[k] = v
+	}
+	return usage
 }
 
 // chatRequest 是 DeepSeek 请求体。
@@ -100,12 +151,26 @@ type chatResponse struct {
 
 // Chat 发送多角色 system + user 提示词，返回模型输出（§17 请求日志）。
 func (c *DeepSeekClient) Chat(ctx context.Context, system, user string) (string, error) {
+	return c.chat(ctx, system, user, false, 0)
+}
+
+// chat 是 Chat 的实现；retried 标记截断重试（最多一次）。
+// chat 是 Chat 的实现；retried 标记截断重试（最多一次）；maxTokensArg>0 时覆盖快照上限
+// （重试翻倍值作参数传递，不写共享状态——无 lost update/race）。
+func (c *DeepSeekClient) chat(ctx context.Context, system, user string, retried bool, maxTokensArg int) (string, error) {
 	if !c.Configured() {
 		return "", fmt.Errorf("DeepSeek 未配置：请设置 DEEPSEEK_API_KEY")
 	}
+	// 配置快照（防 ApplyConfig 并发写竞争）
+	c.cfgMu.Lock()
+	model, maxTokens, timeoutMS := c.model, c.maxTokens, c.timeoutMS
+	c.cfgMu.Unlock()
+	if maxTokensArg > 0 {
+		maxTokens = maxTokensArg // 截断重试的翻倍上限（仅本次调用生效）
+	}
 	start := time.Now()
 	payload := chatRequest{
-		Model: c.model,
+		Model: model,
 		Messages: []chatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
@@ -113,13 +178,19 @@ func (c *DeepSeekClient) Chat(ctx context.Context, system, user string) (string,
 		ResponseFormat: map[string]string{"type": "text"},
 		Stream:         false,
 		Temperature:    0.3,
-		MaxTokens:      c.maxTokens,
+		MaxTokens:      maxTokens,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(data))
+	reqCtx := ctx
+	if timeoutMS > 0 {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.endpoint, bytes.NewReader(data))
 	if err != nil {
 		return "", err
 	}
@@ -146,26 +217,49 @@ func (c *DeepSeekClient) Chat(ctx context.Context, system, user string) (string,
 	}
 	content := strings.TrimSpace(result.Choices[0].Message.Content)
 	duration := time.Since(start).Milliseconds()
-	// 推理模型输出可能被 max_tokens 截断（content 为空/不完整）——记录以便诊断
+	// 用量统计（#10 优化：成本可观测；ByModel 用快照 model，避免与 cfgMu 写竞争）
+	if result.Usage != nil {
+		c.usageMu.Lock()
+		c.usage.TotalCalls++
+		c.usage.TotalPromptTokens += result.Usage.PromptTokens
+		c.usage.TotalCompletionTokens += result.Usage.CompletionTokens
+		c.usage.TotalTokens += result.Usage.TotalTokens
+		c.usage.TotalDurationMS += duration
+		c.usage.ByModel[model]++
+		c.usage.LastCallAt = time.Now().UTC().Format(time.RFC3339)
+		c.usageMu.Unlock()
+	}
+	// 推理模型输出可能被 max_tokens 截断（content 为空/不完整）——自动提高上限重试一次（BUG-004 优化）
 	if result.Choices[0].FinishReason == "length" || content == "" {
 		completionTokens := 0
 		if result.Usage != nil {
 			completionTokens = result.Usage.CompletionTokens
 		}
+		if !retried {
+			logger.Log.Warn().
+				Str("model", model).
+				Str("finish_reason", result.Choices[0].FinishReason).
+				Int("completion_tokens", completionTokens).
+				Int("max_tokens", maxTokens).
+				Msg("deepseek_output_truncated_retrying")
+			// 翻倍上限以参数传入递归（不写共享状态，ApplyConfig 并发安全）
+			return c.chat(ctx, system, user, true, maxTokens*2)
+		}
 		logger.Log.Warn().
-			Str("model", c.model).
+			Str("model", model).
 			Str("finish_reason", result.Choices[0].FinishReason).
 			Int("completion_tokens", completionTokens).
+			Int("max_tokens", maxTokens).
 			Msg("deepseek_output_truncated_or_empty")
 	}
 	logger.Log.Info().
-		Str("model", c.model).
+		Str("model", model).
 		Int("duration_ms", int(duration)).
 		Int("prompt_chars", len(user)).
 		Msg("deepseek_chat_ok")
 	if result.Usage != nil {
 		logger.Log.Info().
-			Str("model", c.model).
+			Str("model", model).
 			Int("prompt_tokens", result.Usage.PromptTokens).
 			Int("completion_tokens", result.Usage.CompletionTokens).
 			Int("total_tokens", result.Usage.TotalTokens).
@@ -182,9 +276,12 @@ func (c *DeepSeekClient) Analyze(ctx context.Context, prompt string) (*AIAnalysi
 	if err != nil {
 		return nil, err
 	}
+	c.cfgMu.Lock()
+	model := c.model
+	c.cfgMu.Unlock()
 	analysis := &AIAnalysis{
 		Summary:    content,
-		Model:      c.model,
+		Model:      model,
 		DurationMs: time.Since(start).Milliseconds(),
 	}
 	parseAIAnalysis(content, analysis)

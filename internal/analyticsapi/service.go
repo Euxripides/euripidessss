@@ -4,9 +4,12 @@ package analyticsapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
@@ -316,6 +319,17 @@ func (s *Service) Risk(ctx context.Context, address string) (*Risk, error) {
 	return r, nil
 }
 
+// normalizeAddresses 规范化地址集：小写 + trim + 排序（供 batchWantSQL 与 batchCacheKey 共用，
+// 保证截断语义一致——先排序再截断，避免同键不同结果）。
+func normalizeAddresses(addresses []string) []string {
+	out := make([]string, 0, len(addresses))
+	for _, a := range addresses {
+		out = append(out, strings.ToLower(strings.TrimSpace(a)))
+	}
+	sort.Strings(out)
+	return out
+}
+
 // batchWantSQL 构造批量画像的 want 表子查询。
 // 优先 addr_file CSV（命令行短，避免 Windows 32K 命令行长度限制），否则内联请求体 addresses（VALUES）；
 // 两者都空返回错误——禁止用空路径 read_csv（DuckDB CLI 会把 '' 当作标准输入，导致结果集爆炸 OOM）。
@@ -325,13 +339,13 @@ func batchWantSQL(addresses []string, addrFile string) (string, error) {
 		return fmt.Sprintf("SELECT addr FROM read_csv(%s, header=false, columns={'addr':'VARCHAR'})", quoteSQLString(af)), nil
 	}
 	const maxBatch = 500 // VALUES 内联受命令行长度限制（约 48 字符/地址，500≈24KB 安全）
-	if len(addresses) > 0 {
-		if len(addresses) > maxBatch {
-			addresses = addresses[:maxBatch]
+	norm := normalizeAddresses(addresses)
+	if len(norm) > 0 {
+		if len(norm) > maxBatch {
+			norm = norm[:maxBatch]
 		}
-		items := make([]string, 0, len(addresses))
-		for _, a := range addresses {
-			addr := strings.ToLower(strings.TrimSpace(a))
+		items := make([]string, 0, len(norm))
+		for _, addr := range norm {
 			if len(addr) > 64 {
 				continue // 跳过超长非地址值（防命令行长度 DoS）
 			}
@@ -345,8 +359,12 @@ func batchWantSQL(addresses []string, addrFile string) (string, error) {
 	return "", errors.New("batch profiles: addresses or addr_file required")
 }
 
-// BatchProfiles 批量查询画像（SEMI JOIN 一次 SQL）。
+// BatchProfiles 批量查询画像（SEMI JOIN 一次 SQL，结果按地址集哈希缓存）。
 func (s *Service) BatchProfiles(ctx context.Context, addresses []string, addrFile string) ([]Profile, error) {
+	key := batchCacheKey(addresses, addrFile)
+	if v, ok := s.cacheGet(key); ok {
+		return append([]Profile(nil), v.([]Profile)...), nil
+	}
 	wantSQL, err := batchWantSQL(addresses, addrFile)
 	if err != nil {
 		return nil, err
@@ -367,7 +385,45 @@ func (s *Service) BatchProfiles(ctx context.Context, addresses []string, addrFil
 			EventCount: int64(r["event_count"].(float64)),
 		})
 	}
+	s.cacheSetBatch(key, profiles)
 	return profiles, nil
+}
+
+// maxCachedBatches 批量结果缓存上限（防内存无限增长）。
+const maxCachedBatches = 64
+
+// cacheSetBatch 写入批量缓存；超出上限时整体清空（简单 LRU 替代）。
+func (s *Service) cacheSetBatch(key string, v []Profile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.cache) >= maxCachedBatches && s.cache[key] == nil {
+		s.cache = map[string]any{key: v} // 冷启动清空
+		return
+	}
+	s.cache[key] = v
+}
+
+// batchCacheKey 计算批量请求的缓存键（地址集排序哈希 + addr_file 路径+修改时间+大小）。
+// 与 batchWantSQL 截断语义保持一致（前 maxBatch 个地址），避免不同入参产生同结果异键。
+func batchCacheKey(addresses []string, addrFile string) string {
+	h := sha256.New()
+	if strings.TrimSpace(addrFile) != "" {
+		// 混入文件版本信息：同一路径改写后不返回陈旧画像
+		_, _ = io.WriteString(h, "F:"+strings.TrimSpace(addrFile))
+		if info, err := os.Stat(addrFile); err == nil {
+			_, _ = fmt.Fprintf(h, "|mtime:%d|size:%d", info.ModTime().UnixNano(), info.Size())
+		}
+	}
+	const maxBatch = 500 // 与 batchWantSQL 截断一致
+	norm := normalizeAddresses(addresses)
+	if len(norm) > maxBatch {
+		norm = norm[:maxBatch]
+	}
+	for _, a := range norm {
+		// 0x00 分隔符防拼接碰撞（["ab","cd"] vs ["abc","d"]）
+		_, _ = io.WriteString(h, "\x00"+a)
+	}
+	return "batch:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // ── 风险评分 ──

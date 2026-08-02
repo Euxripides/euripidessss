@@ -42,6 +42,8 @@ type InvestigationAgent struct {
 	active  map[string]*Investigation // id → 进行中的调查
 	history map[string]*Investigation // id → 已完成的调查
 	nextID  int
+	// subscribers 是 SSE 订阅者（id → channel 集合，#7 优化）
+	subscribers map[string]map[chan *Investigation]struct{}
 }
 
 // AgentOptions 是代理依赖注入选项。
@@ -131,7 +133,12 @@ func (a *InvestigationAgent) rebuildSubcomponentsLocked() {
 	a.detector = NewPatternDetector(cfg)
 	a.report = NewReportAgent(cfg)
 	a.contextBuilder = NewAIContextBuilder(cfg)
-	a.deepseek = NewDeepSeekClient(a.deepseekKey, cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens)
+	// 复用 DeepSeek 客户端实例（#10 优化：用量统计跨调查累计），仅更新配置字段
+	if a.deepseek == nil {
+		a.deepseek = NewDeepSeekClient(a.deepseekKey, cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens)
+	} else {
+		a.deepseek.ApplyConfig(cfg.AIModel, cfg.AITimeoutMS, cfg.MaxTokens)
+	}
 	a.ai = NewAIAgentWithStore(a.aiChatter, a.flowSource, cfg, a.aiMemory)
 }
 
@@ -266,6 +273,103 @@ func (a *InvestigationAgent) setField(inv *Investigation, mutate func(*Investiga
 	defer a.mu.Unlock()
 	mutate(inv)
 	a.active[inv.ID] = inv
+	a.notifyLocked(inv)
+}
+
+// hasStopReason 检查决策理由是否包含指定子串（#5 优化用）。
+func hasStopReason(reasons []string, sub string) bool {
+	for _, r := range reasons {
+		if strings.Contains(r, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// Usage 返回 AI 用量统计（#10 优化）：DeepSeek 客户端统计 + 配置状态。
+type AgentUsage struct {
+	Configured bool    `json:"configured"`
+	Usage      AIUsage `json:"usage"`
+}
+
+func (a *InvestigationAgent) Usage() AgentUsage {
+	a.mu.Lock()
+	configured := a.deepseek != nil && a.deepseek.Configured()
+	var usage AIUsage
+	if a.deepseek != nil {
+		usage = a.deepseek.Usage()
+	}
+	a.mu.Unlock()
+	return AgentUsage{Configured: configured, Usage: usage}
+}
+
+// ── SSE 订阅（#7 优化：前端进度实时推送，替代轮询）──
+
+// maxSubscribersPerInvestigation 单个调查最大 SSE 订阅数（security review MEDIUM：
+// 防连接耗尽 DoS——每个订阅是常驻连接+goroutine，无上限可被滥用）。
+const maxSubscribersPerInvestigation = 4
+
+// Subscribe 订阅调查状态变更（返回带缓冲 channel，调查进入终态时自动关闭）。
+// 原子性：若订阅时调查已终态（active 或 history），立即发送终态快照并关闭 channel，
+// 避免 Get 与 Subscribe 之间的完成竞态导致订阅挂起。
+// 超出订阅上限时返回 nil（调用方应拒绝连接）。
+func (a *InvestigationAgent) Subscribe(id string) chan *Investigation {
+	ch := make(chan *Investigation, 8)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if inv := a.active[id]; inv != nil {
+		if inv.Status == InvestigationCompleted || inv.Status == InvestigationFailed {
+			ch <- inv
+			close(ch)
+			return ch
+		}
+	} else if inv := a.history[id]; inv != nil {
+		// history 中的调查均为终态
+		ch <- inv
+		close(ch)
+		return ch
+	}
+	if len(a.subscribers[id]) >= maxSubscribersPerInvestigation {
+		return nil // 订阅超限：拒绝（防连接耗尽 DoS）
+	}
+	if a.subscribers == nil {
+		a.subscribers = map[string]map[chan *Investigation]struct{}{}
+	}
+	if a.subscribers[id] == nil {
+		a.subscribers[id] = map[chan *Investigation]struct{}{}
+	}
+	a.subscribers[id][ch] = struct{}{}
+	return ch
+}
+
+// Unsubscribe 取消订阅（SSE 连接断开时调用，防 channel 泄漏）。
+func (a *InvestigationAgent) Unsubscribe(id string, ch chan *Investigation) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if subs := a.subscribers[id]; subs != nil {
+		if _, ok := subs[ch]; ok {
+			delete(subs, ch)
+		}
+		if len(subs) == 0 {
+			delete(a.subscribers, id)
+		}
+	}
+}
+
+// notifyLocked 非阻塞广播最新快照；终态时关闭全部订阅（须持锁调用）。
+func (a *InvestigationAgent) notifyLocked(inv *Investigation) {
+	for ch := range a.subscribers[inv.ID] {
+		select {
+		case ch <- inv:
+		default: // 订阅者处理慢则丢弃（SSE 场景总是能消费）
+		}
+	}
+	if inv.Status == InvestigationCompleted || inv.Status == InvestigationFailed {
+		for ch := range a.subscribers[inv.ID] {
+			close(ch)
+		}
+		delete(a.subscribers, inv.ID)
+	}
 }
 
 // planInput 收集规划输入信号（画像/风险/资金概览）。
@@ -323,9 +427,10 @@ func (a *InvestigationAgent) setStage(inv *Investigation, status InvestigationSt
 	inv.Progress = progress
 	inv.UpdatedAt = time.Now().UTC()
 	a.active[inv.ID] = inv
+	a.notifyLocked(inv)
 }
 
-// fail 标记调查失败。
+// fail 标记调查失败（终态，通知 SSE 订阅者关闭连接）。
 func (a *InvestigationAgent) fail(inv *Investigation, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -334,6 +439,7 @@ func (a *InvestigationAgent) fail(inv *Investigation, err error) {
 	inv.UpdatedAt = time.Now().UTC()
 	a.active[inv.ID] = inv
 	a.history[inv.ID] = inv
+	a.notifyLocked(inv)
 }
 
 // validEVMAddress 校验 EVM 地址（0x + 40 hex）。

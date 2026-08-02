@@ -275,6 +275,13 @@ func integrityEnabled(dataRoot string, t *testing.T) bool {
 		t.Skip("create " + flag + " to enable data integrity verification")
 		return false
 	}
+	// 跨包并行互斥（#8 优化）：同一时刻仅一个测试进程可用真实数据
+	if release, ok := duckdb.AcquireDataLock(dataRoot); ok {
+		t.Cleanup(release)
+	} else {
+		t.Skip("其他真实数据验证测试正在运行（并行互斥），跳过")
+		return false
+	}
 	return true
 }
 

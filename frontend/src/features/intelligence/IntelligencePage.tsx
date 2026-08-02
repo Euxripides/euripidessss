@@ -39,6 +39,7 @@ import {
   listInvestigations,
   getInvestigation,
   getReport,
+  subscribeInvestigation,
   type Investigation,
   type RankedPath,
 } from "./intelligenceApi";
@@ -115,7 +116,7 @@ export default function IntelligencePage() {
   const [current, setCurrent] = useState<Investigation | null>(null);
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sseRef = useRef<(() => void) | null>(null);
 
   const refreshList = async () => {
     const data = await listInvestigations();
@@ -126,41 +127,39 @@ export default function IntelligencePage() {
     const inv = await getInvestigation(id);
     if (inv) {
       setCurrent(inv);
-      // 未完成则轮询
+      // 未完成则 SSE 订阅实时进度（#7 优化：替代 3s 轮询）
       if (inv.status !== "COMPLETED" && inv.status !== "FAILED") {
-        startPolling(id);
+        startSSE(id);
       } else {
-        stopPolling();
+        stopSSE();
       }
     }
   };
 
-  const startPolling = (id: string) => {
-    stopPolling();
+  // SSE 实时订阅（#7 优化）
+  const startSSE = (id: string) => {
+    stopSSE();
     setPolling(true);
-    pollRef.current = setInterval(async () => {
-      const inv = await getInvestigation(id);
-      if (inv) {
-        setCurrent(inv);
-        if (inv.status === "COMPLETED" || inv.status === "FAILED") {
-          stopPolling();
-          refreshList();
-        }
+    sseRef.current = subscribeInvestigation(id, (inv) => {
+      setCurrent(inv);
+      if (inv.status === "COMPLETED" || inv.status === "FAILED") {
+        stopSSE();
+        refreshList();
       }
-    }, 3000);
+    });
   };
 
-  const stopPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
+  const stopSSE = () => {
+    if (sseRef.current) {
+      sseRef.current();
+      sseRef.current = null;
     }
     setPolling(false);
   };
 
   useEffect(() => {
     refreshList();
-    return () => stopPolling();
+    return () => stopSSE();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
