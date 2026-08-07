@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,13 +21,18 @@ import (
 	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/analyticsapi"
 	"github.com/etl/backend/internal/chain"
+	"github.com/etl/backend/internal/cloudruntime"
 	"github.com/etl/backend/internal/config"
 	"github.com/etl/backend/internal/cryptodownload"
+	"github.com/etl/backend/internal/datasetevents"
+	"github.com/etl/backend/internal/datasetsync"
 	"github.com/etl/backend/internal/datasourcemanager"
 	"github.com/etl/backend/internal/dbimport"
+	"github.com/etl/backend/internal/downloadscheduler"
 	"github.com/etl/backend/internal/dynamicinvestigation"
 	"github.com/etl/backend/internal/etl"
 	"github.com/etl/backend/internal/flow"
+	"github.com/etl/backend/internal/graphincrement"
 	"github.com/etl/backend/internal/intelligence"
 	"github.com/etl/backend/internal/investigationstore"
 	"github.com/etl/backend/internal/model"
@@ -33,6 +40,7 @@ import (
 	"github.com/etl/backend/internal/parser"
 	"github.com/etl/backend/internal/rpcmanager"
 	"github.com/etl/backend/internal/rules"
+	"github.com/etl/backend/internal/s3store"
 	"github.com/etl/backend/internal/scanner"
 	"github.com/etl/backend/internal/storage"
 	"github.com/etl/backend/internal/storage/control"
@@ -56,7 +64,11 @@ var (
 	dynamicInvestigationAPI http.Handler
 	dynamicEngine           *dynamicinvestigation.Engine
 	intelligenceAPI         http.Handler
-	investigationV2API      http.Handler // V2 调查请求入口（/api/investigation/*）
+	investigationV2API      http.Handler                     // V2 调查请求入口（/api/investigation/*）
+	schedulerAPI            http.Handler                     // Smart Download Orchestrator（/api/scheduler/*）
+	investigationAgent      *intelligence.InvestigationAgent // Phase 5：数据索引后自动继续调查
+	datasetEventBus         *datasetevents.Bus               // Phase 5.3：Dataset Event Bus
+	graphIncrementer        *graphincrement.Incrementer      // Phase 5.3：Graph 增量物化
 )
 
 const (
@@ -225,6 +237,8 @@ func Setup(c *config.Config) {
 	setupDynamicInvestigation()
 	// V2.1 RC2: 全自动链上调查平台 Intelligence Layer
 	setupIntelligence()
+	// V2.2: Smart Download Orchestrator 智能下载调度（决策引擎 + Provider 评分 + 计划状态机）
+	setupDownloadScheduler()
 }
 
 // setupDynamicInvestigation 装配动态调查引擎：
@@ -307,11 +321,253 @@ func setupIntelligence() {
 		EventLog:        eventLog, // Runtime V2：运行时事件日志（backend/data/logs/）
 		Config:          intelligence.DefaultConfig(),
 	})
+	investigationAgent = agent
 	intelligenceAPI = intelligence.NewHandler(agent)
 	// ── V2 调查请求入口（设计 §14）：请求持久化 + 意图分析 + 启动调查 ──
 	intentAnalyzer := intelligence.NewIntentAnalyzer()
 	investigationV2API = intelligence.NewInvestigationHandler(agent, requests, intentAnalyzer)
 	log.Info().Str("root", invRoot).Msg("intelligence_engine_ready")
+}
+
+// setupDownloadScheduler 装配 Smart Download Orchestrator（V2.2 智能下载调度）：
+// RPC Provider 复用 rpcmanager；SQD Provider 复用 parquetdownload.Manager；
+// 覆盖检查复用 analyticsapi.Service；计划持久化于 backend/data/download_scheduler/plans。
+func setupDownloadScheduler() {
+	var rpcClient downloadscheduler.RPCClient
+	if rpcManager != nil {
+		rpcClient = rpcManager
+	}
+	var sqdEngine downloadscheduler.SQDEngine
+	if parquetDownload != nil {
+		sqdEngine = parquetDownload.Manager()
+	}
+	// V1.0 恢复层：RPC 恢复数据落盘/合并器（parquetdownload.Manager 实现 RecoveryWriter，
+	// 复用 DuckDB 引擎与 DataRoot；parquetDownload 不可用时为 nil，恢复通道自动不可用）
+	var recoveryWriter downloadscheduler.RecoveryWriter
+	if parquetDownload != nil {
+		recoveryWriter = parquetDownload.Manager()
+	}
+	var coverageSource downloadscheduler.CoverageSource
+	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+		coverageSource = &analyticsCoverageSource{svc: h.Service()}
+	}
+	var sqdProvider *downloadscheduler.SQDProvider
+	if parquetDownload != nil {
+		sqdProvider = downloadscheduler.NewSQDProvider(sqdEngine).WithHealth(&sqdHealthAdapter{parquetDownload.Manager()})
+	} else {
+		// 降级模式：parquetDownload 不可用时不构造 HealthSource（避免 nil 解引用），SQD/AWS 评分自动不可用
+		sqdProvider = downloadscheduler.NewSQDProvider(nil)
+	}
+	// Phase 4：R2/S3 Job Queue + Local Sync 数据面（无凭据时回退本地文件存储用于开发/测试）
+	dataRoot := `E:\codex\bsc_analytics`
+	cloudRoot := filepath.Join(dataRoot, "sqd-cloud")
+	store, storeErr := s3store.NewFromEnv("")
+	cloudMode := strings.EqualFold(strings.TrimSpace(os.Getenv("SQD_CLOUD_MODE")), "cloud")
+	if storeErr != nil {
+		store = s3store.NewLocalStore(filepath.Join(cloudRoot, "store"))
+	}
+	cloudRuntime := setupCloudRuntime(cfg, store, cloudMode && storeErr != nil, storeErr == nil)
+	cloudUsage := downloadscheduler.NewCloudUsageStore(filepath.Join(cloudRoot, "cloud_usage.json"))
+	dsRegistry, _ := datasetsync.NewRegistry(filepath.Join(cloudRoot, "registry.json"))
+	var dsValidator datasetsync.ParquetValidator
+	if analysisEngine != nil {
+		dsValidator = datasetsync.NewDuckDBValidator(analysisEngine)
+	}
+	dsSyncer := datasetsync.NewSyncer(store, dsRegistry, filepath.Join(cloudRoot, "sync"), dsValidator)
+	// Phase 5.3：Dataset Event Bus + Graph 增量物化
+	if bus, err := datasetevents.NewBus(filepath.Join(cloudRoot, "dataset_events.json")); err == nil {
+		datasetEventBus = bus
+	}
+	if analysisEngine != nil {
+		if inc, err := graphincrement.NewIncrementer(analysisEngine, filepath.Join(cloudRoot, "graph_state.json")); err == nil {
+			graphIncrementer = inc
+		}
+	}
+	// Phase 5 §32-33：Graph 数据源接入 Cloud merged parquet（存在后自动生效）
+	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+		h.Service().AddFlowSource(filepath.Join(cloudRoot, "sync", "warehouse", "sqd_cloud", "token_transfers", "chain=bsc", "merged.parquet"))
+	}
+	registry := downloadscheduler.NewRegistry(
+		downloadscheduler.NewRPCProvider(rpcClient).WithRecovery(recoveryWriter),
+		downloadscheduler.NewAWSProvider(sqdEngine),
+		sqdProvider,
+		downloadscheduler.NewBrowserProvider(),
+		downloadscheduler.NewCloudProvider(cloudRuntime),
+	)
+	planDir := filepath.Join(cfg.RootDir, "backend", "data", "download_scheduler", "plans")
+	// 覆盖检查 = 分析快照 + Cloud Dataset Registry（Phase 4 §31）
+	coverageSource = &compositeCoverageSource{analytics: coverageSource, registry: dsRegistry}
+	scheduler := downloadscheduler.NewScheduler(registry, downloadscheduler.NewCoverageResolver(coverageSource), planDir, downloadscheduler.DefaultBudget())
+	scheduler.WithRecoveryWriter(recoveryWriter)
+	scheduler.WithCloudFallback(cloudRuntime, cloudUsage, downloadscheduler.FaultInjectionFromEnv())
+	scheduler.WithDataPlane(dsSyncer, dsRegistry)
+	// Phase 5.3 §5/§6/§7：DATASET_INDEXED 事件 → Investigation Resume / Graph Increment（幂等）
+	if datasetEventBus != nil {
+		datasetEventBus.Subscribe("investigation", func(ctx context.Context, ev datasetevents.Event) error {
+			if ev.Type != datasetevents.DatasetIndexed || investigationAgent == nil {
+				return nil
+			}
+			resumed := 0
+			for _, addr := range ev.Addresses {
+				resumed += investigationAgent.NotifyDataReady(addr)
+			}
+			if resumed > 0 {
+				_ = datasetEventBus.Publish(ctx, datasetevents.Event{
+					Type: datasetevents.InvestigationResumed,
+					RequirementID: ev.RequirementID,
+					Meta:          map[string]any{"resumed": resumed},
+				})
+			}
+			return nil
+		})
+		if graphIncrementer != nil {
+			datasetEventBus.Subscribe("graph", func(ctx context.Context, ev datasetevents.Event) error {
+				if ev.Type != datasetevents.DatasetIndexed {
+					return nil
+				}
+				for _, id := range ev.RegistryEntryIDs {
+					e := dsRegistry.Get(id)
+					if e == nil {
+						continue
+					}
+					if _, err := graphIncrementer.Apply(ctx, e); err != nil {
+						log.Warn().Err(err).Str("chunk", id).Msg("graph_increment_failed")
+						return err
+					}
+				}
+				_ = datasetEventBus.Publish(ctx, datasetevents.Event{
+					Type:          datasetevents.GraphIncrementApplied,
+					RequirementID: ev.RequirementID,
+					Meta:          map[string]any{"chunks": ev.RegistryEntryIDs},
+				})
+				return nil
+			})
+		}
+	}
+	// Phase 5 §30/§32：索引完成 → 发布 DATASET_INDEXED（清分析缓存由事件消费者/幂等重放保证）
+	scheduler.WithDataIndexedHook(func(entries []*datasetsync.Entry) {
+		if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+			h.Service().InvalidateCache()
+		}
+		if datasetEventBus == nil {
+			return
+		}
+		for _, e := range entries {
+			ev := datasetevents.Event{
+				ID:               datasetevents.IndexedEventID(e.ChunkKey),
+				Type:             datasetevents.DatasetIndexed,
+				ChainKey:         e.ChainKey,
+				Dataset:          e.Dataset,
+				Addresses:        e.Addresses,
+				FromBlock:        e.FromBlock,
+				ToBlock:          e.ToBlock,
+				RegistryEntryIDs: []string{e.ChunkKey},
+				RowCount:         e.RowCount,
+				CoverageStatus:   "HIT",
+				Provider:         e.Provider,
+			}
+			_ = datasetEventBus.Publish(context.Background(), ev)
+		}
+	})
+	schedulerAPI = http.StripPrefix("/api/scheduler", NewSchedulerHandler(scheduler))
+	// Phase 4 §60-61：cloud 模式启动后对账已部署 Worker（sqd list --org）
+	if cloudRuntime.Status().Mode == "cloud" {
+		go func() {
+			time.Sleep(2 * time.Second)
+			cloudRuntime.Reconcile(context.Background())
+		}()
+	}
+	// Phase 5.3 §15：重启恢复——已 ACTIVE 条目补发确定性 DATASET_INDEXED + Replay 幂等重放
+	if datasetEventBus != nil {
+		go func() {
+			time.Sleep(3 * time.Second)
+			for _, e := range dsRegistry.Active() {
+				ev := datasetevents.Event{
+					ID:               datasetevents.IndexedEventID(e.ChunkKey),
+					Type:             datasetevents.DatasetIndexed,
+					ChainKey:         e.ChainKey,
+					Dataset:          e.Dataset,
+					Addresses:        e.Addresses,
+					FromBlock:        e.FromBlock,
+					ToBlock:          e.ToBlock,
+					RegistryEntryIDs: []string{e.ChunkKey},
+					RowCount:         e.RowCount,
+					CoverageStatus:   "HIT",
+					Provider:         e.Provider,
+				}
+				_ = datasetEventBus.Publish(context.Background(), ev)
+			}
+			datasetEventBus.Replay(context.Background())
+		}()
+	}
+	// Phase 5 §23：后台自动同步轮询（事件触发 + polling 双保险）
+	scheduler.StartAutoSync(context.Background(), 60*time.Second)
+	log.Info().Str("plans", planDir).Msg("download_scheduler_ready")
+}
+
+// setupCloudRuntime 装配 SQD Cloud 运行时（设计 §27/§31）：
+//   - SQD_CLOUD_MODE=auto（默认）：有 SQD_DEPLOY_KEY → cloud；Worker 项目可用 → local；否则禁用
+//   - SQD_CLOUD_WORKER_DIR：Cloud Worker 项目目录（默认 E:\Code\Processor-only）
+//   - SQD_CLOUD_DATA_ROOT：Job/审计数据根目录（默认 E:\codex\bsc_analytics\sqd-cloud，禁止 C:）
+func setupCloudRuntime(cfg *config.Config, store s3store.ObjectStore, cloudWithoutStore bool, r2Configured bool) *cloudruntime.Manager {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("SQD_CLOUD_MODE")))
+	workerDir := strings.TrimSpace(os.Getenv("SQD_CLOUD_WORKER_DIR"))
+	if workerDir == "" {
+		workerDir = `E:\Code\Processor-only`
+	}
+	root := strings.TrimSpace(os.Getenv("SQD_CLOUD_DATA_ROOT"))
+	if root == "" {
+		root = filepath.Join(`E:\codex\bsc_analytics`, "sqd-cloud")
+	}
+	idleMinutes := 20
+	if v := strings.TrimSpace(os.Getenv("SQD_CLOUD_IDLE_REMOVE_AFTER_MINUTES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			idleMinutes = n
+		}
+	}
+	if cloudWithoutStore {
+		store = nil // 显式 cloud 模式但缺少 R2/S3 凭据 → 运行时 NOT_CONFIGURED（如实暴露）
+	}
+	m := cloudruntime.New(cloudruntime.Config{
+		Mode:                   cloudruntime.Mode(mode),
+		WorkerProjectDir:       workerDir,
+		JobsRoot:               root,
+		Store:                  store,
+		R2Configured:           r2Configured,
+		IdleRemoveAfter:        time.Duration(idleMinutes) * time.Minute,
+		DeployTimeout:          10 * time.Minute,
+		RuntimeFailureCooldown: 15 * time.Minute,
+		DeployKey:              os.Getenv("SQD_DEPLOY_KEY"),
+		Organization:           os.Getenv("SQD_CLOUD_ORG"),
+		WorkerName:             os.Getenv("SQD_CLOUD_WORKER_NAME"),
+		WorkerSlot:             os.Getenv("SQD_CLOUD_WORKER_SLOT"),
+	})
+	log.Info().Str("mode", string(m.Status().Mode)).Str("state", string(m.Status().State)).
+		Str("jobs_root", root).Msg("sqd_cloud_runtime_ready")
+	return m
+}
+
+// compositeCoverageSource 覆盖检查 = 分析快照 + Cloud Registry（Phase 4 §31）。
+type compositeCoverageSource struct {
+	analytics downloadscheduler.CoverageSource
+	registry  *datasetsync.Registry
+}
+
+func (c *compositeCoverageSource) AddressTxCount(ctx context.Context, address string) (int64, error) {
+	var total int64
+	if c.analytics != nil {
+		n, err := c.analytics.AddressTxCount(ctx, address)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	if c.registry != nil {
+		if n, err := c.registry.AddressTxCount(ctx, address); err == nil {
+			total += n
+		}
+	}
+	return total, nil
 }
 
 // Shutdown closes the control store
@@ -381,6 +637,9 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/dynamic-investigation/*path", HandleDynamicInvestigation)
 		api.Any("/intelligence/*path", HandleIntelligence)
 		api.Any("/investigation/*path", HandleInvestigationV2)
+		api.Any("/scheduler/*path", HandleSchedulerAPI)
+		api.GET("/dataset/events", HandleDatasetEvents)
+		api.GET("/graph/status", HandleGraphStatus)
 		api.GET("/address/*path", HandleAddressAnalytics)
 		api.GET("/health", HandleHealth)
 		api.GET("/files/current", HandleCurrentFiles)
@@ -1378,6 +1637,24 @@ func HandleFlowFieldValues(c *gin.Context) {
 		"values":     values,
 		"session_id": payload.SessionID,
 	})
+}
+
+// HandleDatasetEvents GET /api/dataset/events — Dataset Event Bus 审计列表（Phase 5.3 §5/§14）。
+func HandleDatasetEvents(c *gin.Context) {
+	if datasetEventBus == nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "dataset event bus 未装配"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": datasetEventBus.Events()})
+}
+
+// HandleGraphStatus GET /api/graph/status — Graph 增量状态（Phase 5.3 §7/§18）。
+func HandleGraphStatus(c *gin.Context) {
+	if graphIncrementer == nil {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "graph incrementer 未装配"})
+		return
+	}
+	c.JSON(http.StatusOK, graphIncrementer.Status())
 }
 
 // HandleHealth returns health status

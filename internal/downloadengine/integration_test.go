@@ -14,12 +14,12 @@ func TestManifestFinalizerAtomic(t *testing.T) {
 	f := NewManifestFinalizer(dir)
 
 	m := &ManifestV2{
-		Version:     2,
-		JobID:       "job-001",
-		ChainID:     "bsc",
-		DatasetTypes: []string{"transactions"},
-		Status:      "COMPLETED",
-		RowsTotal:   1000,
+		Version:        2,
+		JobID:          "job-001",
+		ChainID:        "bsc",
+		DatasetTypes:   []string{"transactions"},
+		Status:         "COMPLETED",
+		RowsTotal:      1000,
 		CoverageStatus: "FULL",
 	}
 

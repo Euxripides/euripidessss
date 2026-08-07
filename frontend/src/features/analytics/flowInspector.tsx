@@ -12,6 +12,7 @@ import {
   DoubleRightOutlined,
   ExperimentOutlined,
   ReloadOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import { Button, Empty, Spin, Tabs, message } from "antd";
 import { useState } from "react";
@@ -47,6 +48,8 @@ export interface FlowInspectorProps {
   onSaveSnapshot: () => void;
   investigating: boolean;
   onInvestigate: () => void;
+  /** V2.2 智能数据补充（Smart Download Orchestrator） */
+  onSmartFill: () => void;
   onExitFocus: () => void;
   onSelectNeighbor: (address: string) => void;
   onClose: () => void;
@@ -113,6 +116,7 @@ export default function FlowInspector({
   onSaveSnapshot,
   investigating,
   onInvestigate,
+  onSmartFill,
   onExitFocus,
   onSelectNeighbor,
   onClose,
@@ -334,6 +338,15 @@ export default function FlowInspector({
         </Button>
         <Button size="small" icon={<ExperimentOutlined />} onClick={onInvestigate} loading={investigating} aria-label="加入 Investigation Agent">
           加入调查
+        </Button>
+        <Button
+          size="small"
+          icon={<ThunderboltOutlined />}
+          onClick={onSmartFill}
+          aria-label="智能数据补充"
+          title="分析数据需求并自动选择数据源下载（历史交易 SQD / 实时余额 RPC / 标签 Browser）"
+        >
+          智能补充
         </Button>
         <Button size="small" type="primary" ghost onClick={onExitFocus} aria-label="退出聚焦">
           退出聚焦

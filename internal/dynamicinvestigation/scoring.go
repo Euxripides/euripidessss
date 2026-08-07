@@ -20,12 +20,12 @@ var amountBuckets = []struct {
 	score     float64
 }{
 	{big.NewFloat(0), 0},
-	{big.NewFloat(1e3), 10},   // ≥ 1K
-	{big.NewFloat(1e5), 25},   // ≥ 100K
-	{big.NewFloat(1e6), 40},   // ≥ 1M
-	{big.NewFloat(1e7), 60},   // ≥ 10M
-	{big.NewFloat(1e8), 80},   // ≥ 100M
-	{big.NewFloat(1e9), 100},  // ≥ 1B
+	{big.NewFloat(1e3), 10},  // ≥ 1K
+	{big.NewFloat(1e5), 25},  // ≥ 100K
+	{big.NewFloat(1e6), 40},  // ≥ 1M
+	{big.NewFloat(1e7), 60},  // ≥ 10M
+	{big.NewFloat(1e8), 80},  // ≥ 100M
+	{big.NewFloat(1e9), 100}, // ≥ 1B
 }
 
 // amountScore 将 raw decimal 金额映射到 0-100。
@@ -146,10 +146,10 @@ func Score(input ScoreInput, cfg ExpansionConfig) ScoreResult {
 	return ScoreResult{
 		Score: score,
 		Breakdown: map[string]float64{
-			"amount":        math.Round(a*100) / 100,
-			"risk":          math.Round(r*100) / 100,
-			"relation":      math.Round(rel*100) / 100,
-			"activity":      math.Round(act*100) / 100,
+			"amount":         math.Round(a*100) / 100,
+			"risk":           math.Round(r*100) / 100,
+			"relation":       math.Round(rel*100) / 100,
+			"activity":       math.Round(act*100) / 100,
 			"entity_penalty": math.Round(penaltyScore(input.Entity, cfg)*100) / 100,
 		},
 		Decision: decision,

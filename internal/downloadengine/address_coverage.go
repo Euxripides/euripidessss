@@ -11,11 +11,11 @@ import (
 type AddressStatus string
 
 const (
-	AddrNew        AddressStatus = "NEW"
-	AddrScheduled  AddressStatus = "SCHEDULED"
+	AddrNew         AddressStatus = "NEW"
+	AddrScheduled   AddressStatus = "SCHEDULED"
 	AddrDownloading AddressStatus = "DOWNLOADING"
-	AddrReady      AddressStatus = "READY"
-	AddrFailed     AddressStatus = "FAILED"
+	AddrReady       AddressStatus = "READY"
+	AddrFailed      AddressStatus = "FAILED"
 )
 
 type AddressCoverageRecord struct {
@@ -79,9 +79,9 @@ type AddressCoverageIndex struct {
 	bloom   *BloomFilter
 
 	// Metrics
-	Total     int64
-	CacheHit  int64
-	CacheMiss int64
+	Total      int64
+	CacheHit   int64
+	CacheMiss  int64
 	ReadyTotal int64
 }
 
@@ -147,10 +147,10 @@ func (aci *AddressCoverageIndex) BatchCheck(chain string, addresses []string, ds
 
 // IncrementalTask 增量任务生成 — 输入地址列表 → 去掉已覆盖 → 返回缺失地址
 func (aci *AddressCoverageIndex) IncrementalTask(chain string, addresses []string, dsType DatasetType) struct {
-	Total    int
-	Ready    int
-	Missing  int
-	Addrs    []string
+	Total   int
+	Ready   int
+	Missing int
+	Addrs   []string
 } {
 	_, missing := aci.BatchCheck(chain, addresses, dsType)
 	return struct {
@@ -201,11 +201,11 @@ func (aci *AddressCoverageIndex) Snapshot() map[string]any {
 	aci.mu.RLock()
 	defer aci.mu.RUnlock()
 	return map[string]any{
-		"address_coverage_total":   aci.Total,
-		"address_cache_hit":        aci.CacheHit,
-		"address_cache_miss":       aci.CacheMiss,
+		"address_coverage_total":    aci.Total,
+		"address_cache_hit":         aci.CacheHit,
+		"address_cache_miss":        aci.CacheMiss,
 		"address_download_required": aci.Total - aci.ReadyTotal,
-		"address_ready_total":      aci.ReadyTotal,
+		"address_ready_total":       aci.ReadyTotal,
 	}
 }
 

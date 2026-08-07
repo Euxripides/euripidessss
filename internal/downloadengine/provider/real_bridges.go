@@ -216,9 +216,9 @@ func (c *RealCheckpointBridge) Load(ctx context.Context, jobID string) (*parquet
 // Dispatcher is a convenience type that wires ProviderRouter + ParquetWriter + Indexer + Checkpoint
 // into a single-call pipeline for BSC single-address scenarios.
 type Dispatcher struct {
-	Router    *downloadengine.Router
-	Writer    *RealParquetWriter
-	Indexer   *RealDuckDBIndexer
+	Router     *downloadengine.Router
+	Writer     *RealParquetWriter
+	Indexer    *RealDuckDBIndexer
 	Checkpoint *RealCheckpointBridge
 }
 

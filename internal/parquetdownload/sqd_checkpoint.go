@@ -61,8 +61,8 @@ const DefaultSQDChunkSize = 50000
 
 // SQDCheckpointStore manages checkpoint persistence.
 type SQDCheckpointStore struct {
-	mu   sync.Mutex
-	dir  string
+	mu  sync.Mutex
+	dir string
 }
 
 // NewSQDCheckpointStore creates a checkpoint store rooted at dir.

@@ -28,13 +28,13 @@ import (
 // 启用：创建 stress-data/bsc_real/.sqd-200k.enabled
 
 const (
-	env200KTest     = "SQD_200K_TEST"
-	env200KMaxAddr  = "SQD_200K_MAX_ADDRESSES"
-	env200KBlocks   = "SQD_200K_BLOCKS"
-	env200KChunk    = "SQD_200K_CHUNK_SIZE"
-	env200KDataRoot = "SQD_200K_DATA_ROOT"
+	env200KTest       = "SQD_200K_TEST"
+	env200KMaxAddr    = "SQD_200K_MAX_ADDRESSES"
+	env200KBlocks     = "SQD_200K_BLOCKS"
+	env200KChunk      = "SQD_200K_CHUNK_SIZE"
+	env200KDataRoot   = "SQD_200K_DATA_ROOT"
 	env200KStartBlock = "SQD_200K_START_BLOCK"
-	flag200KEnabled = ".sqd-200k.enabled"
+	flag200KEnabled   = ".sqd-200k.enabled"
 
 	default200KAddresses = 200000
 	default200KBlocks    = 200
@@ -52,27 +52,27 @@ type stress200KCheckpoint struct {
 }
 
 type stress200KResult struct {
-	Timestamp           time.Time               `json:"timestamp"`
-	AddressCount        int                     `json:"address_count"`
-	ChunkCount          int                     `json:"chunk_count"`
-	CompletedChunks     int                     `json:"completed_chunks"`
-	BlockRange          [2]uint64               `json:"block_range"`
-	TotalLogs           int                     `json:"raw_logs"`
-	UniqueLogs          int                     `json:"unique_logs"`
-	DuplicateLogs       int                     `json:"duplicate_logs"`
-	DedupRatio          float64                 `json:"dedup_ratio"`
-	DuplicateInChunk    int                     `json:"duplicate_logs_in_chunk"`
-	DuplicateCrossChunk int                     `json:"duplicate_logs_cross_chunk"`
-	ResumedFromCheckpoint bool                  `json:"resumed_from_checkpoint"`
-	Duration            string                  `json:"duration"`
-	Metrics             sqd.MetricsSnapshot     `json:"sqd_metrics"`
-	Workers             sqd.AdaptiveWorkerStats `json:"sqd_workers"`
-	Circuit             sqd.CircuitStats        `json:"sqd_circuit_breaker"`
-	ParquetPath         string                  `json:"parquet_path"`
-	ParquetRows         int64                   `json:"parquet_rows"`
-	DuckDBVerified      bool                    `json:"duckdb_verified"`
-	Errors              []string                `json:"errors,omitempty"`
-	Passed              bool                    `json:"passed"`
+	Timestamp             time.Time               `json:"timestamp"`
+	AddressCount          int                     `json:"address_count"`
+	ChunkCount            int                     `json:"chunk_count"`
+	CompletedChunks       int                     `json:"completed_chunks"`
+	BlockRange            [2]uint64               `json:"block_range"`
+	TotalLogs             int                     `json:"raw_logs"`
+	UniqueLogs            int                     `json:"unique_logs"`
+	DuplicateLogs         int                     `json:"duplicate_logs"`
+	DedupRatio            float64                 `json:"dedup_ratio"`
+	DuplicateInChunk      int                     `json:"duplicate_logs_in_chunk"`
+	DuplicateCrossChunk   int                     `json:"duplicate_logs_cross_chunk"`
+	ResumedFromCheckpoint bool                    `json:"resumed_from_checkpoint"`
+	Duration              string                  `json:"duration"`
+	Metrics               sqd.MetricsSnapshot     `json:"sqd_metrics"`
+	Workers               sqd.AdaptiveWorkerStats `json:"sqd_workers"`
+	Circuit               sqd.CircuitStats        `json:"sqd_circuit_breaker"`
+	ParquetPath           string                  `json:"parquet_path"`
+	ParquetRows           int64                   `json:"parquet_rows"`
+	DuckDBVerified        bool                    `json:"duckdb_verified"`
+	Errors                []string                `json:"errors,omitempty"`
+	Passed                bool                    `json:"passed"`
 }
 
 // TestSQD200KStability runs a bounded real-chain production validation over

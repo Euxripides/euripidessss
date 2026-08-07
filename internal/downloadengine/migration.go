@@ -28,18 +28,18 @@ type MigrationState struct {
 }
 
 type MigrationRunner struct {
-	mu          sync.Mutex
-	migrations  []Migration
-	storeDir    string
-	statePath   string
-	execFn      func(sql string) error // 注入 SQL 执行函数
+	mu         sync.Mutex
+	migrations []Migration
+	storeDir   string
+	statePath  string
+	execFn     func(sql string) error // 注入 SQL 执行函数
 }
 
 func NewMigrationRunner(storeDir string, execFn func(string) error) *MigrationRunner {
 	return &MigrationRunner{
-		storeDir: storeDir,
+		storeDir:  storeDir,
 		statePath: filepath.Join(storeDir, "schema_version.json"),
-		execFn:   execFn,
+		execFn:    execFn,
 	}
 }
 

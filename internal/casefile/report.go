@@ -14,13 +14,13 @@ import (
 
 // Evidence 是案件证据包（snapshots/）。
 type Evidence struct {
-	CaseID          string                         `json:"case_id"`
-	DatasetVersion  string                         `json:"dataset_version"`
-	Targets         []string                       `json:"target_addresses"`
-	AddressEvidence []AddressEvidence              `json:"address_evidence"`
-	TxEvidence      []TxEvidence                   `json:"transaction_evidence"`
+	CaseID           string                         `json:"case_id"`
+	DatasetVersion   string                         `json:"dataset_version"`
+	Targets          []string                       `json:"target_addresses"`
+	AddressEvidence  []AddressEvidence              `json:"address_evidence"`
+	TxEvidence       []TxEvidence                   `json:"transaction_evidence"`
 	RelationEvidence []investigation.RelatedAddress `json:"relation_evidence"`
-	PathEvidence    []PathEvidence                 `json:"path_evidence"`
+	PathEvidence     []PathEvidence                 `json:"path_evidence"`
 }
 
 // AddressEvidence 是地址证据。

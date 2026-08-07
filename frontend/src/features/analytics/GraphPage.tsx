@@ -38,6 +38,7 @@ import {
 } from "./graphUpgrade";
 import { useAddressAssets } from "./useAddressAssets";
 import FlowWorkspaceHeader from "./flowWorkspaceHeader";
+import SmartFillPanel from "./SmartFillPanel";
 import "./graph-page.css";
 
 const DEFAULT_DIRECTION: FocusDirection = "all";
@@ -87,6 +88,8 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   const inspectorMode: "dock" | "collapsible" | "drawer" = isWide ? "dock" : isMedium ? "collapsible" : "drawer";
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // V2.2 智能数据补充面板（Smart Download Orchestrator）
+  const [smartFillOpen, setSmartFillOpen] = useState(false);
   useEffect(() => {
     if (inspectorMode === "drawer" && focus) setDrawerOpen(true);
   }, [inspectorMode, focus]);
@@ -365,9 +368,36 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   };
 
   const onCloseInspector = useCallback(() => {
-    if (inspectorMode === "drawer") setDrawerOpen(false);
-    else onClearFocus();
+    if (inspectorMode === "drawer") {
+      // 抽屉模式：只关闭抽屉（保留聚焦，移动端可随时再看）
+      setDrawerOpen(false);
+    } else {
+      // dock/collapsible：退出聚焦并折叠地址详情面板（右上角 × = 关闭详情）
+      onClearFocus();
+      setInspectorCollapsed(true);
+    }
   }, [inspectorMode, onClearFocus]);
+
+  // V2.2 智能数据补充：打开面板（基于当前聚焦地址）
+  const onSmartFill = useCallback(() => {
+    if (!focus) return;
+    setSmartFillOpen(true);
+  }, [focus]);
+
+  // V2.2 智能数据补充完成后刷新图谱（重新拉取 analytics graph 数据）
+  const onRefreshGraph = useCallback(async () => {
+    setLoading(true);
+    try {
+      const nextGraph = await fetchGraph(5000);
+      setGraph(nextGraph);
+      setSmartFillOpen(false);
+      void message.success("图谱已刷新");
+    } catch {
+      void message.error("刷新图谱失败");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   const inspector = (
     <FlowInspector
@@ -386,6 +416,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       onSaveSnapshot={onSaveSnapshot}
       investigating={investigating}
       onInvestigate={onInvestigate}
+      onSmartFill={onSmartFill}
       onExitFocus={onClearFocus}
       onSelectNeighbor={onSelectNeighbor}
       onClose={onCloseInspector}
@@ -474,6 +505,15 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       >
         {inspector}
       </Drawer>
+
+      {/* V2.2 智能数据补充面板（Smart Download Orchestrator） */}
+      <SmartFillPanel
+        open={smartFillOpen}
+        address={focus?.address ?? ""}
+        chain={CHAIN}
+        onClose={() => setSmartFillOpen(false)}
+        onRefreshGraph={onRefreshGraph}
+      />
     </div>
   );
 }

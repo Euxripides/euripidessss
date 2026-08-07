@@ -31,16 +31,16 @@ const (
 )
 
 type FirstSeenResponse struct {
-	ChainID         string         `json:"chain_id"`
-	Address         string         `json:"address"`
-	AddressType     string         `json:"address_type"`
-	FirstSeenBlock  *int64         `json:"first_seen_block,omitempty"`
-	FirstSeenTime   *string        `json:"first_seen_time,omitempty"`
-	FirstSeenSource string         `json:"first_seen_source,omitempty"`
-	CoverageStatus  string         `json:"coverage_status"`
+	ChainID         string          `json:"chain_id"`
+	Address         string          `json:"address"`
+	AddressType     string          `json:"address_type"`
+	FirstSeenBlock  *int64          `json:"first_seen_block,omitempty"`
+	FirstSeenTime   *string         `json:"first_seen_time,omitempty"`
+	FirstSeenSource string          `json:"first_seen_source,omitempty"`
+	CoverageStatus  string          `json:"coverage_status"`
 	Status          FirstSeenStatus `json:"status"`
-	Provider        string         `json:"provider,omitempty"`
-	ErrorMessage    string         `json:"error_message,omitempty"`
+	Provider        string          `json:"provider,omitempty"`
+	ErrorMessage    string          `json:"error_message,omitempty"`
 }
 
 // ── FirstSeen query ──
@@ -420,7 +420,7 @@ func sqlNullableString(v *string) string {
 
 // AddressLifecycle holds the block range info for an address.
 type AddressLifecycle struct {
-	Address       string
+	Address        string
 	FirstSeenBlock uint64
 	LastSeenBlock  uint64
 	ActivityCount  int64

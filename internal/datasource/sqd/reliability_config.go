@@ -18,10 +18,10 @@ type RetryConfig struct {
 
 // BackoffConfig controls exponential backoff timing.
 type BackoffConfig struct {
-	Enabled  bool          `json:"enabled"`   // enable backoff (default true)
-	Base     time.Duration `json:"base"`      // base interval (default 2s)
-	Max      time.Duration `json:"max"`       // max interval (default 60s)
-	Interval []time.Duration `json:"-"`        // explicit backoff sequence (derived)
+	Enabled  bool            `json:"enabled"` // enable backoff (default true)
+	Base     time.Duration   `json:"base"`    // base interval (default 2s)
+	Max      time.Duration   `json:"max"`     // max interval (default 60s)
+	Interval []time.Duration `json:"-"`       // explicit backoff sequence (derived)
 }
 
 // WorkersConfig controls the adaptive worker pool.

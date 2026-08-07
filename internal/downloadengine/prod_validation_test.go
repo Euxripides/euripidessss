@@ -295,11 +295,11 @@ func TestSQD503FaultRecoveryFlow(t *testing.T) {
 
 	// 模拟 SQD 503 故障序列: 503 → 503 → 恢复 → 503 → 429 → 恢复
 	errors := []error{
-		classifiableError("503 Service Unavailable: no available workers"),    // SQDNoWorkers
-		classifiableError("503 Service Unavailable: no available workers"),    // SQDNoWorkers
+		classifiableError("503 Service Unavailable: no available workers"), // SQDNoWorkers
+		classifiableError("503 Service Unavailable: no available workers"), // SQDNoWorkers
 		nil, // 恢复
-		classifiableError("503 Service Unavailable: no available workers"),    // SQDNoWorkers
-		classifiableError("429 Too Many Requests: rate limit exceeded"),       // RateLimited
+		classifiableError("503 Service Unavailable: no available workers"), // SQDNoWorkers
+		classifiableError("429 Too Many Requests: rate limit exceeded"),    // RateLimited
 		nil, // 恢复
 	}
 
@@ -439,8 +439,8 @@ func TestMultiChainValidation(t *testing.T) {
 
 // ── Helpers ──
 
-func u64ptr(v uint64) *uint64 { return &v }
-func sptr(v string) *string   { return &v }
+func u64ptr(v uint64) *uint64        { return &v }
+func sptr(v string) *string          { return &v }
 func timePtr(t time.Time) *time.Time { return &t }
 
 func isValidEVMAddr(s string) bool {

@@ -24,13 +24,13 @@ const (
 )
 
 type caseReport struct {
-	Timestamp   time.Time      `json:"timestamp"`
-	Case        map[string]any `json:"case"`
-	Evidence    map[string]any `json:"evidence"`
-	Docx        map[string]any `json:"docx"`
-	Reproducible bool          `json:"reproducible"`
-	Perf        map[string]any `json:"performance"`
-	Passed      bool           `json:"passed"`
+	Timestamp    time.Time      `json:"timestamp"`
+	Case         map[string]any `json:"case"`
+	Evidence     map[string]any `json:"evidence"`
+	Docx         map[string]any `json:"docx"`
+	Reproducible bool           `json:"reproducible"`
+	Perf         map[string]any `json:"performance"`
+	Passed       bool           `json:"passed"`
 }
 
 func newCaseTest(t *testing.T) (*Engine, string) {
@@ -169,7 +169,7 @@ func TestCase_FullFlow(t *testing.T) {
 			"address": len(ev.AddressEvidence), "tx": len(ev.TxEvidence),
 			"paths": len(ev.PathEvidence), "related": len(ev.RelationEvidence),
 		},
-		Docx: map[string]any{"size": docxInfo.Size(), "ok": true},
+		Docx:   map[string]any{"size": docxInfo.Size(), "ok": true},
 		Passed: true,
 	}, t)
 }

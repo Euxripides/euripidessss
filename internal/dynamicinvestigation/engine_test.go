@@ -64,7 +64,7 @@ func TestEngineAmountThresholdFilter(t *testing.T) {
 
 	src.SetProfile("0x0000000000000000000000000000000000000001", &ProfileSignal{TxCount: 50, InCount: 25, OutCount: 25})
 	src.SetFlows("0x0000000000000000000000000000000000000001", []FlowSignal{
-		{Counterparty: "0x00000000000000000000000000000000000000b1", Token: "0xt", Amount: "5000000", Direction: "outgoing"},   // 5M ≥ 阈值
+		{Counterparty: "0x00000000000000000000000000000000000000b1", Token: "0xt", Amount: "5000000", Direction: "outgoing"}, // 5M ≥ 阈值
 		{Counterparty: "0x00000000000000000000000000000000000000b2", Token: "0xt", Amount: "5000", Direction: "outgoing"},    // 5K < 阈值
 	})
 

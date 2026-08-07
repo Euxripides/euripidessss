@@ -11,21 +11,21 @@ import (
 type Job struct {
 	mu sync.RWMutex
 
-	ID               string     `json:"job_id"`
-	Type             JobType    `json:"job_type"`
-	ChainID          string     `json:"chain_id"`
-	Status           JobStatus  `json:"status"`
-	Stage            JobStage   `json:"stage"`
-	Priority         Priority   `json:"priority"`
-	RangeMode        RangeMode  `json:"range_mode"`
-	EffectiveRange   *EffectiveRange `json:"effective_range,omitempty"`
-	Discovery        *DiscoveryResult `json:"discovery,omitempty"`
-	Chunks           []*Chunk   `json:"chunks,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	FinishedAt       *time.Time `json:"finished_at,omitempty"`
-	ErrorCode        ErrorCode  `json:"error_code,omitempty"`
-	ErrorMessage     string     `json:"error_message,omitempty"`
+	ID             string           `json:"job_id"`
+	Type           JobType          `json:"job_type"`
+	ChainID        string           `json:"chain_id"`
+	Status         JobStatus        `json:"status"`
+	Stage          JobStage         `json:"stage"`
+	Priority       Priority         `json:"priority"`
+	RangeMode      RangeMode        `json:"range_mode"`
+	EffectiveRange *EffectiveRange  `json:"effective_range,omitempty"`
+	Discovery      *DiscoveryResult `json:"discovery,omitempty"`
+	Chunks         []*Chunk         `json:"chunks,omitempty"`
+	CreatedAt      time.Time        `json:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+	FinishedAt     *time.Time       `json:"finished_at,omitempty"`
+	ErrorCode      ErrorCode        `json:"error_code,omitempty"`
+	ErrorMessage   string           `json:"error_message,omitempty"`
 }
 
 // ── 合法状态转换表 ──
@@ -39,9 +39,9 @@ var validTransitions = map[JobStatus][]JobStatus{
 	StatusPaused:     {StatusRunning, StatusCanceling},
 	StatusCanceling:  {StatusCancelled, StatusFailed},
 	// 终态
-	StatusCompleted:  {},
-	StatusCancelled:  {},
-	StatusFailed:     {},
+	StatusCompleted: {},
+	StatusCancelled: {},
+	StatusFailed:    {},
 }
 
 // ── Transition 是唯一的状态修改入口 ──

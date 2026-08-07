@@ -24,11 +24,11 @@ import (
 )
 
 const (
-	TransferTopic    = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-	TransferSingle   = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
-	TransferBatch    = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
-	transferFilter   = "topic0 IN ('" + TransferTopic + "','" + TransferSingle + "','" + TransferBatch + "')"
-	normalizeTopic   = `CASE WHEN length(%[1]s) = 66 THEN '0x' || substr(%[1]s, 27) ELSE %[1]s END`
+	TransferTopic  = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+	TransferSingle = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
+	TransferBatch  = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
+	transferFilter = "topic0 IN ('" + TransferTopic + "','" + TransferSingle + "','" + TransferBatch + "')"
+	normalizeTopic = `CASE WHEN length(%[1]s) = 66 THEN '0x' || substr(%[1]s, 27) ELSE %[1]s END`
 )
 
 // quoteSQLString 转义 SQL 单引号字符串字面量。
@@ -86,18 +86,21 @@ type PathItem struct {
 
 // Risk 是风险评分响应。
 type Risk struct {
-	RiskScore          float64 `json:"risk_score"`
-	RiskLevel          string  `json:"risk_level"`
-	RiskReason         string  `json:"risk_reason"`
-	TransactionFreq    float64 `json:"transaction_frequency"`
-	TopHolderRatio     float64 `json:"top_holder_ratio"`
-	CounterpartyScore  float64 `json:"shared_counterparty_score"`
+	RiskScore         float64 `json:"risk_score"`
+	RiskLevel         string  `json:"risk_level"`
+	RiskReason        string  `json:"risk_reason"`
+	TransactionFreq   float64 `json:"transaction_frequency"`
+	TopHolderRatio    float64 `json:"top_holder_ratio"`
+	CounterpartyScore float64 `json:"shared_counterparty_score"`
 }
 
 // Service 提供分析查询服务。
 type Service struct {
-	engine *duckdb.Engine
+	engine  *duckdb.Engine
 	parquet string // forward-slash parquet 路径
+	// flowSources 追加的资金流数据源（Phase 5：SQD Cloud merged token_transfers parquet）。
+	// 与主 logs.parquet 属于不同 schema，查询时映射为 logs 语义。
+	flowSources []string
 
 	mu          sync.Mutex
 	cache       map[string]any
@@ -105,9 +108,9 @@ type Service struct {
 	cacheMisses int64
 
 	// 全局风险基座（惰性计算一次）
-	holderRatio float64
+	holderRatio  float64
 	counterScore float64
-	globalOnce  sync.Once
+	globalOnce   sync.Once
 }
 
 // New 创建分析服务。
@@ -117,6 +120,29 @@ func New(engine *duckdb.Engine, parquetPath string) *Service {
 		parquet: strings.ReplaceAll(parquetPath, "\\", "/"),
 		cache:   make(map[string]any),
 	}
+}
+
+// AddFlowSource 追加一个 Cloud token_transfers parquet 数据源（Phase 5 §32-33）。
+// 文件不存在时查询自动跳过该源（合并文件可能尚未生成）。
+func (s *Service) AddFlowSource(path string) {
+	if path == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.flowSources {
+		if p == path {
+			return
+		}
+	}
+	s.flowSources = append(s.flowSources, strings.ReplaceAll(path, "\\", "/"))
+}
+
+// InvalidateCache 清空全部缓存（Phase 5：Cloud 数据索引后 Graph/Profile 立即可见）。
+func (s *Service) InvalidateCache() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache = make(map[string]any)
 }
 
 // CacheStats 返回缓存统计。
@@ -232,11 +258,22 @@ func (s *Service) Flows(ctx context.Context, address string, token string) ([]Fl
 	}
 	norm1 := fmt.Sprintf(normalizeTopic, "topic1", "topic1")
 	norm2 := fmt.Sprintf(normalizeTopic, "topic2", "topic2")
-	sqlText := fmt.Sprintf(`SELECT 'outgoing' AS direction, address AS token, %[8]s AS counterparty, data, block_number, transaction_hash
+	sqlParts := []string{fmt.Sprintf(`SELECT 'outgoing' AS direction, address AS token, %[8]s AS counterparty, data, NULL AS cloud_value, block_number, transaction_hash
 		FROM read_parquet('%[2]s') WHERE %[1]s = '%[3]s' AND topic0 IN ('%[4]s','%[5]s','%[6]s') %[7]s
 		UNION ALL
-		SELECT 'incoming', address, %[1]s, data, block_number, transaction_hash
-		FROM read_parquet('%[2]s') WHERE %[8]s = '%[3]s' AND topic0 IN ('%[4]s','%[5]s','%[6]s') %[7]s`, norm1, s.parquet, addr, TransferTopic, TransferSingle, TransferBatch, tokenClause, norm2)
+		SELECT 'incoming', address, %[1]s, data, NULL, block_number, transaction_hash
+		FROM read_parquet('%[2]s') WHERE %[8]s = '%[3]s' AND topic0 IN ('%[4]s','%[5]s','%[6]s') %[7]s`,
+		norm1, s.parquet, addr, TransferTopic, TransferSingle, TransferBatch, tokenClause, norm2)}
+	// Phase 5：Cloud token_transfers 数据源（schema：token_address/from_address/to_address/value_raw）
+	for _, extra := range s.flowSourcePaths() {
+		sqlParts = append(sqlParts, fmt.Sprintf(`UNION ALL
+			SELECT 'outgoing' AS direction, token_address AS token, to_address AS counterparty, '' AS data, value_raw AS cloud_value, block_number, transaction_hash
+			FROM read_parquet('%[1]s') WHERE from_address = '%[2]s' %[3]s
+			UNION ALL
+			SELECT 'incoming', token_address, from_address, '', value_raw, block_number, transaction_hash
+			FROM read_parquet('%[1]s') WHERE to_address = '%[2]s' %[3]s`, extra, addr, cloudTokenClause(token)))
+	}
+	sqlText := strings.Join(sqlParts, "\n")
 	rows, err := s.engine.ExecSQLJSON(ctx, sqlText)
 	if err != nil {
 		return nil, err
@@ -259,10 +296,35 @@ func (s *Service) Flows(ctx context.Context, address string, token string) ([]Fl
 				e.Amount = n.String()
 			}
 		}
+		// Phase 5：Cloud token_transfers 的 value_raw 是十进制原值，不经过 hex 解析
+		if cv := fmt.Sprintf("%v", r["cloud_value"]); cv != "" && cv != "<nil>" {
+			e.Amount = cv
+		}
 		edges = append(edges, e)
 	}
 	s.cacheSet(key, edges)
 	return edges, nil
+}
+
+// flowSourcePaths 返回当前存在的追加数据源（文件不存在则跳过）。
+func (s *Service) flowSourcePaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, p := range s.flowSources {
+		if _, err := os.Stat(strings.ReplaceAll(p, "/", string(filepath.Separator))); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// cloudTokenClause 生成 Cloud 数据源的 token 过滤子句（token_address 等值）。
+func cloudTokenClause(token string) string {
+	if token == "" {
+		return ""
+	}
+	return "AND token_address = " + quoteSQLString(strings.ToLower(token))
 }
 
 // Path 查询两跳资金路径（A→B→C）。
@@ -348,7 +410,7 @@ func normalizeAddresses(addresses []string) []string {
 
 // batchWantSQL 构造批量画像的 want 表子查询。
 // 优先 addr_file CSV（命令行短，避免 Windows 32K 命令行长度限制），否则内联请求体 addresses（VALUES）；
-// 两者都空返回错误——禁止用空路径 read_csv（DuckDB CLI 会把 '' 当作标准输入，导致结果集爆炸 OOM）。
+// 两者都空返回错误——禁止用空路径 read_csv（DuckDB CLI 会把 ” 当作标准输入，导致结果集爆炸 OOM）。
 func batchWantSQL(addresses []string, addrFile string) (string, error) {
 	if strings.TrimSpace(addrFile) != "" {
 		af := strings.ReplaceAll(addrFile, "\\", "/")
@@ -579,12 +641,12 @@ func (h *Handler) Service() *Service { return h.service }
 
 // Dashboard 返回数据资产概览（地址/Token/交易/风险 + 时间趋势）。
 type Dashboard struct {
-	AddressCount   int64            `json:"address_count"`
-	TokenCount     int64            `json:"token_count"`
-	TransactionCount int64          `json:"transaction_count"`
-	TransferCount  int64            `json:"transfer_count"`
-	RiskAddresses  int64            `json:"risk_addresses"`
-	Trend          []TrendPoint     `json:"trend"`
+	AddressCount     int64        `json:"address_count"`
+	TokenCount       int64        `json:"token_count"`
+	TransactionCount int64        `json:"transaction_count"`
+	TransferCount    int64        `json:"transfer_count"`
+	RiskAddresses    int64        `json:"risk_addresses"`
+	Trend            []TrendPoint `json:"trend"`
 }
 
 // TrendPoint 是时间趋势点。
@@ -816,12 +878,12 @@ func (h *Handler) serveGraphFile(w http.ResponseWriter, limit int) {
 			Degree int     `json:"degree"`
 		} `json:"nodes"`
 		Edges []struct {
-			Source string `json:"source"`
-			Target string `json:"target"`
-			Kind   string `json:"kind"`
-			Token  string `json:"token,omitempty"`
-			Amount string `json:"amount,omitempty"`
-			TxCount int64 `json:"tx_count,omitempty"`
+			Source  string `json:"source"`
+			Target  string `json:"target"`
+			Kind    string `json:"kind"`
+			Token   string `json:"token,omitempty"`
+			Amount  string `json:"amount,omitempty"`
+			TxCount int64  `json:"tx_count,omitempty"`
 		} `json:"edges"`
 	}
 	if err := json.Unmarshal(data, &full); err != nil {

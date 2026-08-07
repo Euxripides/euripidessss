@@ -15,8 +15,8 @@ type mockStreamingProvider struct {
 	datasetTypes []string
 }
 
-func (m *mockStreamingProvider) Name() string                          { return m.name }
-func (m *mockStreamingProvider) Capabilities() ProviderCapabilities     { return m.caps }
+func (m *mockStreamingProvider) Name() string                            { return m.name }
+func (m *mockStreamingProvider) Capabilities() ProviderCapabilities      { return m.caps }
 func (m *mockStreamingProvider) Health(_ context.Context) ProviderHealth { return m.health }
 func (m *mockStreamingProvider) Estimate(_ context.Context, _ StreamEstimateRequest) (*EstimateResult, error) {
 	return &EstimateResult{}, nil
@@ -32,8 +32,8 @@ type mockObjectProvider struct {
 	datasetTypes []string
 }
 
-func (m *mockObjectProvider) Name() string                          { return m.name }
-func (m *mockObjectProvider) Capabilities() ProviderCapabilities     { return m.caps }
+func (m *mockObjectProvider) Name() string                            { return m.name }
+func (m *mockObjectProvider) Capabilities() ProviderCapabilities      { return m.caps }
 func (m *mockObjectProvider) Health(_ context.Context) ProviderHealth { return m.health }
 func (m *mockObjectProvider) Estimate(_ context.Context, _ ObjectEstimateRequest) (*EstimateResult, error) {
 	return &EstimateResult{}, nil
@@ -106,13 +106,13 @@ func TestRouterResolveObject(t *testing.T) {
 func TestRouterCapabilitiesCache(t *testing.T) {
 	r := NewRouter()
 	r.RegisterStreaming(&mockStreamingProvider{
-		name: "SQD",
-		caps: ProviderCapabilities{Name: "SQD", SupportsStreaming: true, DatasetTypes: []string{"transactions"}},
+		name:   "SQD",
+		caps:   ProviderCapabilities{Name: "SQD", SupportsStreaming: true, DatasetTypes: []string{"transactions"}},
 		health: ProviderHealth{Name: "SQD", Status: ProviderHealthy, LastCheck: time.Now()},
 	})
 	r.RegisterObject(&mockObjectProvider{
-		name: "AWS",
-		caps: ProviderCapabilities{Name: "AWS", SupportsObject: true, DatasetTypes: []string{"transactions"}},
+		name:   "AWS",
+		caps:   ProviderCapabilities{Name: "AWS", SupportsObject: true, DatasetTypes: []string{"transactions"}},
 		health: ProviderHealth{Name: "AWS", Status: ProviderHealthy, LastCheck: time.Now()},
 	})
 

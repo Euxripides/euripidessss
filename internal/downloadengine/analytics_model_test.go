@@ -42,16 +42,16 @@ type modelProfileRow struct {
 }
 
 type analyticsModelResult struct {
-	Timestamp    time.Time        `json:"timestamp"`
-	DataRows     int64            `json:"data_rows"`
-	ProfileRows  int64            `json:"profile_rows"`
+	Timestamp    time.Time         `json:"timestamp"`
+	DataRows     int64             `json:"data_rows"`
+	ProfileRows  int64             `json:"profile_rows"`
 	Profile      []modelProfileRow `json:"profile_top10"`
-	Behavior     map[string]any   `json:"behavior,omitempty"`
-	TokenFlow    map[string]any   `json:"token_flow,omitempty"`
-	PathAnalysis map[string]any   `json:"path_analysis,omitempty"`
-	Risk         map[string]any   `json:"risk,omitempty"`
-	Perf         map[string]any   `json:"performance,omitempty"`
-	Passed       bool             `json:"passed"`
+	Behavior     map[string]any    `json:"behavior,omitempty"`
+	TokenFlow    map[string]any    `json:"token_flow,omitempty"`
+	PathAnalysis map[string]any    `json:"path_analysis,omitempty"`
+	Risk         map[string]any    `json:"risk,omitempty"`
+	Perf         map[string]any    `json:"performance,omitempty"`
+	Passed       bool              `json:"passed"`
 }
 
 // analyticsModelTest 提供共享基础设施。
@@ -304,12 +304,12 @@ func TestAnalytics_Behavior(t *testing.T) {
 
 // transferEdge 表示一条 Token 转账边（金额为 raw hex 值，无 decimals）。
 type transferEdge struct {
-	Token   string
-	From    string
-	To      string
-	Amount  string // decimal string
-	Block   string
-	TxHash  string
+	Token  string
+	From   string
+	To     string
+	Amount string // decimal string
+	Block  string
+	TxHash string
 }
 
 // TestAnalytics_TokenFlow 验证 Token 资金流 + 资金路径分析。

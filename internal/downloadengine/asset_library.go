@@ -42,9 +42,9 @@ var dedupKeys = map[DatasetType]string{
 // ── Asset Library ──
 
 type ParquetAssetLibrary struct {
-	mu       sync.RWMutex
-	baseDir  string
-	chain    string
+	mu        sync.RWMutex
+	baseDir   string
+	chain     string
 	manifests map[string]*AssetManifest // path → manifest
 }
 
@@ -250,11 +250,11 @@ func (lib *ParquetAssetLibrary) Stats() map[string]any {
 		byDataset[m.Dataset]++
 	}
 	return map[string]any{
-		"total_files":    len(lib.manifests),
-		"total_rows":     totalRows,
-		"total_size_mb":  float64(totalSize) / 1e6,
-		"by_dataset":     byDataset,
-		"chain":          lib.chain,
+		"total_files":   len(lib.manifests),
+		"total_rows":    totalRows,
+		"total_size_mb": float64(totalSize) / 1e6,
+		"by_dataset":    byDataset,
+		"chain":         lib.chain,
 	}
 }
 
@@ -277,9 +277,9 @@ func (lib *ParquetAssetLibrary) QueryOrDownload(dataset DatasetType, startBlock,
 
 func Plan2TBDevice() map[string]string {
 	return map[string]string{
-		"system":    "200GB",
-		"bsc_data":  "1500GB",
-		"cache":     "300GB",
+		"system":   "200GB",
+		"bsc_data": "1500GB",
+		"cache":    "300GB",
 	}
 }
 

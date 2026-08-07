@@ -66,11 +66,11 @@ const (
 type DataLevel int
 
 const (
-	LevelDiscover    DataLevel = 0 // 发现（关系已知）
-	LevelLogs        DataLevel = 1 // Logs（ERC20 转账事件）
-	LevelTransfer    DataLevel = 2 // Transfer（转账明细）
+	LevelDiscover     DataLevel = 0 // 发现（关系已知）
+	LevelLogs         DataLevel = 1 // Logs（ERC20 转账事件）
+	LevelTransfer     DataLevel = 2 // Transfer（转账明细）
 	LevelTransactions DataLevel = 3 // Transactions（交易明细）
-	LevelTrace       DataLevel = 4 // Trace（内部调用追踪）
+	LevelTrace        DataLevel = 4 // Trace（内部调用追踪）
 )
 
 // String 返回数据等级名称。
@@ -95,25 +95,25 @@ func (l DataLevel) String() string {
 
 // DiscoveredAddress 是地址发现队列中的一条记录。
 type DiscoveredAddress struct {
-	Address      string          `json:"address"`               // 地址（小写）
-	Source       string          `json:"source"`                // 发现来源（目标地址/上一跳）
-	Amount       string          `json:"amount"`                // 关联金额（raw hex 或 decimal 字符串）
-	Token        string          `json:"token"`                 // 关联 Token
-	Depth        int             `json:"depth"`                 // 扩展深度（目标地址=0）
-	Status       DiscoveryStatus `json:"status"`                // 队列状态
-	Score        float64         `json:"score,omitempty"`       // Expansion Score
+	Address        string             `json:"address"`                   // 地址（小写）
+	Source         string             `json:"source"`                    // 发现来源（目标地址/上一跳）
+	Amount         string             `json:"amount"`                    // 关联金额（raw hex 或 decimal 字符串）
+	Token          string             `json:"token"`                     // 关联 Token
+	Depth          int                `json:"depth"`                     // 扩展深度（目标地址=0）
+	Status         DiscoveryStatus    `json:"status"`                    // 队列状态
+	Score          float64            `json:"score,omitempty"`           // Expansion Score
 	ScoreBreakdown map[string]float64 `json:"score_breakdown,omitempty"` // 评分分项
-	Entity       EntityType      `json:"entity,omitempty"`      // 实体类型
-	Acquisition  AcquisitionMode `json:"acquisition,omitempty"` // 采集方式
-	TargetLevel  DataLevel       `json:"target_level"`          // 路由目标数据等级（未升级前）
-	DataLevel    DataLevel       `json:"data_level"`            // 当前已获取数据等级
-	RiskScore    float64         `json:"risk_score,omitempty"`  // 风险评分（来源：analyticsapi.Risk）
-	TxCount      int64           `json:"tx_count,omitempty"`    // 交易笔数
-	Label        string          `json:"label,omitempty"`       // 实体标签（如 Binance Hot Wallet）
-	JobID        string          `json:"job_id,omitempty"`      // 关联的下载任务 ID
-	IgnoredReason string         `json:"ignored_reason,omitempty"` // 忽略原因
-	DiscoveredAt time.Time       `json:"discovered_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	Entity         EntityType         `json:"entity,omitempty"`          // 实体类型
+	Acquisition    AcquisitionMode    `json:"acquisition,omitempty"`     // 采集方式
+	TargetLevel    DataLevel          `json:"target_level"`              // 路由目标数据等级（未升级前）
+	DataLevel      DataLevel          `json:"data_level"`                // 当前已获取数据等级
+	RiskScore      float64            `json:"risk_score,omitempty"`      // 风险评分（来源：analyticsapi.Risk）
+	TxCount        int64              `json:"tx_count,omitempty"`        // 交易笔数
+	Label          string             `json:"label,omitempty"`           // 实体标签（如 Binance Hot Wallet）
+	JobID          string             `json:"job_id,omitempty"`          // 关联的下载任务 ID
+	IgnoredReason  string             `json:"ignored_reason,omitempty"`  // 忽略原因
+	DiscoveredAt   time.Time          `json:"discovered_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
 // ── 引擎配置 ──
@@ -158,22 +158,22 @@ func DefaultConfig() ExpansionConfig {
 
 // ScoreInput 是一次地址评分所需的信号。
 type ScoreInput struct {
-	Address       string  `json:"address"`
+	Address       string     `json:"address"`
 	Entity        EntityType `json:"entity"`
-	Amount        string  `json:"amount"`         // 关联金额
-	RiskScore     float64 `json:"risk_score"`     // 0-100
-	SharedCounter int     `json:"shared_counter"` // 共同对手数（关联强度）
-	RelationScore float64 `json:"relation_score"` // 关联强度 0-1
-	TxCount       int64   `json:"tx_count"`       // 交易笔数（活跃度）
-	Degree        int     `json:"degree"`         // 图度（活跃度补充）
+	Amount        string     `json:"amount"`         // 关联金额
+	RiskScore     float64    `json:"risk_score"`     // 0-100
+	SharedCounter int        `json:"shared_counter"` // 共同对手数（关联强度）
+	RelationScore float64    `json:"relation_score"` // 关联强度 0-1
+	TxCount       int64      `json:"tx_count"`       // 交易笔数（活跃度）
+	Degree        int        `json:"degree"`         // 图度（活跃度补充）
 }
 
 // ScoreResult 是评分结果。
 type ScoreResult struct {
-	Score       float64            `json:"score"`
-	Breakdown   map[string]float64 `json:"breakdown"` // amount/risk/relation/activity/entity_penalty
-	Decision    Decision           `json:"decision"`
-	Reason      string             `json:"reason"`
+	Score     float64            `json:"score"`
+	Breakdown map[string]float64 `json:"breakdown"` // amount/risk/relation/activity/entity_penalty
+	Decision  Decision           `json:"decision"`
+	Reason    string             `json:"reason"`
 }
 
 // Decision 表示评分后的采集决策。
@@ -332,13 +332,13 @@ func (t *AcquisitionTask) View() TaskView {
 
 // EngineStats 是引擎运行统计。
 type EngineStats struct {
-	TotalDiscovered int            `json:"total_discovered"`
-	TotalApproved   int            `json:"total_approved"`
-	TotalCompleted  int            `json:"total_completed"`
-	TotalIgnored    int            `json:"total_ignored"`
-	TotalTasks      int            `json:"total_tasks"`
-	ByEntity        map[EntityType]int `json:"by_entity"`
+	TotalDiscovered int                     `json:"total_discovered"`
+	TotalApproved   int                     `json:"total_approved"`
+	TotalCompleted  int                     `json:"total_completed"`
+	TotalIgnored    int                     `json:"total_ignored"`
+	TotalTasks      int                     `json:"total_tasks"`
+	ByEntity        map[EntityType]int      `json:"by_entity"`
 	ByAcquisition   map[AcquisitionMode]int `json:"by_acquisition"`
-	LastRun         *time.Time     `json:"last_run,omitempty"`
-	Config          ExpansionConfig `json:"config"`
+	LastRun         *time.Time              `json:"last_run,omitempty"`
+	Config          ExpansionConfig         `json:"config"`
 }

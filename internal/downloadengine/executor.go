@@ -12,10 +12,10 @@ import (
 // ── Chunk Executor ──
 
 type Executor struct {
-	router       *Router
-	maxRetries   int
-	backoffBase  time.Duration
-	backoffMax   time.Duration
+	router      *Router
+	maxRetries  int
+	backoffBase time.Duration
+	backoffMax  time.Duration
 }
 
 func NewExecutor(router *Router) *Executor {

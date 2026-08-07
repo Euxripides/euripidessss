@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/datasource/aws"
@@ -27,9 +28,30 @@ func (d *discoverer) discover(ctx context.Context, chainKey, startDate, endDate 
 		return nil, err
 	}
 	d.adapter.Endpoint = d.endpoint
-	items, err := d.adapter.DiscoverTransactions(ctx, network, startDate, endDate)
-	if err != nil {
-		return nil, err
+	// AWS discover 单次限制 366 天：超范围自动按 366 天切片，合并分区列表（2020-01-01 起的大跨度任务必需）
+	var items []SourceObject
+	if start, e := time.Parse("2006-01-02", startDate); e == nil {
+		if end, e2 := time.Parse("2006-01-02", endDate); e2 == nil && end.Sub(start) > 366*24*time.Hour {
+			segStart := start
+			for segStart.Before(end) {
+				segEnd := segStart.Add(365 * 24 * time.Hour)
+				if segEnd.After(end) {
+					segEnd = end
+				}
+				seg, err := d.adapter.DiscoverTransactions(ctx, network, segStart.Format("2006-01-02"), segEnd.Format("2006-01-02"))
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, seg...)
+				segStart = segEnd.Add(24 * time.Hour)
+			}
+		}
+	}
+	if items == nil {
+		items, err = d.adapter.DiscoverTransactions(ctx, network, startDate, endDate)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for index := range items {
 		items[index].URI = aws.HTTPURL(d.endpoint, items[index])

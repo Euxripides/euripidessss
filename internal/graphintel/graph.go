@@ -31,18 +31,18 @@ const (
 
 // Node 是地址节点。
 type Node struct {
-	Address           string  `json:"address"`
-	Type              string  `json:"type"`
-	RiskScore         float64 `json:"risk_score"`
-	TransactionCount  int64   `json:"transaction_count"`
-	TotalIn           int64   `json:"total_in"`
-	TotalOut          int64   `json:"total_out"`
-	FirstActivity     string  `json:"first_activity"`
-	LastActivity      string  `json:"last_activity"`
-	Degree            int     `json:"degree"`
-	WeightedDegree    float64 `json:"weighted_degree"`
-	PageRank          float64 `json:"pagerank"`
-	ClusterID         int     `json:"cluster_id,omitempty"`
+	Address          string  `json:"address"`
+	Type             string  `json:"type"`
+	RiskScore        float64 `json:"risk_score"`
+	TransactionCount int64   `json:"transaction_count"`
+	TotalIn          int64   `json:"total_in"`
+	TotalOut         int64   `json:"total_out"`
+	FirstActivity    string  `json:"first_activity"`
+	LastActivity     string  `json:"last_activity"`
+	Degree           int     `json:"degree"`
+	WeightedDegree   float64 `json:"weighted_degree"`
+	PageRank         float64 `json:"pagerank"`
+	ClusterID        int     `json:"cluster_id,omitempty"`
 }
 
 // Edge 是关系边（聚合）。
@@ -112,9 +112,9 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 			edgeSeen[key] = true
 			g.Edges = append(g.Edges, Edge{
 				Source: f, Target: t, Kind: EdgeTransfer,
-				Token:  fmt.Sprintf("%v", r["token"]),
-				Amount: amount,
-				TxCount: int64(r["tx_count"].(float64)),
+				Token:     fmt.Sprintf("%v", r["token"]),
+				Amount:    amount,
+				TxCount:   int64(r["tx_count"].(float64)),
 				FirstTime: fmt.Sprintf("%v", r["first_time"]),
 				LastTime:  fmt.Sprintf("%v", r["last_time"]),
 			})
@@ -145,7 +145,7 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 				edgeSeen[key] = true
 				g.Edges = append(g.Edges, Edge{
 					Source: emitter, Target: a, Kind: EdgeInteraction,
-					TxCount:  int64(r["n"].(float64)),
+					TxCount:   int64(r["n"].(float64)),
 					FirstTime: fmt.Sprintf("%v", r["first_time"]),
 					LastTime:  fmt.Sprintf("%v", r["last_time"]),
 				})
@@ -159,7 +159,7 @@ func (b *Builder) Build(ctx context.Context) (*Graph, error) {
 				edgeSeen[key] = true
 				g.Edges = append(g.Edges, Edge{
 					Source: emitter, Target: b, Kind: EdgeInteraction,
-					TxCount:  int64(r["n"].(float64)),
+					TxCount:   int64(r["n"].(float64)),
 					FirstTime: fmt.Sprintf("%v", r["first_time"]),
 					LastTime:  fmt.Sprintf("%v", r["last_time"]),
 				})
@@ -308,8 +308,8 @@ func ComputeMetrics(g *Graph) {
 
 // RiskPattern 是风险网络模式。
 type RiskPattern struct {
-	Hubs    []string `json:"hubs"`    // 中转：in>=10 && out>=10
-	Sinks   []string `json:"sinks"`   // 归集：in>=10 且 in > 2*out
+	Hubs      []string `json:"hubs"`      // 中转：in>=10 && out>=10
+	Sinks     []string `json:"sinks"`     // 归集：in>=10 且 in > 2*out
 	Spreaders []string `json:"spreaders"` // 分散：out>=10 且 out > 2*in
 }
 
@@ -464,11 +464,11 @@ func Stats(g *Graph) map[string]any {
 		}
 	}
 	return map[string]any{
-		"nodes":          len(g.Nodes),
-		"edges":          len(g.Edges),
-		"clusters":       len(clusterSizes),
+		"nodes":           len(g.Nodes),
+		"edges":           len(g.Edges),
+		"clusters":        len(clusterSizes),
 		"largest_cluster": maxCluster,
-		"build_time_ms":  0,
+		"build_time_ms":   0,
 	}
 }
 

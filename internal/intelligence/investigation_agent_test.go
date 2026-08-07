@@ -40,18 +40,18 @@ func TestAgentFullFlow(t *testing.T) {
 	cfg.TopPaths = 5
 
 	agent := &InvestigationAgent{
-		flowSource:      src,
-		ranker:          DefaultPathRanker(),
-		planner:         NewPlanner(cfg),
-		detector:        NewPatternDetector(cfg),
-		report:          NewReportAgent(cfg),
-		contextBuilder:  NewAIContextBuilder(cfg),
-		deepseek:        NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
-		entityResolver:  NewEntityResolver(nil, nil),
-		cfg:             cfg,
-		active:          make(map[string]*Investigation),
-		history:         make(map[string]*Investigation),
-		memories:        NewMemoryStore(""),
+		flowSource:     src,
+		ranker:         DefaultPathRanker(),
+		planner:        NewPlanner(cfg),
+		detector:       NewPatternDetector(cfg),
+		report:         NewReportAgent(cfg),
+		contextBuilder: NewAIContextBuilder(cfg),
+		deepseek:       NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
+		entityResolver: NewEntityResolver(nil, nil),
+		cfg:            cfg,
+		active:         make(map[string]*Investigation),
+		history:        make(map[string]*Investigation),
+		memories:       NewMemoryStore(""),
 	}
 	agent.tracer = NewFundTracer(src, agent.ranker, cfg)
 
@@ -148,18 +148,18 @@ func TestAgentConcurrentSurveys(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.UseAI = false
 	agent := &InvestigationAgent{
-		flowSource:      src,
-		ranker:          DefaultPathRanker(),
-		planner:         NewPlanner(cfg),
-		detector:        NewPatternDetector(cfg),
-		report:          NewReportAgent(cfg),
-		contextBuilder:  NewAIContextBuilder(cfg),
-		deepseek:        NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
-		entityResolver:  NewEntityResolver(nil, nil),
-		cfg:             cfg,
-		active:          make(map[string]*Investigation),
-		history:         make(map[string]*Investigation),
-		memories:        NewMemoryStore(""),
+		flowSource:     src,
+		ranker:         DefaultPathRanker(),
+		planner:        NewPlanner(cfg),
+		detector:       NewPatternDetector(cfg),
+		report:         NewReportAgent(cfg),
+		contextBuilder: NewAIContextBuilder(cfg),
+		deepseek:       NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
+		entityResolver: NewEntityResolver(nil, nil),
+		cfg:            cfg,
+		active:         make(map[string]*Investigation),
+		history:        make(map[string]*Investigation),
+		memories:       NewMemoryStore(""),
 	}
 	agent.tracer = NewFundTracer(src, agent.ranker, cfg)
 

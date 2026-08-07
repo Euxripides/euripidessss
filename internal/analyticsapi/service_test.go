@@ -22,16 +22,16 @@ import (
 const (
 	flagAPIService = ".api-service.enabled"
 	knownAddress   = "0x55d398326f99059ff775485246999027b3197955" // USDT 合约
-	activeAddress  = "0x238a358808379702088667322f80ac48bad5e6c4"  // 活跃交易方
+	activeAddress  = "0x238a358808379702088667322f80ac48bad5e6c4" // 活跃交易方
 )
 
 type apiReport struct {
-	Timestamp    time.Time              `json:"timestamp"`
-	Correctness  map[string]any         `json:"correctness"`
-	Cache        map[string]any         `json:"cache"`
-	Perf         map[string]any         `json:"performance"`
-	Concurrency  map[string]any         `json:"concurrency"`
-	Passed       bool                   `json:"passed"`
+	Timestamp   time.Time      `json:"timestamp"`
+	Correctness map[string]any `json:"correctness"`
+	Cache       map[string]any `json:"cache"`
+	Perf        map[string]any `json:"performance"`
+	Concurrency map[string]any `json:"concurrency"`
+	Passed      bool           `json:"passed"`
 }
 
 func newAPITest(t *testing.T) (*Service, *duckdb.Engine, string) {
@@ -316,7 +316,7 @@ func TestAPI_Concurrency(t *testing.T) {
 }
 
 // TestBatchProfiles_Validation 回归：addresses 与 addr_file 都空时拒绝；
-// addresses 走 VALUES 内联（不产生 read_csv('') 读 stdin 的 OOM 路径）。
+// addresses 走 VALUES 内联（不产生 read_csv(”) 读 stdin 的 OOM 路径）。
 func TestBatchProfiles_Validation(t *testing.T) {
 	// 1. 两者都空 → 错误（修复前：read_csv('') 读标准输入 → JOIN 爆炸 → 服务 OOM）
 	if _, err := batchWantSQL(nil, ""); err == nil {

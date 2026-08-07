@@ -1,13 +1,13 @@
-﻿package rules
+package rules
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"crypto/sha1"
 	"sort"
+	"strings"
 )
 
 var customRulesPath string
@@ -18,9 +18,9 @@ func SetCustomRulesPath(path string) {
 
 // CustomRulesData represents the structure of custom_rules.json
 type CustomRulesData struct {
-	Providers         map[string][]map[string]interface{} `json:"providers"`
-	FlowMappingRules  []map[string]interface{}            `json:"flow_mapping_rules,omitempty"`
-	DirectionAliases  map[string]string                   `json:"direction_aliases,omitempty"`
+	Providers        map[string][]map[string]interface{} `json:"providers"`
+	FlowMappingRules []map[string]interface{}            `json:"flow_mapping_rules,omitempty"`
+	DirectionAliases map[string]string                   `json:"direction_aliases,omitempty"`
 }
 
 func LoadCustomRules() (*CustomRulesData, error) {
@@ -158,7 +158,6 @@ func SaveDirectionAliases(aliases map[string]string) (*CustomRulesData, error) {
 	return data, nil
 }
 
-
 // GenerateColumnSignature creates a deterministic hash based on the sorted column list
 // Used to detect if we've seen this column combination before
 func GenerateColumnSignature(columns []string) string {
@@ -184,4 +183,3 @@ func saveCustomRules(data *CustomRulesData) error {
 	}
 	return os.WriteFile(customRulesPath, raw, 0644)
 }
-

@@ -1,4 +1,4 @@
-﻿package etl
+package etl
 
 import (
 	"fmt"

@@ -1,4 +1,4 @@
-﻿package logger
+package logger
 
 import (
 	"fmt"
@@ -73,4 +73,3 @@ func Close() {
 func init() {
 	Log = zerolog.New(io.Discard).With().Timestamp().Logger()
 }
-

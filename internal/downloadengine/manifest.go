@@ -14,20 +14,20 @@ import (
 // ── Manifest V2 Finalizer（原子 rename）──
 
 type ManifestV2 struct {
-	Version     int       `json:"version"`
-	JobID       string    `json:"job_id"`
-	ChainID     string    `json:"chain_id"`
+	Version      int      `json:"version"`
+	JobID        string   `json:"job_id"`
+	ChainID      string   `json:"chain_id"`
 	DatasetTypes []string `json:"dataset_types"`
-	Range       struct {
+	Range        struct {
 		StartBlock uint64 `json:"start_block"`
 		EndBlock   uint64 `json:"end_block"`
 	} `json:"range"`
-	Status         string    `json:"status"`
-	RowsTotal      int64     `json:"rows_total"`
-	BytesTotal     int64     `json:"bytes_total"`
-	CoverageStatus string    `json:"coverage_status"`
-	CreatedAt      string    `json:"created_at"`
-	CompletedAt    string    `json:"completed_at"`
+	Status         string `json:"status"`
+	RowsTotal      int64  `json:"rows_total"`
+	BytesTotal     int64  `json:"bytes_total"`
+	CoverageStatus string `json:"coverage_status"`
+	CreatedAt      string `json:"created_at"`
+	CompletedAt    string `json:"completed_at"`
 }
 
 type ManifestFinalizer struct {
@@ -106,8 +106,8 @@ func (g *CompletionGate) Verify(job *Job, chunks []*Chunk, manifestWritten bool,
 // ── Dataset Registry ──
 
 type DatasetRecord struct {
-	DatasetID   string    `json:"dataset_id"`   // UUID
-	Fingerprint string    `json:"fingerprint"`  // SHA256(json.Marshal({chain,type,start,end}))
+	DatasetID   string    `json:"dataset_id"`  // UUID
+	Fingerprint string    `json:"fingerprint"` // SHA256(json.Marshal({chain,type,start,end}))
 	JobID       string    `json:"job_id"`
 	ChainID     string    `json:"chain_id"`
 	DatasetType string    `json:"dataset_type"`
@@ -122,10 +122,10 @@ type DatasetRecord struct {
 }
 
 type DatasetRegistry struct {
-	mu        sync.RWMutex
-	byID      map[string]*DatasetRecord // UUID → record
-	byFP      map[string]*DatasetRecord // fingerprint → record
-	storeDir  string
+	mu       sync.RWMutex
+	byID     map[string]*DatasetRecord // UUID → record
+	byFP     map[string]*DatasetRecord // fingerprint → record
+	storeDir string
 }
 
 func NewDatasetRegistry(storeDir string) *DatasetRegistry {

@@ -8,15 +8,15 @@ import (
 type AccountStatus string
 
 const (
-	AccountStatusPending       AccountStatus = "pending"
-	AccountStatusRegister      AccountStatus = "registering"
-	AccountStatusVerifyMail    AccountStatus = "verifying"
-	AccountStatusLogin         AccountStatus = "logging_in"
-	AccountStatusCaptcha       AccountStatus = "captcha"
-	AccountStatusDone          AccountStatus = "done"
-	AccountStatusFailed        AccountStatus = "failed"
-	AccountStatusWaitVerify    AccountStatus = "wait_verify" // Registered, email received, waiting for verify+login
-	AccountStatusBanned        AccountStatus = "banned"      // Account blocked/suspended by Dune
+	AccountStatusPending    AccountStatus = "pending"
+	AccountStatusRegister   AccountStatus = "registering"
+	AccountStatusVerifyMail AccountStatus = "verifying"
+	AccountStatusLogin      AccountStatus = "logging_in"
+	AccountStatusCaptcha    AccountStatus = "captcha"
+	AccountStatusDone       AccountStatus = "done"
+	AccountStatusFailed     AccountStatus = "failed"
+	AccountStatusWaitVerify AccountStatus = "wait_verify" // Registered, email received, waiting for verify+login
+	AccountStatusBanned     AccountStatus = "banned"      // Account blocked/suspended by Dune
 )
 
 type TaskStatus string
@@ -44,15 +44,15 @@ type Account struct {
 }
 
 type TaskSnapshot struct {
-	ID           string     `json:"id"`
-	Total        int        `json:"total"`
-	Completed    int        `json:"completed"`
-	Failed       int        `json:"failed"`
-	Status       TaskStatus `json:"status"`
-	Accounts     []Account  `json:"accounts"`
-	StartedAt    string     `json:"started_at,omitempty"`
-	UpdatedAt    string     `json:"updated_at,omitempty"`
-	RedirectedFrom string   `json:"redirected_from,omitempty"`
+	ID             string     `json:"id"`
+	Total          int        `json:"total"`
+	Completed      int        `json:"completed"`
+	Failed         int        `json:"failed"`
+	Status         TaskStatus `json:"status"`
+	Accounts       []Account  `json:"accounts"`
+	StartedAt      string     `json:"started_at,omitempty"`
+	UpdatedAt      string     `json:"updated_at,omitempty"`
+	RedirectedFrom string     `json:"redirected_from,omitempty"`
 }
 
 type StartRequest struct {

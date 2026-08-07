@@ -25,10 +25,10 @@ import (
 // 启用：创建 stress-data/bsc_real/.duckdb-bench.enabled
 
 const (
-	flagDuckBench    = ".duckdb-bench.enabled"
-	transferTopic    = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-	transferSingle   = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
-	transferBatch    = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
+	flagDuckBench  = ".duckdb-bench.enabled"
+	transferTopic  = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+	transferSingle = "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62"
+	transferBatch  = "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb"
 )
 
 type benchScenario struct {
@@ -257,7 +257,7 @@ func TestDuckDBAnalyticsBenchmark(t *testing.T) {
 	for _, n := range []int{1, 5, 10} {
 		d := concurrent(n)
 		result.Scenarios = append(result.Scenarios, benchScenario{
-			Name: fmt.Sprintf("7. 并发查询（%d 连接）", n),
+			Name:     fmt.Sprintf("7. 并发查询（%d 连接）", n),
 			Duration: roundMS(d), Seconds: d,
 			Note: fmt.Sprintf("平均单查询 %.0fms", d/float64(n)*1000),
 		})
@@ -279,7 +279,7 @@ func TestDuckDBAnalyticsBenchmark(t *testing.T) {
 		t.Fatalf("full scan: %v", err)
 	}
 	result.Scenarios = append(result.Scenarios, benchScenario{
-		Name: "8. 字段裁剪（SELECT 子集 vs SELECT *）",
+		Name:     "8. 字段裁剪（SELECT 子集 vs SELECT *）",
 		Duration: roundMS(projDur), Seconds: projDur,
 		Note: fmt.Sprintf("SELECT * 耗时 %s（裁剪加速 %.1f%%）", roundMS(fullDur), (1-projDur/fullDur)*100),
 	})
@@ -342,4 +342,3 @@ func roundMS(secs float64) string {
 
 var _ = bufio.NewReader // keep import if unused in future edits
 var _ = runtime.NumCPU
-

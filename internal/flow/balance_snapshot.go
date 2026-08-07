@@ -19,13 +19,13 @@ import (
 
 // BalanceSnapshot 是一条余额快照（设计 §8 字段）。
 type BalanceSnapshot struct {
-	Chain       string           `json:"chain"`
-	ChainID     int64            `json:"chain_id"`
-	Address     string           `json:"address"`
-	BlockNumber string           `json:"block_number,omitempty"`
-	CapturedAt  time.Time        `json:"captured_at"`
-	Source      string           `json:"source"`
-	Assets      []AssetBalance   `json:"assets"`
+	Chain       string         `json:"chain"`
+	ChainID     int64          `json:"chain_id"`
+	Address     string         `json:"address"`
+	BlockNumber string         `json:"block_number,omitempty"`
+	CapturedAt  time.Time      `json:"captured_at"`
+	Source      string         `json:"source"`
+	Assets      []AssetBalance `json:"assets"`
 }
 
 // BalanceSnapshotStore 管理余额快照（目录 = dataRoot/investigation/balance-snapshots）。
@@ -109,14 +109,14 @@ func (s *BalanceSnapshotStore) List(chain, address string) []BalanceSnapshot {
 
 // SnapshotDiff 是历史对比（设计 §8：实时 vs 最近快照，变化量与变化率）。
 type SnapshotDiff struct {
-	Address     string  `json:"address"`
-	Chain       string  `json:"chain"`
-	Symbol      string  `json:"symbol"`
-	Current     string  `json:"current"`      // 实时余额
-	Snapshot    string  `json:"snapshot"`     // 快照余额
-	SnapshotAt  string  `json:"snapshot_at"`  // 快照时间
-	Change      float64 `json:"change"`       // 变化量（数值差值）
-	ChangePct   float64 `json:"change_pct"`   // 变化率（%）
+	Address    string  `json:"address"`
+	Chain      string  `json:"chain"`
+	Symbol     string  `json:"symbol"`
+	Current    string  `json:"current"`     // 实时余额
+	Snapshot   string  `json:"snapshot"`    // 快照余额
+	SnapshotAt string  `json:"snapshot_at"` // 快照时间
+	Change     float64 `json:"change"`      // 变化量（数值差值）
+	ChangePct  float64 `json:"change_pct"`  // 变化率（%）
 }
 
 // Compare 对比实时资产与最新快照（设计 §8）。

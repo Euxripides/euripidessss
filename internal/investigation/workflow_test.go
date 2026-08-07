@@ -20,18 +20,18 @@ import (
 const (
 	flagInvestigation = ".investigation.enabled"
 	targetContract    = "0x55d398326f99059ff775485246999027b3197955" // USDT 合约（高频）
-	targetActive      = "0x238a358808379702088667322f80ac48bad5e6c4"  // 活跃交易方
+	targetActive      = "0x238a358808379702088667322f80ac48bad5e6c4" // 活跃交易方
 )
 
 type invReport struct {
-	Timestamp    time.Time          `json:"timestamp"`
-	SingleAddress map[string]any    `json:"single_address"`
-	Trace         map[string]any    `json:"trace_funds"`
-	Relations     map[string]any    `json:"relations"`
-	RiskScenario  map[string]any    `json:"risk_scenario"`
-	Reproducible  bool              `json:"reproducible"`
-	Perf          map[string]any    `json:"performance"`
-	Passed        bool              `json:"passed"`
+	Timestamp     time.Time      `json:"timestamp"`
+	SingleAddress map[string]any `json:"single_address"`
+	Trace         map[string]any `json:"trace_funds"`
+	Relations     map[string]any `json:"relations"`
+	RiskScenario  map[string]any `json:"risk_scenario"`
+	Reproducible  bool           `json:"reproducible"`
+	Perf          map[string]any `json:"performance"`
+	Passed        bool           `json:"passed"`
 }
 
 func newInvestigationTest(t *testing.T) (*Investigator, *analyticsapi.Service, string) {
@@ -289,7 +289,7 @@ func TestInvestigation_ReproducibleAndPerf(t *testing.T) {
 	}
 
 	writeInvReport(filepath.Join(dataRoot, "..", "..", "benchmark"), &invReport{
-		Timestamp: time.Now().UTC(),
+		Timestamp:    time.Now().UTC(),
 		Reproducible: reproducible,
 		Perf:         perf,
 		Passed:       reproducible,

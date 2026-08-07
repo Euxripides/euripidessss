@@ -160,7 +160,7 @@ func TestReport2_FullReport(t *testing.T) {
 			"items": len(items), "transfer": withTx, "traceable": traceable,
 			"timeline_classified": len(classified), "has_large": hasLarge,
 		},
-		Perf: map[string]any{"case_run_ms": runDur.Milliseconds()},
+		Perf:   map[string]any{"case_run_ms": runDur.Milliseconds()},
 		Passed: traceable && hasLarge && len(items) > 0,
 	}, t)
 	if !traceable {

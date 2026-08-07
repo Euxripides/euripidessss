@@ -20,17 +20,17 @@ import (
 
 // Summary 是单地址调查摘要。
 type Summary struct {
-	Address       string                 `json:"address"`
-	AddressType   string                 `json:"address_type"` // 合约 / 活跃交易方 / 低频
-	Profile       *analyticsapi.Profile  `json:"profile"`
-	Risk          *analyticsapi.Risk     `json:"risk"`
-	InCount       int                    `json:"in_count"`
-	OutCount      int                    `json:"out_count"`
-	TopToken      string                 `json:"top_token"`
-	PathCount     int                    `json:"path_count"`
-	RelatedCount  int                    `json:"related_count"`
-	Related       []RelatedAddress       `json:"related_top5"`
-	QueryDuration map[string]string      `json:"query_duration_ms"`
+	Address       string                `json:"address"`
+	AddressType   string                `json:"address_type"` // 合约 / 活跃交易方 / 低频
+	Profile       *analyticsapi.Profile `json:"profile"`
+	Risk          *analyticsapi.Risk    `json:"risk"`
+	InCount       int                   `json:"in_count"`
+	OutCount      int                   `json:"out_count"`
+	TopToken      string                `json:"top_token"`
+	PathCount     int                   `json:"path_count"`
+	RelatedCount  int                   `json:"related_count"`
+	Related       []RelatedAddress      `json:"related_top5"`
+	QueryDuration map[string]string     `json:"query_duration_ms"`
 }
 
 // TraceEdge 是一条可追踪的转账边。
@@ -54,19 +54,19 @@ type TracePath struct {
 
 // RelatedAddress 是关联地址（共同对手 Jaccard）。
 type RelatedAddress struct {
-	Address             string  `json:"address"`
-	Score               float64 `json:"shared_counterparty_score"`
-	SharedCounterparties int    `json:"shared_counterparties"`
+	Address              string  `json:"address"`
+	Score                float64 `json:"shared_counterparty_score"`
+	SharedCounterparties int     `json:"shared_counterparties"`
 }
 
 // RiskEvidence 是高风险调查证据。
 type RiskEvidence struct {
-	Address        string       `json:"address"`
-	Risk           *analyticsapi.Risk `json:"risk"`
-	LargeInflows   []TraceEdge  `json:"large_inflows_top5"`
-	RapidOutflows  []TraceEdge  `json:"rapid_outflows_top5"`
-	SpreadTargets  []SpreadTarget `json:"spread_targets_top5"`
-	Pattern        string       `json:"pattern"`
+	Address       string             `json:"address"`
+	Risk          *analyticsapi.Risk `json:"risk"`
+	LargeInflows  []TraceEdge        `json:"large_inflows_top5"`
+	RapidOutflows []TraceEdge        `json:"rapid_outflows_top5"`
+	SpreadTargets []SpreadTarget     `json:"spread_targets_top5"`
+	Pattern       string             `json:"pattern"`
 }
 
 // SpreadTarget 是资金分散目标。
@@ -78,8 +78,8 @@ type SpreadTarget struct {
 
 // Investigator 执行调查工作流。
 type Investigator struct {
-	svc    *analyticsapi.Service
-	engine *duckdb.Engine
+	svc     *analyticsapi.Service
+	engine  *duckdb.Engine
 	parquet string
 }
 
@@ -460,12 +460,12 @@ func sortEdgesByBlock(edges []TraceEdge) {
 
 // Evidence 是调查证据包（写入 snapshots/）。
 type Evidence struct {
-	Timestamp time.Time          `json:"timestamp"`
-	Target    string             `json:"target"`
-	Summary   *Summary           `json:"summary"`
-	TracePaths []TracePath       `json:"trace_paths"`
-	Risk      *RiskEvidence      `json:"risk_evidence"`
-	Related   []RelatedAddress   `json:"related_addresses"`
+	Timestamp  time.Time        `json:"timestamp"`
+	Target     string           `json:"target"`
+	Summary    *Summary         `json:"summary"`
+	TracePaths []TracePath      `json:"trace_paths"`
+	Risk       *RiskEvidence    `json:"risk_evidence"`
+	Related    []RelatedAddress `json:"related_addresses"`
 }
 
 // GenerateReport 生成调查证据（investigation-report.json/md + snapshots/*）。

@@ -48,12 +48,12 @@ func (h *JobAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *JobAPIHandler) createJob(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		JobType     string   `json:"job_type"`
-		ChainID     string   `json:"chain_id"`
-		Addresses   []string `json:"addresses"`
-		Datasets    []string `json:"datasets"`
-		RangeMode   string   `json:"range_mode"`
-		Priority    int      `json:"priority"`
+		JobType   string   `json:"job_type"`
+		ChainID   string   `json:"chain_id"`
+		Addresses []string `json:"addresses"`
+		Datasets  []string `json:"datasets"`
+		RangeMode string   `json:"range_mode"`
+		Priority  int      `json:"priority"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"detail": "请求格式错误"})

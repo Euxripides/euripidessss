@@ -11,11 +11,11 @@ package dynamicinvestigation
 
 // RouteInput 是采集路由决策输入。
 type RouteInput struct {
-	Entity     EntityType
-	Decision   Decision
-	Score      float64
+	Entity       EntityType
+	Decision     Decision
+	Score        float64
 	CurrentLevel DataLevel
-	Depth      int
+	Depth        int
 }
 
 // RouteResult 是路由决策结果。

@@ -280,7 +280,8 @@ func (m *Manager) runJob(ctx context.Context, id string, settings Settings) {
 		})
 	} else {
 		m.mutate(id, func(item *Job) {
-			setStage(item, "receipts", StatusDone, 100, "未选择 transactions")
+			// SQD 流式路径不提供 AWS parquet 交易文件：Receipts/合约创建富化在此路径不可用（已知限制）
+			setStage(item, "receipts", StatusDone, 100, "SQD 流式路径未启用 Receipt 富化（需 AWS parquet 或 receipts 数据源）")
 			setStage(item, "normalize", StatusDone, 100, "原生交易标准化未选择")
 			setStage(item, "activity", StatusDone, 100, fmt.Sprintf("SQD 生成 %d 条统一活动", item.ActivityRows))
 		})

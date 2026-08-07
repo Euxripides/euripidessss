@@ -205,6 +205,16 @@ async def run():
         REPORT["压力: 40 次滚轮节点数不变"] = node_count_before == node_count_after
         REPORT["压力: 40 次滚轮边数不变"] = edge_count_before == edge_count_after
         REPORT["压力: 交互结束动画恢复(无 interacting 类)"] = not interacting
+
+        # 右上角 × 关闭地址详情 = 退出聚焦 + 折叠面板
+        await page.get_by_label("关闭详情").click()
+        await page.wait_for_timeout(400)
+        REPORT["1440px: ×关闭后面板折叠"] = await page.locator(".flow-inspector-collapse-bar").is_visible()
+        mode_text = await page.locator(".flow-canvas-mode-label").inner_text()
+        REPORT["1440px: ×关闭后退出聚焦"] = "聚焦模式" not in mode_text
+        await page.get_by_label("展开地址详情").click()
+        await page.wait_for_timeout(400)
+        REPORT["1440px: 关闭后可重新展开"] = await page.locator(".flow-inspector").is_visible()
         await ctx.close()
 
         # ── 5. 移动端 390×844（Drawer 全屏）：先桌面进入图谱，再缩小视口 ──

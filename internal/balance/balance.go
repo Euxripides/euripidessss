@@ -36,14 +36,14 @@ var knownTokens = []TokenMeta{
 
 // Transfer 是一条 Transfer 记录。
 type Transfer struct {
-	Token   string
-	From    string
-	To      string
-	Amount  string // decimal string（raw，未除 decimals）
-	Block   string
-	TxHash  string
-	LogIdx  string
-	Time    string
+	Token  string
+	From   string
+	To     string
+	Amount string // decimal string（raw，未除 decimals）
+	Block  string
+	TxHash string
+	LogIdx string
+	Time   string
 }
 
 // BalanceEngine 计算余额。
@@ -131,12 +131,12 @@ func (b *BalanceEngine) Load(ctx context.Context) error {
 
 // Balance 是地址在某 token 上的余额（raw 值）。
 type Balance struct {
-	Address string `json:"address"`
-	Token   string `json:"token"`
-	Symbol  string `json:"symbol"`
-	Decimals int   `json:"decimals"`
-	Balance string `json:"balance"` // raw decimal
-	InTotal string `json:"in_total"`
+	Address  string `json:"address"`
+	Token    string `json:"token"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+	Balance  string `json:"balance"` // raw decimal
+	InTotal  string `json:"in_total"`
 	OutTotal string `json:"out_total"`
 }
 
@@ -212,13 +212,13 @@ func (b *BalanceEngine) buildAllBalances() {
 
 // Snapshot 是单地址资产快照。
 type Snapshot struct {
-	Address       string     `json:"address"`
-	Balances      []Balance  `json:"balances"`
-	HistoryHigh   []HighBalance `json:"history_high"`
+	Address       string          `json:"address"`
+	Balances      []Balance       `json:"balances"`
+	HistoryHigh   []HighBalance   `json:"history_high"`
 	Timeline      []BalanceChange `json:"timeline"`
-	LargeInflows  []LargeFlow `json:"large_inflows"`
-	RapidOutflows []LargeFlow `json:"rapid_outflows"`
-	Risk          AssetRisk  `json:"risk"`
+	LargeInflows  []LargeFlow     `json:"large_inflows"`
+	RapidOutflows []LargeFlow     `json:"rapid_outflows"`
+	Risk          AssetRisk       `json:"risk"`
 }
 
 // HighBalance 是历史最高余额。
@@ -251,10 +251,10 @@ type LargeFlow struct {
 
 // AssetRisk 是资产风险指标。
 type AssetRisk struct {
-	AssetValue      string  `json:"asset_value_raw"`
+	AssetValue        string  `json:"asset_value_raw"`
 	BalanceChangeRate float64 `json:"balance_change_rate"`
-	LiquidationSignal bool   `json:"liquidation_signal"`
-	Level           string  `json:"level"`
+	LiquidationSignal bool    `json:"liquidation_signal"`
+	Level             string  `json:"level"`
 }
 
 // AssetSummary 是资产摘要（报告用）。
@@ -281,7 +281,7 @@ func (b *BalanceEngine) BuildSnapshot(ctx context.Context, address string) (*Sna
 
 	// 该地址相关 Transfer（按 token 分组的时序）
 	type entry struct {
-		t Transfer
+		t  Transfer
 		in bool
 	}
 	var events []entry
@@ -297,9 +297,9 @@ func (b *BalanceEngine) BuildSnapshot(ctx context.Context, address string) (*Sna
 	// 时间线 + 历史最高（按 token 独立累计）
 	byToken := map[string]*big.Int{}
 	type high struct {
-		bal     *big.Int
-		block   string
-		time    string
+		bal   *big.Int
+		block string
+		time  string
 	}
 	highs := map[string]*high{}
 	for _, ev := range events {

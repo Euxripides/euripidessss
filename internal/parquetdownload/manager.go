@@ -169,13 +169,10 @@ func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, e
 	if err != nil {
 		return Preview{}, err
 	}
+	// 原生交易（含 BSC）一律由 SQD 流式按地址过滤采集：
+	// AWS 公共 Parquet 为全量日分区（单文件 ~6GB、单次 discover ≤366 天），
+	// 对地址筛选任务会造成 TB 级不必要下载，故不再触发 AWS discover。
 	var files []SourceObject
-	if hasSelectedSource(selectedSources, "transactions") && network.Key == "bsc" {
-		files, err = m.discoverer.discover(ctx, chainKey, request.StartDate, request.EndDate)
-		if err != nil {
-			return Preview{}, err
-		}
-	}
 	settings := m.Settings()
 	free, err := diskFreeBytes(settings.DataRoot)
 	if err != nil {
@@ -186,7 +183,7 @@ func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, e
 	sqdAvailable := false
 	needsSQD := hasSelectedSource(selectedSources, "logs") ||
 		hasSelectedSource(selectedSources, "traces") ||
-		(hasSelectedSource(selectedSources, "transactions") && network.Key != "bsc")
+		hasSelectedSource(selectedSources, "transactions")
 	if needsSQD {
 		if network.SQDDataset == "" {
 			return Preview{}, fmt.Errorf("%s 尚未配置 SQD 数据集", network.Name)
@@ -194,23 +191,27 @@ func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, e
 		if _, err := m.sqd.Metadata(ctx, network); err != nil {
 			return Preview{}, fmt.Errorf("探测 SQD 数据集: %w", err)
 		}
-		if resolved, err := m.sqd.ResolveDateRange(ctx, network, request.StartDate, request.EndDate); err != nil {
-			return Preview{}, fmt.Errorf("解析 SQD 日期区块范围: %w", err)
-		} else {
-			if request.UseFirstSeen && addresses.Valid > 0 {
-				minBlock := m.resolveMinFirstSeen(ctx, network, addresses.Addresses)
-				if minBlock > 0 && minBlock <= resolved.To {
-					resolved.From = minBlock
-				}
-			}
-			sqdRange = &SQDBlockRange{From: resolved.From, To: resolved.To}
+		if request.FromBlock > 0 && request.ToBlock >= request.FromBlock {
+			// Phase 5.2 P0-2：DataRequirement 显式 from/to 必须原样透传到 Portal 查询
+			sqdRange = &SQDBlockRange{From: request.FromBlock, To: request.ToBlock}
 			sqdAvailable = true
+		} else {
+			if resolved, err := m.sqd.ResolveDateRange(ctx, network, request.StartDate, request.EndDate); err != nil {
+				return Preview{}, fmt.Errorf("解析 SQD 日期区块范围: %w", err)
+			} else {
+				if request.UseFirstSeen && addresses.Valid > 0 {
+					minBlock := m.resolveMinFirstSeen(ctx, network, addresses.Addresses)
+					if minBlock > 0 && minBlock <= resolved.To {
+						resolved.From = minBlock
+					}
+				}
+				sqdRange = &SQDBlockRange{From: resolved.From, To: resolved.To}
+				sqdAvailable = true
+			}
 		}
 	}
-	if hasSelectedSource(selectedSources, "transactions") && network.Key == "bsc" {
-		warnings = append(warnings, "原生交易来自 AWS 公共 Parquet；Transfer 事件与 Trace 由 SQD 独立采集，不混写为交易记录。")
-	} else if hasSelectedSource(selectedSources, "transactions") {
-		warnings = append(warnings, "原生交易由 SQD 按地址过滤并统一为多链 transactions 模型。")
+	if hasSelectedSource(selectedSources, "transactions") {
+		warnings = append(warnings, "原生交易由 SQD 流式按地址过滤并统一为多链 transactions 模型（不再走 AWS 全量分区下载）。")
 	}
 	if hasSelectedSource(selectedSources, "logs") {
 		warnings = append(warnings, "Token/NFT 标准事件已解析；当前保留 amount_raw，未配置或未完成代币 metadata RPC 时 symbol、decimals、换算金额保持空值。")
@@ -220,7 +221,7 @@ func (m *Manager) Preview(ctx context.Context, request StartRequest) (Preview, e
 		warnings = append(warnings, fmt.Sprintf("未配置 %s；Receipt、准确合约创建暂不启用，to_address 为空只保留为候选。", network.RPCEnv))
 	}
 	if hasSelectedSource(selectedSources, "transactions") && network.Key == "bsc" && len(files) == 0 {
-		warnings = append(warnings, "所选日期尚未发现 transactions Parquet，可能是数据尚未发布。")
+		// files 恒为空（SQD 流式接管原生交易），无需警告
 	}
 	return Preview{
 		ChainKey:         chainKey,

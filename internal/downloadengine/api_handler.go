@@ -24,9 +24,9 @@ func (h *APIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIHandler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":          "ok",
-		"engine":          "downloadengine-v2",
-		"schema_version":  h.runner.CurrentVersion(),
+		"status":         "ok",
+		"engine":         "downloadengine-v2",
+		"schema_version": h.runner.CurrentVersion(),
 	})
 }
 

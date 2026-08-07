@@ -94,14 +94,14 @@ type AssetBalance struct {
 
 // AddressAssets 是单地址资产响应（设计 §15.1）。
 type AddressAssets struct {
-	Chain      string         `json:"chain"`
-	ChainID    int64          `json:"chain_id"`
-	Address    string         `json:"address"`
-	BlockNumber string        `json:"block_number,omitempty"`
-	QueriedAt  time.Time      `json:"queried_at"`
-	Source     string         `json:"source"`
-	Status     AssetState     `json:"status"`
-	Assets     []AssetBalance `json:"assets"`
+	Chain       string         `json:"chain"`
+	ChainID     int64          `json:"chain_id"`
+	Address     string         `json:"address"`
+	BlockNumber string         `json:"block_number,omitempty"`
+	QueriedAt   time.Time      `json:"queried_at"`
+	Source      string         `json:"source"`
+	Status      AssetState     `json:"status"`
+	Assets      []AssetBalance `json:"assets"`
 }
 
 // ── 缓存（设计 §16：有界内存 + TTL 分级）──
@@ -167,8 +167,8 @@ type assetRequest struct {
 }
 
 type tokenSpec struct {
-	Address string // "" = native
-	Symbol  string
+	Address  string // "" = native
+	Symbol   string
 	Decimals int
 }
 
@@ -184,9 +184,9 @@ type AssetStore interface {
 
 // AssetService 是实时资产服务（Provider Router 复用 rpcmanager）。
 type AssetService struct {
-	rpc    *rpcmanager.Manager
-	cache  *assetCache
-	mu     sync.Mutex // 串行化同地址并发查询（防 RPC 洪泛）
+	rpc      *rpcmanager.Manager
+	cache    *assetCache
+	mu       sync.Mutex // 串行化同地址并发查询（防 RPC 洪泛）
 	inflight map[string]bool
 }
 
