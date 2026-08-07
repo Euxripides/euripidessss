@@ -11,6 +11,7 @@ import (
 	"github.com/etl/backend/internal/analyticsapi"
 	"github.com/etl/backend/internal/dynamicinvestigation"
 	"github.com/etl/backend/internal/investigationstore"
+	"github.com/etl/backend/internal/logger"
 )
 
 // ── Investigation Agent ──
@@ -420,6 +421,31 @@ func (a *InvestigationAgent) Resume(invID string) (int, error) {
 	snap := a.snapshot()
 	go a.resumeRun(invID, recovered, snap)
 	return len(recovered), nil
+}
+
+// NotifyDataReady 数据索引完成后通知相关调查（Phase 5 §30-31）：
+// 对非终态且目标地址匹配的调查执行安全 Resume（Resume 仅允许 CREATED/WAITING 状态，
+// 不会与主循环双队列并发）；返回成功恢复的调查数。
+func (a *InvestigationAgent) NotifyDataReady(target string) int {
+	if a == nil {
+		return 0
+	}
+	resumed := 0
+	for _, inv := range a.List() {
+		if !strings.EqualFold(inv.Target, target) {
+			continue
+		}
+		if TerminalStatuses[inv.Status] {
+			continue
+		}
+		if _, err := a.Resume(inv.ID); err == nil {
+			resumed++
+		}
+	}
+	if resumed > 0 {
+		logger.Log.Info().Str("target", target).Int("resumed", resumed).Msg("investigation_data_ready_resumed")
+	}
+	return resumed
 }
 
 // resumeRun 后台执行恢复的任务（复用 LoopEngine 单轮执行语义）。

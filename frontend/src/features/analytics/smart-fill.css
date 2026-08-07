@@ -1,0 +1,245 @@
+/* SmartFillPanel 智能数据补充面板（暗色，对齐 graph-page.css 变量） */
+.smart-fill-modal .ant-modal-content {
+  background: var(--fg-panel-bg);
+  border: 1px solid var(--fg-panel-border);
+  color: var(--fg-text);
+}
+.smart-fill-modal .ant-modal-header {
+  background: transparent;
+  border-bottom: 1px solid var(--fg-panel-border);
+  margin-bottom: 14px;
+}
+.smart-fill-modal .ant-modal-title {
+  color: var(--fg-text);
+}
+.smart-fill-modal .ant-modal-close {
+  color: var(--fg-text-dim);
+}
+.smart-fill-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.smart-fill-title .anticon {
+  color: var(--fg-accent);
+}
+.smart-fill-address {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--fg-text-dim);
+  font-family: var(--fg-mono);
+  overflow-wrap: anywhere;
+}
+.smart-fill-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.smart-fill-section h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--fg-text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.smart-fill-loading {
+  color: var(--fg-text-dim);
+  font-size: 12px;
+  padding: 6px 0;
+}
+.smart-fill-requirements,
+.smart-fill-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.smart-fill-requirements li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--fg-canvas-bg);
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 6px;
+}
+.smart-fill-requirements .ant-checkbox-wrapper {
+  color: var(--fg-text);
+  font-size: 13px;
+}
+.smart-fill-requirements .ant-checkbox-inner {
+  background: transparent;
+  border-color: var(--fg-text-dim);
+}
+.smart-fill-provider {
+  flex-shrink: 0;
+}
+.smart-fill-tag-auto {
+  color: #2fd07a;
+  background: rgba(47, 208, 122, 0.12);
+  border-color: rgba(47, 208, 122, 0.4);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+}
+.smart-fill-tag-manual {
+  color: var(--fg-exchange);
+  background: rgba(215, 179, 77, 0.12);
+  border-color: rgba(215, 179, 77, 0.4);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+}
+.smart-fill-coverage {
+  font-size: 11px;
+  color: var(--fg-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.smart-fill-coverage.is-covered {
+  color: #2fd07a;
+}
+.smart-fill-plan-status {
+  font-size: 11px;
+  color: var(--fg-accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.smart-fill-plan-status.is-done {
+  color: #2fd07a;
+}
+.smart-fill-plan-status.is-failed {
+  color: var(--fg-danger);
+}
+.smart-fill-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--fg-text-dim);
+  border-top-color: var(--fg-accent);
+  border-radius: 50%;
+  animation: smart-fill-spin 0.8s linear infinite;
+}
+@keyframes smart-fill-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.smart-fill-tasks li {
+  padding: 8px 10px;
+  background: var(--fg-canvas-bg);
+  border: 1px solid var(--fg-panel-border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.smart-fill-task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.smart-fill-task-name {
+  font-size: 13px;
+  color: var(--fg-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.smart-fill-task-provider {
+  font-size: 10px;
+  color: var(--fg-accent);
+  background: rgba(38, 217, 232, 0.1);
+  border-color: rgba(38, 217, 232, 0.35);
+  border-radius: 3px;
+  line-height: 16px;
+  margin-inline-end: 0;
+}
+/* V3：SQD 健康降级徽章（冷却/熔断/成功率低） */
+.smart-fill-tag-degraded {
+  font-size: 10px;
+  color: var(--fg-exchange);
+  background: rgba(215, 179, 77, 0.12);
+  border-color: rgba(215, 179, 77, 0.45);
+  border-radius: 3px;
+  line-height: 16px;
+  margin-inline-end: 0;
+}
+.smart-fill-task-status {
+  font-size: 11px;
+  color: var(--fg-text-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.smart-fill-task-status.is-done {
+  color: #2fd07a;
+}
+.smart-fill-task-status.is-failed,
+.smart-fill-task-status.is-skipped {
+  color: var(--fg-danger);
+}
+.smart-fill-task-status.is-running {
+  color: var(--fg-accent);
+}
+.smart-fill-task-error {
+  font-size: 11px;
+  color: var(--fg-danger);
+  overflow-wrap: anywhere;
+}
+.smart-fill-task-detail {
+  font-size: 11px;
+  color: var(--fg-text-dim);
+  overflow-wrap: anywhere;
+}
+.smart-fill-stage {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--fg-text-dim);
+}
+.smart-fill-boundary {
+  background: rgba(127, 157, 181, 0.08);
+  border-color: var(--fg-panel-border);
+  border-radius: 6px;
+}
+.smart-fill-boundary .ant-alert-message {
+  color: var(--fg-text);
+  font-size: 12px;
+}
+.smart-fill-boundary .ant-alert-description {
+  color: var(--fg-text-dim);
+  font-size: 11px;
+}
+.smart-fill-boundary .ant-alert-icon {
+  color: var(--fg-accent);
+}
+.smart-fill-cloud-alert {
+  margin-bottom: 10px;
+}
+.smart-fill-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.smart-fill-start.ant-btn-primary {
+  background: var(--fg-accent);
+  border-color: var(--fg-accent);
+  color: #04222e;
+  font-weight: 600;
+}
+.smart-fill-start.ant-btn-primary:hover {
+  opacity: 0.88;
+  background: var(--fg-accent);
+  border-color: var(--fg-accent);
+  color: #04222e;
+}
+.smart-fill-modal .ant-btn {
+  border-radius: 6px;
+}

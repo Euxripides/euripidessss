@@ -29,33 +29,33 @@ const (
 
 // Case 是调查案件模型。
 type Case struct {
-	CaseID          string    `json:"case_id"`
-	Title           string    `json:"title"`
-	TargetAddresses []string  `json:"target_addresses"`
-	CreatedAt       time.Time `json:"created_at"`
-	Status          CaseStatus  `json:"status"`
-	Investigator    string    `json:"investigator"`
-	DatasetVersion  string    `json:"dataset_version"`
-	Error           string    `json:"error,omitempty"`
+	CaseID          string     `json:"case_id"`
+	Title           string     `json:"title"`
+	TargetAddresses []string   `json:"target_addresses"`
+	CreatedAt       time.Time  `json:"created_at"`
+	Status          CaseStatus `json:"status"`
+	Investigator    string     `json:"investigator"`
+	DatasetVersion  string     `json:"dataset_version"`
+	Error           string     `json:"error,omitempty"`
 
 	// 调查结果
-	Summaries      map[string]*investigation.Summary `json:"summaries"`
-	TracePaths     []investigation.TracePath         `json:"trace_paths"`
-	Related        []investigation.RelatedAddress    `json:"related_addresses"`
-	Risks          map[string]*investigation.RiskEvidence `json:"risk_evidence"`
-	CommonSources  []CommonFlow                      `json:"common_sources"`
-	CommonSinks    []CommonFlow                      `json:"common_sinks"`
-	Timeline       []TimelineEvent                   `json:"timeline"`
-	Graph          *Graph                            `json:"graph"`
-	Assets         map[string]*balance.Snapshot      `json:"assets,omitempty"`
+	Summaries     map[string]*investigation.Summary      `json:"summaries"`
+	TracePaths    []investigation.TracePath              `json:"trace_paths"`
+	Related       []investigation.RelatedAddress         `json:"related_addresses"`
+	Risks         map[string]*investigation.RiskEvidence `json:"risk_evidence"`
+	CommonSources []CommonFlow                           `json:"common_sources"`
+	CommonSinks   []CommonFlow                           `json:"common_sinks"`
+	Timeline      []TimelineEvent                        `json:"timeline"`
+	Graph         *Graph                                 `json:"graph"`
+	Assets        map[string]*balance.Snapshot           `json:"assets,omitempty"`
 }
 
 // CommonFlow 是公共资金来源/去向。
 type CommonFlow struct {
-	Address  string   `json:"address"`
-	Targets  []string `json:"targets"`
-	Count    int      `json:"count"`
-	Tokens   []string `json:"tokens,omitempty"`
+	Address string   `json:"address"`
+	Targets []string `json:"targets"`
+	Count   int      `json:"count"`
+	Tokens  []string `json:"tokens,omitempty"`
 }
 
 // TimelineEvent 是时间线事件。
@@ -78,10 +78,10 @@ type Graph struct {
 
 // GraphNode 是图节点。
 type GraphNode struct {
-	ID       string  `json:"id"`
-	Type     string  `json:"type"`
+	ID        string  `json:"id"`
+	Type      string  `json:"type"`
 	RiskScore float64 `json:"risk_score"`
-	Degree   int     `json:"degree"`
+	Degree    int     `json:"degree"`
 }
 
 // GraphEdge 是图边。

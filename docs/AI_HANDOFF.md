@@ -1,4 +1,393 @@
-## 2026-08-02 地址详情可折叠/展开 + panic 日志
+## 2026-08-07 SQD Cloud Phase 5.3：Investigation + Graph Cloud-Aware 自动联动（完成）
+
+> 详细报告：`docs/SQD_Cloud_Phase5.3_Investigation_Graph_CloudAware联动与增量恢复报告.md`
+
+### 完成
+
+- Dataset Event Bus（持久化 + 幂等消费者）：DATASET_INDEXED → Investigation Resume / Graph 增量。
+- Graph 增量物化（graph_edges/graph_nodes 唯一键去重，GRAPH_READY，`/api/graph/status`）。
+- 后端重启恢复：ACTIVE Registry 补发确定性事件 + Replay；8010/8000 均验证。
+- Cancel 新二进制真实重放 PASS（计划终态 canceled，R2 全套证据，0 事件导入）。
+- Manifest V2 + 多分片 Sync + Checkpoint V2（`sum(parts.rows)==row_count` 实测通过）。
+- Idle Remove PASS；生产 8000 已更新（local，events=12，graph 484,348 edges）。
+
+### 边界
+
+- Multipart 阈值触发（25k 行/64MB/5k 块）未实现，当前 30s 心跳粒度；V2 crash 精确 resume 代码已就绪但未重放真实 crash。
+- Investigation WAITING_DATA/DATA_READY 沿用 CREATED/WAITING 行为；Objective 驱动规划未实现。
+- 事件文件单节点共享写入；DPAPI Secret Store 未实施（建议项）。
+
+## 2026-08-07 SQD Cloud Phase 5.2：25 地址 × 50,000 Blocks 生产化验收（完成）
+
+> 详细报告：`docs/SQD_Cloud_Phase5.2_25地址x50000Blocks_生产化验收与故障恢复报告.md`
+
+### 主 Canary（PASS）
+
+- `c1cd1c88-44f5-4415-93f1-162a13e91d53`：25 地址 × 114450000-114499999 → `READY_FOR_GRAPH`，484,250 行，632,537ms，10 个 parquet，严格边界（max=114499999），R2 manifest/SHA256/_SUCCESS 齐全。
+- Registry ACTIVE：484,338 rows / 12 files / dup=0；merged.parquet 484,338 唯一；25 地址 Coverage MISS → HIT。
+- Heartbeat 3 次续租（12:41:25→12:42:25→12:43:25，expires 单调后移）。
+
+### P0 与故障恢复（PASS）
+
+1. 修复前越界 chunk（831013b2/8ab1f079）隔离为 `INVALID_RANGE_LEGACY`，排除 merged/coverage；修复多实例共享 registry 时旧缓存整文件覆盖隔离状态的问题（保存/读取均以磁盘为准刷新）。
+2. 普通 SQD Provider from/to 精确透传（实测 sqd_block_range=114450000-114499999）。
+3. Cancel Marker：R2 cancel/cancelled 终态、无 _SUCCESS、checkpoint cancelled:true、lease 清除（UI 终态处理已补代码，Phase 5.3 重放）。
+4. Lease 过期/Crash 恢复：requeue 同 job_id + resume from checkpoint 114453238 + 单 completed + dup=0；边界：容器重启不跨重启累计 parquet 行。
+5. Sync 失败注入：LOCAL_SYNC_FAILED → 重试 INDEXED，Cloud 不重抓。
+6. Provider 恢复：故障注入关闭后走普通 sqd；Idle Remove → ABSENT，sqd list 空。
+
+### 验证
+
+- `go test ./... -short` 全绿；`go vet` 零告警；`go build` + `npm run build` 通过。
+- 生产 8000 已更新为新后端（local 模式，health ok）；验收实例 8010 已停止。
+
+## 2026-08-07 SQD Cloud Phase 5.1 真实 Cloud Canary（完成）
+
+### 完整闭环（本次续跑，代理关闭后）
+
+> 详细验收报告：`docs/SQD_Cloud_Phase5.1_真实Cloud_Canary_验收报告.md`
+
+```text
+Normal Provider Exhausted（故障注入）
+→ Cloud Admission（ALL_NORMAL_PROVIDERS_EXHAUSTED，sqd_cloud 保持 Tier 100）
+→ EnsureWorker / Reconcile（复用已部署 supreme/bsc-emergency-worker@v2）
+→ SQD Cloud Worker（Job Queue：pending → leased → completed）
+→ BSC Portal 真实数据 → Parquet → R2（manifest/_SUCCESS/SHA256）
+→ Local Sync（.partial + SHA256 + DuckDB 校验）
+→ Dataset Registry（2151 rows / 5 entries / 3 files / 77649 bytes）
+→ Coverage HIT（3 地址 tx_count=6632；新地址 0x2910… 由 MISS → HIT）
+→ READY_FOR_GRAPH（图谱可消费）
+```
+
+### Canary 计划证据
+
+| Plan | 地址/范围 | 结果 | 行数 | 耗时 | 说明 |
+|------|-----------|------|------|------|------|
+| 831013b2… | 3 addr × 114474000-114474500 | READY_FOR_GRAPH | 1658 | 17.5s | 首条真实 Cloud 闭环；修复前代码有批次越界（见边界） |
+| 0961c076… | 同上（重复范围） | FAILED | - | - | 预期拒绝：LOCAL_COVERAGE_FULL，Cloud 只补缺口 |
+| 31aaa3b2… | 1 新地址 × 同范围 | READY_FOR_GRAPH | 58 | 17.8s | 修复后严格边界：max_block=114474499 ≤ to_block |
+| 184e25ed… | 1 新地址（恢复测试） | sqd 普通 Provider | - | 取消 | 故障注入关闭后不回 Cloud；本地 SQD 任务范围解析为全量（既有边界） |
+
+### 本次修复的缺陷
+
+1. `internal/cloudruntime/manager.go`：Idle Reaper 只统计 `status.json`，远端 Worker 领取后仅写 `lease.json` 时被误判空闲并 `sqd remove`（首条 Job 正在处理时 Worker 被删除）。修复：`lease.json` 也计入 leased；`remoteJobStatus` 见到 lease 即视为 running。
+2. `internal/cloudruntime/types.go` + `E:\Code\Processor-only\src\job-poller.ts`：Go Job JSON 字段为 `id`，TS Worker 读取 `job_id` → `path.join` 收到 undefined 崩溃（首轮卡死根因）。修复：Go 双写 `id/job_id` 并补 `chain_id/dataset`；TS 端对 Go JSON 做字段归一化。
+3. `E:\Code\Processor-only\src\main.ts`：Job 处理期间无心跳 → 本地调度器看不到 running，长任务 Lease 无法续租。修复：每 30s 写 `status.json` 并续租 `lease.json`。
+4. `E:\Code\Processor-only\src\main.ts`：数据源直接设 `to=TO_BLOCK` 会在流结束时退出进程，30s 兜底上传来不及执行（Job 卡在 leased）。修复：保持 head-follow，回调内过滤 `> TO_BLOCK` 的块，严格截断且保证进程存活到上传。
+5. `internal/datasetsync/{sync,validator}.go`：`Merge` 只合并当前 chunk 并覆盖 `merged.parquet`，历史数据丢失（2151 registry 行 vs 58 merged 行）。修复：`SyncAll` 结束后全量收集本地 parquet 重建 merged；Merge 按唯一键 `chain_id|block_number|transaction_hash|log_index` 去重并原子替换。
+
+### 其他验证
+
+- R2 Canary 全部 PASS（PUT/HEAD/GET/LIST/DELETE/HEAD-after 404）。
+- 组织 secrets 经 `squid.yaml deploy.env` 的 `${{ secrets.* }}` 引用后，Worker 日志不再报“缺少 R2/S3 凭据”，稳定轮询队列。
+- Provider 恢复：关闭故障注入后新需求路由到普通 `sqd`，Cloud 不接入、runtime 保持 IDLE。
+- Idle Remove：2 分钟空闲后 `REMOVING → ABSENT`，`sqd list --org supreme` 为空。
+- 无密钥泄漏：日志/API/文档均未输出 R2/SQD_DEPLOY_KEY 值（CLI 输出按需脱敏）。
+
+### 已知边界
+
+- 首条 Cloud chunk（831013b2，修复前代码）：manifest `to_block=114474500` 但 parquet 实际 `max_block=114475243`（批次越界），该数据保留在 Registry/merged 中作为修复前证据；修复后 chunk（31aaa3b2）max=114474499 已验证。
+- 本地 SQD 普通 Provider 对显式 `from_block/to_block` 未透传（恢复测试任务 `sqd_block_range` 从 0 开始），已取消；此为既有本地 Provider 边界，不影响 Cloud 路径。
+- `sqd logs` 日志聚合存在分钟级延迟；R2 对象与计划状态为更可靠的验收证据。
+
+## 2026-08-07 真实 R2 Canary + S3Store Security-Token 修复
+
+### 本次完成
+
+- 真实 Cloudflare R2（bucket=pangu-sqd-cloud）最小连接测试全 PASS：PUT/HEAD/GET/LIST/DELETE/HEAD-after-DELETE。
+- 修复 `internal/s3store`：此前对每次请求发送空 `x-amz-security-token` 头，R2 返回 `InvalidArgument: X-Amz-Security-Token`（HTTP 400）；现仅当配置了 Session Token 时才发送该头。
+- 新增 `S3Store.LastStatus()`（最近一次 HTTP 状态码，网络错误为 0）与 `TestR2Canary`（RUN_R2_CANARY=1 门控；输出仅含 PASS/FAIL、状态码、耗时、脱敏错误，绝不打印 R2/SQD 密钥）。
+
+### 修改文件
+
+- internal/s3store/store.go、internal/s3store/r2_canary_test.go
+
+### 已验证
+
+- R2 实测：PUT 200 / HEAD 200 / GET 200 / LIST 200 / DELETE 204 / HEAD-after-DELETE 404（预期不存在）。
+- go test ./internal/s3store/... 全绿；go build ./... 通过。
+- 服务以 SQD_CLOUD_MODE=local 重启（未触发任何 SQD Cloud 部署）。
+
+### 注意事项
+
+- 凭据仅环境变量（Process/User 作用域可见）；测试进程内读取并脱敏，输出不含密钥值。
+- 生产仍为 local 模式；切换 cloud 前需确认 SQD_DEPLOY_KEY/R2 配置并执行 Phase 5 Canary。
+
+## 2026-08-07 SQD Cloud Phase 5：Cloud Mode 生产激活 + Investigation/Graph E2E（部署）
+
+### 本次完成
+
+- **凭据与状态**：`deployment_key_configured` / `r2_configured` 布尔 API；`EnsureWorker` 先 `sqd list --org` 复用已部署 Worker（禁止重复 Deploy）；`Reconcile` 不覆盖 NOT_CONFIGURED；Admission 对缺凭据返回 `CREDENTIALS_NOT_CONFIGURED`（Test B 实测通过）。
+- **Auto Sync**：Cloud 完成事件触发 + 60s 后台轮询双保险；`POST /cloud/sync` 保留为人工恢复；Cloud Export 与 Local Sync 状态解耦（Registry.SyncState）。
+- **Legacy 治理**：无 schema_version / 路径缺 `token_transfers/` 前缀 → 告警 + registry_skip，不自动删除；同步前要求 `_SUCCESS` 存在。
+- **Investigation 自动继续**：`InvestigationAgent.NotifyDataReady(target)` 对非终态匹配调查安全 Resume（仅 CREATED/WAITING，防双队列）；索引完成后自动调用。
+- **Graph 增量消费**：analyticsapi.Flows 联合 Cloud merged parquet（value_raw 按十进制原值解析，不误当 hex）；索引完成 InvalidateCache；前端 READY 后自动刷新图谱。
+- **KPI/审计**：`/cloud/usage` 新增 fallback_ratio、r2_configured；安全审计确认仓库/Worker 无硬编码密钥、日志无密钥值、API 仅布尔。
+- **run.ps1**：cloud 模式校验必需环境变量（SQD_DEPLOY_KEY/R2_*），缺失即报错退出，禁止硬编码。
+
+### 修改文件
+
+- 修改：internal/cloudruntime/manager.go、internal/datasetsync/{registry,sync}.go、internal/downloadscheduler/{scheduler,admission}.go、internal/analyticsapi/service.go、internal/intelligence/investigation_agent.go、internal/api/{handlers,download_scheduler_handlers}.go、run.ps1、frontend SmartFillPanel.tsx/schedulerApi.ts
+- 新增测试：analyticsapi/cloud_source_test.go、datasetsync legacy 治理、cloudruntime EnsureWorker 复用/Reconcile 保护、admission CREDENTIALS_NOT_CONFIGURED
+
+### 已验证
+
+- 相关包测试全绿 + go vet 零告警 + 前端/后端构建通过。
+- Test B 实测：`SQD_CLOUD_MODE=cloud` 无凭据 + 故障注入 → runtime NOT_CONFIGURED → Admission 拒绝 `CREDENTIALS_NOT_CONFIGURED`，未发起 deploy。
+- 数据面回归：435 行真实 USDT、Local Sync/Validator/Registry/Coverage HIT 保持有效。
+
+### 未完成与注意事项
+
+- 真实 SQD Cloud Deploy + 真实 R2 + Cloud 内 Portal Canary 需 `SQD_DEPLOY_KEY` 与 R2 凭据（当前环境缺失）；凭据注入后按 PHASE5_IMPLEMENTATION_REPORT.md §4 执行。
+- Investigation 自动继续仅对 CREATED/WAITING 安全 Resume；RUNNING 中调查依赖任务循环自行读取新数据。
+- Graph Flows 已接入 Cloud 数据；Profile/Risk 等其他查询暂未联合（边界）。
+
+## 2026-08-07 SQD Cloud Phase 4：Job Worker + R2/S3 生产导出（部署）
+
+### 本次完成
+
+- **R2/S3 ObjectStore**（`internal/s3store`）：SigV4 path-style S3-compatible 客户端（GET/PUT/HEAD/DELETE/LIST），无 AWS SDK 依赖；`R2_BACKEND=local` 本地文件存储用于开发/测试；密钥仅环境变量（R2_ENDPOINT/R2_BUCKET/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY），不落盘/日志/前端/Git。
+- **Job Queue 协议**（`internal/cloudruntime` 重构）：统一 `bsc/jobs/{pending,leased,completed,failed}/...` 队列；Job 增加 ChunkID/Priority/Attempt；Lease（TTL 10m）+ 幂等（completed/_SUCCESS 跳过）+ Heartbeat status.json + Checkpoint + Manifest + `_SUCCESS` 最后写；cloud 模式 SubmitJob=EnsureWorker+enqueue，Status 读远端；local/mock 模式由本地循环消费同一协议。
+- **Chunk 化**（`downloadscheduler/cloud_provider.go`）：25 地址/组 × 50,000 区块/窗口；`JobProgress` 聚合全部 Chunk；`Requirement` 支持显式 from_block/to_block。
+- **Local Sync + Validator + Registry**（`internal/datasetsync`）：扫描 completed Manifest → `.partial`+SHA256 下载 → DuckDB 校验（Schema/行数/唯一键/重复/Min-Max Block）→ Registry 登记（含地址与覆盖）→ 合并 parquet 到 `sync/warehouse/sqd_cloud/token_transfers/chain=bsc/merged.parquet`；0 行 Chunk 合法登记（Phase 4 §25/§31）；覆盖检查 = 分析快照 + Cloud Registry 复合源。
+- **Reconcile + 安全回收**：cloud 模式启动后 `sqd list --org` 对账托管 Worker；Idle Remove 仅当 pending/leased/running 均为 0。
+- **API/前端**：`GET /cloud/jobs`、`POST /cloud/sync`、`GET /cloud/usage`（含 `deployment_key_configured` 布尔、Registry 汇总）；SmartFillPanel 显示 Cloud Worker 状态/排队/当前 Chunk/行数。
+- **TS Job-driven Worker**（`E:\Code\Processor-only\src\`）：object-store.ts（S3 SigV4 + LocalStore）、job-poller.ts（Lease）、job-runner.ts（Runner 子进程 + Heartbeat + 上传 + Checkpoint/Manifest/_SUCCESS）、worker.ts 主循环（5s 轮询）；main.ts 支持 CHUNK_ID、progress.json、移除 isHead 强制 Flush；`.squidignore` 已排除 node_modules/data/logs/builds/lib/*.parquet/*.tar.gz。
+
+### 修改文件
+
+- 新增：`internal/s3store/`、`internal/datasetsync/`（registry/sync/validator + 测试）、`internal/datasetsync/ts_worker_e2e_test.go`、`E:\Code\Processor-only\src\{object-store,job-poller,job-runner,worker}.ts`、`E:\Code\Processor-only\scripts\mock-runner.js`
+- 修改：`internal/cloudruntime/{types,manager,queue}.go` + 测试、`internal/downloadscheduler/{cloud_provider,scheduler,admission}.go`、`internal/api/{handlers,download_scheduler_handlers}.go`、前端 schedulerApi.ts/SmartFillPanel.tsx、`E:\Code\Processor-only\src\main.ts`、package.json
+
+### 已验证
+
+- `go test ./internal/... -short -count=1`：42 包全部 ok；`go vet` 零告警；Go 构建、前端构建、TS Worker 构建通过。
+- 跨语言协议 E2E（`RUN_TS_WORKER_E2E=1`）：Go 控制面入队 → TS Worker（local store + mock runner）Lease/执行/完成 → Go Sync 登记，PASS。
+- **真实 BSC 单 Chunk Cloud fallback（Portal 网络恢复后）**：故障注入 → Admission 批准 → pending→leased（BUSY）→ 本机 Processor 从 Portal 实际拉到 finalized head 114,497,629 → 3 地址窗口 114,474,000-114,474,500 产出 **435 行真实 USDT Transfer** → Manifest/_SUCCESS → Local Sync（SHA256+Parquet 校验）→ Registry 登记（435 行/1 文件/20499 字节）→ 合并 parquet（435 行、唯一键 435、重复 0）→ 覆盖检查返回 have=true tx=435。
+
+### 未完成与注意事项
+
+- **真实 Squid Cloud 部署**（`cloud` 模式）仍需 `SQD_DEPLOY_KEY` + R2/S3 凭据；当前本机无凭据，生产运行在 `local` 模式。部署后需补 Phase 4.8/4.9：Cloud 内 Portal 请求、Investigation/Graph 自动消费。
+- 协议修复留档：`9cf39d91...` Chunk 的旧 Manifest 文件路径缺少 `token_transfers/` 前缀，已修复并重跑（`8ab1f079...`），旧 completed 记录仍保留在 store（同步时仅告警，不登记）。
+- Graph/Investigation 数据源为固定快照，新 Cloud 数据经 DuckDB 合并后可查询，但图谱刷新仍需切换数据源（既有边界）。
+
+## 2026-08-07 SQD Cloud 最终兜底 Provider 接入 V3.0（部署）
+
+### 本次完成
+
+- **Provider Tier/State 模型**（internal/downloadscheduler/tier.go、provider_state.go）：新增 ProviderTier（Local 0 / Normal 10 / Fallback 20 / EmergencyCloud 100）与 ProviderState（HEALTHY/DEGRADED/RATE_LIMITED/RISK_CONTROLLED/CIRCUIT_OPEN/AUTH_BLOCKED/UNAVAILABLE/UNSUPPORTED/NOT_CONFIGURED）。排序规则改为 Tier 永远优先；Provider 接口新增 Tier()；SQD/RPC/AWS/Browser/Cloud 均实现 StateProvider。
+- **错误分类与熔断**：ClassifyProviderError（429/403/401/5xx/超时/风控文本→对应状态）；ProviderHealthTracker 按 Provider 跟踪连续失败与冷却（降级 3 / 打开 6、限流 3、风控 1；限流 120s、服务 60s、风控 900s、认证 300s），冷却到期自动恢复。
+- **Cloud Admission Gate**（admission.go）：本地覆盖缺口（LOCAL_COVERAGE_FULL 拒绝）、V1 仅 token_transfer、全部常规 Provider 耗尽（单次 503 不满足）、cloud_eligible、Cloud 预算 Guard（默认启用 60 分钟/日）、运行时可用且不在冷却；拒绝原因可审计。
+- **Cloud Runtime Manager**（internal/cloudruntime/）：Worker 状态机、单实例 deploy.lock、串行 Job 队列、空闲 20 分钟回收、失败冷却 15 分钟；local（本机 Processor）/cloud（sqd deploy，需 SQD_DEPLOY_KEY）/mock 三模式；产物契约 request.json/status.json/manifest.json/_SUCCESS + Parquet。
+- **SQD Cloud Provider**（cloud_provider.go）：Tier 100 不参与常规竞速；Requirement 支持显式 from_block/to_block（Chunk 级任务）；V1 仅 BSC USDT Token Transfer。
+- **调度器兜底**（scheduler.go）：ProviderAttempts 审计；常规 Provider 全部耗尽→tryCloudFallback；故障注入 SCHEDULER_FAULT_INJECTION=all_normal_providers_fail；Cloud 用量审计 cloud_usage.json。
+- **API**：GET /api/scheduler/providers/health、GET /api/scheduler/cloud/runtime；/plan、/expand 支持 cloud_eligible/from_block/to_block。
+- **前端**：SmartFillPanel 显示 Provider Tier/状态、☁ 应急兜底标签、CLOUD_* 状态与应急通道提示。
+- **Cloud Worker**（E:\Code\Processor-only/src/main.ts）：TO_BLOCK 有界退出、WATCH_ADDRESSES 地址过滤、完成写 manifest/_SUCCESS 并退出；tsc 构建通过。
+
+### 修改文件
+
+- 新增：internal/downloadscheduler/{tier,provider_state,admission,cloud_provider}.go 及 {provider_state_test,admission_test,scheduler_cloud_test}.go、internal/cloudruntime/{types,manager}.go、manager_test.go
+- 修改：internal/downloadscheduler/{types,provider,health,scheduler,aws_provider}.go、internal/api/{handlers,download_scheduler_handlers}.go、frontend schedulerApi.ts/SmartFillPanel.tsx/smart-fill.css、E:\Code\Processor-only/src/main.ts
+
+### 已验证
+
+- go test ./internal/... -short：41 包 ok；go vet 零告警；go build 与 npm run build 通过。
+- 真实 API 链路（临时 8010 + 故障注入 + local 模式）：Admission 批准（ALL_NORMAL_PROVIDERS_EXHAUSTED）→ Cloud Job 提交（显式 114000000-114050000）→ 本机 Processor 启动 → 外部 portal.sqd.dev DNS/TLS 被本机网络层阻断而如实失败；Attempts（sqd_cloud/DEGRADED）、Job request/status.json、worker.log 全部可审计。
+
+### 未完成与注意事项
+
+- 真实 Portal 数据下载待网络恢复后验证（portal.sqd.dev 当前 DNS/TLS 被本机安全软件/Anycast 拦截；此前冒烟数据证明 Worker+Portal 管线可用）。
+- Phase 4/5 未实施：Worker Job 化轮询（Lease）、R2/S3 输出、Cloud 数据 DuckDB 同标准入库；cloud 模式需 SQD_DEPLOY_KEY。
+- 生产默认 SQD_CLOUD_MODE=auto：无密钥→local（Worker 项目存在时），无 Worker 项目→禁用。
+
+## 2026-08-03 Token Transfer Multi-Provider Recovery Layer V1.0（差距补齐）
+
+### 本次完成
+
+- **差距分析**（`docs/token_transfer_recovery_gap_report.md`）：token_transfer 此前仅 SQD 单 Provider 候选——SQD Portal 503 时任务直接失败；AWS 公共数据集无 logs（设计 §5 不可行，偏差记录），恢复通道采用设计 §6 的 RPC eth_getLogs。设计文档原件归档 `docs/token_transfer_multi_provider_recovery_v1.0.md`。
+- **RPCProvider 支持 token_transfer**（`internal/downloadscheduler/rpc_logs.go`）：
+  - `eth_blockNumber` + `eth_getLogs` 按地址分批（≤100）+ 区块分块（≤50,000），结果超限自动二分收窄（仅限节点"结果上限"类错误触发，其他错误不放大）
+  - `Transfer(address,address,uint256)` 解析：topics[1]/[2]→from/to、data→value（amount_raw）、standard=BEP20(bsc)/ERC20；logIndex 解析失败视为坏行（避免唯一键坍缩丢数据）
+  - 唯一键去重 `chain_id+tx_hash+log_index+token_address`；窗口默认最近 90 天、上限 180 天（历史走 SQD/AWS）；Submit 保留传播 StartDate/EndDate
+  - 逐地址批查询 + 逐批落盘（`{taskKey}-b{n}` 目录，控制内存峰值），MERGING 统一合并
+  - token_transfer 场景评分 RPC 66（SQD 79；SQD 冷却降分后 RPC 自动接管，Layer 3 失败切换）
+- **RecoveryWriter**（`internal/parquetdownload/recovery.go`，Manager 方法）：
+  - 恢复数据落盘 `{DataRoot}/recovery/token_transfers/chain=<key>/{taskKey}/token-transfers.parquet`（与 SQD token_transfers 同 14 列 schema，DISTINCT 唯一化）+ `manifest.json`
+  - MERGING 合并：恢复数据 + 仓库既有 token_transfers 按唯一键 `ROW_NUMBER()` 去重（block_time 非空 SQD 行优先），输出 `{DataRoot}/recovery/merge/{planID}/token-transfers.parquet` + 统计（recovery/warehouse/merged/duplicate rows）
+  - `read_csv` 显式方言 + `strict_mode=false`：内置 DuckDB 构建自动嗅探对小文件/空字段不可靠（2026-08-03 实测）
+- 调度器 MERGING 阶段调用合并（`Scheduler.WithRecoveryWriter`），`Plan.Recovery` 新增合并统计字段；API 装配：parquetDownload 可用时其 Manager 即 RecoveryWriter（handlers.go）
+- 前端：SmartFillPanel token_transfer 需求行显示「✓ SQD / ⚡ RPC 恢复」
+
+### 修改文件
+
+- 新增：`internal/downloadscheduler/{rpc_logs.go,recovery_test.go}`、`internal/parquetdownload/{recovery.go,recovery_test.go}`、`docs/token_transfer_recovery_gap_report.md`、`docs/token_transfer_multi_provider_recovery_v1.0.md`
+- 修改：`internal/downloadscheduler/{provider,scheduler,types}.go`、`internal/api/handlers.go`、`frontend/src/features/analytics/SmartFillPanel.tsx`
+
+### 已验证
+
+- `go test ./internal/... -short -count=1`：41 包全部 ok（新增 7 个测试场景：RPC 解析/去重/二分/窗口/无 writer 报错/SQD→RPC 切换+MERGING 集成/真实 duckdb 落盘合并）；`go vet` 零告警
+- `go build -o bin\etl-server.exe .\cmd\server\` 通过；`npm run build` 通过（仅既有 chunk 警告）
+- 真实 duckdb：恢复 2+2 行 + 仓库 2 行 → 合并唯一 4 行（去重 2），parquet 读回复核一致
+
+### 未完成与注意事项
+
+- RPC 恢复数据 `block_time` 为空（eth_getLogs 无区块时间戳，设计偏差 #3）；合并时 SQD 行优先，V1.1 可 RPC 批量富化
+- AWS 无 logs 公共数据集，token_transfer 恢复通道为 RPC（设计 §5→§6 偏差）；恢复窗口限最近 180 天
+- 恢复/合并产物在 `E:\codex\bsc_analytics\recovery/`；前端「刷新图谱」数据源仍为固定快照数据集，需切换数据源后可见（既有限制）
+
+
+### 本次完成
+
+- 用户提交 971 个 EVM 地址（A 级 182 / B 级 789，FIFO 金额标注）要求下载数据与余额。使用 Smart Download Orchestrator 分批执行（预算限制：500 地址/任务、5 任务/计划）：
+  - **余额（RPC）：971/971 全部成功**——批次 5/6/7（400+400+171 地址，每任务 100/100 成功），结果保存 `backend/data/download_scheduler/balance_results.json`（122KB，971 条）
+  - **Token 转账/历史交易（SQD）：因 SQD portal 持续 503 "No available workers" 未能下载**——可靠性层正确工作（冷却/重试/分片），但 portal 长时间不可用；重跑脚本已就绪 `backend/data/download_scheduler/run_batches_v5.ps1`
+- 执行过程中修复 parquetdownload 三个真实阻塞：
+  1. **SQD schema 探测容错**（client.go stream()）：portal 流中元消息/心跳（header 为空）不再误判为 schema 错误终止任务——修复后 497 地址大任务真实启动并读到 64 万条日志
+  2. **bsc transactions 改走 SQD 流式**（manager.go）：AWS 公共 Parquet 全量日分区（单文件 ~6GB、单次 discover ≤366 天）对地址筛选任务会造成 TB 级不必要下载，bsc 原生交易改由 SQD 流式按地址过滤采集
+  3. **ingestSQD chunk 化 + 冷却重试**（sqd_ingest.go）：区块范围按 500 万块分片（≈170 天），单片遇 503/超时冷却等待重试（6 次/片），避免 portal 强制中断导致任务从头重来；错误信息明确为"区块分片 X-Y 重试 6 次仍失败"
+- 另修复：AWS discover 366 天自动切片（s3.go，保留供未来显式启用）
+
+### 修改文件
+
+- internal/datasource/sqd/client.go、internal/parquetdownload/{manager,sqd_ingest,s3}.go
+- backend/data/download_scheduler/{addr_list.txt,balance_results.json,batch_results*.txt,run_batches_v*.ps1}
+
+### 已验证
+
+- go test ./internal/... -short -count=1：41 包全部 ok；go vet 零告警
+- 真实端到端：balance 971/971 成功（BNB 余额，RPC）；SQD 任务 chunk 化推进验证（35.4→36%，分片级错误信息）；SQD portal 持续 503 为外部不可用
+
+### 未完成与注意事项
+
+- **SQD portal（portal.sqd.dev）持续 503**：token_transfer 重试进行中（bash-30 脚本，10 批 × 3 次尝试 + balance 重启打断的 400 地址补跑；断点续拉修复已生效）；portal 恢复后批次可完成
+- AWS 通道已从自动路由移除（bsc transactions 默认 SQD 流式）；discover 366 天切片保留
+- 余额为原生 BNB（eth_getBalance）；USDT 等代币余额未查（调度器 balance 数据集仅原生，Token 余额可走 /api/flow/address-assets）
+
+
+
+### 本次完成
+
+- **B1 AdaptiveWorkers 真并发限流**（设计 §4）：`internal/datasource/sqd/client.go` 新增 `acquireWorker/releaseWorker` 信号量闸门——在途请求数按 `AdaptiveWorkers.Current()` 动态限流（503 降档立即生效，workers 8→4→1 真实约束并发），替换原有 `Current() <= 0` 伪检查。
+- **B2 熔断事件日志接线**（设计 §5）：`checkBreakerEvents` 检测 Circuit Breaker 状态迁移（NORMAL/DEGRADED/OPEN/HALF_OPEN），OPEN→LogCircuitOpen、HALF_OPEN→LogCircuitHalfOpen、恢复→LogCircuitRecovery；成功/503/4xx/重试/耗尽 5 处调用；`lastBreakerState` 原子字段防重复日志。
+- **A0 健康快照接口**：`downloadscheduler.HealthSource`（SQDHealthSnapshot：cooldown/breaker/workers/成功率/503 计数），api 层 `sqdHealthAdapter` 从 `parquetdownload.SQDStatus()` 映射（避免包循环依赖）。
+- **A1 动态健康评分**（设计 §10）：`SQDProvider.WithHealth` 注入后评分随健康动态衰减——OPEN -55、冷却 -25（speed -20）、EMERGENCY -25、成功率 <85% -15、503 连续计数衰减；降级原因自动生成（"SQD 503 冷却中（至 X），已降级"等）。
+- **A2 Smart Provider Router 策略**（设计 §9）：新增 `AWSProvider`（S3 公共 Parquet，仅 BSC 原生交易，评分 88）——历史交易 **AWS > SQD**（实测 88 vs 79；SQD 冷却时 88 vs 69）；Logs/Transfers SQD、余额 RPC 保持；waitSQDJob 改 `jobPoller` 统一轮询 SQD/AWS 下游任务。
+- **A3 Address Activity Score + chunk 智能调整**（设计 §7）：新增 `activity.go`——按数据集内交易笔数分档（≤1 低活跃/≤100 普通/>100 高活跃），chunk 500/100/20 地址/任务；`Submit(ctx, reqs)` 按活跃度分桶切片生成任务，任务 Note 标注活跃度与 chunk（实测 "活跃度 low（chunk 1）"）；预算上限 100→500。
+- **前端**：SmartFillPanel 任务行显示活跃度 Note + **⚠ 降级徽章**（hover 显示原因，关键词：降级/冷却/熔断/偏低/503）。
+
+### 修改文件
+
+- 修改：internal/datasource/sqd/client.go（限流+熔断事件）、internal/downloadscheduler/{provider,types,scheduler,coverage}.go、internal/api/{handlers,download_scheduler_handlers}.go、frontend SmartFillPanel.tsx/smart-fill.css
+- 新增：internal/downloadscheduler/{health,activity,aws_provider}.go
+
+### 接口
+
+- 新增 `downloadscheduler.HealthSource`（api 层 sqdHealthAdapter 实现）；`SQDProvider.WithHealth`；`AWSProvider`（ProviderKind 加 aws）；`CoverageResolver.TxCount`
+- `/api/scheduler/plan` 响应中 candidates 现含动态评分与降级原因；`requirement.note` 新增活跃度说明
+
+### 数据库
+
+- 无数据库变更
+
+### 已验证
+
+- go test ./internal/... -short -count=1：41 包全部 ok（downloadscheduler 新增 TestDynamicScoreDegradesOnSQDHealth、TestActivityBucketingAndChunk 等，共 16 用例）；go vet 零告警
+- 真实端到端（PID 14928）：transactions 候选 [aws(88), sqd(79)] 选 AWS；SQD 真实 503 冷却时评分 79→69 且降级原因完整（"503 冷却中（至 2026-08-03T01:36:52+08:00）"/"自适应并发已降至 DEGRADED（4 workers）"/"连续 1 次 503"/"Router 已自动降低 SQD 优先级"）；parquetdownload 重启自动恢复旧任务与调度器单任务并发协作正确（冲突→重试→如实失败）；sqd-events.log 记录 503_no_workers + worker_scale 8→4
+- npm run build（tsc + vite）通过；run.ps1 重启（PID 14928）
+
+### 未完成与注意事项
+
+- 熔断 OPEN/HALF_OPEN 事件日志路径已接线并经单测覆盖，但需连续 5 次失败才真实触发（当前环境 503 间隔冷却未自然达到）
+- SQD portal 公共端点 503 限流仍存在（cooldown 阶梯 30s/60s/120s/10min），降级评分与 AWS 路由已自动规避
+- chunk 调整为任务粒度分批（外层），parquetdownload 内部流式未改（避免主链路重构风险）；checkpoint 续跑为 parquetdownload 既有能力
+- 历史交易非 BSC 链无 AWS 候选（S3 仅 bsc），自动回落 SQD
+
+#### Review 修复（2026-08-03 二次 review 后补）
+
+- 阻塞修复：setupDownloadScheduler 在 parquetDownload 为 nil（降级模式）时不再解引用 Manager()——SQD Provider 降级为 nil-engine，不构造 HealthSource
+- 非 BSC 剔除 AWS 候选：Submit 选择阶段按 chain 过滤（实测 eth transactions → 仅 SQD 候选，不再选后失败再切换）；新增 Registry.SelectFrom 支持预过滤
+- 数据竞争：executeTaskWithFallback 中冗余的锁外 `t.Provider = c.Provider` 删除（FALLBACK 分支已持锁设置）
+- waitSQDJob 优先按任务 Provider 选择 poller（同 provider 轮询，避免跨引擎假设）
+- 评分分量 clampScore 钳制 [0,100]（同一 503 事件多惩罚不叠加到负数）
+- 预算截断（MaxTasksPerPlan 切掉地址）记录 logger.Warn（scheduler_budget_truncated_addresses）
+- checkBreakerEvents 改 atomic.CompareAndSwapInt32 防并发重复日志
+- expand 返回 Run 之后的最新计划（实测 status=EXECUTING 而非 stale BUILDING_PLAN）
+- 前端 ProviderKind 补 "aws" + PROVIDER_LABELS + 需求列表徽章（transactions → ✓ AWS）
+
+
+## 2026-08-03 Smart Download Orchestrator 智能下载调度 V2.2（全栈最小可用版）
+
+### 本次完成
+
+- 新增 `internal/downloadscheduler` 包：三层决策模型落地——Layer 1 规则路由（balance→RPC、transactions/token_transfer→SQD、labels→Browser 手动）、Layer 2 Provider 评分（coverage/accuracy/speed/cost/reliability 加权，SQD 79 / RPC 77 实测）、Layer 3 简单仲裁（固定重试 1 次后切换候选 Provider）。
+- 状态机（设计 §13）：ANALYZING_REQUIREMENT → SELECTING_PROVIDER → BUILDING_PLAN → EXECUTING → RETRYING/FALLBACK → VALIDATING → MERGING → READY_FOR_GRAPH/FAILED；执行生命周期独立于 HTTP 请求上下文（请求结束不中断下载）。
+- Coverage Resolver（设计 §10）：复用 analyticsapi.Service.Flows 判断地址本地覆盖（无数据返回空 slice），已覆盖数据集前端默认跳过，避免重复下载。
+- 预算（设计 §16）：单任务地址 ≤100、单计划任务 ≤5、并发计划 1（parquetdownload 单任务限制）、重试 ≤1；地址 EVM 校验+去重，同 (dataset,chain) 合并为单任务。
+- 三 Provider：RPC（rpcmanager.Call eth_getBalance，单地址失败不中断批次、错误脱敏）、SQD（parquetdownload.Manager.Start，异步 job 2s 轮询进度）、Browser（ManualOnly——cryptodownload 仅 HTTP handler 无 Go API，计划中标记 skipped 并提示手动）。
+- 计划持久化：backend/data/download_scheduler/plans/{id}.json 原子写 + 启动加载。
+- API：POST /api/scheduler/{coverage,plan,run,expand} + GET /{status,plans,budget}，expand 为图联动一站式（地址校验→计划→执行→返回轮询地址）。
+- 前端：地址关系图 Inspector 底部新增「智能补充」按钮（保存快照/加入调查/智能补充/退出聚焦）；SmartFillPanel 模态面板——需求分析+覆盖检查（已覆盖默认跳过）→ Provider 徽章（✓SQD/✓RPC/⚠手动）→ expand 启动 → 2s 轮询任务进度 → 终态「刷新图谱」联动；数据源边界诚实提示（新数据落盘 E:\codex\bsc_analytics\warehouse，图谱数据源为固定快照数据集）。
+
+### 修改文件
+
+- 新增：internal/downloadscheduler/{types,coverage,provider,scheduler}.go + scheduler_test.go（11 用例）、internal/api/download_scheduler_handlers.go、frontend/src/features/analytics/{schedulerApi.ts,SmartFillPanel.tsx,smart-fill.css}
+- 修改：internal/api/handlers.go（setupDownloadScheduler 装配 + /api/scheduler/*path 路由）、frontend/src/features/analytics/{GraphPage.tsx,flowInspector.tsx}
+
+### 接口
+
+- 新增 POST /api/scheduler/coverage、/plan、/run、/expand；GET /api/scheduler/status、/plans、/budget
+- 新增内部接口：downloadscheduler.RPCClient（rpcmanager.Manager 实现）、SQDEngine（parquetdownload.Manager 实现）、CoverageSource（analyticsapi.Service 适配）
+
+### 数据库
+
+- 无数据库变更；新增文件系统 backend/data/download_scheduler/plans/
+
+### 已验证
+
+- go test ./internal/... -short -count=1：41 包全部 ok；go vet 零告警
+- 真实端到端（PID 32464）：RPC 余额查询成功（0x5713…cb8d BNB 4200739571314923 wei → READY_FOR_GRAPH）；SQD token_transfer 真实启动 parquetdownload job（5845dd4e20627bc0），外部 SQD portal 503 限流如实失败+重试 1 次 → FAILED；注入 payload 400；计划 JSON 落盘
+- npm run build（tsc + vite）通过；前端产物 assets/index-CPsUjfds.js 已部署（HTTP 200）
+
+### 未完成与注意事项
+
+- Browser Provider 为 ManualOnly：cryptodownload 仅暴露 HTTP handler，标签采集需在「虚拟币-数据下载」页手动执行（后续可暴露 Go API 接入自动调度）
+- 图谱联动「刷新图谱」受数据源限制：analyticsapi 读固定快照数据集（stress-data/…/logs.parquet），新下载数据在 E:\codex\bsc_analytics\warehouse，需切换数据源后可见
+- SQD portal 公共端点存在 503 限流（No available workers，cooldown 1m）；重试策略已生效
+- 取消 API 未实现（scheduler.cancel 已预留）；Layer 3 Agent 仲裁未接 AI（分数接近时按顺序选首个，日志记录）
+
+#### 并发修复（review 后补，2026-08-03）
+
+- 数据竞争修复：execute goroutine 的计划状态修改全部改走 updatePlan（s.mu 持锁 + 锁外持久化），与 Plan()/Plans() 的 clonePlan 读互斥
+- 重复执行防护：Run 拒绝执行中中间态（EXECUTING/RETRYING/FALLBACK/VALIDATING/MERGING），实测二次 run 返回 409
+- 重启恢复：loadPlans 将未达终态的计划标记 FAILED（"服务重启，计划未完成"），避免 stuck EXECUTING 重复执行
+- waitSQDJob 修复 dead code：result 传入轮询函数，完成后写入 SQD 完成摘要
+- 覆盖检查地址上限 200→100（避免超时）；前端轮询连续失败 5 次自动停止
+- 新增测试：TestRunRejectsDuplicateExecution、TestLoadPlansMarksInterruptedFailed（共 13 用例）
+
+
+## 2026-08-02 修复：地址详情右上角 × 关闭面板
+
+### 本次完成
+
+- × 按钮现在真正关闭地址详情：dock/collapsible 模式 = 退出聚焦 + 折叠面板（展开条）；Drawer 模式 = 只关抽屉保留聚焦。此前 × 仅清空内容、面板仍显示空状态。
+
+### 修改文件
+
+- frontend/src/features/analytics/GraphPage.tsx、tools/graph_ui_acceptance.py
+
+### 接口
+
+- 无 API/数据库变更
+
+### 已验证
+
+- npm run build 通过；Playwright 54/54 PASS（+3 × 关闭断言）；go test ./internal/... -short 41 包全部 ok
+
+### 未完成与注意事项
+
+- 无
+
 
 ### 本次完成
 

@@ -176,8 +176,8 @@ func TestAddressCoverageSnapshot(t *testing.T) {
 		aci.Mark(&AddressCoverageRecord{Address: fmt.Sprintf("0x%040x", i), Chain: "bsc", DatasetType: DSTransactions, Status: AddrReady})
 	}
 	for i := 0; i < 50; i++ {
-		aci.Check("bsc", fmt.Sprintf("0x%040x", i), DSTransactions)        // hits
-		aci.Check("bsc", fmt.Sprintf("0x%040x", i+500), DSTransactions)     // misses
+		aci.Check("bsc", fmt.Sprintf("0x%040x", i), DSTransactions)     // hits
+		aci.Check("bsc", fmt.Sprintf("0x%040x", i+500), DSTransactions) // misses
 	}
 	snap := aci.Snapshot()
 	t.Logf("  Snapshot: total=%d, hit=%d, miss=%d, ready=%d, download=%d",

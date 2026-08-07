@@ -43,25 +43,25 @@ const (
 )
 
 type stress10KResult struct {
-	Timestamp      time.Time               `json:"timestamp"`
-	AddressCount   int                     `json:"address_count"`
-	ChunkCount     int                     `json:"chunk_count"`
-	BlockRange     [2]uint64               `json:"block_range"`
-	TotalTx        int                     `json:"total_tx"`
-	TotalLogs      int                     `json:"total_logs"`
-	UniqueTxHashes int                     `json:"unique_tx_hashes"`
-	UniqueLogKeys  int                     `json:"unique_log_keys"`
-	DuplicateTx    int                     `json:"duplicate_tx"`
-	DuplicateLogs  int                     `json:"duplicate_logs"`
-	DuplicateInChunk    int                `json:"duplicate_logs_in_chunk"`    // SQD from/to 双命中（同 chunk 内）
-	DuplicateCrossChunk int                `json:"duplicate_logs_cross_chunk"` // 多 chunk 地址重叠命中同一 log
-	Duration       string                  `json:"duration"`
-	TxPerSecond    float64                 `json:"tx_per_second"`
-	Metrics        sqd.MetricsSnapshot     `json:"sqd_metrics"`
-	Workers        sqd.AdaptiveWorkerStats `json:"sqd_workers"`
-	Circuit        sqd.CircuitStats        `json:"sqd_circuit_breaker"`
-	Errors         []string                `json:"errors,omitempty"`
-	Passed         bool                    `json:"passed"`
+	Timestamp           time.Time               `json:"timestamp"`
+	AddressCount        int                     `json:"address_count"`
+	ChunkCount          int                     `json:"chunk_count"`
+	BlockRange          [2]uint64               `json:"block_range"`
+	TotalTx             int                     `json:"total_tx"`
+	TotalLogs           int                     `json:"total_logs"`
+	UniqueTxHashes      int                     `json:"unique_tx_hashes"`
+	UniqueLogKeys       int                     `json:"unique_log_keys"`
+	DuplicateTx         int                     `json:"duplicate_tx"`
+	DuplicateLogs       int                     `json:"duplicate_logs"`
+	DuplicateInChunk    int                     `json:"duplicate_logs_in_chunk"`    // SQD from/to 双命中（同 chunk 内）
+	DuplicateCrossChunk int                     `json:"duplicate_logs_cross_chunk"` // 多 chunk 地址重叠命中同一 log
+	Duration            string                  `json:"duration"`
+	TxPerSecond         float64                 `json:"tx_per_second"`
+	Metrics             sqd.MetricsSnapshot     `json:"sqd_metrics"`
+	Workers             sqd.AdaptiveWorkerStats `json:"sqd_workers"`
+	Circuit             sqd.CircuitStats        `json:"sqd_circuit_breaker"`
+	Errors              []string                `json:"errors,omitempty"`
+	Passed              bool                    `json:"passed"`
 }
 
 // TestSQD10KStability runs a bounded real-chain stability test over up to
@@ -125,7 +125,7 @@ func TestSQD10KStability(t *testing.T) {
 	chunks := splitAddressChunks(addresses, chunkSize)
 
 	result := &stress10KResult{
-		Timestamp: time.Now().UTC(),
+		Timestamp:  time.Now().UTC(),
 		BlockRange: [2]uint64{startBlock, endBlock},
 	}
 	txSeen := make(map[string]bool)

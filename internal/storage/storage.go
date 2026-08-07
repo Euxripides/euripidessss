@@ -1,4 +1,4 @@
-﻿package storage
+package storage
 
 import (
 	"fmt"
@@ -122,7 +122,7 @@ func (fs *FileStorage) GetOutput(filename string) ([]byte, string, error) {
 	path := filepath.Join(fs.OutputDir, filename)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		// Try to find by partial match
-		entries, _ := filepath.Glob(filepath.Join(fs.OutputDir, "*" + filename + "*"))
+		entries, _ := filepath.Glob(filepath.Join(fs.OutputDir, "*"+filename+"*"))
 		if len(entries) > 0 {
 			path = entries[0]
 		} else {

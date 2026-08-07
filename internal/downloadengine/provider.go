@@ -96,8 +96,8 @@ type LookupResult struct {
 }
 
 type EstimateResult struct {
-	EstimatedRows    int64 `json:"estimated_rows"`
-	EstimatedBytes   int64 `json:"estimated_bytes"`
-	EstimatedChunks  int   `json:"estimated_chunks"`
-	SupportsRequest  bool  `json:"supports_request"`
+	EstimatedRows   int64 `json:"estimated_rows"`
+	EstimatedBytes  int64 `json:"estimated_bytes"`
+	EstimatedChunks int   `json:"estimated_chunks"`
+	SupportsRequest bool  `json:"supports_request"`
 }

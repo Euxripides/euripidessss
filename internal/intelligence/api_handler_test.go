@@ -194,19 +194,19 @@ func newTestAgent() *InvestigationAgent {
 	cfg.UseAI = false // 测试不调用真实 DeepSeek
 	ranker := DefaultPathRanker()
 	agent := &InvestigationAgent{
-		flowSource:      src,
-		ranker:          ranker,
-		tracer:          NewFundTracer(src, ranker, cfg),
-		planner:         NewPlanner(cfg),
-		detector:        NewPatternDetector(cfg),
-		report:          NewReportAgent(cfg),
-		contextBuilder:  NewAIContextBuilder(cfg),
-		deepseek:        NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
-		entityResolver:  NewEntityResolver(nil, nil),
-		cfg:             cfg,
-		active:          make(map[string]*Investigation),
-		history:         make(map[string]*Investigation),
-		memories:        NewMemoryStore(""),
+		flowSource:     src,
+		ranker:         ranker,
+		tracer:         NewFundTracer(src, ranker, cfg),
+		planner:        NewPlanner(cfg),
+		detector:       NewPatternDetector(cfg),
+		report:         NewReportAgent(cfg),
+		contextBuilder: NewAIContextBuilder(cfg),
+		deepseek:       NewDeepSeekClient("", cfg.AIModel, cfg.AITimeoutMS),
+		entityResolver: NewEntityResolver(nil, nil),
+		cfg:            cfg,
+		active:         make(map[string]*Investigation),
+		history:        make(map[string]*Investigation),
+		memories:       NewMemoryStore(""),
 	}
 	return agent
 }

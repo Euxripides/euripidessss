@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/etl/backend/internal/chain"
@@ -28,9 +29,9 @@ const (
 )
 
 type Client struct {
-	httpClient     *http.Client
-	portalRoot     string
-	apiKey         string
+	httpClient *http.Client
+	portalRoot string
+	apiKey     string
 
 	cooldownMu     sync.Mutex
 	cooldownUntil  time.Time
@@ -38,6 +39,13 @@ type Client struct {
 	maxCooldown    time.Duration
 
 	breaker *CircuitBreaker
+
+	// V3 Reliability：真并发闸门（信号量按 AdaptiveWorkers.Current() 限流）
+	semMu    sync.Mutex
+	inflight int
+
+	// V3 Reliability：熔断状态变化检测（事件日志接线）
+	lastBreakerState int32 // atomic: CircuitState
 
 	// Reliability Layer (V2.1 RC2)
 	relConfig ReliabilityConfig
@@ -179,7 +187,7 @@ func NewReliable(client *http.Client, portalRoot, apiKey string, logDir string) 
 		portalRoot:  portalRoot,
 		apiKey:      strings.TrimSpace(apiKey),
 		maxCooldown: DefaultMaxCooldown,
-		breaker:     NewCircuitBreaker(CircuitBreakerConfig{
+		breaker: NewCircuitBreaker(CircuitBreakerConfig{
 			MaxFailures:  relConfig.Circuit.Threshold,
 			OpenDuration: relConfig.Circuit.Cooldown,
 			MinSuccesses: 1,
@@ -195,7 +203,72 @@ func NewReliable(client *http.Client, portalRoot, apiKey string, logDir string) 
 			events.LogWorkerScale(from, to, reason)
 		})
 	}
+	c.lastBreakerState = int32(c.breaker.State())
 	return c, nil
+}
+
+// acquireWorker 按 AdaptiveWorkers.Current() 实现真并发限流（V3 设计 §4）：
+// 在途请求数达到当前 worker 上限时等待（信号量闸门），workers 动态升降立即生效。
+func (c *Client) acquireWorker(ctx context.Context) error {
+	if c.workers == nil {
+		return nil
+	}
+	for {
+		limit := c.workers.Current()
+		if limit <= 0 {
+			return fmt.Errorf("sqd: no available workers (adaptive pool depleted)")
+		}
+		c.semMu.Lock()
+		if c.inflight < limit {
+			c.inflight++
+			c.semMu.Unlock()
+			return nil
+		}
+		c.semMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (c *Client) releaseWorker() {
+	c.semMu.Lock()
+	if c.inflight > 0 {
+		c.inflight--
+	}
+	c.semMu.Unlock()
+}
+
+// checkBreakerEvents 检测熔断器状态变化并写入事件日志（V3 设计 §5：熔断可观测）。
+// 仅记录 NORMAL/DEGRADED/OPEN/HALF_OPEN 之间的迁移，避免重复日志。
+func (c *Client) checkBreakerEvents() {
+	if c.events == nil || c.breaker == nil {
+		return
+	}
+	state := c.breaker.State()
+	prev := CircuitState(atomic.LoadInt32(&c.lastBreakerState))
+	if state == prev {
+		return
+	}
+	// CAS 防并发重复记录同一迁移
+	if !atomic.CompareAndSwapInt32(&c.lastBreakerState, int32(prev), int32(state)) {
+		return
+	}
+	c.configMu.Lock()
+	cooldown := c.relConfig.Circuit.Cooldown
+	c.configMu.Unlock()
+	switch state {
+	case CircuitOpen:
+		c.events.LogCircuitOpen(c.breaker.Stats().Failures, cooldown)
+	case CircuitHalfOpen:
+		c.events.LogCircuitHalfOpen()
+	case CircuitNormal, CircuitDegraded:
+		if prev == CircuitOpen || prev == CircuitHalfOpen {
+			c.events.LogCircuitRecovery()
+		}
+	}
 }
 
 // ensureTransport ensures the HTTP client has a connection-pooling transport.
@@ -408,8 +481,9 @@ func (c *Client) stream(
 			}
 			if !probed {
 				if err := validate(block); err != nil {
-					response.Body.Close()
-					return fmt.Errorf("SQD Schema 探测失败: %w", err)
+					// 容错：portal 元消息/心跳（header 为空）跳过，等待第一条有效消息；
+					// 若整个流无有效消息，最后 "流未返回可推进的区块" 会如实报错
+					continue
 				}
 				probed = true
 			}
@@ -417,7 +491,9 @@ func (c *Client) stream(
 				response.Body.Close()
 				return err
 			}
-			last = block.Header.Number
+			if block.Header.Number > 0 {
+				last = block.Header.Number
+			}
 		}
 		scanErr := scanner.Err()
 		response.Body.Close()
@@ -460,12 +536,11 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 		return nil, fmt.Errorf("%w: available at %s", ErrSQDCooldown, c.CooldownUntil().Format(time.RFC3339))
 	}
 
-	// Check adaptive worker availability
-	if c.workers != nil {
-		if c.workers.Current() <= 0 {
-			return nil, fmt.Errorf("sqd: no available workers (adaptive pool depleted)")
-		}
+	// Check adaptive worker availability（V3：信号量闸门真限流）
+	if err := c.acquireWorker(ctx); err != nil {
+		return nil, err
 	}
+	defer c.releaseWorker()
 
 	if c.metrics != nil {
 		c.metrics.RecordRequest()
@@ -508,6 +583,7 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 		if doErr == nil && (response.StatusCode == http.StatusOK || response.StatusCode == http.StatusNoContent) {
 			c.resetCooldown()
 			c.breaker.RecordSuccess()
+			c.checkBreakerEvents()
 			if c.metrics != nil {
 				c.metrics.RecordSuccess(latency)
 			}
@@ -530,6 +606,7 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 					strings.Contains(strings.ToLower(string(message)), "no_available_worker")) {
 				d := c.setCooldown()
 				c.breaker.RecordFailure()
+				c.checkBreakerEvents()
 				if c.metrics != nil {
 					c.metrics.RecordFailure(Error503)
 				}
@@ -555,6 +632,7 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 			// Client errors (4xx except 429) are not retryable
 			if response.StatusCode != http.StatusTooManyRequests && response.StatusCode < 500 {
 				c.breaker.RecordFailure()
+				c.checkBreakerEvents()
 				if c.metrics != nil {
 					c.metrics.RecordFailure(ErrorOther)
 				}
@@ -585,6 +663,7 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 		if c.metrics != nil {
 			c.metrics.RecordRetry()
 		}
+		c.checkBreakerEvents()
 
 		// Calculate backoff
 		backoff := intervals[attempt]
@@ -599,6 +678,7 @@ func (c *Client) postWithRetry(ctx context.Context, endpoint string, body []byte
 		}
 	}
 	c.breaker.RecordFailure()
+	c.checkBreakerEvents()
 	return nil, last
 }
 

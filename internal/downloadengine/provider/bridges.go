@@ -21,7 +21,7 @@ func NewAWSAdapter() *AWSAdapter {
 	return &AWSAdapter{name: "AWS"}
 }
 
-func (a *AWSAdapter) Name() string                                    { return a.name }
+func (a *AWSAdapter) Name() string { return a.name }
 func (a *AWSAdapter) Capabilities() downloadengine.ProviderCapabilities {
 	return downloadengine.ProviderCapabilities{
 		Name:           "AWS",

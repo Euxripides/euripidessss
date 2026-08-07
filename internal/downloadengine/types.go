@@ -8,16 +8,16 @@ import "time"
 type JobType string
 
 const (
-	JobAddressSingle     JobType = "ADDRESS_SINGLE"
-	JobAddressBatch      JobType = "ADDRESS_BATCH"
-	JobToken             JobType = "TOKEN"
-	JobContract          JobType = "CONTRACT"
-	JobNFT               JobType = "NFT"
-	JobDatasetRange      JobType = "DATASET_RANGE"
-	JobFullHistory       JobType = "FULL_HISTORY"
-	JobIncrementalSync   JobType = "INCREMENTAL_SYNC"
-	JobRepair            JobType = "REPAIR"
-	JobReindex           JobType = "REINDEX"
+	JobAddressSingle   JobType = "ADDRESS_SINGLE"
+	JobAddressBatch    JobType = "ADDRESS_BATCH"
+	JobToken           JobType = "TOKEN"
+	JobContract        JobType = "CONTRACT"
+	JobNFT             JobType = "NFT"
+	JobDatasetRange    JobType = "DATASET_RANGE"
+	JobFullHistory     JobType = "FULL_HISTORY"
+	JobIncrementalSync JobType = "INCREMENTAL_SYNC"
+	JobRepair          JobType = "REPAIR"
+	JobReindex         JobType = "REINDEX"
 )
 
 // ── 双层状态模型：JobStatus(生命周期) + JobStage(处理阶段) ──
@@ -42,16 +42,16 @@ const (
 type JobStage string
 
 const (
-	StageIdle              JobStage = "IDLE"
-	StageDiscovering       JobStage = "DISCOVERING"
-	StageResolvingRange    JobStage = "RESOLVING_RANGE"
-	StagePlanning          JobStage = "PLANNING"
-	StageAwaitingSchedule  JobStage = "AWAITING_SCHEDULE"
-	StageDownloading       JobStage = "DOWNLOADING"
-	StageWriting           JobStage = "WRITING"
-	StageIndexing          JobStage = "INDEXING"
-	StageValidatingOutput  JobStage = "VALIDATING_OUTPUT"
-	StageFinalizing        JobStage = "FINALIZING"
+	StageIdle             JobStage = "IDLE"
+	StageDiscovering      JobStage = "DISCOVERING"
+	StageResolvingRange   JobStage = "RESOLVING_RANGE"
+	StagePlanning         JobStage = "PLANNING"
+	StageAwaitingSchedule JobStage = "AWAITING_SCHEDULE"
+	StageDownloading      JobStage = "DOWNLOADING"
+	StageWriting          JobStage = "WRITING"
+	StageIndexing         JobStage = "INDEXING"
+	StageValidatingOutput JobStage = "VALIDATING_OUTPUT"
+	StageFinalizing       JobStage = "FINALIZING"
 )
 
 // ── 范围模式 ──
@@ -84,28 +84,28 @@ const (
 type ErrorCode string
 
 const (
-	ErrInvalidRequest            ErrorCode = "INVALID_REQUEST"
-	ErrInvalidAddress            ErrorCode = "INVALID_ADDRESS"
-	ErrUnsupportedChain          ErrorCode = "UNSUPPORTED_CHAIN"
-	ErrUnsupportedDataset        ErrorCode = "UNSUPPORTED_DATASET"
-	ErrFirstSeenNotFound         ErrorCode = "FIRST_SEEN_NOT_FOUND"
-	ErrFirstSeenPartial          ErrorCode = "FIRST_SEEN_PARTIAL"
-	ErrSQDNoWorkers              ErrorCode = "SQD_NO_AVAILABLE_WORKERS"
-	ErrSQDRateLimited            ErrorCode = "SQD_RATE_LIMITED"
-	ErrSQDCircuitOpen            ErrorCode = "SQD_CIRCUIT_OPEN"
-	ErrAWSFileNotFound           ErrorCode = "AWS_FILE_NOT_FOUND"
-	ErrRPCUnavailable            ErrorCode = "RPC_UNAVAILABLE"
-	ErrStoragePathInvalid        ErrorCode = "STORAGE_PATH_INVALID"
-	ErrDiskSpaceInsufficient     ErrorCode = "DISK_SPACE_INSUFFICIENT"
-	ErrCheckpointCorrupted       ErrorCode = "CHECKPOINT_CORRUPTED"
-	ErrParquetWriteFailed        ErrorCode = "PARQUET_WRITE_FAILED"
-	ErrManifestInconsistent      ErrorCode = "MANIFEST_INCONSISTENT"
-	ErrDuckDBIndexFailed         ErrorCode = "DUCKDB_INDEX_FAILED"
-	ErrValidationFailed          ErrorCode = "VALIDATION_FAILED"
-	ErrJobCancelled              ErrorCode = "JOB_CANCELLED"
-	ErrStartTimeRequired         ErrorCode = "START_TIME_REQUIRED"
-	ErrEndTimeInFuture           ErrorCode = "END_TIME_IN_FUTURE"
-	ErrDateRangeInvalid          ErrorCode = "DATE_RANGE_INVALID"
+	ErrInvalidRequest        ErrorCode = "INVALID_REQUEST"
+	ErrInvalidAddress        ErrorCode = "INVALID_ADDRESS"
+	ErrUnsupportedChain      ErrorCode = "UNSUPPORTED_CHAIN"
+	ErrUnsupportedDataset    ErrorCode = "UNSUPPORTED_DATASET"
+	ErrFirstSeenNotFound     ErrorCode = "FIRST_SEEN_NOT_FOUND"
+	ErrFirstSeenPartial      ErrorCode = "FIRST_SEEN_PARTIAL"
+	ErrSQDNoWorkers          ErrorCode = "SQD_NO_AVAILABLE_WORKERS"
+	ErrSQDRateLimited        ErrorCode = "SQD_RATE_LIMITED"
+	ErrSQDCircuitOpen        ErrorCode = "SQD_CIRCUIT_OPEN"
+	ErrAWSFileNotFound       ErrorCode = "AWS_FILE_NOT_FOUND"
+	ErrRPCUnavailable        ErrorCode = "RPC_UNAVAILABLE"
+	ErrStoragePathInvalid    ErrorCode = "STORAGE_PATH_INVALID"
+	ErrDiskSpaceInsufficient ErrorCode = "DISK_SPACE_INSUFFICIENT"
+	ErrCheckpointCorrupted   ErrorCode = "CHECKPOINT_CORRUPTED"
+	ErrParquetWriteFailed    ErrorCode = "PARQUET_WRITE_FAILED"
+	ErrManifestInconsistent  ErrorCode = "MANIFEST_INCONSISTENT"
+	ErrDuckDBIndexFailed     ErrorCode = "DUCKDB_INDEX_FAILED"
+	ErrValidationFailed      ErrorCode = "VALIDATION_FAILED"
+	ErrJobCancelled          ErrorCode = "JOB_CANCELLED"
+	ErrStartTimeRequired     ErrorCode = "START_TIME_REQUIRED"
+	ErrEndTimeInFuture       ErrorCode = "END_TIME_IN_FUTURE"
+	ErrDateRangeInvalid      ErrorCode = "DATE_RANGE_INVALID"
 )
 
 // ── Chunk ──
@@ -113,14 +113,14 @@ const (
 type ChunkStatus string
 
 const (
-	ChunkPending    ChunkStatus = "PENDING"
-	ChunkQueued     ChunkStatus = "QUEUED"
-	ChunkRunning    ChunkStatus = "RUNNING"
-	ChunkRetryWait  ChunkStatus = "RETRY_WAIT"
-	ChunkSucceeded  ChunkStatus = "SUCCEEDED"
-	ChunkFailed     ChunkStatus = "FAILED"
-	ChunkSkipped    ChunkStatus = "SKIPPED"
-	ChunkCancelled  ChunkStatus = "CANCELLED"
+	ChunkPending   ChunkStatus = "PENDING"
+	ChunkQueued    ChunkStatus = "QUEUED"
+	ChunkRunning   ChunkStatus = "RUNNING"
+	ChunkRetryWait ChunkStatus = "RETRY_WAIT"
+	ChunkSucceeded ChunkStatus = "SUCCEEDED"
+	ChunkFailed    ChunkStatus = "FAILED"
+	ChunkSkipped   ChunkStatus = "SKIPPED"
+	ChunkCancelled ChunkStatus = "CANCELLED"
 )
 
 type Chunk struct {
@@ -164,12 +164,12 @@ const (
 )
 
 type AddressDiscovery struct {
-	Address        string           `json:"address"`
-	FirstSeenBlock *uint64          `json:"first_seen_block,omitempty"`
-	FirstSeenTime  *string          `json:"first_seen_time,omitempty"`
-	FirstSeenSource string          `json:"first_seen_source,omitempty"`
-	Status         FirstSeenStatusV2 `json:"status"`
-	Coverage       CoverageStatusV2 `json:"coverage"`
+	Address         string            `json:"address"`
+	FirstSeenBlock  *uint64           `json:"first_seen_block,omitempty"`
+	FirstSeenTime   *string           `json:"first_seen_time,omitempty"`
+	FirstSeenSource string            `json:"first_seen_source,omitempty"`
+	Status          FirstSeenStatusV2 `json:"status"`
+	Coverage        CoverageStatusV2  `json:"coverage"`
 }
 
 type DiscoveryResult struct {
@@ -185,12 +185,12 @@ type DiscoveryResult struct {
 // ── 有效范围 ──
 
 type EffectiveRange struct {
-	StartBlock      uint64 `json:"start_block"`
-	EndBlock        uint64 `json:"end_block"`
-	StartTime       string `json:"start_time"`
-	EndTime         string `json:"end_time"`
-	RangeSource     string `json:"range_source"` // FIRST_SEEN / USER_SELECTED / INCREMENTAL
-	CoverageStatus  string `json:"coverage_status"`
+	StartBlock     uint64 `json:"start_block"`
+	EndBlock       uint64 `json:"end_block"`
+	StartTime      string `json:"start_time"`
+	EndTime        string `json:"end_time"`
+	RangeSource    string `json:"range_source"` // FIRST_SEEN / USER_SELECTED / INCREMENTAL
+	CoverageStatus string `json:"coverage_status"`
 }
 
 // ── Provider 能力 ──
@@ -210,19 +210,19 @@ type ProviderCapabilities struct {
 type ProviderHealthStatus string
 
 const (
-	ProviderHealthy      ProviderHealthStatus = "HEALTHY"
-	ProviderDegraded     ProviderHealthStatus = "DEGRADED"
-	ProviderNoWorker     ProviderHealthStatus = "NO_WORKER"
-	ProviderRateLimited  ProviderHealthStatus = "RATE_LIMITED"
-	ProviderUnavailable  ProviderHealthStatus = "UNAVAILABLE"
-	ProviderRecovering   ProviderHealthStatus = "RECOVERING"
-	ProviderDisabled     ProviderHealthStatus = "DISABLED"
+	ProviderHealthy     ProviderHealthStatus = "HEALTHY"
+	ProviderDegraded    ProviderHealthStatus = "DEGRADED"
+	ProviderNoWorker    ProviderHealthStatus = "NO_WORKER"
+	ProviderRateLimited ProviderHealthStatus = "RATE_LIMITED"
+	ProviderUnavailable ProviderHealthStatus = "UNAVAILABLE"
+	ProviderRecovering  ProviderHealthStatus = "RECOVERING"
+	ProviderDisabled    ProviderHealthStatus = "DISABLED"
 )
 
 type ProviderHealth struct {
-	Name       string              `json:"name"`
-	Status     ProviderHealthStatus `json:"status"`
-	LatencyMs  float64             `json:"latency_ms"`
-	ErrorRate  float64             `json:"error_rate"`
-	LastCheck  time.Time           `json:"last_check"`
+	Name      string               `json:"name"`
+	Status    ProviderHealthStatus `json:"status"`
+	LatencyMs float64              `json:"latency_ms"`
+	ErrorRate float64              `json:"error_rate"`
+	LastCheck time.Time            `json:"last_check"`
 }

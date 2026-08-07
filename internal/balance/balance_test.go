@@ -198,7 +198,7 @@ func TestBalance_Snapshot(t *testing.T) {
 		Snapshot: map[string]any{
 			"tokens": len(snap.Balances), "timeline": len(snap.Timeline),
 			"history_high": len(snap.HistoryHigh), "large_in": len(snap.LargeInflows),
-			"rapid_out": len(snap.RapidOutflows),
+			"rapid_out":    len(snap.RapidOutflows),
 			"usdt_balance": usdtBal, "risk_level": snap.Risk.Level,
 		},
 		Passed: len(snap.Timeline) > 0,
@@ -256,10 +256,10 @@ func TestBalance_PerfAndReproduce(t *testing.T) {
 	}
 
 	writeBalanceReport(filepath.Join(dataRoot, "..", "..", "benchmark"), &balanceReport{
-		Timestamp: time.Now().UTC(),
-		Perf:      perf,
+		Timestamp:    time.Now().UTC(),
+		Perf:         perf,
 		Reproducible: repro,
-		Passed:    repro,
+		Passed:       repro,
 	}, t)
 	if !repro {
 		t.Error("余额不可复现")

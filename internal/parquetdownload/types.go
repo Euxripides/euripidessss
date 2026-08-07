@@ -43,6 +43,8 @@ type StartRequest struct {
 	Addresses       string   `json:"addresses"`
 	StartDate       string   `json:"start_date"`
 	EndDate         string   `json:"end_date"`
+	FromBlock       uint64   `json:"from_block,omitempty"` // Phase 5.2 P0-2：显式区块范围透传
+	ToBlock         uint64   `json:"to_block,omitempty"`
 	UseFirstSeen    bool     `json:"use_first_seen"`
 	KeepSource      *bool    `json:"keep_source_files,omitempty"`
 	ExportCSV       *bool    `json:"export_csv,omitempty"`

@@ -15,11 +15,11 @@ import (
 
 // Queue 是地址发现队列：管理状态迁移与持久化。
 type Queue struct {
-	mu      sync.RWMutex
-	items   map[string]*DiscoveredAddress // address → item
-	order   []string                      // 按发现顺序
-	storeDir string                       // JSON 持久化目录（可选）
-	dirty   bool
+	mu       sync.RWMutex
+	items    map[string]*DiscoveredAddress // address → item
+	order    []string                      // 按发现顺序
+	storeDir string                        // JSON 持久化目录（可选）
+	dirty    bool
 }
 
 // NewQueue 创建队列。storeDir 为空则仅内存。

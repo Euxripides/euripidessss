@@ -3,6 +3,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# ── Phase 5：SQD Cloud 生产模式注入 ──
+# Secret 只允许来自环境变量（SQD_DEPLOY_KEY / R2_*），禁止硬编码到脚本或仓库。
+if ([string]::IsNullOrEmpty($env:SQD_CLOUD_MODE) -and -not [string]::IsNullOrEmpty($env:SQD_RUNTIME_MODE)) {
+    $env:SQD_CLOUD_MODE = $env:SQD_RUNTIME_MODE
+}
+if ($env:SQD_CLOUD_MODE -eq "cloud") {
+    $missing = @()
+    foreach ($name in @("SQD_DEPLOY_KEY", "R2_ENDPOINT", "R2_BUCKET", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")) {
+        if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name))) { $missing += $name }
+    }
+    if ($missing.Count -gt 0) {
+        Write-Host "[ERROR] SQD_CLOUD_MODE=cloud 需要环境变量: $($missing -join ', ')（禁止硬编码到 run.ps1）"
+        exit 1
+    }
+}
+if ([string]::IsNullOrEmpty($env:SQD_CLOUD_ORG)) { $env:SQD_CLOUD_ORG = "supreme" }
+
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BinPath = Join-Path $ProjectRoot "bin\etl-server.exe"
 $Port = 8000

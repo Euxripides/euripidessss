@@ -29,9 +29,9 @@ type AIChatter interface {
 
 // DeepSeekClient 是 DeepSeek API 客户端。
 type DeepSeekClient struct {
-	apiKey    string
+	apiKey     string
 	httpClient *http.Client
-	endpoint  string
+	endpoint   string
 
 	// cfgMu 保护 model/maxTokens/timeoutMS（ApplyConfig 与并发 Chat 读写，review should-fix）
 	cfgMu     sync.Mutex
@@ -46,13 +46,13 @@ type DeepSeekClient struct {
 
 // AIUsage 是 DeepSeek 调用用量统计（#10 优化）。
 type AIUsage struct {
-	TotalCalls        int            `json:"total_calls"`
-	TotalPromptTokens int            `json:"total_prompt_tokens"`
-	TotalCompletionTokens int        `json:"total_completion_tokens"`
-	TotalTokens       int            `json:"total_tokens"`
-	TotalDurationMS   int64          `json:"total_duration_ms"`
-	ByModel           map[string]int `json:"by_model"`
-	LastCallAt        string         `json:"last_call_at,omitempty"`
+	TotalCalls            int            `json:"total_calls"`
+	TotalPromptTokens     int            `json:"total_prompt_tokens"`
+	TotalCompletionTokens int            `json:"total_completion_tokens"`
+	TotalTokens           int            `json:"total_tokens"`
+	TotalDurationMS       int64          `json:"total_duration_ms"`
+	ByModel               map[string]int `json:"by_model"`
+	LastCallAt            string         `json:"last_call_at,omitempty"`
 }
 
 // NewDeepSeekClient 创建客户端。apiKey 为空时回退读 DEEPSEEK_API_KEY 环境变量。
@@ -72,10 +72,10 @@ func NewDeepSeekClient(apiKey, model string, timeoutMS int, maxTokens ...int) *D
 		tokens = maxTokens[0]
 	}
 	return &DeepSeekClient{
-		apiKey:     apiKey,
-		model:      model,
-		maxTokens:  tokens,
-		timeoutMS:  timeoutMS,
+		apiKey:    apiKey,
+		model:     model,
+		maxTokens: tokens,
+		timeoutMS: timeoutMS,
 		// Timeout 置 0：请求超时完全由 chat() 内 context.WithTimeout 按快照精确控制
 		// （httpClient.Timeout 固定值会导致 ApplyConfig 放宽超时不生效）
 		httpClient: &http.Client{},

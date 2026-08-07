@@ -94,11 +94,11 @@ func TestBSCSingleAddressE2E(t *testing.T) {
 func TestBreakpointResume(t *testing.T) {
 	// Simulate: job paused mid-download, then resumed
 	job := &Job{
-		ID:       "recovery-001",
-		Type:     JobAddressBatch,
-		ChainID:  "bsc",
-		Status:   StatusRunning,
-		Stage:    StageDownloading,
+		ID:        "recovery-001",
+		Type:      JobAddressBatch,
+		ChainID:   "bsc",
+		Status:    StatusRunning,
+		Stage:     StageDownloading,
 		CreatedAt: time.Now().UTC(),
 	}
 

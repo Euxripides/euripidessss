@@ -40,10 +40,10 @@ type AdaptiveWorkers struct {
 
 	config WorkersConfig
 
-	current     int32       // current worker count (atomic for reads)
-	tier        WorkerTier  // current tier
-	lastScale   time.Time   // last time we scaled
-	scaleCount  int         // number of scale events
+	current    int32      // current worker count (atomic for reads)
+	tier       WorkerTier // current tier
+	lastScale  time.Time  // last time we scaled
+	scaleCount int        // number of scale events
 
 	// Recovery tracking
 	consecutiveSuccesses int

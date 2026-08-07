@@ -11,13 +11,13 @@ import (
 // SQDStatusSnapshot is the debug view of the SQD reliability layer.
 // Exposed at GET /api/crypto/parquet/sqd/status.
 type SQDStatusSnapshot struct {
-	Portal      string                       `json:"portal"`
-	Metrics     sqd.MetricsSnapshot          `json:"metrics"`
-	Workers     sqd.AdaptiveWorkerStats      `json:"workers"`
-	Circuit     sqd.CircuitStats             `json:"circuit_breaker"`
-	Cooldown    bool                         `json:"cooldown_active"`
-	CooldownFor string                       `json:"cooldown_for,omitempty"`
-	CheckedAt   time.Time                    `json:"checked_at"`
+	Portal      string                  `json:"portal"`
+	Metrics     sqd.MetricsSnapshot     `json:"metrics"`
+	Workers     sqd.AdaptiveWorkerStats `json:"workers"`
+	Circuit     sqd.CircuitStats        `json:"circuit_breaker"`
+	Cooldown    bool                    `json:"cooldown_active"`
+	CooldownFor string                  `json:"cooldown_for,omitempty"`
+	CheckedAt   time.Time               `json:"checked_at"`
 }
 
 // SQDStatus returns a point-in-time snapshot of the SQD reliability layer.

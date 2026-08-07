@@ -3,6 +3,7 @@ package parquetdownload
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -16,6 +17,85 @@ import (
 	"github.com/etl/backend/internal/datasource/sqd"
 	"github.com/etl/backend/internal/normalize"
 )
+
+// sqdChunkSizeBlocks 单次 SQD 流式拉取的区块分片大小（≈170 天，BSC ~28800 块/天）。
+// SQD portal 对超长流（数百万区块）会强制 503 中断，分片 + 冷却重试可完整拉取。
+const sqdChunkSizeBlocks = 5_000_000
+
+// streamChunked 将区块范围按 chunkSize 分片顺序流式拉取（V3 §7 chunk 智能调整落地）：
+// 单片遇可恢复错误（503 冷却/超时/熔断）时冷却等待重试（最多 maxAttempts 次），
+// 避免 portal 强制中断导致任务从头重来；不可恢复错误（schema 等）直接返回。
+// stream 回调通过 lastHandled 报告最后完整处理的区块号：中断重试从 lastHandled+1 续拉，
+// 已写入 sink 的行不会被重复写入（503 中断发生在分片中部时尤其关键）。
+func streamChunked(ctx context.Context, blockRange SQDBlockRange, chunkSize uint64,
+	stream func(ctx context.Context, rng sqd.BlockRange, lastHandled *uint64) error) error {
+	if chunkSize == 0 {
+		chunkSize = sqdChunkSizeBlocks
+	}
+	chunks := splitBlockRange(blockRange.From, blockRange.To, chunkSize)
+	if len(chunks) == 0 {
+		return nil
+	}
+	// portal 负载波动（503 间歇出现）下需更长重试窗口：12 次尝试 + 最长 300s 冷却间隔
+	const maxAttempts = 12
+	for _, chunk := range chunks {
+		var lastHandled uint64 // 0 = 本分片尚未处理任何块（创世块无交易，从 0 续拉安全）
+		from := chunk.From
+		var lastErr error
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			lastErr = stream(ctx, sqd.BlockRange{From: from, To: chunk.To}, &lastHandled)
+			if lastErr == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if !retryableSQDError(lastErr) {
+				return lastErr
+			}
+			// 断点续拉：从最后完整处理的区块之后继续，避免重复写行
+			if lastHandled > 0 {
+				from = lastHandled + 1
+			}
+			// 冷却等待：503 后 portal 需要恢复时间（30s/60s/.../300s 阶梯）；最后一次尝试后不再等待
+			if attempt >= maxAttempts-1 {
+				break
+			}
+			wait := time.Duration(attempt+1) * 30 * time.Second
+			if wait > 5*time.Minute {
+				wait = 5 * time.Minute
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		if lastErr != nil {
+			return fmt.Errorf("区块分片 %d-%d 重试 %d 次仍失败: %w", chunk.From, chunk.To, maxAttempts-1, lastErr)
+		}
+	}
+	return nil
+}
+
+// retryableSQDError 判断 SQD 错误是否可恢复（503 冷却/熔断/超时/网络/中流截断）。
+func retryableSQDError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, sqd.ErrSQDCooldown) || errors.Is(err, sqd.ErrCircuitOpen) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "503") ||
+		strings.Contains(msg, "no available worker") ||
+		strings.Contains(msg, "冷却") ||
+		strings.Contains(msg, "unexpected eof") || // 中流截断（收窄匹配，避免误判致命解析错误）
+		strings.Contains(msg, "truncated") ||
+		strings.Contains(msg, "interrupted") ||
+		strings.Contains(msg, "connection reset")
+}
 
 type sqdOutcome struct {
 	TransactionRows   int64
@@ -100,7 +180,8 @@ func (m *Manager) ingestSQD(
 		}
 	}()
 
-	if hasSelectedSource(selected, "transactions") && network.Key != "bsc" {
+	// 原生交易（含 BSC）一律由 SQD 流式按地址过滤采集（manager.Preview 已不再触发 AWS discover）
+	if hasSelectedSource(selected, "transactions") {
 		transactionSink, sinkErr := newCSVSink(filepath.Join(tempDir, "transactions.csv"), []string{
 			"chain_key", "chain_id", "tx_hash", "block_number", "block_time", "from_address",
 			"to_address", "value_raw", "input", "method_id", "status", "gas_used", "gas_price", "source",
@@ -112,44 +193,49 @@ func (m *Manager) ingestSQD(
 			job.Stage = "transactions"
 			setStage(job, "transactions", StatusRunning, 0, "SQD 多链交易按地址流式筛选")
 		})
-		streamErr := m.sqd.StreamTransactions(ctx, network, sqd.BlockRange{From: blockRange.From, To: blockRange.To}, addresses, func(block sqd.Block) error {
-			for _, item := range block.Transactions {
-				valueRaw, quantityErr := hexQuantityDecimal(item.Value)
-				if quantityErr != nil {
-					return fmt.Errorf("解析交易 %s value: %w", item.Hash, quantityErr)
+		streamErr := streamChunked(ctx, blockRange, sqdChunkSizeBlocks, func(ctx context.Context, rng sqd.BlockRange, lastHandled *uint64) error {
+			return m.sqd.StreamTransactions(ctx, network, rng, addresses, func(block sqd.Block) error {
+				for _, item := range block.Transactions {
+					valueRaw, quantityErr := hexQuantityDecimal(item.Value)
+					if quantityErr != nil {
+						return fmt.Errorf("解析交易 %s value: %w", item.Hash, quantityErr)
+					}
+					methodID := strings.ToLower(item.Sighash)
+					if methodID == "" && len(item.Input) >= 10 {
+						methodID = strings.ToLower(item.Input[:10])
+					}
+					transaction := normalize.UnifiedTransaction{
+						ChainKey: network.Key, ChainID: network.ID, TxHash: strings.ToLower(item.Hash),
+						BlockNumber: block.Header.Number, BlockTime: time.Unix(block.Header.Timestamp, 0).UTC(),
+						FromAddress: strings.ToLower(item.From), ToAddress: strings.ToLower(item.To),
+						ValueRaw: valueRaw, Input: item.Input, MethodID: methodID, Status: item.Status,
+						GasUsed: item.GasUsed, GasPrice: item.GasPrice, Source: "SQD_TRANSACTION",
+					}
+					if err := writeUnifiedTransaction(transactionSink.writer, transaction); err != nil {
+						return err
+					}
+					result.TransactionRows++
+					activityType := "NATIVE_TRANSFER"
+					if item.Input != "" && item.Input != "0x" {
+						activityType = normalize.ActivityTypeForMethod(methodID, "CONTRACT_CALL")
+					}
+					written, activityErr := writeTransferActivities(
+						activitySink.writer, targets, network, transaction.FromAddress, transaction.ToAddress,
+						"", valueRaw, formatUnits(valueRaw, 18), transaction.TxHash,
+						transaction.BlockTime.Format("2006-01-02T15:04:05Z"), activityType, "NATIVE",
+						methodID, 0, transactionStatus(transaction.Status), transaction.Source,
+					)
+					if activityErr != nil {
+						return activityErr
+					}
+					result.ActivityRows += written
 				}
-				methodID := strings.ToLower(item.Sighash)
-				if methodID == "" && len(item.Input) >= 10 {
-					methodID = strings.ToLower(item.Input[:10])
+				m.updateSQDProgress(jobID, "transactions", block.Header.Number, blockRange, fmt.Sprintf("已统一 %d 条交易", result.TransactionRows))
+				if lastHandled != nil {
+					*lastHandled = block.Header.Number
 				}
-				transaction := normalize.UnifiedTransaction{
-					ChainKey: network.Key, ChainID: network.ID, TxHash: strings.ToLower(item.Hash),
-					BlockNumber: block.Header.Number, BlockTime: time.Unix(block.Header.Timestamp, 0).UTC(),
-					FromAddress: strings.ToLower(item.From), ToAddress: strings.ToLower(item.To),
-					ValueRaw: valueRaw, Input: item.Input, MethodID: methodID, Status: item.Status,
-					GasUsed: item.GasUsed, GasPrice: item.GasPrice, Source: "SQD_TRANSACTION",
-				}
-				if err := writeUnifiedTransaction(transactionSink.writer, transaction); err != nil {
-					return err
-				}
-				result.TransactionRows++
-				activityType := "NATIVE_TRANSFER"
-				if item.Input != "" && item.Input != "0x" {
-					activityType = normalize.ActivityTypeForMethod(methodID, "CONTRACT_CALL")
-				}
-				written, activityErr := writeTransferActivities(
-					activitySink.writer, targets, network, transaction.FromAddress, transaction.ToAddress,
-					"", valueRaw, formatUnits(valueRaw, 18), transaction.TxHash,
-					transaction.BlockTime.Format("2006-01-02T15:04:05Z"), activityType, "NATIVE",
-					methodID, 0, transactionStatus(transaction.Status), transaction.Source,
-				)
-				if activityErr != nil {
-					return activityErr
-				}
-				result.ActivityRows += written
-			}
-			m.updateSQDProgress(jobID, "transactions", block.Header.Number, blockRange, fmt.Sprintf("已统一 %d 条交易", result.TransactionRows))
-			return nil
+				return nil
+			})
 		})
 		if closeErr := transactionSink.close(); streamErr == nil && closeErr != nil {
 			streamErr = closeErr
@@ -167,7 +253,7 @@ func (m *Manager) ingestSQD(
 		})
 	} else {
 		m.mutate(jobID, func(job *Job) {
-			detail := "BSC 使用 AWS transactions"
+			detail := "未选择 transactions"
 			if !hasSelectedSource(selected, "transactions") {
 				detail = "未选择"
 			}
@@ -207,50 +293,55 @@ func (m *Manager) ingestSQD(
 			setStage(job, "logs", StatusRunning, 0, "SQD finalized-stream 连接成功，开始流式筛选")
 			setStage(job, "nft", StatusRunning, 0, "等待解析标准事件")
 		})
-		streamErr := m.sqd.StreamLogs(ctx, network, sqd.BlockRange{From: blockRange.From, To: blockRange.To}, addresses, func(block sqd.Block) error {
-			for _, item := range block.Logs {
-				topics := make([]string, 4)
-				copy(topics, item.Topics)
-				if err := logSink.writer.Write([]string{
-					network.Key, strconv.FormatInt(network.ID, 10), strconv.FormatUint(block.Header.Number, 10),
-					formatUnix(block.Header.Timestamp), strings.ToLower(item.TransactionHash),
-					strconv.FormatUint(item.TransactionIndex, 10), strconv.FormatUint(item.LogIndex, 10),
-					strings.ToLower(item.Address), topics[0], topics[1], topics[2], topics[3], item.Data,
-				}); err != nil {
-					return err
-				}
-				result.LogRows++
-				tokens, nfts, decodeErr := normalize.DecodeTransferLog(network, block.Header, item)
-				if decodeErr != nil {
-					return fmt.Errorf("解析区块 %d Log %d: %w", block.Header.Number, item.LogIndex, decodeErr)
-				}
-				for _, transfer := range tokens {
-					tokenContracts[transfer.TokenAddress] = transfer.Standard
-					if err := writeTokenTransfer(tokenSink.writer, transfer); err != nil {
+		streamErr := streamChunked(ctx, blockRange, sqdChunkSizeBlocks, func(ctx context.Context, rng sqd.BlockRange, lastHandled *uint64) error {
+			return m.sqd.StreamLogs(ctx, network, rng, addresses, func(block sqd.Block) error {
+				for _, item := range block.Logs {
+					topics := make([]string, 4)
+					copy(topics, item.Topics)
+					if err := logSink.writer.Write([]string{
+						network.Key, strconv.FormatInt(network.ID, 10), strconv.FormatUint(block.Header.Number, 10),
+						formatUnix(block.Header.Timestamp), strings.ToLower(item.TransactionHash),
+						strconv.FormatUint(item.TransactionIndex, 10), strconv.FormatUint(item.LogIndex, 10),
+						strings.ToLower(item.Address), topics[0], topics[1], topics[2], topics[3], item.Data,
+					}); err != nil {
 						return err
 					}
-					result.TokenTransferRows++
-					written, activityErr := writeTransferActivities(activitySink.writer, targets, network, transfer.FromAddress, transfer.ToAddress, transfer.TokenAddress, transfer.AmountRaw, "", transfer.TxHash, transfer.BlockTime.Format("2006-01-02T15:04:05Z"), "TOKEN_TRANSFER", "TOKEN", "", 0, "UNKNOWN", "SQD_LOG")
-					if activityErr != nil {
-						return activityErr
+					result.LogRows++
+					tokens, nfts, decodeErr := normalize.DecodeTransferLog(network, block.Header, item)
+					if decodeErr != nil {
+						return fmt.Errorf("解析区块 %d Log %d: %w", block.Header.Number, item.LogIndex, decodeErr)
 					}
-					result.ActivityRows += written
+					for _, transfer := range tokens {
+						tokenContracts[transfer.TokenAddress] = transfer.Standard
+						if err := writeTokenTransfer(tokenSink.writer, transfer); err != nil {
+							return err
+						}
+						result.TokenTransferRows++
+						written, activityErr := writeTransferActivities(activitySink.writer, targets, network, transfer.FromAddress, transfer.ToAddress, transfer.TokenAddress, transfer.AmountRaw, "", transfer.TxHash, transfer.BlockTime.Format("2006-01-02T15:04:05Z"), "TOKEN_TRANSFER", "TOKEN", "", 0, "UNKNOWN", "SQD_LOG")
+						if activityErr != nil {
+							return activityErr
+						}
+						result.ActivityRows += written
+					}
+					for _, transfer := range nfts {
+						if err := writeNFTTransfer(nftSink.writer, transfer); err != nil {
+							return err
+						}
+						result.NFTTransferRows++
+						written, activityErr := writeTransferActivities(activitySink.writer, targets, network, transfer.FromAddress, transfer.ToAddress, transfer.ContractAddress, transfer.Amount, transfer.Amount, transfer.TxHash, transfer.BlockTime.Format("2006-01-02T15:04:05Z"), "NFT_TRANSFER", transfer.Standard, "", 0, "UNKNOWN", "SQD_LOG")
+						if activityErr != nil {
+							return activityErr
+						}
+						result.ActivityRows += written
+					}
 				}
-				for _, transfer := range nfts {
-					if err := writeNFTTransfer(nftSink.writer, transfer); err != nil {
-						return err
-					}
-					result.NFTTransferRows++
-					written, activityErr := writeTransferActivities(activitySink.writer, targets, network, transfer.FromAddress, transfer.ToAddress, transfer.ContractAddress, transfer.Amount, transfer.Amount, transfer.TxHash, transfer.BlockTime.Format("2006-01-02T15:04:05Z"), "NFT_TRANSFER", transfer.Standard, "", 0, "UNKNOWN", "SQD_LOG")
-					if activityErr != nil {
-						return activityErr
-					}
-					result.ActivityRows += written
+				m.updateSQDProgress(jobID, "logs", block.Header.Number, blockRange, fmt.Sprintf("已读取 %d 条日志", result.LogRows))
+				m.updateSQDProgress(jobID, "nft", block.Header.Number, blockRange, fmt.Sprintf("Token %d / NFT %d", result.TokenTransferRows, result.NFTTransferRows))
+				if lastHandled != nil {
+					*lastHandled = block.Header.Number
 				}
-			}
-			m.updateSQDProgress(jobID, "logs", block.Header.Number, blockRange, fmt.Sprintf("已读取 %d 条日志", result.LogRows))
-			m.updateSQDProgress(jobID, "nft", block.Header.Number, blockRange, fmt.Sprintf("Token %d / NFT %d", result.TokenTransferRows, result.NFTTransferRows))
-			return nil
+				return nil
+			})
 		})
 		for _, sink := range []*csvSink{logSink, tokenSink, nftSink} {
 			if closeErr := sink.close(); streamErr == nil && closeErr != nil {
@@ -305,34 +396,39 @@ func (m *Manager) ingestSQD(
 			job.Stage = "traces"
 			setStage(job, "traces", StatusRunning, 0, "按目标地址筛选 Trace")
 		})
-		streamErr := m.sqd.StreamTraces(ctx, network, sqd.BlockRange{From: blockRange.From, To: blockRange.To}, addresses, func(block sqd.Block) error {
-			txHashes := make(map[uint64]string, len(block.Transactions))
-			for _, transaction := range block.Transactions {
-				txHashes[transaction.TransactionIndex] = transaction.Hash
-			}
-			for index, item := range block.Traces {
-				trace, internal, normalizeErr := normalize.NormalizeTrace(network, block.Header, item, txHashes[item.TransactionIndex], index)
-				if normalizeErr != nil {
-					return fmt.Errorf("解析区块 %d Trace %d: %w", block.Header.Number, index, normalizeErr)
+		streamErr := streamChunked(ctx, blockRange, sqdChunkSizeBlocks, func(ctx context.Context, rng sqd.BlockRange, lastHandled *uint64) error {
+			return m.sqd.StreamTraces(ctx, network, rng, addresses, func(block sqd.Block) error {
+				txHashes := make(map[uint64]string, len(block.Transactions))
+				for _, transaction := range block.Transactions {
+					txHashes[transaction.TransactionIndex] = transaction.Hash
 				}
-				if err := writeTrace(traceSink.writer, trace); err != nil {
-					return err
-				}
-				result.TraceRows++
-				if internal != nil {
-					if err := writeInternalTransaction(internalSink.writer, *internal); err != nil {
+				for index, item := range block.Traces {
+					trace, internal, normalizeErr := normalize.NormalizeTrace(network, block.Header, item, txHashes[item.TransactionIndex], index)
+					if normalizeErr != nil {
+						return fmt.Errorf("解析区块 %d Trace %d: %w", block.Header.Number, index, normalizeErr)
+					}
+					if err := writeTrace(traceSink.writer, trace); err != nil {
 						return err
 					}
-					result.InternalRows++
-					written, activityErr := writeTransferActivities(activitySink.writer, targets, network, internal.FromAddress, internal.ToAddress, "", internal.ValueRaw, formatUnits(internal.ValueRaw, 18), internal.TxHash, internal.BlockTime.Format("2006-01-02T15:04:05Z"), "INTERNAL_TRANSFER", "NATIVE", "", trace.TraceDepth, trace.Status, "SQD_TRACE")
-					if activityErr != nil {
-						return activityErr
+					result.TraceRows++
+					if internal != nil {
+						if err := writeInternalTransaction(internalSink.writer, *internal); err != nil {
+							return err
+						}
+						result.InternalRows++
+						written, activityErr := writeTransferActivities(activitySink.writer, targets, network, internal.FromAddress, internal.ToAddress, "", internal.ValueRaw, formatUnits(internal.ValueRaw, 18), internal.TxHash, internal.BlockTime.Format("2006-01-02T15:04:05Z"), "INTERNAL_TRANSFER", "NATIVE", "", trace.TraceDepth, trace.Status, "SQD_TRACE")
+						if activityErr != nil {
+							return activityErr
+						}
+						result.ActivityRows += written
 					}
-					result.ActivityRows += written
 				}
-			}
-			m.updateSQDProgress(jobID, "traces", block.Header.Number, blockRange, fmt.Sprintf("Trace %d / 内部交易 %d", result.TraceRows, result.InternalRows))
-			return nil
+				m.updateSQDProgress(jobID, "traces", block.Header.Number, blockRange, fmt.Sprintf("Trace %d / 内部交易 %d", result.TraceRows, result.InternalRows))
+				if lastHandled != nil {
+					*lastHandled = block.Header.Number
+				}
+				return nil
+			})
 		})
 		for _, sink := range []*csvSink{traceSink, internalSink} {
 			if closeErr := sink.close(); streamErr == nil && closeErr != nil {

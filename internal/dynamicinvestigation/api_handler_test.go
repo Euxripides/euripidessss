@@ -62,8 +62,8 @@ func TestHandlerQueueFlow(t *testing.T) {
 		t.Fatalf("queue 应 200, got %d", rr.Code)
 	}
 	var list struct {
-		Total int                   `json:"total"`
-		Items []DiscoveredAddress   `json:"items"`
+		Total int                 `json:"total"`
+		Items []DiscoveredAddress `json:"items"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &list); err != nil {
 		t.Fatalf("queue 响应解析失败: %v", err)
@@ -130,8 +130,8 @@ func TestHandlerTasksAndStats(t *testing.T) {
 		t.Fatalf("tasks 应 200, got %d", rr.Code)
 	}
 	var tasks struct {
-		Total int                `json:"total"`
-		Items []TaskView      `json:"items"`
+		Total int        `json:"total"`
+		Items []TaskView `json:"items"`
 	}
 	_ = json.Unmarshal(rr.Body.Bytes(), &tasks)
 	if tasks.Total != 1 {

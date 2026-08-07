@@ -152,7 +152,7 @@ func TestGraph_Correctness(t *testing.T) {
 			"nodes": len(g.Nodes), "edges": len(g.Edges),
 			"parquet_transfer_rows": parquetRows, "traceable": traceable, "no_cycle": noCycle,
 		},
-		Perf: map[string]any{"build_ms": buildDur.Milliseconds()},
+		Perf:   map[string]any{"build_ms": buildDur.Milliseconds()},
 		Passed: noCycle && traceable,
 	}, t)
 	if !noCycle || !traceable {

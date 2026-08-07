@@ -31,22 +31,22 @@ const (
 )
 
 type integrityResult struct {
-	Timestamp     time.Time `json:"timestamp"`
-	SourceRows    int64     `json:"source_rows"`     // CSV 数据行（raw 下载计数）
-	ParsedRows    int64     `json:"parsed_rows"`     // CSV 解析成功行
-	UniqueRows    int64     `json:"unique_rows"`     // 4 元组去重后
-	ParquetRows   int64     `json:"parquet_rows"`    // Parquet 物理行
-	DuckDBRows    int64     `json:"duckdb_rows"`     // COUNT(*)
-	DuckDBDistinct int64    `json:"duckdb_distinct"` // COUNT(DISTINCT unique_key)
-	DuplicateRows int64     `json:"duplicate_rows"`  // source - unique
-	Consistent    bool      `json:"consistent"`      // source=parquet=duckdb
-	ParquetExists bool      `json:"parquet_exists"`
-	ParquetSize   int64     `json:"parquet_size"`
-	ParquetSHA256 string    `json:"parquet_sha256"`
-	SchemaColumns []string  `json:"schema_columns"`
-	ChecksumOK    bool      `json:"checksum_ok"`
-	ManifestPath  string    `json:"manifest_path,omitempty"`
-	Passed        bool      `json:"passed"`
+	Timestamp      time.Time `json:"timestamp"`
+	SourceRows     int64     `json:"source_rows"`     // CSV 数据行（raw 下载计数）
+	ParsedRows     int64     `json:"parsed_rows"`     // CSV 解析成功行
+	UniqueRows     int64     `json:"unique_rows"`     // 4 元组去重后
+	ParquetRows    int64     `json:"parquet_rows"`    // Parquet 物理行
+	DuckDBRows     int64     `json:"duckdb_rows"`     // COUNT(*)
+	DuckDBDistinct int64     `json:"duckdb_distinct"` // COUNT(DISTINCT unique_key)
+	DuplicateRows  int64     `json:"duplicate_rows"`  // source - unique
+	Consistent     bool      `json:"consistent"`      // source=parquet=duckdb
+	ParquetExists  bool      `json:"parquet_exists"`
+	ParquetSize    int64     `json:"parquet_size"`
+	ParquetSHA256  string    `json:"parquet_sha256"`
+	SchemaColumns  []string  `json:"schema_columns"`
+	ChecksumOK     bool      `json:"checksum_ok"`
+	ManifestPath   string    `json:"manifest_path,omitempty"`
+	Passed         bool      `json:"passed"`
 }
 
 // TestDataIntegrityVerification 验证 SQD→CSV→Parquet→DuckDB 数据一致性。

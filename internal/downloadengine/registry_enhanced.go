@@ -12,7 +12,7 @@ import (
 type DatasetStatus string
 
 const (
-	DsCreated    DatasetStatus = "CREATED"
+	DsCreated     DatasetStatus = "CREATED"
 	DsDownloading DatasetStatus = "DOWNLOADING"
 	DsValidating  DatasetStatus = "VALIDATING"
 	DsReady       DatasetStatus = "READY"
@@ -133,18 +133,18 @@ func (bc *BlockCoverage) merge() {
 // ── Address Coverage ──
 
 type AddressCoverage struct {
-	mu       sync.RWMutex
-	entries  map[string]*AddressCoverageEntry
+	mu      sync.RWMutex
+	entries map[string]*AddressCoverageEntry
 }
 
 type AddressCoverageEntry struct {
-	Address   string    `json:"address"`
-	DatasetID string    `json:"dataset_id"`
-	Chain     string    `json:"chain"`
-	StartBlock uint64   `json:"start_block"`
-	EndBlock   uint64   `json:"end_block"`
-	Status    string    `json:"status"` // covered / partial
-	UpdatedAt time.Time `json:"updated_at"`
+	Address    string    `json:"address"`
+	DatasetID  string    `json:"dataset_id"`
+	Chain      string    `json:"chain"`
+	StartBlock uint64    `json:"start_block"`
+	EndBlock   uint64    `json:"end_block"`
+	Status     string    `json:"status"` // covered / partial
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 func NewAddressCoverage() *AddressCoverage {
@@ -171,7 +171,7 @@ type EnhancedRegistry struct {
 	datasets map[string]*EnhancedDataset // ID → dataset
 	coverage map[string]*BlockCoverage   // chain:type → coverage
 	addrCov  *AddressCoverage
-	files    map[string]*FileEntry       // path → file entry
+	files    map[string]*FileEntry // path → file entry
 
 	// Metrics
 	CacheHits   int64

@@ -30,8 +30,8 @@ type KnownEntity struct {
 
 // Recognizer 负责实体识别。
 type Recognizer struct {
-	mu     sync.RWMutex
-	known  map[string]KnownEntity // address(lower) → known
+	mu    sync.RWMutex
+	known map[string]KnownEntity // address(lower) → known
 }
 
 // NewRecognizer 创建识别器。

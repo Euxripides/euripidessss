@@ -10,15 +10,15 @@ import (
 type SQDErrorKind string
 
 const (
-	ErrorNone         SQDErrorKind = ""
-	Error503          SQDErrorKind = "503"
-	Error429          SQDErrorKind = "429"
-	ErrorTimeout      SQDErrorKind = "timeout"
-	ErrorDNS          SQDErrorKind = "dns"
-	ErrorNetwork      SQDErrorKind = "network"
-	ErrorOther        SQDErrorKind = "other"
-	ErrorCircuitOpen  SQDErrorKind = "circuit_open"
-	ErrorCooldown     SQDErrorKind = "cooldown"
+	ErrorNone        SQDErrorKind = ""
+	Error503         SQDErrorKind = "503"
+	Error429         SQDErrorKind = "429"
+	ErrorTimeout     SQDErrorKind = "timeout"
+	ErrorDNS         SQDErrorKind = "dns"
+	ErrorNetwork     SQDErrorKind = "network"
+	ErrorOther       SQDErrorKind = "other"
+	ErrorCircuitOpen SQDErrorKind = "circuit_open"
+	ErrorCooldown    SQDErrorKind = "cooldown"
 )
 
 // ProviderMetrics tracks SQD provider-level metrics for observability.
@@ -27,14 +27,14 @@ type ProviderMetrics struct {
 	mu sync.Mutex
 
 	// Counters
-	requestTotal   int64
-	successTotal   int64
-	failedTotal    int64
-	retryTotal     int64
-	error503Total  int64
-	error429Total  int64
+	requestTotal      int64
+	successTotal      int64
+	failedTotal       int64
+	retryTotal        int64
+	error503Total     int64
+	error429Total     int64
 	errorTimeoutTotal int64
-	errorDNSTotal  int64
+	errorDNSTotal     int64
 	errorNetworkTotal int64
 
 	// Performance
@@ -44,10 +44,10 @@ type ProviderMetrics struct {
 	byteTotal      int64
 
 	// Timing
-	startedAt      time.Time
-	lastRequestAt  time.Time
-	lastSuccessAt  time.Time
-	lastFailureAt  time.Time
+	startedAt     time.Time
+	lastRequestAt time.Time
+	lastSuccessAt time.Time
+	lastFailureAt time.Time
 }
 
 // NewProviderMetrics creates a new metrics tracker.

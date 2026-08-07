@@ -31,7 +31,7 @@ func NewSQDAdapter(client *sqd.Client) *SQDAdapter {
 }
 
 func (s *SQDAdapter) Name() string                                      { return "SQD" }
-func (s *SQDAdapter) Capabilities() downloadengine.ProviderCapabilities   { return s.caps }
+func (s *SQDAdapter) Capabilities() downloadengine.ProviderCapabilities { return s.caps }
 
 func (s *SQDAdapter) Health(ctx context.Context) downloadengine.ProviderHealth {
 	status := downloadengine.ProviderHealthy
@@ -60,7 +60,7 @@ func (s *SQDAdapter) Estimate(ctx context.Context, req downloadengine.StreamEsti
 	if err != nil {
 		return &downloadengine.EstimateResult{SupportsRequest: false}, fmt.Errorf("SQD estimate metadata: %w", err)
 	}
-	chunks := int((req.EndBlock-req.StartBlock+50000-1)/50000)
+	chunks := int((req.EndBlock - req.StartBlock + 50000 - 1) / 50000)
 	if chunks < 1 {
 		chunks = 1
 	}
@@ -150,9 +150,9 @@ func sqdBlockToMap(block sqd.Block) map[string]any {
 		logs := make([]map[string]any, len(block.Logs))
 		for i, l := range block.Logs {
 			logs[i] = map[string]any{
-				"address":  l.Address,
-				"topics":   l.Topics,
-				"tx_hash":  l.TransactionHash,
+				"address": l.Address,
+				"topics":  l.Topics,
+				"tx_hash": l.TransactionHash,
 			}
 		}
 		m["logs"] = logs
@@ -161,9 +161,9 @@ func sqdBlockToMap(block sqd.Block) map[string]any {
 		traces := make([]map[string]any, len(block.Traces))
 		for i, tr := range block.Traces {
 			traces[i] = map[string]any{
-				"type":   tr.Type,
-				"from":   tr.Action.From,
-				"to":     tr.Action.To,
+				"type": tr.Type,
+				"from": tr.Action.From,
+				"to":   tr.Action.To,
 			}
 		}
 		m["traces"] = traces

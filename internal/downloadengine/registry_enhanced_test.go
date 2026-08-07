@@ -145,7 +145,7 @@ func TestAddressCoverage(t *testing.T) {
 	ac := NewAddressCoverage()
 	ac.Mark("0x55d398326f99059ff775485246999027b3197955", &AddressCoverageEntry{
 		Address: "0x55d398326f99059ff775485246999027b3197955",
-		Chain: "bsc", DatasetID: "ds-001", StartBlock: 44500000, EndBlock: 44501000,
+		Chain:   "bsc", DatasetID: "ds-001", StartBlock: 44500000, EndBlock: 44501000,
 		Status: "covered", UpdatedAt: time.Now(),
 	})
 

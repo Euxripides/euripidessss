@@ -54,10 +54,10 @@ type FlowCompleteness struct {
 
 // FlowStats 是图统计响应（设计 §19.1）。
 type FlowStats struct {
-	Scope       FlowStatsScope   `json:"scope"`
-	Graph       FlowGraphStats   `json:"graph"`
-	Flow        FlowFlowStats    `json:"flow"`
-	Entities    FlowEntityStats  `json:"entities"`
+	Scope        FlowStatsScope   `json:"scope"`
+	Graph        FlowGraphStats   `json:"graph"`
+	Flow         FlowFlowStats    `json:"flow"`
+	Entities     FlowEntityStats  `json:"entities"`
 	Completeness FlowCompleteness `json:"completeness"`
 }
 
@@ -159,28 +159,28 @@ type AddressStats struct {
 	Address string `json:"address"`
 
 	// 基础统计（§9.1）
-	TxCount        int64  `json:"tx_count"`
-	InCount        int64  `json:"in_count"`
-	OutCount       int64  `json:"out_count"`
-	UniqueUpstream int64  `json:"unique_upstream"`
-	UniqueDownstream int64 `json:"unique_downstream"`
-	ActiveDays     int64  `json:"active_days"`
-	FirstSeen      string `json:"first_seen"`
-	LastSeen       string `json:"last_seen"`
-	AvgAmount      string `json:"avg_amount"`
-	MaxAmount      string `json:"max_amount"`
+	TxCount          int64  `json:"tx_count"`
+	InCount          int64  `json:"in_count"`
+	OutCount         int64  `json:"out_count"`
+	UniqueUpstream   int64  `json:"unique_upstream"`
+	UniqueDownstream int64  `json:"unique_downstream"`
+	ActiveDays       int64  `json:"active_days"`
+	FirstSeen        string `json:"first_seen"`
+	LastSeen         string `json:"last_seen"`
+	AvgAmount        string `json:"avg_amount"`
+	MaxAmount        string `json:"max_amount"`
 
 	// 资金统计（§9.2）
-	TotalIn   string `json:"total_in"`
-	TotalOut  string `json:"total_out"`
-	NetFlow   string `json:"net_flow"`
+	TotalIn       string `json:"total_in"`
+	TotalOut      string `json:"total_out"`
+	NetFlow       string `json:"net_flow"`
 	DominantToken string `json:"dominant_token"`
 
 	// 结构统计（§9.3，V2.0 采用 Top-N 占比）
-	Top1SourceRatio  float64 `json:"top1_source_ratio"`
-	Top5SourceRatio  float64 `json:"top5_source_ratio"`
-	Top1TargetRatio  float64 `json:"top1_target_ratio"`
-	Top5TargetRatio  float64 `json:"top5_target_ratio"`
+	Top1SourceRatio float64 `json:"top1_source_ratio"`
+	Top5SourceRatio float64 `json:"top5_source_ratio"`
+	Top1TargetRatio float64 `json:"top1_target_ratio"`
+	Top5TargetRatio float64 `json:"top5_target_ratio"`
 
 	// 活跃度（§9.4）
 	Recent24h int64 `json:"recent_24h"`

@@ -11,18 +11,18 @@ import (
 // ── Provider Health Score ──
 
 type ProviderScore struct {
-	Provider    string  `json:"provider"`
-	SuccessRate float64 `json:"success_rate"`
-	AvgLatency  int64   `json:"avg_latency_ms"`
-	ErrorCount  int     `json:"error_count"`
-	LastError   string  `json:"last_error,omitempty"`
+	Provider    string    `json:"provider"`
+	SuccessRate float64   `json:"success_rate"`
+	AvgLatency  int64     `json:"avg_latency_ms"`
+	ErrorCount  int       `json:"error_count"`
+	LastError   string    `json:"last_error,omitempty"`
 	LastSuccess time.Time `json:"last_success"`
-	Status      string  `json:"status"` // healthy / degraded / unavailable
+	Status      string    `json:"status"` // healthy / degraded / unavailable
 }
 
 type ProviderScorer struct {
-	mu       sync.RWMutex
-	scores   map[string]*providerStats
+	mu     sync.RWMutex
+	scores map[string]*providerStats
 }
 
 type providerStats struct {
@@ -118,8 +118,8 @@ func (s *ProviderScorer) ensureR(name string) *providerStats {
 // ── Chunk-level Failover ──
 
 type ChunkFailover struct {
-	mu       sync.Mutex
-	history  map[string][]failoverEntry // chunkID → failover log
+	mu      sync.Mutex
+	history map[string][]failoverEntry // chunkID → failover log
 }
 
 type failoverEntry struct {
@@ -208,12 +208,12 @@ func (p *PriorityResolver) ShouldFailover(current string) (string, bool) {
 // ── Dataset Recovery Manifest ──
 
 type RecoveryManifest struct {
-	Dataset      string  `json:"dataset"`
-	TotalChunks  int     `json:"chunks"`
-	Completed    int     `json:"completed"`
-	FailedChunks []int   `json:"failed"`
-	Provider     string  `json:"provider"`
-	UpdatedAt    string  `json:"updated_at"`
+	Dataset      string `json:"dataset"`
+	TotalChunks  int    `json:"chunks"`
+	Completed    int    `json:"completed"`
+	FailedChunks []int  `json:"failed"`
+	Provider     string `json:"provider"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 func NewRecoveryManifest(dataset string) *RecoveryManifest {
@@ -291,15 +291,15 @@ func (fm *FailoverMetrics) Snapshot() map[string]any {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 	return map[string]any{
-		"total_requests":  fm.TotalRequests,
-		"success_total":   fm.SuccessTotal,
-		"fail_total":      fm.FailTotal,
-		"status_503":      fm.Status503,
-		"status_429":      fm.Status429,
-		"avg_latency_ms":  safeDiv(fm.LatencySum, fm.TotalRequests),
-		"failover_from":   fm.FailoverFrom,
-		"failover_to":     fm.FailoverTo,
-		"recovery_count":  fm.RecoveryCount,
+		"total_requests": fm.TotalRequests,
+		"success_total":  fm.SuccessTotal,
+		"fail_total":     fm.FailTotal,
+		"status_503":     fm.Status503,
+		"status_429":     fm.Status429,
+		"avg_latency_ms": safeDiv(fm.LatencySum, fm.TotalRequests),
+		"failover_from":  fm.FailoverFrom,
+		"failover_to":    fm.FailoverTo,
+		"recovery_count": fm.RecoveryCount,
 	}
 }
 
@@ -313,9 +313,9 @@ func safeDiv(a, b int64) int64 {
 // ── Weighted Provider Score (PRD §6) ──
 
 type WeightedScore struct {
-	Total float64 `json:"total"`
-	SuccessWeight float64 `json:"success_weight"`
-	LatencyWeight float64 `json:"latency_weight"`
+	Total           float64 `json:"total"`
+	SuccessWeight   float64 `json:"success_weight"`
+	LatencyWeight   float64 `json:"latency_weight"`
 	StabilityWeight float64 `json:"stability_weight"`
 }
 
@@ -339,9 +339,9 @@ func (s *ProviderScorer) WeightedScore(provider string) WeightedScore {
 type LoadBalanceMode string
 
 const (
-	BalanceSpeed   LoadBalanceMode = "speed"   // 最高score
-	BalanceStable  LoadBalanceMode = "stable"  // 成功率最高
-	BalanceCost    LoadBalanceMode = "cost"    // Cache > Free > Paid
+	BalanceSpeed  LoadBalanceMode = "speed"  // 最高score
+	BalanceStable LoadBalanceMode = "stable" // 成功率最高
+	BalanceCost   LoadBalanceMode = "cost"   // Cache > Free > Paid
 )
 
 func (p *PriorityResolver) ResolveWithMode(mode LoadBalanceMode) string {

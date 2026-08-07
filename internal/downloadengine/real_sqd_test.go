@@ -66,7 +66,7 @@ func TestRealBSCHundredBlocks(t *testing.T) {
 
 	// Chunk 生成模拟
 	chunkStart := time.Now()
-	chunks := (endBlock-startBlock+50000-1)/50000
+	chunks := (endBlock - startBlock + 50000 - 1) / 50000
 	_ = time.Since(chunkStart)
 
 	t.Logf("  Chunks: %d (50K block chunks)", chunks)
@@ -117,7 +117,10 @@ func TestRealBSCCountAddresses(t *testing.T) {
 		int(float64(len(addrSet))/countDur.Seconds()))
 
 	// Top 5 addresses
-	type addrCount struct{ addr string; count int }
+	type addrCount struct {
+		addr  string
+		count int
+	}
 	sorted := make([]addrCount, 0, len(addrSet))
 	for a, c := range addrSet {
 		sorted = append(sorted, addrCount{a, c})
@@ -251,7 +254,10 @@ func TestRealBSCWithActiveAddresses(t *testing.T) {
 			float64(totalLogs)/streamDur.Seconds())
 
 		// Top 5 地址
-		type ac struct{ a string; c int }
+		type ac struct {
+			a string
+			c int
+		}
 		var sorted []ac
 		for a, c := range addrTxCount {
 			sorted = append(sorted, ac{a, c})
