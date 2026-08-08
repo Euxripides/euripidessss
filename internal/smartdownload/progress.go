@@ -1,8 +1,11 @@
 package smartdownload
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/etl/backend/internal/smartdownload/progress"
 )
 
 // EWMA ETA（实施方案 §23）：speed = α*current + (1-α)*previous。
@@ -29,13 +32,21 @@ func ewmaSpeed(prev, current float64, started bool) float64 {
 // ── SSE 事件（实施方案 §24：Progress Aggregator 250-500ms 合并后推送）──
 
 const (
-	EventAddressUpdated    = "address.updated"
-	EventDatasetUpdated    = "dataset.updated"
-	EventProviderSwitched  = "provider.switched"
-	EventRangeCompleted    = "range.completed"
-	EventValidationUpdated = "validation.updated"
-	EventResultReady       = "result.ready"
-	EventError             = "error"
+	EventAddressUpdated      = "address.updated"
+	EventDatasetUpdated      = "dataset.updated"
+	EventProviderSwitched    = "provider.switched"
+	EventResourceSwitched    = "resource.switched"
+	EventFeedbackAction      = "feedback.action"
+	EventRangeCompleted      = "range.completed"
+	EventValidationUpdated   = "validation.updated"
+	EventValidationStarted   = "validation.started"
+	EventValidationCompleted = "validation.completed"
+	EventGapDetected         = "gap.detected"
+	EventRepairStarted       = "repair.started"
+	EventRepairCompleted     = "repair.completed"
+	EventCoverageUpdated     = "coverage.updated"
+	EventResultReady         = "result.ready"
+	EventError               = "error"
 )
 
 // Event 统一 SSE 事件。
@@ -50,6 +61,7 @@ type Event struct {
 	Message      string         `json:"message,omitempty"`
 	TS           time.Time      `json:"ts"`
 	Payload      map[string]any `json:"payload,omitempty"`
+	Sequence     uint64         `json:"sequence,omitempty"` // 批次单调序列（Progress V2）
 }
 
 // EventBus 轻量事件总线（SSE 订阅；dataset/address 更新按 throttle 合并）。
@@ -59,6 +71,8 @@ type EventBus struct {
 	subscribers map[int]chan Event
 	throttle    time.Duration
 	lastSent    map[string]time.Time
+	seq         *progress.SequenceStore
+	buffer      *progress.EventBuffer
 }
 
 // NewEventBus 创建事件总线（默认合并窗口 300ms）。
@@ -70,6 +84,8 @@ func NewEventBus(throttle time.Duration) *EventBus {
 		subscribers: map[int]chan Event{},
 		throttle:    throttle,
 		lastSent:    map[string]time.Time{},
+		seq:         progress.NewSequenceStore(),
+		buffer:      progress.NewEventBuffer(10_000),
 	}
 }
 
@@ -94,6 +110,15 @@ func (b *EventBus) Unsubscribe(id int) {
 
 // Publish 发布事件；dataset.updated/address.updated 按 key 300ms 合并，其余直接推送。
 func (b *EventBus) Publish(e Event) {
+	if b.seq != nil && e.BatchID != "" {
+		e.Sequence = b.seq.Next(e.BatchID)
+	}
+	if b.buffer != nil {
+		payload, _ := json.Marshal(e)
+		_ = b.buffer.Append(progress.BufferedEvent{
+			ID: e.Sequence, BatchID: e.BatchID, Type: e.Type, Payload: payload,
+		})
+	}
 	b.mu.Lock()
 	key := e.Type + "|" + e.DatasetJobID + e.AddressJobID + e.BatchID
 	if e.Type == EventDatasetUpdated || e.Type == EventAddressUpdated {
@@ -117,6 +142,30 @@ func (b *EventBus) Publish(e Event) {
 		default: // 订阅者慢则丢弃（SSE 有快照兜底）
 		}
 	}
+}
+
+// Replay 回放指定批次在 afterSeq 之后的事件（SSE Last-Event-ID 恢复；超出缓冲返回 resync）。
+func (b *EventBus) Replay(batchID string, afterSeq uint64) ([]Event, bool) {
+	if b.buffer == nil {
+		return nil, true
+	}
+	entries, ok := b.buffer.Replay(batchID, afterSeq)
+	out := make([]Event, 0, len(entries))
+	for _, e := range entries {
+		var ev Event
+		if json.Unmarshal(e.Payload, &ev) == nil {
+			out = append(out, ev)
+		}
+	}
+	return out, ok
+}
+
+// CurrentSequence 返回批次当前序列号。
+func (b *EventBus) CurrentSequence(batchID string) uint64 {
+	if b.seq == nil {
+		return 0
+	}
+	return b.seq.Current(batchID)
 }
 
 // Events 返回事件总线（API 注册用）。

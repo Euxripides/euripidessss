@@ -16,6 +16,12 @@ import (
 	"github.com/etl/backend/internal/analysis/duckdb"
 	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/logger"
+	"github.com/etl/backend/internal/smartdownload/cloudplanner"
+	"github.com/etl/backend/internal/smartdownload/discovery"
+	"github.com/etl/backend/internal/smartdownload/feedback"
+	pg "github.com/etl/backend/internal/smartdownload/progress"
+	reg "github.com/etl/backend/internal/smartdownload/registry"
+	v3 "github.com/etl/backend/internal/smartdownload/validation"
 	"github.com/google/uuid"
 )
 
@@ -27,6 +33,7 @@ type Options struct {
 	RetryLimit      int    // 单个 Range 重试上限
 	DefaultEndBlock uint64 // FULL 模式未显式给 to_block 时的默认终点
 	RangeChunkSize  uint64 // Range 切分大小（区块数）
+	AdaptiveRanges  bool   // Discovery 驱动自适应 Range（默认固定分块）
 }
 
 // DefaultOptions 返回 Phase 1 默认值。
@@ -51,10 +58,14 @@ type Service struct {
 	validator     *Validator
 	events        *EventBus
 	eta           map[string]*etaState
+	etaEngines    map[string]*pg.ETAEngine
 	duckdbEngine  *duckdb.Engine
 	rangeCoverage RangeCoverageSource
 	results       *ResultProcessor
 	onIndexed     func(*IndexedResult)
+	cloudPlanner  *cloudplanner.Planner
+	history       *feedback.History
+	coverageIndex *reg.Store
 	ctx           context.Context
 	cancel        context.CancelFunc
 	workers       map[string]bool
@@ -78,22 +89,42 @@ func NewService(store *Store, opts Options, writer PartWriter) *Service {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
-		store:     store,
-		cp:        NewCheckpointStore(store.Root()),
-		opts:      opts,
-		writer:    writer,
-		adapters:  map[string]ProviderAdapter{},
-		scheduler: NewSmartScheduler(),
-		events:    NewEventBus(300 * time.Millisecond),
-		eta:       map[string]*etaState{},
-		ctx:       ctx,
-		cancel:    cancel,
-		workers:   map[string]bool{},
-		cpCache:   map[string]*CheckpointV3{},
+		store:      store,
+		cp:         NewCheckpointStore(store.Root()),
+		opts:       opts,
+		writer:     writer,
+		adapters:   map[string]ProviderAdapter{},
+		scheduler:  NewSmartScheduler(),
+		events:     NewEventBus(300 * time.Millisecond),
+		eta:        map[string]*etaState{},
+		etaEngines: map[string]*pg.ETAEngine{},
+		ctx:        ctx,
+		cancel:     cancel,
+		workers:    map[string]bool{},
+		cpCache:    map[string]*CheckpointV3{},
 	}
 	svc.validator = NewValidator(svc)
 	svc.results = NewResultProcessor(svc)
+	svc.cloudPlanner = cloudplanner.NewPlanner(cloudplanner.BudgetGuard{})
+	svc.history = feedback.NewHistory(store.Root())
+	svc.coverageIndex = reg.NewStore(store.Root(), "1")
+	svc.coverageIndex.OnUpdate = func(chainKey, address, dataset string) {
+		svc.events.Publish(Event{Type: EventCoverageUpdated, DatasetJobID: dataset,
+			Message: "coverage updated", Payload: map[string]any{
+				"chain_key": chainKey, "address": address,
+			}})
+	}
+	svc.scheduler.SetHistoryBonus(func(chainID int64, dataset, provider, bucket string) float64 {
+		return svc.history.ScoreBonus(chainID, dataset, provider, bucket)
+	})
 	return svc
+}
+
+// SetCloudBudget 配置 Cloud 预算守卫（弹性调度 V1.0 §22）。
+func (s *Service) SetCloudBudget(b cloudplanner.BudgetGuard) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cloudPlanner = cloudplanner.NewPlanner(b)
 }
 
 // SetOnDatasetIndexed 注册结果入库回调（API 层接图谱/调查联动）。
@@ -246,6 +277,8 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 		Status:       BatchCreated,
 		AddressCount: len(valid),
 		DatasetTypes: datasets,
+		Prefetch:     req.Prefetch,
+		PrefetchPriority: req.PrefetchPriority,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -253,6 +286,7 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 		return nil, err
 	}
 	datasetJobs, rangeJobs := 0, 0
+	localFullHits, localPartialHits, localMisses, reusedRanges := 0, 0, 0, 0
 	packMode := len(valid)*len(datasets) > packThreshold
 	var pack *BatchPack
 	if packMode {
@@ -315,6 +349,7 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 				reused, missing := planReuse(requested, covered)
 				if len(reused) == 0 {
 					// 无覆盖：正常下载
+					localMisses++
 				} else if len(missing) == 0 {
 					if err := s.store.SaveDataset(dsJob); err != nil {
 						return nil, err
@@ -322,6 +357,8 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 					if err := s.markDatasetReused(dsID, requested, reused, 0); err != nil {
 						return nil, err
 					}
+					localFullHits++
+					reusedRanges += len(reused)
 					rangeJobs += len(reused)
 					continue
 				} else {
@@ -331,12 +368,38 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 					if err := s.createReuseDataset(dsID, dsJob, addrID, batchID, addr, ds, requested, reused, missing, now); err != nil {
 						return nil, err
 					}
+					localPartialHits++
+					reusedRanges += len(reused)
 					rangeJobs += len(missing)
 					continue
 				}
 			}
+			pendingRanges := SplitBlockRange(requested.From, requested.To, s.opts.RangeChunkSize)
+			if s.opts.AdaptiveRanges && !packMode {
+				if dr, derr := s.discoverDataset(ctx, dsJob, requested.From, requested.To); derr == nil &&
+					len(dr.Segments) > 0 && dr.Confidence > 0 {
+					spans := discovery.PlanSegments(requested.From, requested.To, dr.Segments, 50_000)
+					pendingRanges = pendingRanges[:0]
+					for _, sp := range spans {
+						pendingRanges = append(pendingRanges, BlockRange{From: sp.From, To: sp.To})
+					}
+					dsJob.EstimatedRows = dr.EstimatedRows
+					dsJob.EstimatedBytes = dr.EstimatedBytes
+					dsJob.DiscoveryConfidence = dr.Confidence
+					dsJob.SuggestedRangeSpan = dr.SuggestedRangeSpan
+					dsJob.ActivitySegments = dr.Segments
+				} else if derr != nil {
+					logger.Log.Warn().Str("dataset_job", dsID).Str("address", addr).
+						Err(derr).Msg("smartdownload_adaptive_discovery_failed")
+				} else {
+					logger.Log.Warn().Str("dataset_job", dsID).Str("address", addr).
+						Float64("confidence", dr.Confidence).Int("segments", len(dr.Segments)).
+						Msg("smartdownload_adaptive_discovery_low_confidence")
+				}
+			}
 			cp := &CheckpointV3{}
 			cp.Init(dsID, addr, ds, requested, s.opts.RangeChunkSize)
+			cp.PendingRanges = pendingRanges
 			if packMode {
 				for _, r := range cp.PendingRanges {
 					pack.Ranges = append(pack.Ranges, &RangeJob{
@@ -403,12 +466,16 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 		Int("addresses", len(valid)).Int("dataset_jobs", datasetJobs).Int("range_jobs", rangeJobs).
 		Bool("pack_mode", packMode).Msg("smartdownload_batch_created")
 	return &CreateBatchResponse{
-		Batch:       batch,
-		Valid:       len(valid),
-		Invalid:     invalid,
-		Duplicates:  duplicates,
-		DatasetJobs: datasetJobs,
-		RangeJobs:   rangeJobs,
+		Batch:            batch,
+		Valid:            len(valid),
+		Invalid:          invalid,
+		Duplicates:       duplicates,
+		DatasetJobs:      datasetJobs,
+		RangeJobs:        rangeJobs,
+		LocalFullHits:    localFullHits,
+		LocalPartialHits: localPartialHits,
+		LocalMisses:      localMisses,
+		ReusedRanges:     reusedRanges,
 	}, nil
 }
 
@@ -483,9 +550,27 @@ func (s *Service) PlanBatch(ctx context.Context, batchID string) (*ExecutionPlan
 				logger.Log.Warn().Str("dataset_job", ds.ID).Err(err).Msg("smartdownload_plan_dataset_failed")
 				continue
 			}
-			ds.EstimatedRows = dp.EstimatedRows
-			ds.EstimatedBytes = dp.EstimatedBytes
-			ds.PreferredProvider = dp.PreferredProvider
+			// 已有估算（人工/历史）优先，探测只做向上细化，避免小采样覆盖大估算
+			if ds.EstimatedRows == 0 || dp.EstimatedRows > ds.EstimatedRows {
+				ds.EstimatedRows = dp.EstimatedRows
+			}
+			if ds.EstimatedBytes == 0 || dp.EstimatedBytes > ds.EstimatedBytes {
+				ds.EstimatedBytes = dp.EstimatedBytes
+			}
+			if dp.PreferredProvider != "" {
+				ds.PreferredProvider = dp.PreferredProvider
+			}
+			if dr, derr := s.discoverDataset(ctx, ds, req.FromBlock, req.ToBlock); derr == nil && dr.Confidence > 0 {
+				if ds.EstimatedRows == 0 || dr.EstimatedRows > ds.EstimatedRows {
+					ds.EstimatedRows = dr.EstimatedRows
+				}
+				if ds.EstimatedBytes == 0 || dr.EstimatedBytes > ds.EstimatedBytes {
+					ds.EstimatedBytes = dr.EstimatedBytes
+				}
+				ds.DiscoveryConfidence = dr.Confidence
+				ds.SuggestedRangeSpan = dr.SuggestedRangeSpan
+				ds.ActivitySegments = dr.Segments
+			}
 			ds.UpdatedAt = time.Now().UTC()
 			_ = s.store.SaveDataset(ds)
 			plan.Datasets = append(plan.Datasets, dp)
@@ -500,6 +585,134 @@ func (s *Service) planBatchIfNeeded(batchID string) {
 	if _, err := s.PlanBatch(planCtx, batchID); err != nil {
 		logger.Log.Warn().Str("batch_id", batchID).Err(err).Msg("smartdownload_plan_skipped")
 	}
+}
+
+// discoverDataset 运行 Discovery（L0 Metadata → L1/L2 自适应采样 → 分段 → 缓存）。
+func (s *Service) discoverDataset(ctx context.Context, ds *DatasetJob, from, to uint64) (*discovery.DiscoveryResult, error) {
+	if ds == nil {
+		return nil, fmt.Errorf("dataset 为空")
+	}
+	engine := discovery.NewEngine(s.store.Root(), discoveryMetadata{svc: s},
+		func(ctx context.Context, wFrom, wTo uint64) (uint64, error) {
+			return s.sampleWindow(ctx, ds, wFrom, wTo)
+		})
+	return engine.Discover(ctx, discovery.Input{
+		ChainID:     s.chainIDOfDataset(ds),
+		ChainKey:    ds.ChainKey,
+		Address:     ds.Address,
+		Dataset:     ds.Dataset,
+		FromBlock:   from,
+		ToBlock:     to,
+		BytesPerRow: 160,
+		Activity:    int64(ds.EstimatedRows),
+	})
+}
+
+// sampleWindow 用当前最佳 Adapter 对窗口计数（ProbeWith 窗口估算 ≈ 窗口行数）。
+func (s *Service) sampleWindow(ctx context.Context, ds *DatasetJob, from, to uint64) (uint64, error) {
+	cands := s.scheduler.Candidates(ds.Dataset)
+	s.mu.Lock()
+	var adapters []ProviderAdapter
+	for _, c := range cands {
+		if c.ManualOnly || !c.Available {
+			continue
+		}
+		if a, ok := s.adapters[c.Name]; ok {
+			adapters = append(adapters, a)
+		}
+	}
+	s.mu.Unlock()
+	var lastErr error
+	for _, a := range adapters {
+		res, err := ProbeWith(ctx, a, ProbeRequest{
+			Address: ds.Address, Dataset: ds.Dataset, ChainKey: ds.ChainKey,
+			ChainID: s.chainIDOfDataset(ds), FromBlock: from, ToBlock: to,
+		})
+		if err == nil && res.Confidence > 0 && res.EstimatedRows > 0 {
+			return res.EstimatedRows, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return 0, lastErr
+	}
+	return 0, fmt.Errorf("采样窗口无有效结果（%d 个候选 Provider）", len(adapters))
+}
+
+func (s *Service) chainIDOfDataset(ds *DatasetJob) int64 {
+	if ds == nil {
+		return 0
+	}
+	if a := s.store.GetAddress(ds.AddressJobID); a != nil {
+		return a.ChainID
+	}
+	return 0
+}
+
+// discoveryMetadata L0：本地 Registry 全覆盖时直接返回 total（confidence 0.95）。
+type discoveryMetadata struct{ svc *Service }
+
+func (m discoveryMetadata) TotalRows(ctx context.Context, chainKey, address, dataset string, from, to uint64) (uint64, bool, error) {
+	svc := m.svc
+	covered := svc.coveredRangesFor(ctx, chainKey, address, dataset, from, to)
+	_, missing := planReuse(BlockRange{From: from, To: to}, covered)
+	if len(missing) > 0 {
+		return 0, false, nil
+	}
+	var total uint64
+	for _, e := range svc.results.List() {
+		if e.ChainKey != chainKey || e.Dataset != dataset || e.Validation != "VALIDATED" {
+			continue
+		}
+		if !strings.EqualFold(e.Address, address) {
+			continue
+		}
+		if e.ToBlock < from || e.FromBlock > to {
+			continue
+		}
+		total += uint64(e.RowCount)
+	}
+	if total > 0 {
+		return total, true, nil
+	}
+	return 0, false, nil
+}
+
+// recordHistory 记录 Provider 历史画像（传输层 + 最终验证）。
+func (s *Service) recordHistory(ds *DatasetJob, provider string, rows int64, runtime, latency time.Duration,
+	success, final bool, httpClass string) {
+	if ds == nil || provider == "" || provider == "local_hit" {
+		return
+	}
+	s.history.Record(feedback.Record{
+		ChainID:      s.chainIDOfDataset(ds),
+		Dataset:      ds.Dataset,
+		Provider:     provider,
+		ScaleBucket:  feedback.ScaleBucket(ds.EstimatedRows),
+		Rows:         rows,
+		Runtime:      runtime,
+		Latency:      latency,
+		Success:      success,
+		FinalSuccess: final,
+		HTTPClass:    httpClass,
+	})
+}
+
+// emitFeedbackAction 记录/推送反馈动作（Execution Feedback Loop Phase D）。
+func (s *Service) emitFeedbackAction(ds *DatasetJob, d feedback.Decision) {
+	if ds == nil || d.Action == feedback.Keep {
+		return
+	}
+	_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
+		Event: LedgerFeedbackAction, DatasetJobID: ds.ID,
+		Provider: ds.CurrentProvider, Error: fmt.Sprintf("action=%s reason=%s", d.Action, d.Reason),
+	})
+	s.events.Publish(Event{
+		Type: EventFeedbackAction, DatasetJobID: ds.ID, Provider: ds.CurrentProvider,
+		Status: string(d.Action), Message: d.Reason,
+	})
 }
 
 func (s *Service) PauseBatch(batchID string) (*BatchJob, error) {
@@ -864,8 +1077,12 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 					}
 					ds.Status = DatasetRunning
 					ds.CurrentProvider = provider
+					if previous != "" && previous != provider {
+						s.resetETA(ds)
+					}
 					ds.UpdatedAt = time.Now().UTC()
 					_ = s.store.SaveDataset(ds)
+					s.ensureETAStarted(ds)
 					a.Status = AddressDownloading
 					a.UpdatedAt = time.Now().UTC()
 					_ = s.store.SaveAddress(a)
@@ -877,6 +1094,19 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 						ToBlock:      r.ToBlock,
 						Provider:     provider,
 					})
+					req := RangeRequest{
+						DatasetJobID: ds.ID,
+						Address:      a.Address,
+						Dataset:      ds.Dataset,
+						ChainKey:     a.ChainKey,
+						ChainID:      a.ChainID,
+						FromBlock:    r.FromBlock,
+						ToBlock:      r.ToBlock,
+					}
+					if provider == "sqd_cloud" {
+						s.ensureCloudPlanLocked(ds)
+						req.CloudTier = ds.CloudTier
+					}
 					return &claimedRange{
 						rangeID:      r.ID,
 						datasetJobID: ds.ID,
@@ -884,15 +1114,7 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 						batchID:      batchID,
 						provider:     provider,
 						adapter:      adapter,
-						req: RangeRequest{
-							DatasetJobID: ds.ID,
-							Address:      a.Address,
-							Dataset:      ds.Dataset,
-							ChainKey:     a.ChainKey,
-							ChainID:      a.ChainID,
-							FromBlock:    r.FromBlock,
-							ToBlock:      r.ToBlock,
-						},
+						req:          req,
 					}
 				}
 			}
@@ -991,6 +1213,12 @@ func (s *Service) executeRange(claim *claimedRange) {
 	rj.FinishedAt = &now
 	rj.UpdatedAt = now
 	_ = s.store.SaveRange(rj)
+	runtime := time.Duration(0)
+	if rj.StartedAt != nil {
+		runtime = time.Since(*rj.StartedAt)
+	}
+	s.recordHistory(ds, claim.provider, part.Rows, runtime, runtime, true, false, "")
+	s.completeRepair(ds, rj, part.Rows)
 	ds.DownloadedRows += uint64(part.Rows)
 	s.updateProgressLocked(ds.ID)
 	s.finalizeDatasetIfDoneLocked(ds.ID)
@@ -1009,6 +1237,21 @@ func (s *Service) failRange(claim *claimedRange, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rj := s.store.GetRange(claim.rangeID)
+	ds := s.store.GetDataset(claim.datasetJobID)
+	runtime := time.Duration(0)
+	if rj.StartedAt != nil {
+		runtime = time.Since(*rj.StartedAt)
+	}
+	httpClass := feedback.ClassifyHTTPClass(err.Error())
+	s.recordHistory(ds, claim.provider, 0, runtime, runtime, false, false, httpClass)
+	s.emitFeedbackAction(ds, feedback.Reevaluate(feedback.ExecutionMetrics{
+		Provider:         claim.provider,
+		HTTP503Rate:      boolRate(httpClass == "503"),
+		HTTP429Rate:      boolRate(httpClass == "429"),
+		TimeoutCount:     boolInt(httpClass == "timeout"),
+		CircuitOpen:      s.scheduler.Health().Exhausted(claim.provider),
+		CompletedPercent: progressPercent(ds),
+	}))
 	rj.Attempts++
 	rj.Error = err.Error()
 	rj.UpdatedAt = time.Now().UTC()
@@ -1043,7 +1286,6 @@ func (s *Service) failRange(claim *claimedRange, err error) {
 	now := time.Now().UTC()
 	rj.FinishedAt = &now
 	_ = s.store.SaveRange(rj)
-	ds := s.store.GetDataset(claim.datasetJobID)
 	if ds != nil && !ds.Status.Terminal() {
 		ds.Status = DatasetFailed
 		ds.Error = err.Error()
@@ -1057,6 +1299,27 @@ func (s *Service) failRange(claim *claimedRange, err error) {
 		a.UpdatedAt = now
 		_ = s.store.SaveAddress(a)
 	}
+}
+
+func boolRate(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func progressPercent(ds *DatasetJob) float64 {
+	if ds == nil {
+		return 0
+	}
+	return ds.Progress.Percent
 }
 
 // selectProviderLocked 为 Range 选择 Provider（跳过已失败/冷却 Provider；Cloud 最后兜底）。
@@ -1155,6 +1418,7 @@ func (s *Service) validateDatasetAndFinalize(dsID string) {
 		ds.UpdatedAt = now
 		_ = s.store.SaveDataset(ds)
 		s.finalizeAddressIfDoneLocked(ds.AddressJobID)
+		s.recordFinalHistory(ds, false)
 		s.mu.Unlock()
 		s.events.Publish(Event{Type: EventError, DatasetJobID: dsID, Status: "FAILED", Message: msg})
 		return
@@ -1169,6 +1433,12 @@ func (s *Service) validateDatasetAndFinalize(dsID string) {
 		ds.UpdatedAt = now
 		_ = s.store.SaveDataset(ds)
 		s.finalizeAddressIfDoneLocked(ds.AddressJobID)
+		s.recordFinalHistory(ds, false)
+		if report != nil && report.Coverage < 1 {
+			s.emitFeedbackAction(ds, feedback.Reevaluate(feedback.ExecutionMetrics{
+				Provider: ds.CurrentProvider, SilentGap: true,
+			}))
+		}
 		s.mu.Unlock()
 		s.events.Publish(Event{Type: EventResultReady, DatasetJobID: dsID, Status: "PARTIAL", Message: "存在未覆盖区间"})
 		return
@@ -1179,10 +1449,23 @@ func (s *Service) validateDatasetAndFinalize(dsID string) {
 		ds.UpdatedAt = now
 		_ = s.store.SaveDataset(ds)
 		s.finalizeAddressIfDoneLocked(ds.AddressJobID)
+		s.recordFinalHistory(ds, true)
 		s.mu.Unlock()
 		s.events.Publish(Event{Type: EventResultReady, DatasetJobID: dsID, Status: "VALIDATED", Message: "完整性校验通过"})
 		go s.indexDataset(dsID)
 	}
+}
+
+// recordFinalHistory 记录最终结果（Download + Validation 成功率，设计 §43/§44）。
+func (s *Service) recordFinalHistory(ds *DatasetJob, validated bool) {
+	if ds == nil {
+		return
+	}
+	runtime := time.Duration(0)
+	if ds.StartedAt != nil {
+		runtime = time.Since(*ds.StartedAt)
+	}
+	s.recordHistory(ds, ds.CurrentProvider, int64(ds.DownloadedRows), runtime, 0, true, validated, "")
 }
 
 // indexDataset 结果入库：合并 warehouse Parquet + Registry 登记 + 下游事件。
@@ -1193,6 +1476,18 @@ func (s *Service) indexDataset(dsID string) {
 	if err != nil {
 		logger.Log.Warn().Str("dataset_job", dsID).Err(err).Msg("smartdownload_index_failed")
 		return
+	}
+	// Coverage Index V2：只有 CERTIFIED 才写认证覆盖；余额类写快照（TTL 300s）
+	if s.coverageIndex != nil && entry.Certification == "CERTIFIED" {
+		var snapshot *reg.SnapshotCoverage
+		if entry.Dataset == DatasetBalances {
+			snapshot = &reg.SnapshotCoverage{
+				Block: entry.ToBlock, Time: time.Now().UTC(), TTLSeconds: 300,
+			}
+		}
+		_ = s.coverageIndex.AddCertified(entry.ChainKey, entry.ChainID, entry.Address,
+			entry.Dataset, []reg.Interval{{From: entry.FromBlock, To: entry.ToBlock}},
+			entry.RowCount, snapshot)
 	}
 	s.mu.Lock()
 	fn := s.onIndexed
@@ -1208,6 +1503,50 @@ func (s *Service) repairDatasetGapsLocked(dsID string, report *ValidationReport)
 	if ds == nil || ds.RepairRounds >= 2 || len(report.MissingRanges) == 0 {
 		return false
 	}
+	gapStore := v3.NewGapStore(s.store.Root(), dsID)
+	ledgerEntries, _ := NewLedger(s.store.Root(), dsID).Replay()
+	used := map[string]bool{}
+	providerOfRange := map[string]string{}
+	for _, e := range ledgerEntries {
+		if e.Provider != "" {
+			used[e.Provider] = true
+		}
+		if e.RangeID != "" && (e.Event == LedgerRangeCompleted || e.Event == LedgerRangeEmpty || e.Event == LedgerPartCommitted) {
+			providerOfRange[e.RangeID] = e.Provider
+		}
+	}
+	blacklist := map[string]bool{}
+	for _, g := range report.Gaps {
+		if g.Type == v3.GapSuspiciousEmpty || g.Type == v3.GapCountGap {
+			key := fmt.Sprintf("%d_%d", g.FromBlock, g.ToBlock)
+			if p := providerOfRange[key]; p != "" {
+				blacklist[p] = true
+			}
+		}
+	}
+	var available []string
+	for name, a := range s.adapters {
+		if !a.Available() {
+			continue
+		}
+		m, ok := a.(interface{ ManualOnly() bool })
+		if ok && m.ManualOnly() {
+			continue
+		}
+		available = append(available, name)
+	}
+	var usedList, blacklistList []string
+	for p := range used {
+		usedList = append(usedList, p)
+	}
+	for p := range blacklist {
+		blacklistList = append(blacklistList, p)
+	}
+	planner := v3.NewRepairPlanner(available, usedList, blacklistList)
+	chosen := planner.Select()
+	if chosen == "" {
+		chosen = "" // 无可用补洞 Provider：保持缺口 → PARTIAL
+	}
 	ds.RepairRounds++
 	ds.Status = DatasetRunning
 	ds.Validation = report
@@ -1220,21 +1559,170 @@ func (s *Service) repairDatasetGapsLocked(dsID string, report *ValidationReport)
 	}
 	now := time.Now().UTC()
 	for _, r := range report.MissingRanges {
+		gapID := fmt.Sprintf("%d_%d", r.From, r.To)
+		attempts, _ := gapStore.RepairCount(gapID)
+		if attempts >= v3.MaxRepairAttempts {
+			continue // 超过补洞上限 → 保持 PARTIAL（设计 §28/§59）
+		}
+		var failed []string
+		if chosen != "" {
+			for _, a := range available {
+				if a != chosen {
+					failed = append(failed, a)
+				}
+			}
+		}
 		rj := &RangeJob{
 			ID: uuid.NewString(), DatasetJobID: dsID, BatchID: ds.BatchID,
 			AddressJobID: ds.AddressJobID, Address: ds.Address, Dataset: ds.Dataset,
 			FromBlock: r.From, ToBlock: r.To, Status: RangeReady,
+			Provider: chosen, FailedProviders: failed,
+			Purpose:   string(v3.PurposeRepair),
 			CreatedAt: now, UpdatedAt: now,
 		}
 		_ = s.store.SaveRange(rj)
 		_ = NewLedger(s.store.Root(), dsID).Append(LedgerEntry{
 			Event: LedgerRangeCreated, DatasetJobID: dsID,
 			RangeID: r.Key(), FromBlock: r.From, ToBlock: r.To,
+			Provider: chosen, Error: "REPAIR",
+		})
+		_ = gapStore.AppendRepair(v3.RepairAttempt{
+			GapID: gapID, Provider: chosen, Attempt: attempts + 1,
+			StartedAt: now,
+		})
+		s.events.Publish(Event{
+			Type: EventRepairStarted, DatasetJobID: dsID, RangeID: r.Key(),
+			Provider: chosen, Status: "REPAIR", Message: fmt.Sprintf("补洞 %d-%d", r.From, r.To),
 		})
 	}
+	_ = gapStore.SaveState(v3.StateRepairing, "repair")
+	s.recordGapRepairHistory(ds, true, false)
 	logger.Log.Info().Str("dataset_job", dsID).Int("repair_ranges", len(report.MissingRanges)).
 		Int("round", ds.RepairRounds).Msg("smartdownload_gap_repair_created")
 	return true
+}
+
+// finishValidationPipeline 校验收尾：状态机 + Gap Ledger + Validation Certificate + 事件（Validation V3）。
+func (s *Service) finishValidationPipeline(dsID string, report *ValidationReport) {
+	cp, err := s.cp.Load(dsID)
+	if err != nil {
+		return
+	}
+	ledgerEntries, _ := NewLedger(s.store.Root(), dsID).Replay()
+	store := v3.NewGapStore(s.store.Root(), dsID)
+	providers := map[string]bool{}
+	switches := 0
+	for _, e := range ledgerEntries {
+		if e.Provider != "" {
+			providers[e.Provider] = true
+		}
+		if e.Event == LedgerProviderSwitched {
+			switches++
+		}
+	}
+	var providersList []string
+	for p := range providers {
+		providersList = append(providersList, p)
+	}
+	for _, g := range report.Gaps {
+		_ = store.AppendGap(g)
+		s.events.Publish(Event{Type: EventGapDetected, DatasetJobID: dsID,
+			RangeID: fmt.Sprintf("%d_%d", g.FromBlock, g.ToBlock),
+			Status:  string(g.Type), Message: g.Reason})
+	}
+	allGaps, _ := store.LoadGaps()
+	latest := map[string]v3.GapStatus{}
+	for _, g := range allGaps {
+		latest[g.GapID] = g.Status
+	}
+	detected, repaired, remaining := len(latest), 0, 0
+	for _, st := range latest {
+		switch st {
+		case v3.GapRepaired:
+			repaired++
+		case v3.GapDetected, v3.GapRepairing:
+			remaining++
+		}
+	}
+	if remaining == 0 && len(report.MissingRanges) > 0 {
+		remaining = len(report.MissingRanges)
+	}
+	certStatus := "PASS"
+	state := v3.StatePass
+	switch report.Status {
+	case "PARTIAL":
+		certStatus, state = "PARTIAL", v3.StatePartial
+	case "FAILED":
+		certStatus, state = "FAILED", v3.StateFailed
+	}
+	if len(report.Gaps) > 0 && state == v3.StatePass {
+		state = v3.StateRepairing
+	}
+	cert := &v3.Certificate{
+		DatasetJobID: dsID, Status: certStatus,
+		RequestedRange: v3.BlockInterval{From: cp.RequestedFrom, To: cp.RequestedTo},
+		Coverage:       report.BlockCoverage,
+		RowsRaw:        report.RawRows, RowsNormalized: report.Rows,
+		RowsUnique: report.UniqueKeyCount, RowsFinal: report.UniqueKeyCount,
+		DuplicatesRemoved: report.DuplicateCount,
+		PartsCount:        len(cp.Parts), DuplicateSHA: report.PartsDuplicateSHA,
+		GapsDetected: detected, GapsRepaired: repaired,
+		GapsRemaining:          remaining,
+		CrossCheckSampleRanges: report.CrossCheck.Windows,
+		CrossCheckMatched:      report.CrossCheck.Windows - report.CrossCheck.Mismatch,
+		ProvidersUsed:          providersList, ProviderSwitches: switches,
+		CertifiedAt: time.Now().UTC(),
+	}
+	_ = store.SaveState(state, "certified")
+	_ = store.SaveCertificate(cert)
+	s.events.Publish(Event{Type: EventValidationCompleted, DatasetJobID: dsID,
+		Status: certStatus, Message: fmt.Sprintf("coverage=%.4f gaps=%d", cert.Coverage, len(report.Gaps))})
+	if len(report.Gaps) > 0 {
+		s.recordGapRepairHistory(s.store.GetDataset(dsID), true, false)
+	}
+}
+
+// completeRepair 补洞成功后标记 gap repaired 并写入历史（调用方持 service.mu）。
+func (s *Service) completeRepair(ds *DatasetJob, rj *RangeJob, rows int64) {
+	if ds == nil || rj == nil || rj.Purpose != string(v3.PurposeRepair) {
+		return
+	}
+	gapID := fmt.Sprintf("%d_%d", rj.FromBlock, rj.ToBlock)
+	store := v3.NewGapStore(s.store.Root(), ds.ID)
+	attempts, _ := store.RepairCount(gapID)
+	_ = store.AppendRepair(v3.RepairAttempt{
+		GapID: gapID, Provider: rj.Provider, Attempt: attempts + 1,
+		Success: true, Rows: rows,
+		StartedAt: nowTime(rj.StartedAt), FinishedAt: time.Now().UTC(),
+	})
+	_ = store.AppendGap(v3.GapRecord{
+		GapID: gapID, Type: v3.GapRangeGap, FromBlock: rj.FromBlock, ToBlock: rj.ToBlock,
+		Status: v3.GapRepaired, Provider: rj.Provider, Rows: rows,
+		CreatedAt: time.Now().UTC(),
+	})
+	s.events.Publish(Event{Type: EventRepairCompleted, DatasetJobID: ds.ID,
+		RangeID: gapID, Provider: rj.Provider, Status: "REPAIRED",
+		Message: fmt.Sprintf("补洞完成 %d 行", rows)})
+	s.recordGapRepairHistory(ds, false, true)
+}
+
+// recordGapRepairHistory 把缺口/修复反馈写入 Provider 历史画像（Validation → Scheduler 闭环）。
+func (s *Service) recordGapRepairHistory(ds *DatasetJob, gap, repair bool) {
+	if ds == nil || ds.CurrentProvider == "" {
+		return
+	}
+	s.history.Record(feedback.Record{
+		ChainID: s.chainIDOfDataset(ds), Dataset: ds.Dataset,
+		Provider: ds.CurrentProvider, ScaleBucket: feedback.ScaleBucket(ds.EstimatedRows),
+		Gap: gap, Repair: repair,
+	})
+}
+
+func nowTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Now().UTC()
+	}
+	return t.UTC()
 }
 
 func (s *Service) finalizeAddressIfDoneLocked(addressID string) {
@@ -1243,6 +1731,8 @@ func (s *Service) finalizeAddressIfDoneLocked(addressID string) {
 		return
 	}
 	datasets := s.store.ListDatasetsByAddress(addressID)
+	logger.Log.Warn().Str("address", addressID).Int("datasets", len(datasets)).
+		Msg("DEBUG_finalize_address")
 	done := 0
 	partial := false
 	for _, ds := range datasets {
@@ -1471,17 +1961,19 @@ func (s *Service) updateProgressLocked(datasetJobID string) {
 		_ = s.store.SaveDataset(ds)
 		return
 	}
-	done := 0
 	var rows, blocks uint64
+	weighted := make([]pg.RangeProgress, 0, len(ranges))
 	for _, r := range ranges {
+		pct := 0.0
 		if r.Status == RangeCompleted || r.Status == RangeEmpty {
-			done++
+			pct = 1
 			rows += r.RowsCommitted
 			blocks += r.ToBlock - r.FromBlock + 1
 		}
+		weighted = append(weighted, pg.RangeProgress{Weight: s.rangeWeight(ds, r), Percent: pct})
 	}
 	ds.Progress = ProgressSnapshot{
-		Percent:       float64(done) / float64(len(ranges)),
+		Percent:       pg.WeightedProgress(weighted),
 		RowsCurrent:   rows,
 		RowsTotal:     ds.EstimatedRows,
 		BlocksCurrent: blocks,
@@ -1490,25 +1982,41 @@ func (s *Service) updateProgressLocked(datasetJobID string) {
 		BytesTotal:    ds.EstimatedBytes,
 	}
 	s.applyETA(ds)
+	s.monitorCloudTierLocked(ds)
 	_ = s.store.SaveDataset(ds)
 	a := s.store.GetAddress(ds.AddressJobID)
 	if a != nil {
 		datasets := s.store.ListDatasetsByAddress(a.ID)
 		if len(datasets) > 0 {
-			total := 0.0
+			totalW, wp := 0.0, 0.0
 			rows = 0
+			recalc := false
 			for _, d := range datasets {
-				total += d.Progress.Percent
+				w := float64(d.EstimatedRows) * cloudplanner.DatasetComplexity(d.Dataset)
+				if w <= 0 {
+					w = float64(d.Progress.BlocksTotal) + 1
+				}
+				totalW += w
+				wp += w * d.Progress.Percent
 				rows += d.Progress.RowsCurrent
+				if d.Progress.ETARecalculating {
+					recalc = true
+				}
+			}
+			if totalW <= 0 {
+				totalW = 1
 			}
 			a.Progress = ProgressSnapshot{
-				Percent:         total / float64(len(datasets)),
-				RowsCurrent:     rows,
-				RowsTotal:       sumRowsTotal(datasets),
-				BytesTotal:      sumBytesTotal(datasets),
-				SpeedRowsPerSec: avgSpeed(datasets),
-				ETASeconds:      maxETA(datasets),
-				ETAConfidence:   avgConfidence(datasets),
+				Percent:              wp / totalW,
+				RowsCurrent:          rows,
+				RowsTotal:            sumRowsTotal(datasets),
+				BytesTotal:           sumBytesTotal(datasets),
+				SpeedRowsPerSec:      avgSpeed(datasets),
+				ETASeconds:           maxETA(datasets),
+				ETAConfidence:        avgConfidence(datasets),
+				ETALowerBoundSeconds: maxLower(datasets),
+				ETAUpperBoundSeconds: maxUpper(datasets),
+				ETARecalculating:     recalc,
 			}
 			_ = s.store.SaveAddress(a)
 		}
@@ -1523,8 +2031,13 @@ func (s *Service) updateProgressLocked(datasetJobID string) {
 	})
 }
 
-// applyETA 按 EWMA 计算数据集速度与 ETA（切换 Provider 后由新 Range 的进度自然重建）。
+// applyETA 使用 ETA Engine（EWMA + 滚动中位数 + 置信度 + 冷却 + 切换重算）。
 func (s *Service) applyETA(ds *DatasetJob) {
+	engine := s.etaEngines[ds.ID]
+	if engine == nil || engine.Provider() != ds.CurrentProvider {
+		engine = pg.NewETAEngine(ds.CurrentProvider)
+		s.etaEngines[ds.ID] = engine
+	}
 	st := s.eta[ds.ID]
 	if st == nil {
 		st = &etaState{}
@@ -1532,41 +2045,149 @@ func (s *Service) applyETA(ds *DatasetJob) {
 	}
 	now := time.Now()
 	if st.started && !st.lastTime.IsZero() {
-		dt := now.Sub(st.lastTime).Seconds()
+		dt := now.Sub(st.lastTime)
 		if dt > 0 {
-			curRows := float64(ds.Progress.RowsCurrent-st.lastRows) / dt
-			speed := ewmaSpeed(st.prevSpeedRows, curRows, true)
-			st.prevSpeedRows = speed
-			ds.Progress.SpeedRowsPerSec = speed
+			deltaRows := ds.Progress.RowsCurrent - st.lastRows
+			if ds.Progress.RowsCurrent < st.lastRows {
+				deltaRows = 0
+			}
+			deltaBlocks := ds.Progress.BlocksCurrent - st.lastBlocks
+			if ds.Progress.BlocksCurrent < st.lastBlocks {
+				deltaBlocks = 0
+			}
+			_, _, _, _ = engine.Update(deltaRows, deltaBlocks, dt)
+			rate := engine.RowsRate()
+			blockRate := engine.BlocksRate()
+			ds.Progress.SpeedRowsPerSec = rate
 			remaining := float64(0)
 			if ds.EstimatedRows > ds.Progress.RowsCurrent {
 				remaining = float64(ds.EstimatedRows - ds.Progress.RowsCurrent)
 			}
-			if speed > 0 && remaining > 0 {
-				ds.Progress.ETASeconds = remaining / speed
-				ds.Progress.ETAConfidence = 0.9
-			} else {
-				// 行数估算不可靠时退回区块级 ETA（remaining blocks / blocks per sec）
-				curBlocks := float64(ds.Progress.BlocksCurrent-st.lastBlocks) / dt
-				blkSpeed := ewmaSpeed(st.prevSpeedBlk, curBlocks, true)
-				st.prevSpeedBlk = blkSpeed
-				remainingBlocks := float64(0)
-				if ds.Progress.BlocksTotal > ds.Progress.BlocksCurrent {
-					remainingBlocks = float64(ds.Progress.BlocksTotal - ds.Progress.BlocksCurrent)
-				}
-				if blkSpeed > 0 && remainingBlocks > 0 {
-					ds.Progress.ETASeconds = remainingBlocks / blkSpeed
-					ds.Progress.ETAConfidence = 0.8
-				} else {
-					ds.Progress.ETAConfidence = 0
-				}
+			remainingBlocks := float64(0)
+			if ds.Progress.BlocksTotal > ds.Progress.BlocksCurrent {
+				remainingBlocks = float64(ds.Progress.BlocksTotal - ds.Progress.BlocksCurrent)
 			}
+			recalc := ds.Progress.ETARecalculating
+			if recalc && engine.SampleCount() >= 3 {
+				recalc = false
+			}
+			eta := pg.ComputeETA(remaining, rate, remainingBlocks, blockRate,
+				recalc, engine.SampleCount(), ds.DiscoveryConfidence,
+				s.providerCooldown(ds.CurrentProvider))
+			ds.Progress.ETASeconds = float64(eta.Seconds)
+			ds.Progress.ETAConfidence = etaConfidenceFloat(eta.Confidence)
+			ds.Progress.ETALowerBoundSeconds = float64(eta.LowerBoundSeconds)
+			ds.Progress.ETAUpperBoundSeconds = float64(eta.UpperBoundSeconds)
+			ds.Progress.ETARecalculating = eta.Recalculating
+			ds.Progress.ETABasedOn = eta.BasedOn
 		}
 	}
 	st.lastRows = ds.Progress.RowsCurrent
 	st.lastBlocks = ds.Progress.BlocksCurrent
 	st.lastTime = now
 	st.started = true
+}
+
+// rangeWeight Range 权重：Discovery 分段估算行数优先，否则区块跨度（设计 §9）。
+func (s *Service) rangeWeight(ds *DatasetJob, rj *RangeJob) float64 {
+	if rj == nil {
+		return 1
+	}
+	if ds != nil {
+		for _, seg := range ds.ActivitySegments {
+			if rj.FromBlock >= seg.FromBlock && rj.ToBlock <= seg.ToBlock && seg.EstimatedRows > 0 {
+				segSpan := seg.ToBlock - seg.FromBlock + 1
+				rjSpan := rj.ToBlock - rj.FromBlock + 1
+				if segSpan > 0 {
+					return float64(seg.EstimatedRows) * float64(rjSpan) / float64(segSpan)
+				}
+			}
+		}
+	}
+	return float64(rj.ToBlock - rj.FromBlock + 1)
+}
+
+// resetETA Provider/Cloud Tier 切换时重置 ETA 引擎并标记重新计算（设计 §20/§21）。
+func (s *Service) resetETA(ds *DatasetJob) {
+	if ds == nil {
+		return
+	}
+	s.etaEngines[ds.ID] = pg.NewETAEngine(ds.CurrentProvider)
+	if st := s.eta[ds.ID]; st != nil {
+		st.started = false
+		st.prevSpeedRows, st.prevSpeedBlk = 0, 0
+	}
+	ds.Progress.ETARecalculating = true
+	ds.Progress.ETAConfidence = 0
+	ds.Progress.ETASeconds = 0
+}
+
+// providerCooldown 返回 Provider 当前熔断冷却剩余时间（ETA 叠加）。
+func (s *Service) providerCooldown(provider string) time.Duration {
+	if provider == "" {
+		return 0
+	}
+	for name, info := range s.scheduler.Health().Snapshot() {
+		if name != provider || info.CooldownUntil.IsZero() {
+			continue
+		}
+		rem := time.Until(info.CooldownUntil)
+		if rem < 0 {
+			return 0
+		}
+		return rem
+	}
+	return 0
+}
+
+func etaConfidenceFloat(c string) float64 {
+	switch c {
+	case "HIGH":
+		return 0.9
+	case "MEDIUM":
+		return 0.7
+	case "LOW":
+		return 0.4
+	default:
+		return 0
+	}
+}
+
+func maxLower(datasets []*DatasetJob) float64 {
+	var m float64
+	for _, d := range datasets {
+		if d.Progress.ETALowerBoundSeconds > m {
+			m = d.Progress.ETALowerBoundSeconds
+		}
+	}
+	return m
+}
+
+func maxUpper(datasets []*DatasetJob) float64 {
+	var m float64
+	for _, d := range datasets {
+		if d.Progress.ETAUpperBoundSeconds > m {
+			m = d.Progress.ETAUpperBoundSeconds
+		}
+	}
+	return m
+}
+
+// ensureETAStarted 在 Range 领取时初始化 EWMA 基线（首次进度更新即可算速度/ETA）。
+func (s *Service) ensureETAStarted(ds *DatasetJob) {
+	if ds == nil {
+		return
+	}
+	st := s.eta[ds.ID]
+	if st == nil {
+		st = &etaState{}
+		s.eta[ds.ID] = st
+	}
+	if !st.started {
+		st.started = true
+		st.lastRows = ds.Progress.RowsCurrent
+		st.lastTime = time.Now()
+	}
 }
 
 func sumRowsTotal(datasets []*DatasetJob) uint64 {
@@ -1615,6 +2236,95 @@ func avgConfidence(datasets []*DatasetJob) float64 {
 		n += d.Progress.ETAConfidence
 	}
 	return n / float64(len(datasets))
+}
+
+// ensureCloudPlanLocked 为 SQD Cloud 数据集生成/刷新资源分档（调用方持 service.mu）。
+func (s *Service) ensureCloudPlanLocked(ds *DatasetJob) {
+	if ds == nil || ds.CurrentProvider != "sqd_cloud" {
+		return
+	}
+	// 已分档（含运行期自动升级）不再重算覆盖，避免每次领取把升级结果打回原档
+	if ds.CloudTier != "" {
+		return
+	}
+	ranges := s.store.ListRangesByDataset(ds.ID)
+	runtime := ds.CloudEstimatedRuntimeSeconds
+	if runtime <= 0 {
+		if ds.EstimatedRows > 0 {
+			runtime = float64(ds.EstimatedRows) / 10_000 // 粗估 10k rows/s
+		} else {
+			runtime = 600
+		}
+	}
+	in := cloudplanner.ProbeInput{
+		EstimatedRows:           ds.EstimatedRows,
+		EstimatedBytes:          ds.EstimatedBytes,
+		EstimatedRuntimeSeconds: runtime,
+		RangeCount:              len(ranges),
+		Dataset:                 ds.Dataset,
+	}
+	plan := s.cloudPlanner.Plan(in)
+	if ds.CloudTier == string(plan.Tier) && ds.CloudScore == plan.Score {
+		return
+	}
+	ds.CloudTier = string(plan.Tier)
+	ds.CloudScore = plan.Score
+	ds.CloudReasons = append([]string(nil), plan.Reasons...)
+	ds.CloudEstimatedCost = plan.EstimatedCost
+	ds.CloudEstimatedRuntimeSeconds = runtime
+	ds.UpdatedAt = time.Now().UTC()
+	_ = s.store.SaveDataset(ds)
+	_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
+		Event: LedgerCloudTierAssigned, DatasetJobID: ds.ID,
+		Provider: "sqd_cloud", Error: fmt.Sprintf("tier=%s score=%.1f cost=¥%.2f",
+			plan.Tier, plan.Score, plan.EstimatedCost),
+	})
+	s.events.Publish(Event{
+		Type: EventResourceSwitched, DatasetJobID: ds.ID, Provider: "sqd_cloud",
+		Status: string(plan.Tier), Message: "Cloud 资源分档",
+		Payload: map[string]any{"score": plan.Score, "cost": plan.EstimatedCost},
+	})
+	logger.Log.Info().Str("dataset_job", ds.ID).Str("tier", string(plan.Tier)).
+		Float64("score", plan.Score).Msg("smartdownload_cloud_tier_assigned")
+}
+
+// monitorCloudTierLocked 运行期监控：命中升级/降级条件则切换 Cloud 资源档（调用方持 service.mu）。
+func (s *Service) monitorCloudTierLocked(ds *DatasetJob) {
+	if ds == nil || ds.CurrentProvider != "sqd_cloud" || ds.CloudTier == "" {
+		return
+	}
+	current := cloudplanner.ResourcePlan{Tier: cloudplanner.CloudTier(ds.CloudTier)}
+	current.ApplySpecs()
+	metrics := cloudplanner.RuntimeMetrics{
+		RowsPerSecond:            ds.Progress.SpeedRowsPerSec,
+		CompletedPercent:         ds.Progress.Percent,
+		ETA:                      time.Duration(ds.Progress.ETASeconds * float64(time.Second)),
+		OriginalEstimatedRuntime: time.Duration(ds.CloudEstimatedRuntimeSeconds * float64(time.Second)),
+	}
+	next := s.cloudPlanner.Reevaluate(current, metrics)
+	if next.Tier == current.Tier {
+		return
+	}
+	event := LedgerCloudTierUpgraded
+	if next.Tier == cloudplanner.CloudL && current.Tier == cloudplanner.CloudXL {
+		event = LedgerCloudTierDowngraded
+	}
+	ds.CloudTier = string(next.Tier)
+	ds.CloudReasons = append(ds.CloudReasons, next.Reasons...)
+	ds.UpdatedAt = time.Now().UTC()
+	_ = s.store.SaveDataset(ds)
+	_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
+		Event: event, DatasetJobID: ds.ID, Provider: "sqd_cloud",
+		Error: fmt.Sprintf("tier %s → %s：%s", current.Tier, next.Tier,
+			strings.Join(next.Reasons, "；")),
+	})
+	s.events.Publish(Event{
+		Type: EventResourceSwitched, DatasetJobID: ds.ID, Provider: "sqd_cloud",
+		Status: string(next.Tier), Message: strings.Join(next.Reasons, "；"),
+		Payload: map[string]any{"from": string(current.Tier), "to": string(next.Tier)},
+	})
+	logger.Log.Info().Str("dataset_job", ds.ID).Str("from", string(current.Tier)).
+		Str("to", string(next.Tier)).Msg("smartdownload_cloud_tier_switched")
 }
 
 func totalBlocks(ranges []*RangeJob) uint64 {
@@ -1757,6 +2467,99 @@ func (s *Service) SnapshotBatch(batchID string) *BatchDetail {
 		detail.Addresses = append(detail.Addresses, ad)
 	}
 	return detail
+}
+
+// BatchSnapshot 计算批次加权进度快照（Weighted Address → Batch；设计 §11）。
+func (s *Service) BatchSnapshot(batchID string) *pg.ProgressSnapshot {
+	batch := s.store.GetBatch(batchID)
+	if batch == nil {
+		return nil
+	}
+	snap := &pg.ProgressSnapshot{
+		EntityType: "batch", EntityID: batchID,
+		Status: string(batch.Status), UpdatedAt: time.Now().UTC(),
+	}
+	addresses := s.store.ListAddressesByBatch(batchID)
+	byAddr := map[string][]*DatasetJob{}
+	for _, d := range s.store.ListDatasets() {
+		if d.BatchID != batchID {
+			continue
+		}
+		byAddr[d.AddressJobID] = append(byAddr[d.AddressJobID], d)
+	}
+	items := make([]pg.RangeProgress, 0, len(addresses))
+	completed, failed := 0, 0
+	var maxETA, confSum float64
+	var rows uint64
+	recalc := false
+	for _, a := range addresses {
+		w, p := weightedFromDatasets(byAddr[a.ID])
+		items = append(items, pg.RangeProgress{Weight: w, Percent: p})
+		switch a.Status {
+		case AddressCompleted:
+			completed++
+		case AddressFailed:
+			failed++
+		}
+		if a.Progress.ETASeconds > maxETA {
+			maxETA = a.Progress.ETASeconds
+		}
+		confSum += a.Progress.ETAConfidence
+		rows += a.Progress.RowsCurrent
+		if a.Progress.ETARecalculating {
+			recalc = true
+		}
+	}
+	snap.ProgressPercent = pg.WeightedProgress(items)
+	snap.RangesCurrent = uint64(completed)
+	snap.RangesTotal = uint64(len(addresses))
+	snap.RowsCurrent = rows
+	conf := float64(0)
+	if len(addresses) > 0 {
+		conf = confSum / float64(len(addresses))
+	}
+	snap.ETA = pg.ETASnapshot{
+		Seconds: int64(maxETA), Confidence: etaConfidenceLevel(conf), Recalculating: recalc,
+	}
+	_ = failed
+	return snap
+}
+
+// addressWeightedProgress 地址加权进度（Dataset 权重 = 估算行数 × 复杂度；设计 §10）。
+func (s *Service) addressWeightedProgress(a *AddressJob) (weight, percent float64) {
+	if a == nil {
+		return 0, 0
+	}
+	return weightedFromDatasets(s.store.ListDatasetsByAddress(a.ID))
+}
+
+func weightedFromDatasets(datasets []*DatasetJob) (weight, percent float64) {
+	var wSum, wp float64
+	for _, d := range datasets {
+		w := float64(d.EstimatedRows) * cloudplanner.DatasetComplexity(d.Dataset)
+		if w <= 0 {
+			w = float64(d.Progress.BlocksTotal) + 1
+		}
+		wSum += w
+		wp += w * d.Progress.Percent
+	}
+	if wSum <= 0 {
+		return 1, 0
+	}
+	return wSum, wp / wSum
+}
+
+func etaConfidenceLevel(c float64) string {
+	switch {
+	case c >= 0.8:
+		return "HIGH"
+	case c >= 0.5:
+		return "MEDIUM"
+	case c > 0:
+		return "LOW"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 // PartsDir 返回 parts 根目录（recovery/API 用）。

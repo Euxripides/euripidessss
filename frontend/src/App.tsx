@@ -8,6 +8,9 @@ const AnalyticsReportPage = lazy(() => import("./features/analytics/ReportPage")
 const AnalyticsRiskPage = lazy(() => import("./features/analytics/RiskAnalysisPage"));
 const SystemSettingsPage = lazy(() => import("./features/system/SystemSettingsPage"));
 const IntelligencePage = lazy(() => import("./features/intelligence/IntelligencePage"));
+const EntityIntelligencePage = lazy(() => import("./features/entity/EntityPage"));
+const FundFlowPage = lazy(() => import("./features/fundflow/FundFlowPage"));
+const ReportPage = lazy(() => import("./features/reports/ReportPage"));
 import {
   ApartmentOutlined,
   CloudDownloadOutlined,
@@ -19,11 +22,13 @@ import {
   FileZipOutlined,
   FundProjectionScreenOutlined,
   MenuOutlined,
+  NodeIndexOutlined,
   PlusOutlined,
   RightOutlined,
   RobotOutlined,
   SearchOutlined,
   SettingOutlined,
+  TagsOutlined,
   ThunderboltOutlined,
   UploadOutlined,
   WalletOutlined,
@@ -249,6 +254,9 @@ const menuItems = [
     label: "调查工作台",
     children: [
       { key: "intelligence", icon: <RobotOutlined />, label: "智能调查" },
+      { key: "entity", icon: <TagsOutlined />, label: "实体智能" },
+      { key: "fund-flow", icon: <NodeIndexOutlined />, label: "资金流智能" },
+      { key: "reports", icon: <FileTextOutlined />, label: "调查报告" },
       { key: "graph", icon: <FundProjectionScreenOutlined />, label: "资金路径" },
       { key: "analytics-graph", icon: <ApartmentOutlined />, label: "地址关系图" },
       { key: "analytics-report", icon: <FileTextOutlined />, label: "案件报告" },
@@ -645,6 +653,9 @@ export function App() {
               {active === "analytics-report" && <AnalyticsReportPage />}
               {active === "risk" && <AnalyticsRiskPage />}
               {active === "intelligence" && <IntelligencePage />}
+              {active === "entity" && <EntityIntelligencePage />}
+              {active === "fund-flow" && <FundFlowPage />}
+              {active === "reports" && <ReportPage />}
               {active === "system-settings" && <SystemSettingsPage />}
             </Suspense>
           </Content>
@@ -737,6 +748,9 @@ export function App() {
       "analytics-report": "案件报告",
       risk: "风险分析",
       intelligence: "智能调查",
+      entity: "实体智能",
+      "fund-flow": "资金流智能",
+      reports: "调查报告",
       "system-settings": "系统设置",
     }[key];
   }

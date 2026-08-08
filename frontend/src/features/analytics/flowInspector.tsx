@@ -14,7 +14,7 @@ import {
   ReloadOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
-import { Button, Empty, Spin, Tabs, message } from "antd";
+import { Button, Empty, Space, Spin, Tabs, Tag, message } from "antd";
 import { useState } from "react";
 import type { AddressAssets } from "./flowAssetApi";
 import { assetStateLabel, displayBalance } from "./useAddressAssets";
@@ -23,6 +23,7 @@ import { directionLabel, fmtAmount, riskTone } from "./flowWorkspaceGraph";
 import type { EnhancedNodeData, FocusDirection } from "./graphUpgrade";
 import type { FlowEdge } from "./analyticsApi";
 import { shortAddr } from "./format";
+import { CONFIDENCE_TIER_LABELS, ENTITY_TYPE_LABELS, type EntityResolution } from "../entity/entityApi";
 
 export interface NeighborInfo {
   address: string;
@@ -43,6 +44,7 @@ export interface FlowInspectorProps {
   addressStats: AddressStats | null;
   assets: AddressAssets | null;
   assetsState: "idle" | "loading" | "ready" | "failed";
+  entityInfo?: EntityResolution | null;
   onAssetsRefresh: () => void;
   savingSnapshot: boolean;
   onSaveSnapshot: () => void;
@@ -111,6 +113,7 @@ export default function FlowInspector({
   addressStats,
   assets,
   assetsState,
+  entityInfo,
   onAssetsRefresh,
   savingSnapshot,
   onSaveSnapshot,
@@ -184,6 +187,29 @@ export default function FlowInspector({
             <span className={`flow-inspector-role ${riskTone(node.risk)}`}>{node.kind}</span>
             <span className="flow-inspector-source">标签来源：当前数据集图关系</span>
           </div>
+          {entityInfo && (entityInfo.entity || (entityInfo.labels?.length ?? 0) > 0) && (
+            <div className="flow-inspector-entity">
+              {entityInfo.entity && (
+                <div className="flow-inspector-entity-name">
+                  <strong>{entityInfo.entity.name}</strong>
+                  <Tag color="blue">
+                    {ENTITY_TYPE_LABELS[entityInfo.entity.entity_type] ?? entityInfo.entity.entity_type}
+                  </Tag>
+                </div>
+              )}
+              <Space wrap size={4}>
+                {(entityInfo.labels ?? []).map((l) => (
+                  <Tag key={l.label + l.scope} color={l.scope === "INVESTIGATION" ? "orange" : "geekblue"}>
+                    {l.label}
+                  </Tag>
+                ))}
+              </Space>
+              <div className="flow-inspector-entity-meta">
+                可信度 {CONFIDENCE_TIER_LABELS[entityInfo.confidence_tier] ?? entityInfo.confidence_tier} ·{" "}
+                证据 {entityInfo.evidence?.length ?? 0} · 来源可展开
+              </div>
+            </div>
+          )}
         </section>
 
         {/* 图边统计 */}

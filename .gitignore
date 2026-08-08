@@ -72,6 +72,7 @@ backend/data/investigation_evidence/
 backend/data/investigation_requests/
 backend/data/download_scheduler/
 backend/data/smart_download/
+backend/data/entity-intelligence/
 backend/data/crypto_parquet/
 
 # Codex local configuration
@@ -85,3 +86,4 @@ backend/data/crypto_parquet/
 .env
 .env.local
 .env.*.local
+backend/data/fund-flow-cache/

@@ -44,6 +44,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.importFile(w, r)
 	case r.Method == http.MethodGet && path == "registry":
 		writeSmartJSON(w, http.StatusOK, map[string]any{"results": h.svc.Results().List()})
+	case r.Method == http.MethodPost && path == "coverage/query":
+		h.coverageQuery(w, r)
 	case strings.HasPrefix(path, "batches/"):
 		h.routeBatch(w, r, strings.TrimPrefix(path, "batches/"))
 	case strings.HasPrefix(path, "addresses/"):
@@ -52,9 +54,91 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.routeDataset(w, r, strings.TrimPrefix(path, "datasets/"))
 	case strings.HasPrefix(path, "results/"):
 		h.routeResults(w, r, strings.TrimPrefix(path, "results/"))
+	case strings.HasPrefix(path, "jobs/"):
+		h.routeJobs(w, r, strings.TrimPrefix(path, "jobs/"))
 	default:
 		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown smart-download endpoint: " + path})
 	}
+}
+
+// coverageQuery POST /coverage/query — Coverage Index V2 区间查询（设计 §45）。
+func (h *Handler) coverageQuery(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		ChainKey  string `json:"chain_key"`
+		Address   string `json:"address"`
+		Dataset   string `json:"dataset"`
+		FromBlock uint64 `json:"from_block"`
+		ToBlock   uint64 `json:"to_block"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+		return
+	}
+	if !evmAddressRE.MatchString(body.Address) {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "非法 EVM 地址"})
+		return
+	}
+	result := h.svc.CoverageQuery(body.ChainKey, strings.ToLower(body.Address), body.Dataset,
+		body.FromBlock, body.ToBlock)
+	writeSmartJSON(w, http.StatusOK, result)
+}
+
+// routeJobs GET /jobs/{batch_id}/snapshot 与 /jobs/{batch_id}/addresses/{address_job_id}。
+func (h *Handler) routeJobs(w http.ResponseWriter, r *http.Request, rest string) {
+	parts := strings.Split(rest, "/")
+	if len(parts) < 2 || parts[0] == "" {
+		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "batch id 缺失"})
+		return
+	}
+	batchID := parts[0]
+	if len(parts) == 2 && parts[1] == "snapshot" && r.Method == http.MethodGet {
+		snap := h.svc.BatchSnapshot(batchID)
+		if snap == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "批次不存在: " + batchID})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, snap)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "summary" && r.Method == http.MethodGet {
+		addresses := h.svc.store.ListAddressesByBatch(batchID)
+		counts := map[string]int{}
+		throughput := 0.0
+		for _, a := range addresses {
+			counts[string(a.Status)]++
+			throughput += a.Progress.SpeedRowsPerSec
+		}
+		snap := h.svc.BatchSnapshot(batchID)
+		if snap == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "批次不存在: " + batchID})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, map[string]any{
+			"snapshot": snap, "counts": counts, "total": len(addresses),
+			"running":                 counts["DOWNLOADING"] + counts["VALIDATING"],
+			"queued":                  counts["WAITING"],
+			"attention":               counts["FAILED"] + counts["PARTIAL"],
+			"throughput_rows_per_sec": throughput,
+		})
+		return
+	}
+	if len(parts) == 3 && parts[1] == "addresses" && r.Method == http.MethodGet {
+		a := h.svc.GetAddress(parts[2])
+		if a == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "地址任务不存在: " + parts[2]})
+			return
+		}
+		detail := &AddressDetail{Address: a}
+		for _, ds := range h.svc.store.ListDatasetsByAddress(a.ID) {
+			detail.Datasets = append(detail.Datasets, &DatasetDetail{
+				Dataset: ds, Ranges: h.svc.store.ListRangesByDataset(ds.ID),
+			})
+		}
+		writeSmartJSON(w, http.StatusOK, detail)
+		return
+	}
+	writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown jobs endpoint: " + rest})
 }
 
 // importFile POST /import — 上传 TXT/CSV/XLSX 自动识别地址列。
@@ -267,10 +351,26 @@ func (h *Handler) listBatchAddresses(w http.ResponseWriter, r *http.Request, bat
 	}
 	page, size := pagination(r)
 	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	// 每地址活跃 Dataset（RUNNING/VALIDATING/REPAIRING/PENDING 中更新时间最新者）→ 当前数据/Provider/云档
+	active := map[string]*DatasetJob{}
+	for _, d := range h.svc.store.ListDatasets() {
+		if d.BatchID != batchID || d.Status.Terminal() {
+			continue
+		}
+		cur := active[d.AddressJobID]
+		if cur == nil || d.UpdatedAt.After(cur.UpdatedAt) {
+			active[d.AddressJobID] = d
+		}
+	}
 	filtered := make([]*AddressJob, 0, len(addresses))
 	for _, a := range addresses {
 		if status != "" && strings.ToLower(string(a.Status)) != status {
 			continue
+		}
+		if d := active[a.ID]; d != nil {
+			a.CurrentDataset = d.Dataset
+			a.CurrentProvider = d.CurrentProvider
+			a.CloudTier = d.CloudTier
 		}
 		filtered = append(filtered, a)
 	}
@@ -405,8 +505,31 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	batchID := strings.TrimSpace(r.URL.Query().Get("batch_id"))
+	addressID := strings.TrimSpace(r.URL.Query().Get("address_job_id"))
+	lastID := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	if lastID == "" {
+		lastID = strings.TrimSpace(r.URL.Query().Get("last_event_id"))
+	}
+	var afterSeq uint64
+	if lastID != "" {
+		afterSeq, _ = strconv.ParseUint(lastID, 10, 64)
+	}
 	id, ch := h.svc.Events().Subscribe()
 	defer h.svc.Events().Unsubscribe(id)
+	// Last-Event-ID 回放（设计 §32）：超出缓冲 → resync_required
+	if lastID != "" {
+		events, ok := h.svc.Events().Replay(batchID, afterSeq)
+		if !ok {
+			_, _ = fmt.Fprintf(w, "id: %d\nevent: resync_required\ndata: {\"reason\":\"buffer_expired\"}\n\n",
+				h.svc.Events().CurrentSequence(batchID))
+			flusher.Flush()
+		} else {
+			for _, ev := range events {
+				writeSSE(w, ev, flusher)
+			}
+		}
+	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -414,14 +537,27 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case ev := <-ch:
-			payload, _ := json.Marshal(ev)
-			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, payload)
-			flusher.Flush()
+			if batchID != "" && ev.BatchID != "" && ev.BatchID != batchID {
+				continue
+			}
+			if addressID != "" && ev.AddressJobID != "" && ev.AddressJobID != addressID {
+				continue
+			}
+			writeSSE(w, ev, flusher)
 		case <-ticker.C:
 			_, _ = fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		}
 	}
+}
+
+func writeSSE(w http.ResponseWriter, ev Event, flusher http.Flusher) {
+	payload, _ := json.Marshal(ev)
+	if ev.Sequence > 0 {
+		_, _ = fmt.Fprintf(w, "id: %d\n", ev.Sequence)
+	}
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, payload)
+	flusher.Flush()
 }
 
 // ── Legacy 桥接 ──

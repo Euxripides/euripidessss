@@ -44,7 +44,7 @@ func (p *SQDAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, 
 	from, to := probeRange(req)
 	count, err := p.sampleCount(ctx, network, req.Dataset, req.Address, from, to)
 	if err != nil {
-		return ProbeResult{Confidence: 0}, nil // 探测失败不阻断（Phase 2 边界）
+		return ProbeResult{Confidence: 0}, err // 失败上抛，便于调度层记录
 	}
 	return extrapolate(count, to-from+1, probeBlockSpan(req), 0.7), nil
 }

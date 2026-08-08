@@ -1,6 +1,6 @@
 # Funds ETL — Code Property Graph
 
-> Auto-generated. **49 packages, 3403 functions, 912 types.**
+> Auto-generated. **61 packages, 3976 functions, 1088 types.**
 
 Use this as a **project map** before reading source code.
 
@@ -10,44 +10,56 @@ Use this as a **project map** before reading source code.
 
 - **`server`** — 1 fn, 0s/0i, uses: api, config, logger, rules
 
-### API / HTTP (1 pkgs, 325 funcs, 49 types)
+### API / HTTP (1 pkgs, 379 funcs, 50 types)
 
-- **`api`** — 325 fn, 47s/0i, uses: analysis/duckdb, analyticsapi, chain, cloudruntime, used-by: 1 pkg(s)
+- **`api`** — 379 fn, 48s/0i, uses: analysis/duckdb, analyticsapi, chain, cloudruntime, used-by: 1 pkg(s)
 
-### ETL Pipeline (49 pkgs, 3403 funcs, 912 types)
+### ETL Pipeline (61 pkgs, 3976 funcs, 1088 types)
 
 - **`cryptodownload`** — 655 fn, 132s/1i, uses: cryptodownload/useragent, used-by: 1 pkg(s)
+- **`api`** — 379 fn, 48s/0i, uses: analysis/duckdb, analyticsapi, chain, cloudruntime, used-by: 1 pkg(s)
+- **`smartdownload`** — 336 fn, 58s/5i, uses: analysis/duckdb, chain, cloudruntime, datasource/sqd, used-by: 2 pkg(s)
 - **`intelligence`** — 335 fn, 89s/4i, uses: analyticsapi, dynamicinvestigation, investigationstore, logger, used-by: 1 pkg(s)
-- **`api`** — 325 fn, 47s/0i, uses: analysis/duckdb, analyticsapi, chain, cloudruntime, used-by: 1 pkg(s)
-- **`smartdownload`** — 300 fn, 57s/5i, uses: analysis/duckdb, chain, cloudruntime, datasource/sqd, used-by: 1 pkg(s)
 - **`parquetdownload`** — 201 fn, 33s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws, used-by: 4 pkg(s)
 - **`downloadengine`** — 166 fn, 67s/5i, used-by: 1 pkg(s)
 - **`downloadscheduler`** — 161 fn, 34s/9i, uses: chain, cloudruntime, datasetsync, logger, used-by: 2 pkg(s)
 - **`dbimport`** — 110 fn, 27s/1i, uses: model, parser, used-by: 1 pkg(s)
 - **`rpcmanager`** — 110 fn, 21s/0i, uses: chain, used-by: 5 pkg(s)
+- **`investigation/prefetch`** — 104 fn, 24s/0i, uses: graphcache, investigation/cache, smartdownload, used-by: 1 pkg(s)
 - **`etl`** — 99 fn, 10s/0i, uses: model, parser, provider, rules, used-by: 1 pkg(s)
 - **`dynamicinvestigation`** — 98 fn, 21s/2i, uses: analyticsapi, chain, logger, parquetdownload, used-by: 2 pkg(s)
 - **`datasource/sqd`** — 93 fn, 25s/0i, uses: chain, used-by: 5 pkg(s)
 - **`dunetools`** — 88 fn, 16s/3i, used-by: 1 pkg(s)
 - **`parser`** — 85 fn, 7s/0i, used-by: 6 pkg(s)
+- **`reportengine`** — 84 fn, 21s/2i, uses: entityintel, fundflow, investigation/cache, used-by: 1 pkg(s)
+- **`entityintel`** — 68 fn, 17s/1i, uses: analyticsapi, used-by: 3 pkg(s)
+- **`fundflow`** — 54 fn, 23s/2i, uses: analyticsapi, entityintel, used-by: 2 pkg(s)
 - **`cloudruntime`** — 48 fn, 5s/0i, uses: logger, s3store, used-by: 3 pkg(s)
 - **`datasourcemanager`** — 44 fn, 13s/0i, uses: chain, datasource/aws, datasource/sqd, rpcmanager, used-by: 2 pkg(s)
 - **`downloadengine/provider`** — 44 fn, 12s/0i, uses: analysis/duckdb, chain, datasource, datasource/aws
-- **`analyticsapi`** — 41 fn, 16s/0i, uses: analysis/duckdb, logger, used-by: 7 pkg(s)
+- **`analyticsapi`** — 41 fn, 16s/0i, uses: analysis/duckdb, logger, used-by: 10 pkg(s)
 - **`investigationstore`** — 37 fn, 13s/1i, used-by: 3 pkg(s)
 - **`datasetsync`** — 35 fn, 8s/1i, uses: analysis/duckdb, logger, s3store, used-by: 3 pkg(s)
+- **`graphcache`** — 30 fn, 9s/2i, uses: analyticsapi, used-by: 2 pkg(s)
+- **`smartdownload/validation`** — 30 fn, 9s/0i, used-by: 1 pkg(s)
 - **`flow`** — 29 fn, 11s/1i, uses: chain, investigationstore, normalize, rpcmanager, used-by: 1 pkg(s)
 - **`rules`** — 27 fn, 1s/0i, uses: parser, used-by: 5 pkg(s)
+- **`smartdownload/cloudplanner`** — 26 fn, 5s/0i, used-by: 1 pkg(s)
 - **`analysis/duckdb`** — 25 fn, 4s/0i, used-by: 11 pkg(s)
 - **`provider`** — 25 fn, 5s/1i, uses: model, parser, rules, used-by: 1 pkg(s)
+- **`smartdownload/discovery`** — 24 fn, 8s/1i, used-by: 1 pkg(s)
 - **`s3store`** — 23 fn, 5s/1i, used-by: 3 pkg(s)
+- **`smartdownload/progress`** — 19 fn, 10s/0i, used-by: 1 pkg(s)
 - **`casefile`** — 18 fn, 12s/0i, uses: analysis/duckdb, analyticsapi, balance, investigation
 - **`datasource/rpc`** — 17 fn, 3s/0i, uses: chain, normalize, used-by: 1 pkg(s)
 - **`downloader`** — 17 fn, 6s/0i, uses: writer, used-by: 1 pkg(s)
 - **`scanner`** — 17 fn, 2s/0i, uses: parser, rules, used-by: 2 pkg(s)
+- **`smartdownload/feedback`** — 17 fn, 5s/0i, used-by: 1 pkg(s)
+- **`smartdownload/registry`** — 15 fn, 9s/0i, used-by: 1 pkg(s)
 - **`datasetevents`** — 13 fn, 2s/0i, used-by: 1 pkg(s)
 - **`investigation`** — 13 fn, 8s/0i, uses: analysis/duckdb, analyticsapi, used-by: 1 pkg(s)
 - **`datasource/sqd/scheduler`** — 12 fn, 4s/0i
+- **`investigation/cache`** — 12 fn, 5s/0i, used-by: 3 pkg(s)
 - **`normalize`** — 12 fn, 12s/0i, uses: chain, datasource/sqd, used-by: 5 pkg(s)
 - **`balance`** — 10 fn, 11s/0i, uses: analysis/duckdb, analyticsapi, used-by: 1 pkg(s)
 - **`graphincrement`** — 10 fn, 3s/0i, uses: analysis/duckdb, datasetsync, used-by: 1 pkg(s)
@@ -103,11 +115,11 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 
 | Package | Out | In | Instability | Funcs |
 |---------|-----|----|-------------|-------|
-| `api` | 30 | 1 | 0.97 █████████ | 325 |
+| `api` | 36 | 1 | 0.97 █████████ | 379 |
+| `smartdownload` | 13 | 2 | 0.87 ████████ | 336 |
 | `parquetdownload` | 11 | 4 | 0.73 ███████ | 201 |
 | `downloadengine/provider` | 9 | 0 | 1.00 ██████████ | 44 |
 | `downloadscheduler` | 7 | 2 | 0.78 ███████ | 161 |
-| `smartdownload` | 7 | 1 | 0.88 ████████ | 300 |
 | `etl` | 5 | 1 | 0.83 ████████ | 99 |
 | `server` | 4 | 0 | 1.00 ██████████ | 1 |
 | `casefile` | 4 | 0 | 1.00 ██████████ | 18 |
@@ -116,8 +128,8 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 | `flow` | 4 | 1 | 0.80 ████████ | 29 |
 | `intelligence` | 4 | 1 | 0.80 ████████ | 335 |
 | `datasetsync` | 3 | 3 | 0.50 █████ | 35 |
+| `investigation/prefetch` | 3 | 1 | 0.75 ███████ | 104 |
 | `provider` | 3 | 1 | 0.75 ███████ | 25 |
-| `analyticsapi` | 2 | 7 | 0.22 ██ | 41 |
 
 **Key**: `parquetdownload` (11 out) and `api` (15 out) are the most coupled.
 
@@ -127,7 +139,7 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 
 ## 4. Interface Inventory
 
-**40 interfaces**:
+**48 interfaces**:
 
 | Interface | Package | Methods |
 |-----------|---------|--------|
@@ -144,10 +156,15 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 | `Mailbox` | `dunetools` | WaitForVerificationLink |
 | `AcquisitionExecutor` | `dynamicinvestigation` | Execute |
 | `AssetStore` | `flow` | AddressAssets |
+| `EntityIntelligence` | `fundflow` | Resolve |
+| `CoverageQuerier` | `graphcache` | QueryCoverage |
 | `Expander` | `intelligence` | Expand |
 | `FlowSource` | `intelligence` | Flows |
+| `EntityResolver` | `reportengine` | Resolve |
+| `NarrativePolisher` | `reportengine` | Polish |
 | `RPCClient` | `smartdownload` | Call |
 | `RangeCoverageSource` | `smartdownload` | CoveredRanges |
+| `MetadataSource` | `smartdownload/discovery` | TotalRows |
 | `SQLExecutor` | `writer` | ExecSQLJSON |
 | `ReceiptSource` | `datasource` | Probe, Receipts |
 | `exportSchemaExecutor` | `dbimport` | ExecContext, QueryContext |
@@ -155,10 +172,13 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 | `SQDEngine` | `downloadscheduler` | Start, Get |
 | `StateProvider` | `downloadscheduler` | State, StateReasons |
 | `DiscoverySource` | `dynamicinvestigation` | Flows, Profile |
+| `FlowSource` | `fundflow` | Flows, AddressStats |
+| `FlowSource` | `graphcache` | Flows, Profile |
 | `AIChatter` | `intelligence` | Chat, Configured |
 | `PartWriter` | `smartdownload` | WritePart, Extension |
 | `Provider` | `downloadengine` | Name, Capabilities, Health |
 | `BrowserClient` | `dunetools` | Register, VerifyEmail, LoginAndExtract |
+| `FeatureSource` | `entityintel` | AddressStats, Profile, Flows |
 | `Executor` | `intelligence` | Type, Execute, Validate |
 | `Provider` | `provider` | Name, ProcessDirectory, ProcessFile |
 | `LookupProvider` | `downloadengine` | Name, Capabilities, Health, ExecuteLookup |
@@ -176,7 +196,7 @@ Sorted by **instability** (outgoing deps / total deps). High = fragile.
 
 HTTP handlers down to data layer:
 
-- **BuildFlowGraph** ← `api`.HandleProcess ← `etl`.BuildFlowGraph
+- **BuildFlowGraph** ← `api`.HandleBuildImportedFlow ← `etl`.BuildFlowGraph
 - **StartTask** ← `dbimport`.StartTask
 - **CollectAddress** ← `cryptodownload`.CollectAddress
 - **FetchTokenTransfersByTimeWindow** ← `cryptodownload`.FetchTokenTransfersByTimeWindow
@@ -187,9 +207,9 @@ Size × coupling = maintenance risk.
 
 | Package | Size | Coupling | Risk | Level |
 |---------|------|----------|------|-------|
-| `api` | 374 | 31 | 11968 | 🔴 HIGH |
+| `api` | 429 | 37 | 16302 | 🔴 HIGH |
+| `smartdownload` | 406 | 15 | 6496 | 🔴 HIGH |
 | `parquetdownload` | 237 | 15 | 3792 | 🔴 HIGH |
-| `smartdownload` | 369 | 8 | 3321 | 🔴 HIGH |
 | `intelligence` | 443 | 5 | 2658 | 🔴 HIGH |
 | `cryptodownload` | 805 | 2 | 2415 | 🔴 HIGH |
 | `downloadscheduler` | 210 | 9 | 2100 | 🔴 HIGH |
@@ -197,11 +217,11 @@ Size × coupling = maintenance risk.
 | `dynamicinvestigation` | 126 | 6 | 882 | 🔴 HIGH |
 | `datasource/sqd` | 121 | 6 | 847 | 🔴 HIGH |
 | `etl` | 109 | 6 | 763 | 🔴 HIGH |
+| `analyticsapi` | 57 | 12 | 741 | 🔴 HIGH |
+| `investigation/prefetch` | 131 | 4 | 655 | 🔴 HIGH |
 | `parser` | 92 | 6 | 644 | 🔴 HIGH |
-| `analyticsapi` | 57 | 9 | 570 | 🔴 HIGH |
 | `downloadengine/provider` | 56 | 9 | 560 | 🔴 HIGH |
 | `dbimport` | 139 | 3 | 556 | 🔴 HIGH |
-| `downloadengine` | 254 | 1 | 508 | 🔴 HIGH |
 
 ## 7. Dependency Diagram
 

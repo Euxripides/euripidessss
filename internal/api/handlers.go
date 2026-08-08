@@ -30,14 +30,20 @@ import (
 	"github.com/etl/backend/internal/dbimport"
 	"github.com/etl/backend/internal/downloadscheduler"
 	"github.com/etl/backend/internal/dynamicinvestigation"
+	"github.com/etl/backend/internal/entityintel"
 	"github.com/etl/backend/internal/etl"
 	"github.com/etl/backend/internal/flow"
+	"github.com/etl/backend/internal/fundflow"
 	"github.com/etl/backend/internal/graphincrement"
+	"github.com/etl/backend/internal/graphcache"
 	"github.com/etl/backend/internal/intelligence"
+	invcache "github.com/etl/backend/internal/investigation/cache"
 	"github.com/etl/backend/internal/investigationstore"
+	"github.com/etl/backend/internal/investigation/prefetch"
 	"github.com/etl/backend/internal/model"
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/etl/backend/internal/parser"
+	"github.com/etl/backend/internal/reportengine"
 	"github.com/etl/backend/internal/rpcmanager"
 	"github.com/etl/backend/internal/rules"
 	"github.com/etl/backend/internal/s3store"
@@ -71,6 +77,13 @@ var (
 	datasetEventBus         *datasetevents.Bus               // Phase 5.3：Dataset Event Bus
 	graphIncrementer        *graphincrement.Incrementer      // Phase 5.3：Graph 增量物化
 	smartDownloadAPI        http.Handler                     // 智能下载统一入口（/api/smart-download/*）
+	smartDownloadService    *smartdownload.Service           // 智能下载服务（预取管理器桥接）
+	graphCache              *graphcache.Cache                // Graph Expansion Cache V1
+	investigationCacheStore *invcache.Store                  // Investigation Cache V2
+	prefetchManager         *prefetch.Manager                // Smart Prefetch Planner V1
+	entityResolver          *entityintel.Resolver            // Entity Intelligence Layer V1
+	fundFlowEngine          *fundflow.Engine                 // Fund Flow Intelligence V2
+	reportEngine            *reportengine.Engine             // Investigation Report Engine V2
 	downloadScheduler       *downloadscheduler.Scheduler     // Legacy 调度器引用（Bridge 用）
 	smartCloudRuntime       *cloudruntime.Manager            // SQD Cloud 运行时（Phase 2 Adapter 复用）
 	downloadDSRegistry      *datasetsync.Registry            // Cloud Dataset Registry（Smart Download 区间复用）
@@ -246,6 +259,9 @@ func Setup(c *config.Config) {
 	setupDownloadScheduler()
 	// V1.1 Phase 1: 智能下载统一入口（四层任务模型 + Checkpoint V3 + Range Ledger + Recovery）
 	setupSmartDownload()
+	setupEntityIntel()
+	setupFundFlow()
+	setupReportEngine()
 }
 
 // setupDynamicInvestigation 装配动态调查引擎：
@@ -536,6 +552,10 @@ func setupSmartDownload() {
 		return
 	}
 	opts := smartdownload.DefaultOptions()
+	opts.AdaptiveRanges = true // Discovery 驱动自适应 Range（可用环境变量关闭）
+	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_ADAPTIVE_RANGES")); v != "" {
+		opts.AdaptiveRanges = v != "0" && !strings.EqualFold(v, "false")
+	}
 	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_WORKERS")); v != "" {
 		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 64 {
 			opts.Workers = n
@@ -546,6 +566,7 @@ func setupSmartDownload() {
 		partWriter = smartdownload.NewParquetPartWriter(root, analysisEngine)
 	}
 	svc := smartdownload.NewService(store, opts, partWriter)
+	smartDownloadService = svc
 	if analysisEngine != nil {
 		svc.SetDuckDB(analysisEngine)
 	}
@@ -594,6 +615,9 @@ func setupSmartDownload() {
 				log.Warn().Err(err).Str("chunk", ir.ChunkKey).Msg("smart_download_graph_increment_failed")
 			}
 		}
+		if prefetchManager != nil {
+			prefetchManager.OnDatasetIndexed(ir.ChainKey, ir.Address, ir.Dataset)
+		}
 		ev := datasetevents.Event{
 			ID:               datasetevents.IndexedEventID(ir.ChunkKey),
 			Type:             datasetevents.DatasetIndexed,
@@ -616,6 +640,7 @@ func setupSmartDownload() {
 		planLookup = downloadScheduler.Plan
 	}
 	smartDownloadAPI = http.StripPrefix("/api/smart-download", smartdownload.NewHandler(svc, planLookup))
+	setupInvestigationCacheV2(svc)
 	// 启动恢复：回放 Range Ledger → 校验 Parts → 未完成 Range 重新入队
 	go func() {
 		time.Sleep(2 * time.Second)
@@ -734,6 +759,9 @@ func (c *smartRangeCoverage) CoveredRanges(ctx context.Context, chainKey, addres
 
 // Shutdown closes the control store
 func Shutdown() {
+	if prefetchManager != nil {
+		prefetchManager.Stop()
+	}
 	if parquetDownload != nil {
 		parquetDownload.Close()
 	}
@@ -781,6 +809,16 @@ func RegisterRoutes(r *gin.Engine) {
 		api.POST("/flow/direction-rules", HandleSaveFlowDirectionRules)
 		api.POST("/flow/direction-check", HandleCheckFlowDirectionValues)
 		api.POST("/flow/values", HandleFlowFieldValues)
+		// ── Investigation Cache V2 + Graph Expansion Cache + Smart Prefetch（设计 V1.0 §62-§64）──
+		registerInvestigationCacheRoutes(api)
+		// ── Entity Intelligence Layer V1（设计 V1.0 §53-§56）──
+		registerEntityIntelRoutes(api)
+		// ── Fund Flow Intelligence V2（设计 V1.0 §62-§63）──
+		registerFundFlowRoutes(api)
+		// ── Graph API V3（设计 V1.0 §45-§46）──
+		registerGraphV3Routes(api)
+		// ── Investigation Report Engine V2（设计 V1.0 §65-§68）──
+		registerReportEngineRoutes(api)
 		// ── V2.0 实时资产（设计 §15）──
 		api.POST("/flow/address-assets", handleAddressAssets)
 		api.POST("/flow/address-assets/batch", handleAddressAssetsBatch)

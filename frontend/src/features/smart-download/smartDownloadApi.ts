@@ -25,6 +25,8 @@ export interface BatchJob {
   status: string;
   address_count: number;
   dataset_types: string[];
+  prefetch?: boolean;
+  prefetch_priority?: number;
   error?: string;
   created_at: string;
   updated_at: string;
@@ -40,6 +42,9 @@ export interface AddressJob {
   status: string;
   range: RangeSpec;
   progress: ProgressSnapshot;
+  current_dataset?: string;
+  current_provider?: string;
+  cloud_tier?: string;
   error?: string;
   created_at: string;
 }
@@ -59,6 +64,20 @@ export interface DatasetJob {
   progress: ProgressSnapshot;
   validation?: ValidationReport;
   repair_rounds?: number;
+  cloud_tier?: string;
+  cloud_score?: number;
+  cloud_reasons?: string[];
+  cloud_estimated_cost?: number;
+  cloud_estimated_runtime_seconds?: number;
+  discovery_confidence?: number;
+  suggested_range_span?: number;
+  activity_segments?: Array<{
+    from_block: number;
+    to_block: number;
+    estimated_rows: number;
+    density: number;
+    confidence: number;
+  }>;
   error?: string;
 }
 
@@ -144,6 +163,7 @@ export interface IndexedResult {
   row_count: number;
   merged_parquet?: string;
   validation: string;
+  certification?: string;
   indexed_at: string;
 }
 
@@ -158,6 +178,48 @@ export interface SdEvent {
   message?: string;
   ts: string;
   payload?: Record<string, unknown>;
+}
+
+export interface BatchSnapshot {
+  entity_type: string;
+  entity_id: string;
+  status: string;
+  progress_percent: number;
+  ranges_current?: number;
+  ranges_total?: number;
+  rows_current?: number;
+  eta: {
+    seconds: number;
+    lower_bound_seconds: number;
+    upper_bound_seconds: number;
+    confidence: string;
+    recalculating: boolean;
+    based_on?: string;
+  };
+  updated_at: string;
+}
+
+export interface ExecutionPlan {
+  batch_id: string;
+  datasets: Array<{
+    dataset: string;
+    address: string;
+    chain_key: string;
+    estimated_rows: number;
+    estimated_bytes: number;
+    size_class: string;
+    preferred_provider?: string;
+  }>;
+}
+
+export interface BatchSummary {
+  snapshot: BatchSnapshot;
+  counts: Record<string, number>;
+  total: number;
+  running: number;
+  queued: number;
+  attention: number;
+  throughput_rows_per_sec: number;
 }
 
 export const DATASET_LABELS: Record<string, string> = {
@@ -188,11 +250,164 @@ export async function createBatch(body: {
   default_range?: RangeSpec;
   skip_covered?: boolean;
   address_chain_overrides?: Record<string, string>;
-}): Promise<{ batch: BatchJob } | null> {
-  const { response, payload } = await postJson<{ batch: BatchJob }>(
+  prefetch?: boolean;
+  prefetch_priority?: number;
+}): Promise<{
+  batch: BatchJob;
+  local_full_hits?: number;
+  local_partial_hits?: number;
+  local_misses?: number;
+  reused_ranges?: number;
+} | null> {
+  const { response, payload } = await postJson<{
+    batch: BatchJob;
+    local_full_hits?: number;
+    local_partial_hits?: number;
+    local_misses?: number;
+    reused_ranges?: number;
+  }>(
     "/api/smart-download/batches",
     body,
     "创建下载任务失败",
+  );
+  return response.ok ? payload : null;
+}
+
+// ── Investigation Cache V2 + Smart Prefetch（设计 V1.0 §62-§64）──
+
+export interface PrefetchCandidateView {
+  id: string;
+  address: string;
+  parent_address?: string;
+  score: number;
+  priority: string;
+  status: string;
+  batch_id?: string;
+  batch_status?: string;
+  reasons?: string[];
+  required_datasets?: string[];
+  from_block: number;
+  to_block: number;
+  upgrade_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PrefetchStats {
+  total_jobs: number;
+  active_jobs: number;
+  ready_jobs: number;
+  interactive_upgrades: number;
+  budget: {
+    max_active_prefetch_jobs: number;
+    max_prefetch_addresses: number;
+  };
+  counters: {
+    day: string;
+    addresses: number;
+    active_jobs: number;
+  };
+  feedback: {
+    total: number;
+    used: number;
+    unused: number;
+    hit_rate: number;
+    saved_latency_avg: number;
+    wasted_bytes: number;
+  };
+  disk_used_pct: number;
+  disk_action: string;
+  last_run?: string;
+}
+
+export interface PrefetchStatus {
+  investigation_id: string;
+  candidates: PrefetchCandidateView[];
+  stats: PrefetchStats;
+}
+
+export async function getPrefetchStatus(investigationId: string): Promise<PrefetchStatus | null> {
+  const { response, payload } = await getJson<PrefetchStatus>(
+    `/api/investigations/${encodeURIComponent(investigationId)}/prefetch`,
+    "预取状态加载失败",
+  );
+  return response.ok ? payload : null;
+}
+
+export async function pinPrefetch(
+  investigationId: string,
+  input: { chain_key: string; address: string; reason?: string; from_block: number; to_block: number },
+): Promise<{ candidate?: unknown; detail?: string } | null> {
+  const { response, payload } = await postJson<{ candidate?: unknown; detail?: string }>(
+    `/api/investigations/${encodeURIComponent(investigationId)}/prefetch/pin`,
+    input,
+    "固定预取地址失败",
+  );
+  return response.ok ? payload : null;
+}
+
+export async function upgradePrefetch(
+  investigationId: string,
+  chainKey: string,
+  address: string,
+): Promise<{ detail?: string } | null> {
+  const { response, payload } = await postJson<{ detail?: string }>(
+    `/api/investigations/${encodeURIComponent(investigationId)}/prefetch/upgrade`,
+    { chain_key: chainKey, address },
+    "升级预取任务失败",
+  );
+  return response.ok ? payload : null;
+}
+
+export async function getPrefetchStats(): Promise<PrefetchStats | null> {
+  const { response, payload } = await getJson<{ prefetch: PrefetchStats }>("/api/prefetch/stats", "预取统计加载失败");
+  return response.ok ? payload.prefetch ?? null : null;
+}
+
+export async function expandGraphCache(input: {
+  investigation_id?: string;
+  chain_key: string;
+  address: string;
+  direction?: string;
+  token?: string;
+  from_block?: number;
+  to_block?: number;
+  depth?: number;
+}): Promise<{ result?: unknown; cache_hit?: boolean; prefetch_scheduled?: boolean; candidates?: unknown[] } | null> {
+  const { response, payload } = await postJson<{
+    result?: unknown;
+    cache_hit?: boolean;
+    prefetch_scheduled?: boolean;
+    candidates?: unknown[];
+  }>("/api/graph/expand", input, "图扩展缓存预热失败");
+  return response.ok ? payload : null;
+}
+
+export interface CoverageRange {
+  from: number;
+  to: number;
+}
+
+export interface CoverageQueryResult {
+  coverage_ratio: number;
+  full_hit: boolean;
+  covered?: CoverageRange[];
+  missing?: CoverageRange[];
+  certification?: string;
+  compatible?: boolean;
+}
+
+export async function queryCoverageIndex(input: {
+  chain_key: string;
+  address: string;
+  dataset: string;
+  from_block?: number;
+  to_block?: number;
+}): Promise<CoverageQueryResult | null> {
+  const { response, payload } = await postJson<CoverageQueryResult>(
+    "/api/smart-download/coverage/query",
+    input,
+    "覆盖查询失败",
   );
   return response.ok ? payload : null;
 }
@@ -333,6 +548,43 @@ export async function resultSummary(
     const { response, payload } = await getJson<Record<string, unknown>>(
       `/api/smart-download/results/${datasetJobId}/summary`,
       "查询结果摘要失败",
+    );
+    return response.ok ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function batchSnapshot(batchId: string): Promise<BatchSnapshot | null> {
+  try {
+    const { response, payload } = await getJson<BatchSnapshot>(
+      `/api/smart-download/jobs/${batchId}/snapshot`,
+      "查询批次快照失败",
+    );
+    return response.ok ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function batchSummary(batchId: string): Promise<BatchSummary | null> {
+  try {
+    const { response, payload } = await getJson<BatchSummary>(
+      `/api/smart-download/jobs/${batchId}/summary`,
+      "查询批次摘要失败",
+    );
+    return response.ok ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function planBatch(batchId: string): Promise<ExecutionPlan | null> {
+  try {
+    const { response, payload } = await postJson<ExecutionPlan>(
+      `/api/smart-download/batches/${batchId}/plan`,
+      {},
+      "分析数据规模失败",
     );
     return response.ok ? payload : null;
   } catch {

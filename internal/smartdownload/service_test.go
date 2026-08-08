@@ -180,6 +180,34 @@ func TestE2EKillRestartResumeNoRedownload(t *testing.T) {
 	}
 }
 
+// TestCreateBatchPrefetchMarker 验证后台预取任务元数据（Investigation Cache V2 设计 §28-§33）。
+func TestCreateBatchPrefetchMarker(t *testing.T) {
+	_, svc, _ := testService(t)
+	t.Cleanup(svc.Shutdown)
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:         "bsc",
+		Addresses:        []string{addrA},
+		Datasets:         []string{DatasetTransactions},
+		SkipCovered:      boolPtrForTest(true),
+		Prefetch:         true,
+		PrefetchPriority: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Batch.Prefetch != true || resp.Batch.PrefetchPriority != 3 {
+		t.Fatalf("预取标记未持久化: %+v", resp.Batch)
+	}
+	loaded := svc.GetBatch(resp.Batch.ID)
+	if loaded == nil || !loaded.Prefetch || loaded.PrefetchPriority != 3 {
+		t.Fatalf("重新读取预取标记失败: %+v", loaded)
+	}
+}
+
+func boolPtrForTest(v bool) *bool {
+	return &v
+}
+
 // TestCancelBatchKeepsCommittedParts 取消后保留已提交数据。
 func TestCancelBatchKeepsCommittedParts(t *testing.T) {
 	dir := t.TempDir()
