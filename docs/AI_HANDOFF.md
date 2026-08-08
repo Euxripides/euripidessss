@@ -1,3 +1,185 @@
+## 2026-08-08 智能下载统一入口 Phase 4+5：新前端 + 地址列识别 + Registry 复用 + 联动（完成）
+
+> 实施方案：`D:\下载文件\智能下载系统_从V2.2到完整实现_实施方案_V1.1.md`（Phase 4/5）
+
+### 完成内容
+
+#### 后端
+
+1. 地址列自动识别（import.go）：TXT/CSV/XLSX 上传，逐列 valid/non_empty 命中率，自动选列 + 候选列 + 原始行/有效/重复/无效/最终地址统计；`POST /api/smart-download/import`。
+2. 结果层（result.go）：数据集校验通过后自动合并 warehouse Parquet（DuckDB union_by_name）+ Dataset Registry（registry.json，含地址/区间/行数/merged 路径）；`GET /results/{id}`（服务端分页/排序/白名单过滤）、`GET /results/{id}/summary`、`GET /registry`。
+3. LOCAL HIT 复用（coverage.go）：注入本地覆盖源（分析快照 + Cloud Registry），创建任务时 `skip_covered=true` 直接标记已覆盖 Range 为 local_hit 完成（Ledger RANGE_REUSED），不触发下载。
+4. 大批次 Pack 创建（pack.go）：>2000 Job 时单文件打包（batches + packs），checkpoint 延迟创建；10K 地址逻辑任务创建实测 380ms（<3s 目标）。
+5. 下游联动：结果入库回调 → 分析缓存失效 + graphIncrementer.Apply（合成 datasetsync.Entry）+ DATASET_INDEXED 事件（Investigation Resume / Graph 增量复用现有链路）。
+
+#### 前端
+
+6. `frontend/src/features/smart-download/`：智能下载三页签（创建下载/任务中心/结果数据）+ smartDownloadApi.ts。
+   - 创建：地址输入/CSV-XLSX-TXT 上传列识别/链/数据集/全量-时间-区块/本地复用开关；
+   - 任务中心：批次表 + 地址级分页表（状态/进度/行数/速度-ETA/暂停-继续-取消）+ 地址详情 Drawer（Dataset 进度/Provider/校验/补洞/Range/账本时间线）；
+   - 结果数据：已入库 Registry + 摘要 + 服务端分页表格 + 地址画像/关系图/智能调查入口；
+   - SSE 实时刷新（dataset.updated 等事件 400ms 合并）。
+7. App.tsx：数据资产菜单新增「智能下载」入口。
+
+### 已验证
+
+- 新增 Phase 4/5 用例全绿：CSV 列识别统计、10K Pack 创建（380ms + 重启恢复 + 固定 Worker）、LOCAL HIT 复用、结果合并/Registry/分页查询；全部既有用例保持通过；`go test ./internal/... -short` 全绿；`go vet` 零告警；`npm run build`（TS strict）通过；生产 8000 已重启（PID 13952）。
+- 真实冒烟：CSV 上传识别 wallet_address（conf 0.75，rows=4 valid=2 dup=1 invalid=1）；2 地址 × token_transfers 50 块 → 全部 COMPLETED、VALIDATED score=100 coverage=1 dup=0；Registry 含 merged parquet（5 行）；results 分页返回溯源列（source_provider/source_range_id/ingested_at）。
+
+### 边界（诚实说明）
+
+- 10K 验收为逻辑任务创建 + Pack 恢复 + 固定 Worker 数（未真实并发下载 10K 地址；真实并发受 Worker=4 限制）。
+- merged warehouse parquet 读取时曾出现多余 `chain` 列：根因是 DuckDB 对 `warehouse/.../chain=bsc/` 路径自动做 Hive 分区推断；结果查询已显式 `hive_partitioning=false` 修复（Part/校验不受影响，已实测无多余列）。
+- SQD Cloud 结果回读仍走 Phase 3 边界（Cloud Job 提交后由本地 Worker 产物回读）；logs 仍为 Token 事件子集。
+
+### 2026-08-08 追加：多链批量地址支持
+
+- 创建任务支持逐地址指定链：`POST /api/smart-download/batches` 新增 `address_chain_overrides`（address → chain_key）；前端地址输入支持每行 `0x... 链名`（缺省用上方网络）。
+- 混合链批次 `BatchJob.chain_key="multi"`、`chain_id=0`；每个 AddressJob/DatasetJob 独立 `chain_key/chain_id`，Provider/RPC 按地址链执行。
+- 验证：`TestMultiChainAddressOverride` 全绿（bsc/eth/base 逐地址落盘 + 未知链报错）；生产冒烟：bsc 余额 COMPLETED、eth 因未配置 RPC 如实 FAILED（错误含链名）。
+
+### 2026-08-08 追加：Range 级差量复用（修复“重复下载/可能漏下载”）
+
+- 覆盖判定从“地址有任何数据就整批跳过”改为 **(地址 × 数据集 × 区间)**：请求区间 ∩ 本地已覆盖 → 复用；请求区间 − 已覆盖 → 精确缺口补下载（`planReuse/mergeIntervals/subtractCovered`）。
+- 复用源：本服务 Result Registry（VALIDATED 条目）+ Cloud Dataset Registry（INDEXED/LOCAL_SYNCED 条目）组合注入；无覆盖源时回退本服务 Registry。
+- 校验 L3 改为基于实际 RangeJob 集合计算覆盖（不再依赖 chunk 对齐），复用区间（local_hit，无 Part）与下载区间（有 Part）可共存并全部通过 VALIDATED。
+- 验证：`TestRangeDiffPartialReuse` 全绿（1 复用 + 2 缺失，仅补下载 2 个 Part，coverage=1）；生产冒烟：同区间全复用（local_hit、0 下载），扩区间只补下载缺失 50 块（2 行）、已覆盖区间不重下。
+
+### 2026-08-08 追加：结果数据导出接口（≤30 万 XLSX / >30 万 CSV）
+
+- `GET /api/smart-download/results/{dsID}/export`：实际行数 ≤300,000 → XLSX（excelize 流式写入，默认样式）；>300,000 → CSV（UTF-8 BOM，Excel 直接打开不乱码）。
+- 导出路径：DuckDB 直接 `COPY read_parquet(merged)` 出 CSV（30 万+ 不全量进 Go 内存）；无 DuckDB/merged 时从 Part 流式写 CSV 再转格式。文件落 `backend/data/smart_download/smart_download/exports/`。
+- 前端结果页：当前数据集卡片右上角新增「导出数据」按钮 + 格式提示（XLSX ≤30 万 / CSV >30 万）。
+- 验证：`TestResultExportXLSXAndCSV` 全绿（XLSX 含表头行数一致、CSV 带 BOM 行数一致；阈值可注入测 CSV 分支）；生产冒烟 5 行数据集导出 XLSX 附件（Content-Type/Disposition 正确，PK 魔数，7444B）。
+
+## 2026-08-08 智能下载统一入口 Phase 3：Canonical Schema + Validation L3-L6 + ETA + SSE（完成）
+
+> 实施方案：`D:\下载文件\智能下载系统_从V2.2到完整实现_实施方案_V1.1.md`（Phase 3）
+
+### 完成内容
+
+1. Canonical Schema（canonical.go）：transactions / token_transfers / internal_transactions / logs / balances 统一列 + 统一唯一键（tx_hash / tx_hash+log_index / tx_hash+trace_address 等），Part 增加 source_provider / source_range_id / ingested_at 溯源列。
+2. Parquet Part（executor.go）：记录 → Canonical CSV → DuckDB read_csv → COPY TO Parquet（GZIP）→ SHA256；生产在 analysisEngine 可用时自动启用；JSONL 保留为回退。
+3. Validation Pipeline（validation.go）：
+   - L1 文件：存在性/SHA256/Parquet footer/可读性；
+   - L2 记录：唯一键去重、地址/哈希格式、区块越界；
+   - L3 覆盖：requested == completed + confirmed_empty，unknown=0 才通过；
+   - L4 Provider 对账：Ledger provider rows == 每 Part 唯一键 == 全局 unique；
+   - L5 缺口补洞：校验发现 unknown 区间自动创建 Repair Range（上限 2 轮）；
+   - L6 抽样交叉验证：≥3 Range 或估算 ≥500 行时用第二 Provider 抽样比对；
+   - Validation Score（0-100）与 VALIDATED/PARTIAL/FAILED。
+4. EWMA ETA + Progress Aggregator（progress.go）：rows 与 blocks 双通道平滑速度、ETA 与置信度；dataset.updated 300ms 合并；EventBus + SSE（address.updated/dataset.updated/provider.switched/range.completed/validation.updated/result.ready/error）。
+5. API：GET /api/smart-download/events（SSE，15s 心跳）、GET /datasets/{id}/validation、POST /datasets/{id}/repair。
+
+### 已验证
+
+- 新增 5 个 Phase 3 用例全绿：校验四指标（coverage=100%/unknown=0/dup=0/provider count 一致）、L5 缺口自动补洞、EWMA ETA、SSE 合并与事件、Parquet 全链路（写→读→校验 VALIDATED）；全部既有用例保持通过；`go test ./internal/... -short` 全绿；`go vet` 零告警；生产 8000 重启成功。
+- 真实：token_transfers 50 块窗口 → SQD 拉取 9 行 BEP20 USDT → Parquet Part（4350B）→ Validation VALIDATED score=100 coverage=1 dup=0 expected=actual=9；SSE 实时收到 dataset.updated/range.completed/validation.updated/result.ready 四类事件。
+
+### 边界（诚实说明）
+
+- L6 抽样依赖第二 Provider 的 Probe（当前仅 SQD/RPC/Mock）；真实切换链仍以单测注入为准。
+- SQD Cloud 完成后的结果回读/入库（Parquet→Registry）与前端结果表仍属 Phase 4/5；logs 为 SQD 客户端能力内的 Token 事件日志子集。
+
+## 2026-08-08 智能下载统一入口 Phase 2：Provider Adapter + Discovery + Range 级切换（完成）
+
+> 实施方案：`D:\下载文件\智能下载系统_从V2.2到完整实现_实施方案_V1.1.md`（Phase 2）
+
+### 完成内容
+
+1. ProviderAdapter 扩展：接口新增 `Probe`（低成本估算），生产注册 4 个真实 Adapter——
+   - `sqd`（internal/smartdownload/sqd_adapter.go）：复用 datasource/sqd 可靠性客户端，支持 transactions/token_transfers/logs/internal_transactions（未重写下载器）；
+   - `rpc`（rpc_adapter.go）：复用 rpcmanager，balances + token_transfers（eth_getLogs 分块+二分）；
+   - `sqd_cloud`（cloud_adapter.go）：复用 cloudruntime Job 队列，V1 仅 token_transfers；结果回读属 Phase 3（Phase 2 诚实报错）；
+   - `csv`（csv_adapter.go）：ManualOnly 标记，生产不可自动执行，由原浏览器下载页人工采集。
+2. Discovery/Probe（discovery.go）：≤200 块采样按密度外推，不完整扫描；估算 rows/bytes/耗时/成本/置信度，写入 DatasetJob。
+3. Smart Scheduler（scheduler.go）：S/M/L/XL 规模分级 + 规则评分（CSV 优先小数据、SQD 中大数据、RPC 余额/恢复、Cloud 最后兜底）；`PlanBatch` 输出 ExecutionPlan（候选+首选+规模档）；Provider 健康跟踪（连续 2 次失败 → 60s 冷却）。
+4. Range 级 Provider 切换：失败 Provider 记入 RangeJob.FailedProviders → 下次领取自动选下一候选 → Ledger 记录 PROVIDER_SWITCHED；已完成 Range 不重跑；总尝试预算 RetryLimit+1。
+5. API：`POST/GET /api/smart-download/batches/{id}/plan`；`status` 返回已注册 Adapter。
+6. parquetdownload.Manager 新增 `SQDClient()` 访问器（只读暴露，未改下载器）。
+
+### 已验证
+
+- 新增 4 个 Phase 2 用例全绿：CSV→SQD、SQD→RPC（熔断接管）、RPC→SQD Cloud、Discovery 计划；原 Phase 1 用例保持通过；`go test ./internal/... -short` 全绿；`go vet ./...` 零告警；`run.ps1` 重启成功。
+- 真实 SQD 冒烟：transactions 100 块 → EMPTY（合法空集）；token_transfers 100 块（Binance 地址）→ SQD 拉取 32 行真实 BEP20 USDT Transfer，Ledger PART_COMMITTED/RANGE_COMPLETED 齐全，Checkpoint V3 parts=1 rows=32，Part JSONL 内容正确。
+- 生产 8000 Adapter：csv/rpc/sqd/sqd_cloud 全部注册。
+
+### 边界（诚实说明）
+
+- CSV→SQD / SQD→RPC / RPC→SQD Cloud 切换验收由确定性 Mock 驱动（真实 Provider 不做故障注入）；真实 SQD 已通，真实 RPC 恢复通道已实现但未在冒烟中强制触发（需要 SQD 故障）。
+- SQD Cloud 完成后的结果回读/入库（Parquet + Registry）属 Phase 3 Result Processor；logs 数据集当前为 SQD 客户端能力内的 Token 事件日志（非全量原始日志）。
+- Part 仍为 JSONL+SHA256；Canonical Parquet、Validation L3-L6、EWMA ETA、SSE、新前端属 Phase 3/4。
+
+## 2026-08-08 智能下载统一入口 Phase 1：四层任务层落地（完成）
+
+> 实施方案：`D:\下载文件\智能下载系统_从V2.2到完整实现_实施方案_V1.1.md`（Phase 1）
+
+### 完成内容
+
+1. 新增 `internal/smartdownload/`：BatchJob → AddressJob → DatasetJob → RangeJob 四层任务模型、FS StateStore（原子 JSON）、Universal Checkpoint V3（completed/empty/pending ranges + parts sha/rows + provider_state）、Range Ledger（ndjson 追加账本）、Recovery Manager（Part > Ledger > Checkpoint > Task 可信度）、Pause/Resume/Cancel（Batch/Address/Dataset 三级）、LegacyPlanBridge（旧 Plan → 新任务树）。
+2. ProviderAdapter 最小接口（Name/Supports/Available/ExecuteRange）：生产注册 RPC 余额 Adapter（复用 rpcmanager，未改下载器）；MockProvider 仅测试用。SQD/AWS/Browser/Cloud Adapter 为 Phase 2。
+3. API：`/api/smart-download/{status,batches,addresses,datasets,legacy/plan}`，含创建、列表、详情、start/pause/resume/cancel、ledger、checkpoint、分页地址列表。
+4. 装配：`internal/api/handlers.go` setupSmartDownload + 路由；数据落 `backend/data/smart_download/`（注：因 root 为该目录，内部路径为 `smart_download/smart_download/{checkpoints,ledgers,parts}`，一致可用）。
+5. 测试：`internal/smartdownload` 8 个用例全绿，含 `TestE2EKillRestartResumeNoRedownload`（3 地址并行 → 暂停 1 个 → Shutdown 模拟 kill → 新 Service + RecoverAll → 恢复 → 每 Range 恰好 1 次 STARTED/COMPLETED → final dup=0）、取消保留已提交 Part、瞬态失败重试。
+
+### 已验证（真实）
+
+- `go test ./internal/... -short` 全绿；`go vet ./...` 零告警；`go build` + `run.ps1`（amd64）成功。
+- 生产 8000（PID 37120）：POST 创建 3 地址 × balances → start → 全部 COMPLETED（provider=rpc，1 row/地址，attempts=0）；ledger 含 RANGE_CREATED/STARTED/PART_COMMITTED/RANGE_COMPLETED；checkpoint V3 completed=1 parts=1 rows=1。
+- pause→start→PAUSED→resume→COMPLETED API 链路通过。
+- 真实重启后 Recovery 加载 2 个历史批次（COMPLETED 保持），状态正确。
+
+### 边界（诚实说明）
+
+- Phase 1 的 kill/restart/dup=0 端到端用确定性 Mock Provider（任务层验证）；生产真实数据面目前只有 RPC 余额。transactions/logs/internal_transactions 的真实 Adapter（SQD/AWS/RPC 恢复）属 Phase 2。
+- Part 为 JSONL + SHA256；Canonical Parquet、Validation L3-L6、EWMA ETA、SSE、新前端均为 Phase 3/4。
+- 同 Dataset 的 Range 串行执行（避免并发写同一 Checkpoint/Part）；不同 Dataset/不同地址可并行（Worker 池）。
+
+## 2026-08-08 智能下载统一入口 V1.0 完整差距分析（只读）
+
+> 报告：`docs/smart_download_hub_v1_gap_analysis.md`
+
+对照 `D:\下载文件\智能下载统一入口与自适应调度系统_V1.0.md` 审查当前实现，未改任何功能代码。
+
+### 结论
+
+- 现有 Smart Download Orchestrator V2.2 骨架（Provider 评分/覆盖检查/计划状态机/Cloud 兜底/Parquet+DuckDB 数据面）可复用，不需要重写下载器。
+- 9 项结构性差距：四层任务模型（Batch/Address/Dataset/Range）、Universal Checkpoint V3、Range Ledger、Discovery/Probe、地址级 pause/resume/cancel API、SSE 实时通道、统一前端（智能下载/任务中心/结果数据）、地址上传列识别、Validation L3-L6。
+- 关键证据：`scheduler.loadPlans()` 重启把未完成计划标记 FAILED（无续跑）；`sqd_ingest.go` 主路径不落盘 completed_chunks；`DownloadCenterPage.tsx` 未挂载且 `/api/download-engine/jobs` 未注册；全仓无 SSE/WebSocket。
+- 建议实施顺序：阶段 1 统一模型+Checkpoint V3+Range Ledger（不改下载器）→ 阶段 2 Provider Adapter+Discovery+Range 级切换 → 阶段 3 Validation+ETA+SSE → 阶段 4 新前端 → 阶段 5 数据复用+Case A-E 真实容灾验收。
+- 规格中的数据库表因项目规则禁止数据库，改用文件系统 JSON 等价物。
+
+## 2026-08-07 SQD Cloud Phase 5.4.1：真实 Crash Resume Gate（PASS）
+
+> 详细报告：`docs/SQD_Cloud_Phase5.4.1_真实CrashResume与规模验收报告.md`
+
+### 结果
+
+- Gate A PASS：SQD_TEST_CRASH_AFTER_PARTS=2 精确崩溃（3 parts、rows_committed=3691、crash marker），同一 job_id 重新入队，resume from checkpoint 114472386→114472387（rows_offset=3691），不再二次 crash。
+- 修复：checkpoint 只记录已 flush 的块/行；Go Validator 权威对账（manifest row_count 校正为 sum(parts.rows)）；duplicate_part_sha Validator 保留。
+- 最终证据（ad2240cc）：manifest row_count=7042 == sum(parts.rows) == registry rows；uniq=7042、dup=0、range=114450002-114499997；Coverage HIT；R2 parts 9 个唯一 SHA。
+- 新增：Coverage Index、Metrics 端点、duplicate-part-SHA Validator + 测试。
+- 1K-100K 规模档未进入（需单独预算）。生产 8000 已更新（local）；测试 Worker 已删除。
+
+## 2026-08-07 SQD Cloud Phase 5.4：Runtime Hardening + Objective Planner（部分 PASS）
+
+> 详细报告：`docs/SQD_Cloud_Phase5.4_ProductionScale_RuntimeHardening_ObjectivePlanner报告.md`
+
+### PASS
+
+- Multipart 正式阈值（5,000 blocks / 25,000 rows）、part-NNNNNN 固定命名、checkpoint V2；真实 25×10k 验证 2 parts 唯一、dup=0。
+- 修复 Part 重复上传 bug（sha256 去重）；失败条目 9cbd19e6 保留为 FAILED 审计证据。
+- Lease Reaper RFC3339Nano 解析修复 + 诊断/recover；过期自动 requeue 真实验证。
+- CANCELLED 独立终态（cancelled != failed）+ 单测。
+- Event Bus 文件锁/fsync/seq/损坏扫描 + 单测。
+- Objective Planner：矩阵、Cost Guard、Scheduler 展开、API 契约 + 单测。
+- 生产 8000 已更新；go test -short / vet / 构建全绿。
+
+### 未完成
+
+- P0 真实中途 Crash Resume（带 parts）未成功演示（两次受控重启晚于任务完成）；V2 resume 代码已就绪。
+- 1K/10K/50K/100K 规模档未执行；Coverage Index 未建；DPAPI Secret Store 未实施；UI 状态文案未加。
+
 ## 2026-08-07 SQD Cloud Phase 5.3：Investigation + Graph Cloud-Aware 自动联动（完成）
 
 > 详细报告：`docs/SQD_Cloud_Phase5.3_Investigation_Graph_CloudAware联动与增量恢复报告.md`

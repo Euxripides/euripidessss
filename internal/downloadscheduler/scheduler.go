@@ -16,6 +16,7 @@ import (
 	"github.com/etl/backend/internal/cloudruntime"
 	"github.com/etl/backend/internal/datasetsync"
 	"github.com/etl/backend/internal/logger"
+	"github.com/etl/backend/internal/objectiveplanner"
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/google/uuid"
 )
@@ -44,6 +45,9 @@ type Scheduler struct {
 	syncMu          sync.Mutex
 	dataIndexedHook func([]*datasetsync.Entry) // Phase 5：索引完成通知（Investigation/Graph）
 }
+
+// errTaskCancelled 用户/上游取消哨兵（Phase 5.4 §5：cancelled != failed）。
+var errTaskCancelled = errors.New("任务已取消")
 
 // NewScheduler 创建调度器。
 // planDir 为计划持久化目录（如 backend/data/download_scheduler/plans）；为空则不落盘。
@@ -306,7 +310,38 @@ func (s *Scheduler) Submit(ctx context.Context, reqs []Requirement) (*Plan, erro
 	groupBlocks := map[groupKey]struct{ from, to uint64 }{}
 	groupCloudEligible := map[groupKey]*bool{}
 	order := []groupKey{}
+	// Phase 5.4 §7-§9：Objective 驱动展开为数据集需求（目标决定数据，不指定 Provider）
+	var expanded []Requirement
 	for _, r := range reqs {
+		if strings.TrimSpace(r.ObjectiveType) != "" {
+			obj := objectiveplanner.Objective{
+				Type:        r.ObjectiveType,
+				Description: r.ObjectiveDescription,
+				Constraints: r.ObjectiveConstraints,
+			}
+			pl, err := objectiveplanner.Build(obj, r.ChainKey, r.Addresses,
+				r.FromBlock, r.ToBlock, 200, 1000, 50)
+			if err != nil {
+				return nil, err
+			}
+			if pl.Estimate.Rejected {
+				return nil, errors.New(pl.Estimate.RejectReason)
+			}
+			for _, need := range pl.Needs {
+				cp := r
+				cp.Dataset = Dataset(need.Dataset)
+				cp.Direction = need.Direction
+				if !need.CloudEligible {
+					f := false
+					cp.CloudEligible = &f
+				}
+				expanded = append(expanded, cp)
+			}
+			continue
+		}
+		expanded = append(expanded, r)
+	}
+	for _, r := range expanded {
 		r.ChainKey = strings.ToLower(strings.TrimSpace(r.ChainKey))
 		if r.ChainKey == "" {
 			r.ChainKey = "bsc"
@@ -549,6 +584,9 @@ func (s *Scheduler) execute(ctx context.Context, plan *Plan) {
 				t.Result = attempt
 				p.Status = StatusValidating
 				p.StageDetail = fmt.Sprintf("任务 %s 完成（%s）", t.ID, t.Provider)
+			} else if t.Status == "cancelled" {
+				p.Status = StatusCancelled
+				p.StageDetail = fmt.Sprintf("任务 %s 已取消（用户/上游取消）", t.ID)
 			} else {
 				t.Status = "failed"
 				failures++
@@ -559,20 +597,27 @@ func (s *Scheduler) execute(ctx context.Context, plan *Plan) {
 	}
 	// MERGING：合并数据资产（RPC 恢复层 §9/§10：恢复数据 + 仓库数据按唯一键合并去重）
 	s.updatePlan(plan, func(p *Plan) {
-		if p.Status != StatusFailed {
+		if p.Status != StatusFailed && p.Status != StatusCancelled {
 			p.Status = StatusMerging
 			p.StageDetail = "合并数据资产（唯一化）"
 		}
 	})
 	s.mergeRecoveryData(ctx, plan)
 	done := 0
+	cancelled := 0
 	for _, t := range plan.Tasks {
 		if t.Status == "done" {
 			done++
 		}
+		if t.Status == "cancelled" {
+			cancelled++
+		}
 	}
 	s.updatePlan(plan, func(p *Plan) {
-		if failures == 0 {
+		if cancelled > 0 {
+			p.Status = StatusCancelled
+			p.StageDetail = fmt.Sprintf("%d 个任务已取消（成功 %d）", cancelled, done)
+		} else if failures == 0 {
 			p.Status = StatusReady
 			p.StageDetail = fmt.Sprintf("全部 %d 个任务就绪，数据已可供图谱使用", done)
 		} else {
@@ -594,7 +639,7 @@ func (s *Scheduler) mergeRecoveryData(ctx context.Context, plan *Plan) {
 	}
 	// 锁内收集需要合并的链（仅计划未失败时）
 	s.mu.Lock()
-	if plan.Status == StatusFailed {
+	if plan.Status == StatusFailed || plan.Status == StatusCancelled {
 		s.mu.Unlock()
 		return
 	}
@@ -687,6 +732,15 @@ func (s *Scheduler) executeTaskWithFallback(ctx context.Context, plan *Plan, t *
 				// SQD 异步任务：轮询直到终态
 				if result.JobID != "" {
 					if err := s.waitSQDJob(ctx, plan, t, result.JobID, result); err != nil {
+						if errors.Is(err, errTaskCancelled) {
+							s.updatePlan(plan, func(p *Plan) {
+								t.Status = "cancelled"
+								t.Error = err.Error()
+								p.Status = StatusCancelled
+								p.StageDetail = "任务已取消（用户/上游取消）"
+							})
+							return nil
+						}
 						state = ClassifyProviderError(err, 0)
 						s.health.RecordResult(c.Provider, false, state)
 						s.appendAttempt(plan, t, ProviderAttempt{
@@ -810,6 +864,15 @@ func (s *Scheduler) tryCloudFallback(ctx context.Context, plan *Plan, t *PlanTas
 			p.StageDetail = "应急 Cloud 任务已提交，等待 Worker"
 		})
 		if waitErr := s.waitSQDJob(ctx, plan, t, result.JobID, result); waitErr != nil {
+			if errors.Is(waitErr, errTaskCancelled) {
+				s.updatePlan(plan, func(p *Plan) {
+					t.Status = "cancelled"
+					t.Error = "应急 Cloud 任务已取消"
+					p.Status = StatusCancelled
+					p.StageDetail = "应急 Cloud 任务已取消"
+				})
+				return nil
+			}
 			err = waitErr
 			state = ClassifyProviderError(waitErr, 0)
 			s.updatePlan(plan, func(p *Plan) { p.Status = StatusCloudRunning })
@@ -941,8 +1004,10 @@ func (s *Scheduler) waitSQDJob(ctx context.Context, plan *Plan, t *PlanTask, job
 					result.Summary = fmt.Sprintf("Parquet 任务 %s 完成（进度 100%%）", jobID)
 				})
 				return nil
-			case parquetdownload.StatusFailed, parquetdownload.StatusCanceled:
+			case parquetdownload.StatusFailed:
 				return fmt.Errorf("Parquet 任务 %s 结束于 %s", jobID, status)
+			case parquetdownload.StatusCanceled:
+				return errTaskCancelled // cancelled != failed（Phase 5.4 §5）
 			case parquetdownload.StatusSkipped:
 				return fmt.Errorf("Parquet 任务 %s 被跳过（无可用数据源）", jobID)
 			}

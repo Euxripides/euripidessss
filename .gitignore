@@ -71,6 +71,7 @@ backend/data/investigation/
 backend/data/investigation_evidence/
 backend/data/investigation_requests/
 backend/data/download_scheduler/
+backend/data/smart_download/
 backend/data/crypto_parquet/
 
 # Codex local configuration

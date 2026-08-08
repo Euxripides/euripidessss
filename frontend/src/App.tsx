@@ -24,6 +24,7 @@ import {
   RobotOutlined,
   SearchOutlined,
   SettingOutlined,
+  ThunderboltOutlined,
   UploadOutlined,
   WalletOutlined,
   WarningOutlined,
@@ -172,6 +173,7 @@ import {
   uploadFlowImport,
 } from "./features/upload/uploadApi";
 import { TransferPanel } from "./features/upload/TransferPanel";
+import SmartDownloadPage from "./features/smart-download/SmartDownloadPage";
 import {
   ENTITY_KIND_OPTIONS,
   SOURCE_FILTER_FIELDS,
@@ -224,6 +226,7 @@ const menuItems = [
     icon: <DatabaseOutlined />,
     label: "数据资产",
     children: [
+      { key: "smart-download", icon: <ThunderboltOutlined />, label: "智能下载" },
       { key: "clean", icon: <UploadOutlined />, label: "数据集管理" },
       { key: "crypto-parquet", icon: <FileZipOutlined />, label: "Parquet 数据" },
       { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "浏览器下载" },
@@ -626,6 +629,12 @@ export function App() {
             {active === "download-dune" && <DuneDownloadPanel />}
             {active === "crypto-download" && <CryptoDownloadPanel />}
             {active === "crypto-parquet" && <CryptoParquetPanel />}
+            {active === "smart-download" && (
+              <SmartDownloadPage
+                onOpenAddress={openAddressDetail}
+                onNavigate={(page) => setActive(page)}
+              />
+            )}
             {active === "crypto-rpc" && <RpcSettingsPage />}
             {active === "crypto-datasource" && <DataSourcePage onOpenRpc={() => setActive("crypto-rpc")} />}
             {active === "crypto-address" && <CryptoAddressPanel />}
@@ -718,6 +727,7 @@ export function App() {
       "download-dune": "Dune 下载",
       "crypto-download": "浏览器数据下载",
       "crypto-parquet": "链数据采集",
+      "smart-download": "智能下载",
       "crypto-rpc": "EVM RPC 节点管理",
       "crypto-datasource": "数据源管理中心",
       "crypto-address": "地址区分",

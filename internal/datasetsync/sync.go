@@ -265,7 +265,12 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 		})
 	}
 	if s.validator != nil {
-		validation, err := s.validateChunk(ctx, localPaths, m.RowCount, m.FromBlock, m.ToBlock, m.Addresses)
+		expectedRows := m.RowCount
+		if m.SchemaVersion >= 2 {
+			// Manifest V2：row_count 由 Validator 按 sum(parts.rows) 权威校正（Phase 5.4.1）
+			expectedRows = -1
+		}
+		validation, err := s.validateChunk(ctx, localPaths, expectedRows, m.FromBlock, m.ToBlock, m.Addresses)
 		if err != nil {
 			entry.Status = StatusFailed
 			entry.SyncState = SyncValidationFailed
@@ -321,11 +326,31 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 					return SyncResult{}, fmt.Errorf(
 						"LOCAL_VALIDATION_FAILED：sum(parts.rows)=%d != row_count=%d", sum, validation.Rows)
 				}
+				if m.RowCount != validation.Rows {
+					logger.Log.Warn().Str("manifest", manifestKey).
+						Int64("manifest_rows", m.RowCount).Int64("actual_rows", validation.Rows).
+						Msg("datasetsync_manifest_row_reconciled")
+					_ = s.correctManifestRows(ctx, manifestKey, validation.Rows)
+				}
 			}
 		}
 	} else {
 		entry.RowCount = m.RowCount
 		entry.UniqueKeyCount = m.RowCount
+	}
+	// Phase 5.4.1：duplicate part SHA > 0 → LOCAL_VALIDATION_FAILED（禁止覆盖/重复 committed part）
+	shaCount := map[string]int{}
+	for _, f := range entry.Files {
+		shaCount[f.SHA256]++
+	}
+	for sha, n := range shaCount {
+		if n > 1 {
+			entry.Status = StatusFailed
+			entry.SyncState = SyncValidationFailed
+			_ = s.registry.Register(entry)
+			return SyncResult{}, fmt.Errorf(
+				"LOCAL_VALIDATION_FAILED：duplicate_part_sha_count=%d（sha=%s）", n, sha[:min(len(sha), 12)])
+		}
 	}
 	entry.Status = StatusCompleted
 	if err := s.registry.Register(entry); err != nil {
@@ -349,6 +374,31 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 		}
 	}
 	return res, nil
+}
+
+// correctManifestRows 把 completed manifest 的 row_count 校正为 Validator 实测值（V2 幂等对账）。
+func (s *Syncer) correctManifestRows(ctx context.Context, manifestKey string, rows int64) error {
+	payload, err := s.store.Get(ctx, manifestKey)
+	if err != nil {
+		return err
+	}
+	var m map[string]any
+	if json.Unmarshal(payload, &m) != nil {
+		return fmt.Errorf("manifest 解析失败: %s", manifestKey)
+	}
+	m["row_count"] = rows
+	fixed, _ := json.MarshalIndent(m, "", "  ")
+	keys := []string{manifestKey}
+	if idx := strings.LastIndex(manifestKey, "/"); idx > 0 {
+		leased := leasedPrefix + manifestKey[len(completedPrefix):idx]
+		keys = append(keys, leased+"/manifest.json")
+	}
+	for _, k := range keys {
+		if err := s.store.Put(ctx, k, fixed); err != nil {
+			logger.Log.Warn().Err(err).Str("key", k).Msg("datasetsync_manifest_correct_put_failed")
+		}
+	}
+	return nil
 }
 
 // validateChunk 调用带范围约束的校验器（无该能力时回退基础校验）。

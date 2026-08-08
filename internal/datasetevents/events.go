@@ -34,6 +34,7 @@ const (
 // Event 标准事件载荷。
 type Event struct {
 	ID               string         `json:"event_id"`
+	Seq              uint64         `json:"seq,omitempty"`
 	Type             EventType      `json:"type"`
 	RequirementID    string         `json:"requirement_id,omitempty"`
 	ChainKey         string         `json:"chain_key,omitempty"`
@@ -64,6 +65,7 @@ type Bus struct {
 	events    []Event
 	consumers map[string][]Consumer
 	processed map[string]map[string]bool // consumer → event id
+	seq       uint64
 }
 
 // NewBus 创建/加载事件总线。
@@ -104,6 +106,8 @@ func (b *Bus) Publish(ctx context.Context, e Event) error {
 			return nil // 幂等：同 ID 不重复落库
 		}
 	}
+	b.seq++
+	e.Seq = b.seq
 	b.events = append(b.events, e)
 	if err := b.saveLocked(); err != nil {
 		b.mu.Unlock()
@@ -186,8 +190,16 @@ func (b *Bus) load() error {
 	payload, err := os.ReadFile(b.path)
 	if err == nil {
 		var list []Event
-		if json.Unmarshal(payload, &list) == nil {
+		if json.Unmarshal(payload, &list) != nil {
+			// 启动损坏扫描：隔离坏文件，不阻塞启动（Phase 5.4 §10）
+			_ = os.Rename(b.path, b.path+".corrupt-"+time.Now().Format("20060102T150405"))
+		} else {
 			b.events = list
+			for _, e := range list {
+				if e.Seq > b.seq {
+					b.seq = e.Seq
+				}
+			}
 		}
 	}
 	processedPath := b.path + ".processed.json"
@@ -211,6 +223,11 @@ func (b *Bus) saveLocked() error {
 	if b.path == "" {
 		return nil
 	}
+	unlock, err := acquireFileLock(b.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := os.MkdirAll(filepath.Dir(b.path), 0o755); err != nil {
 		return err
 	}
@@ -219,10 +236,22 @@ func (b *Bus) saveLocked() error {
 	if err := os.WriteFile(tmp, payload, 0o644); err != nil {
 		return err
 	}
+	if f, err := os.OpenFile(tmp, os.O_RDWR, 0o644); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
 	return os.Rename(tmp, b.path)
 }
 
 func (b *Bus) saveProcessedLocked() error {
+	if b.path == "" {
+		return nil
+	}
+	unlock, err := acquireFileLock(b.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	path := b.path + ".processed.json"
 	m := map[string][]string{}
 	for name, ids := range b.processed {
@@ -238,5 +267,33 @@ func (b *Bus) saveProcessedLocked() error {
 	if err := os.WriteFile(tmp, payload, 0o644); err != nil {
 		return err
 	}
+	if f, err := os.OpenFile(tmp, os.O_RDWR, 0o644); err == nil {
+		_ = f.Sync()
+		_ = f.Close()
+	}
 	return os.Rename(tmp, path)
+}
+
+// acquireFileLock 跨进程文件锁（O_CREATE|O_EXCL + 过期清理，Phase 5.4 §10）。
+func acquireFileLock(lockPath string) (func(), error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = fmt.Fprintf(f, "pid=%d time=%s\n", os.Getpid(), time.Now().Format(time.RFC3339))
+			_ = f.Close()
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !os.IsExist(err) {
+			return nil, err
+		}
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > 10*time.Second {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("event store lock busy: %s", lockPath)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

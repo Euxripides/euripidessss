@@ -42,6 +42,7 @@ import (
 	"github.com/etl/backend/internal/rules"
 	"github.com/etl/backend/internal/s3store"
 	"github.com/etl/backend/internal/scanner"
+	"github.com/etl/backend/internal/smartdownload"
 	"github.com/etl/backend/internal/storage"
 	"github.com/etl/backend/internal/storage/control"
 )
@@ -69,6 +70,10 @@ var (
 	investigationAgent      *intelligence.InvestigationAgent // Phase 5：数据索引后自动继续调查
 	datasetEventBus         *datasetevents.Bus               // Phase 5.3：Dataset Event Bus
 	graphIncrementer        *graphincrement.Incrementer      // Phase 5.3：Graph 增量物化
+	smartDownloadAPI        http.Handler                     // 智能下载统一入口（/api/smart-download/*）
+	downloadScheduler       *downloadscheduler.Scheduler     // Legacy 调度器引用（Bridge 用）
+	smartCloudRuntime       *cloudruntime.Manager            // SQD Cloud 运行时（Phase 2 Adapter 复用）
+	downloadDSRegistry      *datasetsync.Registry            // Cloud Dataset Registry（Smart Download 区间复用）
 )
 
 const (
@@ -239,6 +244,8 @@ func Setup(c *config.Config) {
 	setupIntelligence()
 	// V2.2: Smart Download Orchestrator 智能下载调度（决策引擎 + Provider 评分 + 计划状态机）
 	setupDownloadScheduler()
+	// V1.1 Phase 1: 智能下载统一入口（四层任务模型 + Checkpoint V3 + Range Ledger + Recovery）
+	setupSmartDownload()
 }
 
 // setupDynamicInvestigation 装配动态调查引擎：
@@ -367,6 +374,7 @@ func setupDownloadScheduler() {
 		store = s3store.NewLocalStore(filepath.Join(cloudRoot, "store"))
 	}
 	cloudRuntime := setupCloudRuntime(cfg, store, cloudMode && storeErr != nil, storeErr == nil)
+	smartCloudRuntime = cloudRuntime
 	cloudUsage := downloadscheduler.NewCloudUsageStore(filepath.Join(cloudRoot, "cloud_usage.json"))
 	dsRegistry, _ := datasetsync.NewRegistry(filepath.Join(cloudRoot, "registry.json"))
 	var dsValidator datasetsync.ParquetValidator
@@ -397,7 +405,9 @@ func setupDownloadScheduler() {
 	planDir := filepath.Join(cfg.RootDir, "backend", "data", "download_scheduler", "plans")
 	// 覆盖检查 = 分析快照 + Cloud Dataset Registry（Phase 4 §31）
 	coverageSource = &compositeCoverageSource{analytics: coverageSource, registry: dsRegistry}
+	downloadDSRegistry = dsRegistry
 	scheduler := downloadscheduler.NewScheduler(registry, downloadscheduler.NewCoverageResolver(coverageSource), planDir, downloadscheduler.DefaultBudget())
+	downloadScheduler = scheduler
 	scheduler.WithRecoveryWriter(recoveryWriter)
 	scheduler.WithCloudFallback(cloudRuntime, cloudUsage, downloadscheduler.FaultInjectionFromEnv())
 	scheduler.WithDataPlane(dsSyncer, dsRegistry)
@@ -413,7 +423,7 @@ func setupDownloadScheduler() {
 			}
 			if resumed > 0 {
 				_ = datasetEventBus.Publish(ctx, datasetevents.Event{
-					Type: datasetevents.InvestigationResumed,
+					Type:          datasetevents.InvestigationResumed,
 					RequirementID: ev.RequirementID,
 					Meta:          map[string]any{"resumed": resumed},
 				})
@@ -505,6 +515,117 @@ func setupDownloadScheduler() {
 	log.Info().Str("plans", planDir).Msg("download_scheduler_ready")
 }
 
+// HandleSmartDownloadAPI 是 /api/smart-download/* 的 Gin 转发入口。
+func HandleSmartDownloadAPI(c *gin.Context) {
+	if smartDownloadAPI == nil {
+		c.JSON(503, map[string]any{"detail": "智能下载统一入口服务不可用"})
+		return
+	}
+	smartDownloadAPI.ServeHTTP(c.Writer, c.Request)
+}
+
+// setupSmartDownload 装配智能下载统一入口（实施方案 V1.1 Phase 1）：
+// 四层任务模型（Batch/Address/Dataset/Range）+ FS StateStore + Checkpoint V3 +
+// Range Ledger + Recovery + Pause/Resume/Cancel。
+// Phase 1 生产 Adapter：仅 RPC 余额（复用 rpcmanager）；SQD/AWS/Browser/Cloud 由 Phase 2 接入。
+func setupSmartDownload() {
+	root := filepath.Join(cfg.RootDir, "backend", "data", "smart_download")
+	store, err := smartdownload.NewStore(root)
+	if err != nil {
+		log.Warn().Err(err).Str("root", root).Msg("smart_download_store_unavailable")
+		return
+	}
+	opts := smartdownload.DefaultOptions()
+	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_WORKERS")); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 64 {
+			opts.Workers = n
+		}
+	}
+	var partWriter smartdownload.PartWriter = smartdownload.NewJSONLPartWriter(root)
+	if analysisEngine != nil && analysisEngine.Available() {
+		partWriter = smartdownload.NewParquetPartWriter(root, analysisEngine)
+	}
+	svc := smartdownload.NewService(store, opts, partWriter)
+	if analysisEngine != nil {
+		svc.SetDuckDB(analysisEngine)
+	}
+	if rpcManager != nil {
+		svc.RegisterAdapter(smartdownload.NewRPCTransferAdapter(rpcManager))
+	}
+	if parquetDownload != nil {
+		if c := parquetDownload.Manager().SQDClient(); c != nil {
+			svc.RegisterAdapter(smartdownload.NewSQDAdapter(c))
+		}
+	}
+	svc.RegisterAdapter(smartdownload.NewCSVAdapter())
+	if smartCloudRuntime != nil {
+		svc.RegisterAdapter(smartdownload.NewSQDCloudAdapter(smartCloudRuntime))
+	}
+	svc.SetRangeCoverageSource(&smartRangeCoverage{svc: svc, registry: downloadDSRegistry})
+	svc.SetOnDatasetIndexed(func(ir *smartdownload.IndexedResult) {
+		if ir == nil {
+			return
+		}
+		if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+			h.Service().InvalidateCache()
+		}
+		if datasetEventBus == nil {
+			return
+		}
+		entry := &datasetsync.Entry{
+			ChunkKey:      ir.ChunkKey,
+			JobID:         ir.DatasetJobID,
+			ChainKey:      ir.ChainKey,
+			ChainID:       ir.ChainID,
+			Dataset:       ir.Dataset,
+			FromBlock:     ir.FromBlock,
+			ToBlock:       ir.ToBlock,
+			Addresses:     []string{ir.Address},
+			Provider:      "SMART_DOWNLOAD",
+			RowCount:      ir.RowCount,
+			Status:        datasetsync.StatusCompleted,
+			SyncState:     datasetsync.SyncIndexed,
+			MergedParquet: ir.MergedParquet,
+			CompletedAt:   ir.IndexedAt,
+			SyncedAt:      ir.IndexedAt,
+		}
+		if graphIncrementer != nil && ir.MergedParquet != "" {
+			if _, err := graphIncrementer.Apply(context.Background(), entry); err != nil {
+				log.Warn().Err(err).Str("chunk", ir.ChunkKey).Msg("smart_download_graph_increment_failed")
+			}
+		}
+		ev := datasetevents.Event{
+			ID:               datasetevents.IndexedEventID(ir.ChunkKey),
+			Type:             datasetevents.DatasetIndexed,
+			ChainKey:         ir.ChainKey,
+			Dataset:          ir.Dataset,
+			Addresses:        []string{ir.Address},
+			FromBlock:        ir.FromBlock,
+			ToBlock:          ir.ToBlock,
+			RegistryEntryIDs: []string{ir.ChunkKey},
+			RowCount:         ir.RowCount,
+			CoverageStatus:   "HIT",
+			Provider:         "SMART_DOWNLOAD",
+		}
+		_ = datasetEventBus.Publish(context.Background(), ev)
+		log.Info().Str("chunk", ir.ChunkKey).Str("dataset", ir.Dataset).
+			Int64("rows", ir.RowCount).Msg("smart_download_indexed_event_published")
+	})
+	var planLookup func(string) *downloadscheduler.Plan
+	if downloadScheduler != nil {
+		planLookup = downloadScheduler.Plan
+	}
+	smartDownloadAPI = http.StripPrefix("/api/smart-download", smartdownload.NewHandler(svc, planLookup))
+	// 启动恢复：回放 Range Ledger → 校验 Parts → 未完成 Range 重新入队
+	go func() {
+		time.Sleep(2 * time.Second)
+		if err := svc.RecoverAll(context.Background()); err != nil {
+			log.Warn().Err(err).Msg("smart_download_recovery_failed")
+		}
+	}()
+	log.Info().Str("root", root).Int("workers", opts.Workers).Msg("smart_download_ready")
+}
+
 // setupCloudRuntime 装配 SQD Cloud 运行时（设计 §27/§31）：
 //   - SQD_CLOUD_MODE=auto（默认）：有 SQD_DEPLOY_KEY → cloud；Worker 项目可用 → local；否则禁用
 //   - SQD_CLOUD_WORKER_DIR：Cloud Worker 项目目录（默认 E:\Code\Processor-only）
@@ -568,6 +689,47 @@ func (c *compositeCoverageSource) AddressTxCount(ctx context.Context, address st
 		}
 	}
 	return total, nil
+}
+
+// smartRangeCoverage Smart Download 区间覆盖源：本服务 Result Registry + Cloud Dataset Registry。
+type smartRangeCoverage struct {
+	svc      *smartdownload.Service
+	registry *datasetsync.Registry
+}
+
+func (c *smartRangeCoverage) CoveredRanges(ctx context.Context, chainKey, address, dataset string, from, to uint64) ([]smartdownload.BlockRange, error) {
+	out := c.svc.RegistryCoverage(chainKey, address, dataset, from, to)
+	if c.registry != nil {
+		for _, e := range c.registry.Active() {
+			if e.ChainKey != chainKey || e.Dataset != dataset {
+				continue
+			}
+			if e.SyncState != datasetsync.SyncIndexed && e.SyncState != datasetsync.SyncLocalSynced {
+				continue
+			}
+			matched := false
+			for _, a := range e.Addresses {
+				if strings.EqualFold(a, address) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			lo, hi := e.FromBlock, e.ToBlock
+			if from > lo {
+				lo = from
+			}
+			if to < hi {
+				hi = to
+			}
+			if hi >= lo {
+				out = append(out, smartdownload.BlockRange{From: lo, To: hi})
+			}
+		}
+	}
+	return out, nil
 }
 
 // Shutdown closes the control store
@@ -638,6 +800,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/intelligence/*path", HandleIntelligence)
 		api.Any("/investigation/*path", HandleInvestigationV2)
 		api.Any("/scheduler/*path", HandleSchedulerAPI)
+		api.Any("/smart-download/*path", HandleSmartDownloadAPI)
 		api.GET("/dataset/events", HandleDatasetEvents)
 		api.GET("/graph/status", HandleGraphStatus)
 		api.GET("/address/*path", HandleAddressAnalytics)

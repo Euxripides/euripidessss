@@ -417,3 +417,63 @@ func TestRegistryMultiInstanceSavePreservesQuarantine(t *testing.T) {
 		t.Fatalf("quarantined coverage = %d, want 0", n)
 	}
 }
+
+func TestRegistryCoverageIndex(t *testing.T) {
+	root := t.TempDir()
+	registry, _ := NewRegistry(filepath.Join(root, "registry.json"))
+	ctx := context.Background()
+	if err := registry.Register(&Entry{
+		ChunkKey: "a/chunk1", JobID: "a", ChunkID: "chunk1",
+		ChainKey: "bsc", ChainID: 56, Dataset: "token_transfer",
+		FromBlock: 1, ToBlock: 100, Addresses: []string{"0xaaa1"}, RowCount: 50,
+		SyncState: SyncIndexed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(&Entry{
+		ChunkKey: "b/chunk1", JobID: "b", ChunkID: "chunk1",
+		ChainKey: "bsc", ChainID: 56, Dataset: "token_transfer",
+		FromBlock: 50, ToBlock: 200, Addresses: []string{"0xaaa1"}, RowCount: 30,
+		SyncState: SyncIndexed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := registry.AddressTxCount(ctx, "0xaaa1"); n != 80 {
+		t.Fatalf("indexed coverage rows = %d, want 80", n)
+	}
+	ce, ok := registry.AddressCoverage("bsc", "0xaaa1", "token_transfer")
+	if !ok || ce.FromBlock != 1 || ce.ToBlock != 200 || ce.RowCount != 80 {
+		t.Fatalf("coverage index = %+v ok=%v", ce, ok)
+	}
+}
+
+func TestSyncRejectsDuplicatePartSHA(t *testing.T) {
+	root := t.TempDir()
+	store := s3store.NewLocalStore(filepath.Join(root, "store"))
+	registry, _ := NewRegistry(filepath.Join(root, "registry.json"))
+	completedDir := "bsc/jobs/completed/jobD/chunk1"
+	// 两个远程路径放同一份 parquet（相同 SHA），下载校验通过后应触发 duplicate_part_sha
+	body := []byte("same-parquet-body")
+	sum := sha256.Sum256(body)
+	_ = store.Put(context.Background(), completedDir+"/token_transfers/a.parquet", body)
+	_ = store.Put(context.Background(), completedDir+"/token_transfers/b.parquet", body)
+	manifest := map[string]any{
+		"schema_version": 2, "job_id": "jobD", "chunk_id": "chunk1",
+		"chain_id": 56, "dataset": "token_transfer", "row_count": 2,
+		"from_block": 1, "to_block": 2, "addresses": []string{"0xaaa1"},
+		"parts": []map[string]any{
+			{"path": "token_transfers/a.parquet", "bytes": len(body), "sha256": hex.EncodeToString(sum[:])},
+			{"path": "token_transfers/b.parquet", "bytes": len(body), "sha256": hex.EncodeToString(sum[:])},
+		},
+		"completed": true,
+	}
+	manifestPayload, _ := json.Marshal(manifest)
+	_ = store.Put(context.Background(), completedDir+"/manifest.json", manifestPayload)
+	_ = store.Put(context.Background(), completedDir+"/_SUCCESS", []byte(`{"completed":true}`))
+	syncer := NewSyncer(store, registry, filepath.Join(root, "local"), nil)
+	_, _ = syncer.SyncAll(context.Background())
+	e := registry.Get("jobD/chunk1")
+	if e == nil || e.Status != StatusFailed || e.SyncState != SyncValidationFailed {
+		t.Fatalf("duplicate part sha must fail validation, got %+v", e)
+	}
+}

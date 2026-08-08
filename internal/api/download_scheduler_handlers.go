@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/analyticsapi"
+	"github.com/etl/backend/internal/datasetevents"
 	"github.com/etl/backend/internal/downloadscheduler"
 	"github.com/etl/backend/internal/logger"
+	"github.com/etl/backend/internal/objectiveplanner"
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/gin-gonic/gin"
 )
@@ -64,9 +66,49 @@ func (h *SchedulerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.cloudJobCancel(w, r)
 	case r.Method == http.MethodGet && path == "cloud/usage":
 		h.cloudUsage(w, r)
+	case r.Method == http.MethodGet && path == "metrics":
+		h.metrics(w, r)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown scheduler endpoint: " + path})
 	}
+}
+
+// metrics GET /metrics — Phase 5.4.1 可观测性指标（可用字段，缺失项显式 0）。
+func (h *SchedulerHandler) metrics(w http.ResponseWriter, r *http.Request) {
+	reg := h.scheduler.CloudRegistry()
+	var registryRows, registryFiles int64
+	if reg != nil {
+		registryRows, registryFiles, _ = reg.Stats()
+	}
+	events := []datasetevents.Event{}
+	if datasetEventBus != nil {
+		events = datasetEventBus.Events()
+	}
+	resumeTotal, cancelTotal := 0, 0
+	for _, e := range events {
+		switch e.Type {
+		case datasetevents.InvestigationResumed:
+			resumeTotal++
+		case datasetevents.InvestigationCancelled:
+			cancelTotal++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"requirements_total":     len(h.scheduler.Plans()),
+		"coverage_hit_ratio":     0, // 需 Coverage Resolver 统计接口，暂缺
+		"provider_success_rate":  0,
+		"provider_p95_ms":        0,
+		"cloud_fallback_ratio":   h.scheduler.CloudFallbackRatio(),
+		"event_total":            len(events),
+		"event_lag_ms":           0,
+		"investigation_resume_ms": 0,
+		"graph_increment_ms":      0,
+		"registry_rows":           registryRows,
+		"multipart_parts_total":   registryFiles,
+		"resume_total":            resumeTotal,
+		"cancel_total":            cancelTotal,
+		"local_sync_retry_total":  0,
+	})
 }
 
 // cloudJobCancel POST /cloud/jobs/cancel — 写入 Cloud Cancel Marker（Phase 5.2 §6）。
@@ -154,6 +196,9 @@ func (h *SchedulerHandler) plan(w http.ResponseWriter, r *http.Request) {
 			Direction     string   `json:"direction,omitempty"`
 			Depth         int      `json:"depth,omitempty"`
 			CloudEligible *bool    `json:"cloud_eligible,omitempty"`
+			ObjectiveType string   `json:"objective_type,omitempty"`
+			ObjectiveDescription string `json:"objective_description,omitempty"`
+			ObjectiveConstraints objectiveplanner.Constraints `json:"objective_constraints,omitempty"`
 		} `json:"requirements"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -181,6 +226,9 @@ func (h *SchedulerHandler) plan(w http.ResponseWriter, r *http.Request) {
 			Direction:     q.Direction,
 			Depth:         q.Depth,
 			CloudEligible: q.CloudEligible,
+			ObjectiveType: q.ObjectiveType,
+			ObjectiveDescription: q.ObjectiveDescription,
+			ObjectiveConstraints: q.ObjectiveConstraints,
 		})
 	}
 	plan, err := h.scheduler.Submit(r.Context(), reqs)
