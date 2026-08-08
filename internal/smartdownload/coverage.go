@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/logger"
+	reg "github.com/etl/backend/internal/smartdownload/registry"
 	"github.com/google/uuid"
 )
 
@@ -58,13 +59,33 @@ func (s *Service) RegistryCoverage(chainKey, address, dataset string, from, to u
 func (s *Service) coveredRangesFor(ctx context.Context, chainKey, address, dataset string, from, to uint64) []BlockRange {
 	s.mu.Lock()
 	src := s.rangeCoverage
+	index := s.coverageIndex
 	s.mu.Unlock()
+	// Coverage Index V2 优先（分片 + 热缓存 + 兼容性 + 快照 TTL）
+	if index != nil {
+		res := index.Resolve(chainKey, address, dataset, from, to, time.Now())
+		if res.Compatible && len(res.Covered) > 0 {
+			out := make([]BlockRange, 0, len(res.Covered))
+			for _, iv := range res.Covered {
+				out = append(out, BlockRange{From: iv.From, To: iv.To})
+			}
+			return out
+		}
+	}
 	if src != nil {
 		if ranges, err := src.CoveredRanges(ctx, chainKey, address, dataset, from, to); err == nil {
 			return ranges
 		}
 	}
 	return s.registryCoverage(chainKey, address, dataset, from, to)
+}
+
+// CoverageQuery 覆盖查询（API /coverage/query）。
+func (s *Service) CoverageQuery(chainKey, address, dataset string, from, to uint64) reg.CoverageResult {
+	if s.coverageIndex == nil {
+		return reg.CoverageResult{Missing: []reg.Interval{{From: from, To: to}}}
+	}
+	return s.coverageIndex.Resolve(chainKey, address, dataset, from, to, time.Now())
 }
 
 // planReuse 计算复用计划：请求区间 ∩ 已覆盖 → reused；请求区间 − 已覆盖 → missing（精确缺口）。

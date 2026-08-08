@@ -33,7 +33,7 @@ type ProbeResult struct {
 const probeSampleBlocks = 200
 
 // probeTimeout 单次探测超时。
-const probeTimeout = 15 * time.Second
+const probeTimeout = 25 * time.Second
 
 // probeRange 计算采样窗口（≤200 块）。
 func probeRange(req ProbeRequest) (from, to uint64) {

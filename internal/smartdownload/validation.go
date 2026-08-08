@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	v3 "github.com/etl/backend/internal/smartdownload/validation"
 	"github.com/etl/backend/internal/writer"
 )
 
@@ -24,25 +25,29 @@ type CrossCheckReport struct {
 }
 
 type ValidationReport struct {
-	DatasetJobID     string           `json:"dataset_job_id"`
-	Status           string           `json:"status"` // VALIDATED / PARTIAL / FAILED
-	Score            float64          `json:"score"`
-	Coverage         float64          `json:"coverage"`
-	Rows             int64            `json:"rows"`
-	UniqueKeyCount   int64            `json:"unique_key_count"`
-	DuplicateCount   int64            `json:"duplicate_count"`
-	ExpectedCount    int64            `json:"expected_count"`
-	ActualCount      int64            `json:"actual_count"`
-	UnknownRanges    []BlockRange     `json:"unknown_ranges,omitempty"`
-	MissingRanges    []BlockRange     `json:"missing_ranges,omitempty"`
-	LevelFile        bool             `json:"level_file"`
-	LevelRecord      bool             `json:"level_record"`
-	LevelCoverage    bool             `json:"level_coverage"`
-	LevelProviderCnt bool             `json:"level_provider_count"`
-	LevelCrossCheck  bool             `json:"level_cross_check"`
-	CrossCheck       CrossCheckReport `json:"cross_check"`
-	Errors           []string         `json:"errors,omitempty"`
-	ValidatedAt      time.Time        `json:"validated_at"`
+	DatasetJobID      string           `json:"dataset_job_id"`
+	Status            string           `json:"status"` // VALIDATED / PARTIAL / FAILED
+	Score             float64          `json:"score"`
+	Coverage          float64          `json:"coverage"`
+	BlockCoverage     float64          `json:"block_coverage"`
+	Rows              int64            `json:"rows"`
+	UniqueKeyCount    int64            `json:"unique_key_count"`
+	DuplicateCount    int64            `json:"duplicate_count"`
+	RawRows           int64            `json:"raw_rows"`
+	PartsDuplicateSHA int              `json:"parts_duplicate_sha"`
+	ExpectedCount     int64            `json:"expected_count"`
+	ActualCount       int64            `json:"actual_count"`
+	UnknownRanges     []BlockRange     `json:"unknown_ranges,omitempty"`
+	MissingRanges     []BlockRange     `json:"missing_ranges,omitempty"`
+	LevelFile         bool             `json:"level_file"`
+	LevelRecord       bool             `json:"level_record"`
+	LevelCoverage     bool             `json:"level_coverage"`
+	LevelProviderCnt  bool             `json:"level_provider_count"`
+	LevelCrossCheck   bool             `json:"level_cross_check"`
+	CrossCheck        CrossCheckReport `json:"cross_check"`
+	Gaps              []v3.GapRecord   `json:"gaps,omitempty"`
+	Errors            []string         `json:"errors,omitempty"`
+	ValidatedAt       time.Time        `json:"validated_at"`
 }
 
 var (
@@ -68,6 +73,7 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 	if ds == nil {
 		return nil, fmt.Errorf("dataset %s 不存在", dsID)
 	}
+	v.svc.events.Publish(Event{Type: EventValidationStarted, DatasetJobID: dsID, Status: "RUNNING"})
 	cp, err := v.svc.cp.Load(dsID)
 	if err != nil {
 		return nil, err
@@ -154,11 +160,14 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 		requested = SplitBlockRange(cp.RequestedFrom, cp.RequestedTo, v.svc.opts.RangeChunkSize)
 	}
 	done := RangeKeySet{}
+	var completedIntervals, emptyIntervals []v3.BlockInterval
 	for _, r := range cp.CompletedRanges {
 		done.Add(r)
+		completedIntervals = append(completedIntervals, v3.BlockInterval{From: r.From, To: r.To})
 	}
 	for _, r := range cp.ConfirmedEmptyRanges {
 		done.Add(r)
+		emptyIntervals = append(emptyIntervals, v3.BlockInterval{From: r.From, To: r.To})
 	}
 	for _, r := range requested {
 		if !done.Has(r) {
@@ -166,6 +175,8 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 		}
 	}
 	report.LevelCoverage = len(report.UnknownRanges) == 0
+	report.BlockCoverage = v3.FromIntervals(append(append([]v3.BlockInterval(nil), completedIntervals...), emptyIntervals...)).
+		CoverageRatio(cp.RequestedFrom, cp.RequestedTo)
 	if len(requested) > 0 {
 		report.Coverage = 1 - float64(len(report.UnknownRanges))/float64(len(requested))
 	} else {
@@ -174,6 +185,59 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 	if !report.LevelCoverage {
 		report.MissingRanges = append([]BlockRange(nil), report.UnknownRanges...)
 		report.Errors = append(report.Errors, fmt.Sprintf("L3 覆盖缺口 %d 个区间", len(report.UnknownRanges)))
+	}
+
+	// ── Gap Detection（Validation V3：RANGE_GAP / SUSPICIOUS_EMPTY / COUNT_GAP）──
+	shaCount := map[string]int{}
+	for _, p := range cp.Parts {
+		shaCount[p.SHA256]++
+	}
+	for _, n := range shaCount {
+		if n > 1 {
+			report.PartsDuplicateSHA++
+		}
+	}
+	rowsByRange := map[string]int64{}
+	for _, e := range ledgerEntries {
+		if e.Event == LedgerPartCommitted || e.Event == LedgerRangeEmpty {
+			rowsByRange[fmt.Sprintf("%d_%d", e.FromBlock, e.ToBlock)] = e.Rows
+		}
+	}
+	rangeGaps := v3.RangeGaps(v3.BlockInterval{From: cp.RequestedFrom, To: cp.RequestedTo},
+		completedIntervals, emptyIntervals)
+	var allRanges []v3.BlockInterval
+	for _, r := range v.svc.store.ListRangesByDataset(dsID) {
+		allRanges = append(allRanges, v3.BlockInterval{From: r.FromBlock, To: r.ToBlock})
+	}
+	suspicious := v3.SuspiciousEmpty(emptyIntervals, allRanges, rowsByRange, 50)
+	for _, g := range rangeGaps {
+		report.Gaps = append(report.Gaps, g)
+	}
+	for _, g := range suspicious {
+		report.Gaps = append(report.Gaps, g)
+	}
+	if report.ExpectedCount != report.ActualCount {
+		report.Gaps = append(report.Gaps, v3.GapRecord{
+			GapID: "count_gap", Type: v3.GapCountGap,
+			FromBlock: cp.RequestedFrom, ToBlock: cp.RequestedTo,
+			Status: v3.GapDetected, Reason: fmt.Sprintf("Provider %d vs final %d",
+				report.ExpectedCount, report.ActualCount),
+			CreatedAt: time.Now().UTC(),
+		})
+	}
+	// 缺口区间并入 MissingRanges（去重）
+	missingSet := map[string]bool{}
+	for _, r := range report.MissingRanges {
+		missingSet[r.Key()] = true
+	}
+	for _, g := range report.Gaps {
+		r := BlockRange{From: g.FromBlock, To: g.ToBlock}
+		if !missingSet[r.Key()] {
+			missingSet[r.Key()] = true
+			report.MissingRanges = append(report.MissingRanges, r)
+			report.UnknownRanges = append(report.UnknownRanges, r)
+			report.LevelCoverage = false
+		}
 	}
 
 	// ── L4 Provider Count 对账：provider rows（Ledger）== 每 Part 唯一键数 ──
@@ -195,6 +259,7 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 	}
 	report.ExpectedCount = expectedTotal
 	report.ActualCount = report.UniqueKeyCount
+	report.RawRows = expectedTotal
 	if expectedTotal != report.ActualCount {
 		report.LevelProviderCnt = false
 		report.Errors = append(report.Errors, fmt.Sprintf(
@@ -236,6 +301,7 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 	default:
 		report.Status = "PARTIAL"
 	}
+	v.svc.finishValidationPipeline(dsID, report)
 	return report, nil
 }
 

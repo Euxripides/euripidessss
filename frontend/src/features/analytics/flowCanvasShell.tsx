@@ -25,7 +25,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Button, Empty, Spin } from "antd";
-import { memo, useCallback, useRef } from "react";
+import { memo, useCallback, useRef, useState } from "react";
 import type { GraphData } from "./analyticsApi";
 import { DANGER_COLOR, RELATION_COLORS, fmtEdgeAmount, fmtAmount, riskTone, type WorkspaceRelation } from "./flowWorkspaceGraph";
 import type { EnhancedEdgeData, EnhancedNodeData, FocusSelection } from "./graphUpgrade";
@@ -43,6 +43,9 @@ interface FlowCanvasShellProps {
   onInit: (instance: ReactFlowInstance) => void;
   onNodeClick: (event: React.MouseEvent, node: Node) => void;
   onExitFocus: () => void;
+  onViewportChange: (zoom: number) => void;
+  zoomLevel: "far" | "medium" | "near";
+  onSelectionChange: (nodeIds: string[]) => void;
 }
 
 function roleLabel(meta: EnhancedNodeData, relation: WorkspaceRelation): string {
@@ -101,6 +104,7 @@ const FlowEdgeView = memo(function FlowEdgeView({
   style,
 }: EdgeProps) {
   const meta = data as unknown as EnhancedEdgeData;
+  const [preview, setPreview] = useState(false);
   const [path, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
@@ -110,17 +114,39 @@ const FlowEdgeView = memo(function FlowEdgeView({
     targetPosition,
     curvature: 0.42,
   });
+  const timeline = (meta.timeline ?? []) as Array<{ time: number; amount: number }>;
+  const first = timeline.length > 0 ? new Date(timeline[0].time * 1000).toISOString().slice(0, 10) : "—";
+  const last = timeline.length > 0 ? new Date(timeline[timeline.length - 1].time * 1000).toISOString().slice(0, 10) : "—";
+  const maxAmt = Math.max(1, ...timeline.map((t) => t.amount));
+  const bars = timeline
+    .slice(-24)
+    .map((t) => {
+      const level = Math.max(1, Math.round((t.amount / maxAmt) * 7));
+      return "▁▂▃▄▅▆▇"[level - 1] ?? "▁";
+    })
+    .join("");
   return (
     <>
       <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
       <EdgeLabelRenderer>
         <div
           className="analytics-flow-edge-label"
+          onMouseEnter={() => setPreview(true)}
+          onMouseLeave={() => setPreview(false)}
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
           <strong>{fmtEdgeAmount(meta.amount)}</strong>
           <span>{meta.token ?? "—"} · {meta.txCount} 笔</span>
         </div>
+        {preview && timeline.length > 0 && (
+          <div
+            className="analytics-edge-preview"
+            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 34}px)` }}
+          >
+            <div>首次 {first} · 最后 {last}</div>
+            <div className="analytics-edge-bars">{bars}</div>
+          </div>
+        )}
       </EdgeLabelRenderer>
     </>
   );
@@ -151,6 +177,9 @@ export default function FlowCanvasShell({
   onInit,
   onNodeClick,
   onExitFocus,
+  onViewportChange,
+  zoomLevel,
+  onSelectionChange,
 }: FlowCanvasShellProps) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const idleTimer = useRef<number>(0);
@@ -168,7 +197,7 @@ export default function FlowCanvasShell({
   }, []);
 
   return (
-    <div className="flow-canvas-shell" ref={shellRef}>
+    <div className={`flow-canvas-shell zoom-${zoomLevel}`} ref={shellRef}>
       {loading ? (
         <div className="flow-canvas-center-state">
           <Spin size="large" />
@@ -193,6 +222,8 @@ export default function FlowCanvasShell({
           onNodeClick={onNodeClick}
           onMoveStart={beginViewportInteraction}
           onMoveEnd={endViewportInteraction}
+          onMove={(_, viewport) => onViewportChange(viewport.zoom)}
+          onSelectionChange={(params) => onSelectionChange(params.nodes.map((n) => String(n.id)))}
           fitView
           fitViewOptions={{ padding: 0.16, maxZoom: 1 }}
           minZoom={0.12}

@@ -59,6 +59,7 @@ type Job struct {
 	ToBlock       uint64     `json:"to_block"`
 	Priority      int        `json:"priority,omitempty"`
 	Attempt       int        `json:"attempt,omitempty"`
+	Tier          string     `json:"tier,omitempty"` // Cloud S/L/XL（弹性调度 V1.0）
 	Mode          Mode       `json:"mode"`
 	State         string     `json:"state"` // queued/running/done/failed
 	OutputDir     string     `json:"output_dir,omitempty"`

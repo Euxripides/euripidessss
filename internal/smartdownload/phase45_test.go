@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/etl/backend/internal/cloudruntime"
+	"github.com/etl/backend/internal/smartdownload/feedback"
+	v3 "github.com/etl/backend/internal/smartdownload/validation"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -459,6 +462,485 @@ func TestExportNoScientificNotation(t *testing.T) {
 	}
 	if !strings.Contains(sheetXML, `r="A2" t="s"`) && !strings.Contains(sheetXML, `r="A2" t="inlineStr"`) {
 		t.Fatalf("XLSX 长数字未按字符串写入（可能出现科学计数法）: %s", sheetXML)
+	}
+}
+
+// TestCloudTierAssignAndUpgrade 验收（设计 P0 Case 2）：Cloud L 运行中吞吐低 → 自动升级 XL，
+// 已完成 Range 不重跑；账本记录 ASSIGNED/UPGRADED。
+func TestCloudTierAssignAndUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	opts := DefaultOptions()
+	opts.Workers = 1
+	opts.DefaultEndBlock = 399
+	opts.RangeChunkSize = 200
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	cloud := NewMockCloudProvider()
+	cloud.delay = 500 * time.Millisecond
+	svc.RegisterAdapter(cloud)
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:  "bsc",
+		Addresses: []string{addrA},
+		Datasets:  []string{DatasetTokenTransfers},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := store.ListDatasets()[0]
+	ds.EstimatedRows = 1_000_000
+	ds.EstimatedBytes = 2 << 30
+	ds.CloudEstimatedRuntimeSeconds = 5 * 60 // 原始估算 5 分钟（L 档）
+	_ = store.SaveDataset(ds)
+	t.Cleanup(svc.Shutdown)
+	if err := svc.Start(resp.Batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		cur := store.GetDataset(ds.ID)
+		if cur != nil && cur.CloudTier == "XL" {
+			break
+		}
+		if cur != nil && cur.Status.Terminal() && cur.CloudTier != "XL" {
+			t.Fatalf("任务结束但未升级: tier=%s rows=%d progress=%+v reasons=%v",
+				cur.CloudTier, cur.EstimatedRows, cur.Progress, cur.CloudReasons)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	waitCompleted(t, svc, resp.Batch.ID)
+	cur := store.GetDataset(ds.ID)
+	if cur.CloudTier != "XL" || cur.CloudScore <= 0 || len(cur.CloudReasons) == 0 {
+		t.Fatalf("Cloud 分档信息缺失: %+v", cur)
+	}
+	entries, _ := NewLedger(store.Root(), ds.ID).Replay()
+	assigned, upgraded := false, false
+	started := map[string]int{}
+	completed := map[string]int{}
+	for _, e := range entries {
+		switch e.Event {
+		case LedgerCloudTierAssigned:
+			assigned = true
+		case LedgerCloudTierUpgraded:
+			upgraded = true
+		case LedgerRangeStarted:
+			started[e.RangeID]++
+		case LedgerRangeCompleted:
+			completed[e.RangeID]++
+		}
+	}
+	if !assigned || !upgraded {
+		t.Fatalf("账本缺少 ASSIGNED(%v)/UPGRADED(%v)", assigned, upgraded)
+	}
+	for _, r := range store.ListRangesByDataset(ds.ID) {
+		key := BlockRange{From: r.FromBlock, To: r.ToBlock}.Key()
+		if started[key] != 1 || completed[key] != 1 {
+			t.Fatalf("Range %s 被重跑: started=%d completed=%d", key, started[key], completed[key])
+		}
+	}
+}
+
+type fakeCloudRuntime struct {
+	submitted *cloudruntime.Job
+}
+
+func (f *fakeCloudRuntime) SubmitJob(_ context.Context, job cloudruntime.Job) (string, error) {
+	cp := job
+	f.submitted = &cp
+	return job.ID, nil
+}
+
+func (f *fakeCloudRuntime) JobStatus(id string) (cloudruntime.Job, error) {
+	return cloudruntime.Job{ID: id, State: "done"}, nil
+}
+
+func (f *fakeCloudRuntime) CancelJob(_ context.Context, _ string) error { return nil }
+
+func (f *fakeCloudRuntime) Status() cloudruntime.Status {
+	return cloudruntime.Status{State: cloudruntime.WorkerReady, Available: true}
+}
+
+// TestCloudAdapterCarriesTier 验收：Cloud Job 携带 S/L/XL 资源档。
+func TestCloudAdapterCarriesTier(t *testing.T) {
+	rt := &fakeCloudRuntime{}
+	a := NewSQDCloudAdapter(rt)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = a.ExecuteRange(ctx, RangeRequest{
+		DatasetJobID: "d1", Address: addrA, Dataset: DatasetTokenTransfers,
+		ChainKey: "bsc", ChainID: 56, FromBlock: 1, ToBlock: 10, CloudTier: "XL",
+	})
+	if rt.submitted == nil {
+		t.Fatal("Cloud Job 未提交")
+	}
+	if rt.submitted.Tier != "XL" {
+		t.Fatalf("Cloud Job tier=%s，期望 XL", rt.submitted.Tier)
+	}
+	if rt.submitted.FromBlock != 1 || rt.submitted.ToBlock != 10 || len(rt.submitted.Addresses) != 1 {
+		t.Fatalf("Cloud Job 参数不符: %+v", rt.submitted)
+	}
+}
+
+// TestBatchSnapshotWeighted 验收（设计 §9-§11）：Address/Batch 按工作量加权，不是简单平均。
+func TestBatchSnapshotWeighted(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(dir))
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:  "bsc",
+		Addresses: []string{addrA},
+		Datasets:  []string{DatasetTransactions, DatasetLogs},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 手工构造：transactions 10k 行已完成，logs 2M 行未开始 → 地址进度应接近 0.5%（加权）
+	datasets := store.ListDatasetsByAddress(store.ListAddressesByBatch(resp.Batch.ID)[0].ID)
+	for _, d := range datasets {
+		switch d.Dataset {
+		case DatasetTransactions:
+			d.EstimatedRows = 10_000
+			d.Progress.Percent = 1
+		case DatasetLogs:
+			d.EstimatedRows = 2_000_000
+			d.Progress.Percent = 0
+		}
+		_ = store.SaveDataset(d)
+	}
+	a := store.ListAddressesByBatch(resp.Batch.ID)[0]
+	w, p := svc.addressWeightedProgress(a)
+	if w <= 0 || p > 0.02 || p <= 0 {
+		t.Fatalf("加权地址进度异常 w=%.0f p=%v（期望 ~0.5%%）", w, p)
+	}
+	snap := svc.BatchSnapshot(resp.Batch.ID)
+	if snap == nil || snap.ProgressPercent != p {
+		t.Fatalf("BatchSnapshot 不符: %+v", snap)
+	}
+	// Logs 也完成 → 100%
+	for _, d := range datasets {
+		if d.Dataset == DatasetLogs {
+			d.Progress.Percent = 1
+			_ = store.SaveDataset(d)
+		}
+	}
+	if snap := svc.BatchSnapshot(resp.Batch.ID); snap.ProgressPercent != 1 {
+		t.Fatalf("全部完成后进度 %v，期望 1", snap.ProgressPercent)
+	}
+}
+
+// TestSnapshot10KPerformance 验收（设计 §65）：10K 地址 Snapshot 计算不随规模劣化。
+func TestSnapshot10KPerformance(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	opts := DefaultOptions()
+	opts.DefaultEndBlock = 999
+	opts.RangeChunkSize = 1000
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	addrs := make([]string, 10_000)
+	for i := range addrs {
+		addrs[i] = fmt.Sprintf("0x%040x", i+1)
+	}
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:  "bsc",
+		Addresses: addrs,
+		Datasets:  []string{DatasetTransactions},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	snap := svc.BatchSnapshot(resp.Batch.ID)
+	elapsed := time.Since(start)
+	if snap == nil {
+		t.Fatal("snapshot 为空")
+	}
+	if snap.RangesTotal != 10_000 {
+		t.Fatalf("地址总数 %d", snap.RangesTotal)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("10K snapshot 耗时 %v，超 2s", elapsed)
+	}
+	t.Logf("10K snapshot 耗时 %v", elapsed)
+}
+
+// TestResetETAOnProviderSwitch 验收（设计 §20）：Provider 切换后 ETA 重算。
+func TestResetETAOnProviderSwitch(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(dir))
+	ds := &DatasetJob{ID: "d1", CurrentProvider: "sqd"}
+	ds.Progress = ProgressSnapshot{ETASeconds: 3600, ETAConfidence: 0.9}
+	ds.CurrentProvider = "rpc"
+	svc.resetETA(ds)
+	if !ds.Progress.ETARecalculating || ds.Progress.ETASeconds != 0 {
+		t.Fatalf("切换后 ETA 未重算: %+v", ds.Progress)
+	}
+	if e := svc.etaEngines["d1"]; e == nil || e.SampleCount() != 0 || e.Provider() != "rpc" {
+		t.Fatalf("ETA 引擎未重置: %+v", e)
+	}
+}
+
+// TestCoverageIndexFullHitAndQuery 验收（设计 Case A/B + §45）：认证后 FULL HIT，二次任务零网络复用。
+func TestCoverageIndexFullHitAndQuery(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	opts := DefaultOptions()
+	opts.Workers = 1
+	opts.DefaultEndBlock = 399
+	opts.RangeChunkSize = 200
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:  "bsc",
+		Addresses: []string{addrA},
+		Datasets:  []string{DatasetTokenTransfers},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Shutdown)
+	if err := svc.Start(resp.Batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitCompleted(t, svc, resp.Batch.ID)
+	waitFor(t, 30*time.Second, "入库+覆盖索引", func() bool {
+		for _, d := range store.ListDatasets() {
+			if d.BatchID != resp.Batch.ID {
+				continue
+			}
+			entry := svc.Results().find(d.ID)
+			if entry != nil && entry.Certification == "CERTIFIED" {
+				return true
+			}
+		}
+		return false
+	})
+	// Coverage Query：同范围 FULL HIT
+	query := svc.CoverageQuery("bsc", addrA, DatasetTokenTransfers, 0, 399)
+	if !query.FullHit || query.CoverageRatio != 1 || len(query.Missing) != 0 {
+		t.Fatalf("覆盖查询应 FULL HIT: %+v", query)
+	}
+	// 二次任务：零网络复用
+	skip := true
+	resp2, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:    "bsc",
+		Addresses:   []string{addrA},
+		Datasets:    []string{DatasetTokenTransfers},
+		SkipCovered: &skip,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp2.LocalFullHits < 1 || resp2.ReusedRanges < 1 || resp2.LocalMisses != 0 {
+		t.Fatalf("复用统计不符: %+v", resp2)
+	}
+	var ds2 *DatasetJob
+	for _, d := range store.ListDatasets() {
+		if d.BatchID == resp2.Batch.ID {
+			ds2 = d
+			break
+		}
+	}
+	if ds2 == nil {
+		t.Fatal("二次任务数据集不存在")
+	}
+	ranges2 := store.ListRangesByDataset(ds2.ID)
+	for _, r := range ranges2 {
+		if r.Provider != "local_hit" {
+			t.Fatalf("二次任务应全部 LOCAL_REUSE，实际 %s", r.Provider)
+		}
+	}
+	// 部分命中：请求更大范围 → 仅补缺口
+	resp3, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:     "bsc",
+		Addresses:    []string{addrA},
+		Datasets:     []string{DatasetTokenTransfers},
+		DefaultRange: &RangeSpec{Mode: RangeModeBlock, FromBlock: 0, ToBlock: 599},
+		SkipCovered:  &skip,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp3.LocalPartialHits < 1 || resp3.ReusedRanges < 1 {
+		t.Fatalf("部分命中统计不符: %+v", resp3)
+	}
+}
+
+// TestAdaptiveRangesCreation 验收（Phase B）：Discovery 驱动自适应 Range，均匀低密度 → 大跨度单 Range。
+func TestAdaptiveRangesCreation(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	opts := DefaultOptions()
+	opts.Workers = 1
+	opts.DefaultEndBlock = 999
+	opts.RangeChunkSize = 200
+	opts.AdaptiveRanges = true
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:  "bsc",
+		Addresses: []string{addrA},
+		Datasets:  []string{DatasetTransactions},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := store.ListDatasets()[0]
+	ranges := store.ListRangesByDataset(ds.ID)
+	if len(ranges) != 1 {
+		t.Fatalf("均匀低密度应合并为 1 个自适应 Range，实际 %d", len(ranges))
+	}
+	if ds.DiscoveryConfidence <= 0 || ds.SuggestedRangeSpan == 0 || len(ds.ActivitySegments) == 0 {
+		t.Fatalf("Discovery 结果未落盘: conf=%v span=%d seg=%d",
+			ds.DiscoveryConfidence, ds.SuggestedRangeSpan, len(ds.ActivitySegments))
+	}
+	t.Cleanup(svc.Shutdown)
+	if err := svc.Start(resp.Batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitCompleted(t, svc, resp.Batch.ID)
+	waitFor(t, 30*time.Second, "自适应批次校验完成", func() bool {
+		cur := store.GetDataset(ds.ID)
+		return cur != nil && cur.Validation != nil && cur.Status == DatasetCompleted
+	})
+	if report := store.GetDataset(ds.ID).Validation; report.Status != "VALIDATED" {
+		t.Fatalf("自适应 Range 校验失败: %v", report.Errors)
+	}
+}
+
+// TestHistoryRecordedAfterBatch 验收（Phase E）：任务完成后写入 Provider 历史画像。
+func TestHistoryRecordedAfterBatch(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	opts := DefaultOptions()
+	opts.Workers = 1
+	opts.DefaultEndBlock = 399
+	opts.RangeChunkSize = 200
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:  "bsc",
+		Addresses: []string{addrA},
+		Datasets:  []string{DatasetTransactions},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(svc.Shutdown)
+	if err := svc.Start(resp.Batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitCompleted(t, svc, resp.Batch.ID)
+	ds := store.ListDatasets()[0]
+	waitFor(t, 30*time.Second, "校验完成", func() bool {
+		cur := store.GetDataset(ds.ID)
+		return cur != nil && cur.Validation != nil
+	})
+	profile := svc.history.Profile(56, DatasetTransactions, "mock",
+		feedback.ScaleBucket(store.GetDataset(ds.ID).EstimatedRows))
+	if profile == nil || profile.Jobs == 0 {
+		t.Fatal("历史画像未记录")
+	}
+	if profile.FinalSuccessCount == 0 {
+		t.Fatal("最终验证成功未计入画像")
+	}
+}
+
+// TestFeedbackActionLogged 验收（Phase D）：反馈动作写入 Ledger。
+func TestFeedbackActionLogged(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(dir))
+	svc.emitFeedbackAction(&DatasetJob{ID: "d1", CurrentProvider: "sqd"},
+		feedback.Decision{Action: feedback.Throttle, Reason: "503 率高，先降并发"})
+	entries, _ := NewLedger(dir, "d1").Replay()
+	found := false
+	for _, e := range entries {
+		if e.Event == LedgerFeedbackAction {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Ledger 缺少 FEEDBACK_ACTION")
+	}
+}
+
+// TestValidationV3CertificateAndRepair 验收（设计 P0）：
+// 缺口 → Gap Ledger/Repair Attempts → 补洞 → Validation Certificate（PASS，gaps repaired）→ CERTIFIED 发布。
+func TestValidationV3CertificateAndRepair(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := DefaultOptions()
+	opts.Workers = 1
+	opts.DefaultEndBlock = 399
+	opts.RangeChunkSize = 200
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey:  "bsc",
+		Addresses: []string{addrA},
+		Datasets:  []string{DatasetTransactions},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟静默缺口：启动前取消第二个 Range（无数据）
+	ds := store.ListDatasets()[0]
+	ranges := store.ListRangesByDataset(ds.ID)
+	ranges[1].Status = RangeCanceled
+	now := time.Now().UTC()
+	ranges[1].FinishedAt = &now
+	ranges[1].UpdatedAt = now
+	_ = store.SaveRange(ranges[1])
+	t.Cleanup(svc.Shutdown)
+	if err := svc.Start(resp.Batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitCompleted(t, svc, resp.Batch.ID)
+	waitFor(t, 30*time.Second, "补洞后校验完成", func() bool {
+		cur := store.GetDataset(ds.ID)
+		return cur != nil && cur.Validation != nil && cur.Status == DatasetCompleted
+	})
+	gapStore := v3.NewGapStore(dir, ds.ID)
+	cert, err := gapStore.LoadCertificate()
+	if err != nil {
+		t.Fatalf("Validation Certificate 未生成: %v", err)
+	}
+	if cert.Status != "PASS" || cert.Coverage != 1.0 {
+		t.Fatalf("证书不符: status=%s coverage=%v", cert.Status, cert.Coverage)
+	}
+	if cert.GapsDetected < 1 || cert.GapsRepaired < 1 || cert.GapsRemaining != 0 {
+		t.Fatalf("缺口统计不符: detected=%d repaired=%d remaining=%d",
+			cert.GapsDetected, cert.GapsRepaired, cert.GapsRemaining)
+	}
+	if cert.DuplicateSHA != 0 || cert.DuplicatesRemoved != 0 {
+		t.Fatalf("证书重复统计异常: dup_sha=%d dup_rows=%d", cert.DuplicateSHA, cert.DuplicatesRemoved)
+	}
+	if cert.RowsRaw != cert.RowsFinal || cert.RowsRaw == 0 {
+		t.Fatalf("证书行数不符: raw=%d final=%d", cert.RowsRaw, cert.RowsFinal)
+	}
+	if state := gapStore.LoadState(); state.Status != v3.StatePass {
+		t.Fatalf("Validation State=%s，期望 PASS", state.Status)
+	}
+	gaps, _ := gapStore.LoadGaps()
+	if len(gaps) < 2 {
+		t.Fatalf("Gap Ledger 应有 DETECTED+REPAIRED 两条，实际 %d", len(gaps))
+	}
+	repairs, _ := gapStore.LoadRepairs()
+	successRepair := false
+	for _, r := range repairs {
+		if r.Success {
+			successRepair = true
+		}
+	}
+	if !successRepair {
+		t.Fatal("Repair Attempts 缺少成功记录")
+	}
+	entry := svc.Results().find(ds.ID)
+	if entry == nil || entry.Certification != "CERTIFIED" {
+		t.Fatalf("Registry 未认证发布: %+v", entry)
 	}
 }
 

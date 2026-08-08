@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/logger"
+	reg "github.com/etl/backend/internal/smartdownload/registry"
 )
 
 // RecoverAll 服务启动恢复（实施方案 §19-§20）：
@@ -17,10 +18,27 @@ import (
 //
 // 可信度顺序：Committed Part（磁盘 SHA 校验）> Range Ledger > Checkpoint > Task JSON。
 func (s *Service) RecoverAll(ctx context.Context) error {
+	// Coverage Index V2 重建：只恢复 CERTIFIED 资产（设计 §42）
+	if s.coverageIndex != nil {
+		var inputs []reg.RebuildInput
+		for _, e := range s.results.List() {
+			if e.Certification != "CERTIFIED" {
+				continue
+			}
+			inputs = append(inputs, reg.RebuildInput{
+				ChainKey: e.ChainKey, ChainID: e.ChainID, Address: e.Address,
+				Dataset: e.Dataset, FromBlock: e.FromBlock, ToBlock: e.ToBlock,
+				Rows: e.RowCount, Certified: true, UpdatedAt: e.IndexedAt,
+			})
+		}
+		s.coverageIndex.Rebuild(inputs)
+	}
 	batches := s.store.ListBatches()
+	scanTime := time.Now().UTC()
 	recovered := 0
 	for _, batch := range batches {
-		if batch.Status.Terminal() {
+		if batch.Status.Terminal() || batch.CreatedAt.After(scanTime) {
+			// 跳过恢复扫描开始后新建的批次（避免与 CreateBatch 半成品竞态）
 			continue
 		}
 		if err := s.recoverBatch(ctx, batch.ID); err != nil {
@@ -31,7 +49,8 @@ func (s *Service) RecoverAll(ctx context.Context) error {
 	}
 	// 恢复后自动重新调度 RUNNING 批次
 	for _, batch := range batches {
-		if batch.Status.Terminal() || batch.Status == BatchPaused || batch.Status == BatchCanceled {
+		if batch.Status.Terminal() || batch.Status == BatchPaused || batch.Status == BatchCanceled ||
+			batch.CreatedAt.After(scanTime) {
 			continue
 		}
 		current := s.store.GetBatch(batch.ID)
@@ -237,6 +256,9 @@ func (s *Service) recomputeAddressStatus(addressID string) {
 		return
 	}
 	datasets := s.store.ListDatasetsByAddress(addressID)
+	if len(datasets) == 0 {
+		return // 数据集尚未落盘：不要据此完成地址（CreateBatch 半成品保护）
+	}
 	allDone, anyFailed, anyPartial, anyCanceled := true, false, false, false
 	for _, ds := range datasets {
 		if !ds.Status.Terminal() {

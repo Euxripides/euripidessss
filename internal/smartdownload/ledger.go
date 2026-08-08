@@ -12,17 +12,21 @@ import (
 
 // Range Ledger 事件类型（实施方案 §5：恢复和审计的事实账本）。
 const (
-	LedgerRangeCreated     = "RANGE_CREATED"
-	LedgerRangeStarted     = "RANGE_STARTED"
-	LedgerPartCommitted    = "PART_COMMITTED"
-	LedgerRangeCompleted   = "RANGE_COMPLETED"
-	LedgerRangeEmpty       = "RANGE_EMPTY"
-	LedgerRangeFailed      = "RANGE_FAILED"
-	LedgerProviderFailed   = "PROVIDER_FAILED"
-	LedgerProviderSwitched = "PROVIDER_SWITCHED"
-	LedgerPaused           = "PAUSED"
-	LedgerResumed          = "RESUMED"
-	LedgerCanceled         = "CANCELED"
+	LedgerRangeCreated        = "RANGE_CREATED"
+	LedgerRangeStarted        = "RANGE_STARTED"
+	LedgerPartCommitted       = "PART_COMMITTED"
+	LedgerRangeCompleted      = "RANGE_COMPLETED"
+	LedgerRangeEmpty          = "RANGE_EMPTY"
+	LedgerRangeFailed         = "RANGE_FAILED"
+	LedgerProviderFailed      = "PROVIDER_FAILED"
+	LedgerProviderSwitched    = "PROVIDER_SWITCHED"
+	LedgerCloudTierAssigned   = "CLOUD_TIER_ASSIGNED"
+	LedgerCloudTierUpgraded   = "CLOUD_TIER_UPGRADED"
+	LedgerCloudTierDowngraded = "CLOUD_TIER_DOWNGRADED"
+	LedgerFeedbackAction      = "FEEDBACK_ACTION"
+	LedgerPaused              = "PAUSED"
+	LedgerResumed             = "RESUMED"
+	LedgerCanceled            = "CANCELED"
 )
 
 // LedgerEntry 单条 Range Ledger 记录。

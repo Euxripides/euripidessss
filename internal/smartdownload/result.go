@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/logger"
+	v3 "github.com/etl/backend/internal/smartdownload/validation"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -34,6 +35,7 @@ type IndexedResult struct {
 	RowCount      int64     `json:"row_count"`
 	MergedParquet string    `json:"merged_parquet,omitempty"`
 	Validation    string    `json:"validation"`
+	Certification string    `json:"certification,omitempty"` // CERTIFIED / PARTIAL
 	IndexedAt     time.Time `json:"indexed_at"`
 }
 
@@ -268,23 +270,29 @@ func (p *ResultProcessor) MergeDataset(ctx context.Context, dsID string) (*Index
 	}
 	engine := p.svc.duckdb()
 	entry := &IndexedResult{
-		ChunkKey:     "sd-" + dsID,
-		DatasetJobID: dsID,
-		ChainKey:     ds.ChainKey,
-		ChainID:      p.chainIDOf(ds),
-		Dataset:      ds.Dataset,
-		Address:      ds.Address,
-		FromBlock:    cp.RequestedFrom,
-		ToBlock:      cp.RequestedTo,
-		Validation:   "VALIDATED",
-		IndexedAt:    time.Now().UTC(),
+		ChunkKey:      "sd-" + dsID,
+		DatasetJobID:  dsID,
+		ChainKey:      ds.ChainKey,
+		ChainID:       p.chainIDOf(ds),
+		Dataset:       ds.Dataset,
+		Address:       ds.Address,
+		FromBlock:     cp.RequestedFrom,
+		ToBlock:       cp.RequestedTo,
+		Validation:    "VALIDATED",
+		Certification: "PARTIAL",
+		IndexedAt:     time.Now().UTC(),
+	}
+	outRoot := "staging"
+	if ds.Status == DatasetCompleted {
+		outRoot = "final"
+		entry.Certification = "CERTIFIED"
 	}
 	var paths []string
 	for _, part := range cp.Parts {
 		paths = append(paths, filepath.Join(p.svc.PartsDir(), dsID, part.Name))
 	}
 	if len(paths) > 0 && engine != nil && engine.Available() {
-		outDir := filepath.Join(p.svc.store.Root(), "smart_download", "warehouse", ds.Dataset, "chain="+ds.ChainKey)
+		outDir := filepath.Join(p.svc.store.Root(), "smart_download", outRoot, ds.Dataset, "chain="+ds.ChainKey)
 		if err := os.MkdirAll(outDir, 0o755); err != nil {
 			return nil, err
 		}
@@ -316,6 +324,9 @@ func (p *ResultProcessor) MergeDataset(ctx context.Context, dsID string) (*Index
 			entry.RowCount = int64(toFloat(rows[0]["n"]))
 		}
 		entry.MergedParquet = merged
+		if entry.Certification == "CERTIFIED" {
+			p.writeManifestV3(ctx, dsID, entry, cp)
+		}
 	} else {
 		for _, part := range cp.Parts {
 			entry.RowCount += part.Rows
@@ -351,6 +362,66 @@ func (p *ResultProcessor) MergeDataset(ctx context.Context, dsID string) (*Index
 		Int64("rows", entry.RowCount).Str("merged", entry.MergedParquet).
 		Msg("smartdownload_result_indexed")
 	return entry, nil
+}
+
+// writeManifestV3 生成 manifest-v3.json（设计 §64）。
+func (p *ResultProcessor) writeManifestV3(ctx context.Context, dsID string, entry *IndexedResult, cp *CheckpointV3) {
+	ledger, _ := p.svc.LedgerEntries(dsID)
+	providers := map[string]bool{}
+	switches := 0
+	for _, e := range ledger {
+		if e.Provider != "" {
+			providers[e.Provider] = true
+		}
+		if e.Event == LedgerProviderSwitched {
+			switches++
+		}
+	}
+	var providersList []string
+	for pv := range providers {
+		providersList = append(providersList, pv)
+	}
+	cert := map[string]any{}
+	if c, err := v3.NewGapStore(p.svc.store.Root(), dsID).LoadCertificate(); err == nil {
+		cert = map[string]any{
+			"status": c.Status, "coverage": c.Coverage,
+			"rows_final": c.RowsFinal, "duplicates_removed": c.DuplicatesRemoved,
+			"gaps_detected": c.GapsDetected, "gaps_repaired": c.GapsRepaired,
+			"gaps_remaining":            c.GapsRemaining,
+			"cross_check_sample_ranges": c.CrossCheckSampleRanges,
+			"cross_check_matched":       c.CrossCheckMatched,
+			"certified_at":              c.CertifiedAt,
+		}
+	}
+	var parts []map[string]any
+	for _, pt := range cp.Parts {
+		parts = append(parts, map[string]any{
+			"name": pt.Name, "sha256": pt.SHA256, "rows": pt.Rows,
+			"range": []uint64{pt.RangeFrom, pt.RangeTo},
+		})
+	}
+	manifest := map[string]any{
+		"schema_version":         3,
+		"dataset_job_id":         dsID,
+		"dataset":                entry.Dataset,
+		"address":                entry.Address,
+		"chain_id":               entry.ChainID,
+		"range":                  []uint64{entry.FromBlock, entry.ToBlock},
+		"rows":                   entry.RowCount,
+		"parts":                  parts,
+		"providers_used":         providersList,
+		"provider_switches":      switches,
+		"validation_certificate": cert,
+		"certified_at":           entry.IndexedAt,
+	}
+	payload, _ := json.MarshalIndent(manifest, "", "  ")
+	dir := filepath.Dir(entry.MergedParquet)
+	manifestName := entry.DatasetJobID + "-manifest-v3.json"
+	tmp := filepath.Join(dir, manifestName+".tmp")
+	if os.WriteFile(tmp, payload, 0o644) == nil {
+		_ = os.Rename(tmp, filepath.Join(dir, manifestName))
+	}
+	_ = ctx
 }
 
 func (p *ResultProcessor) chainIDOf(ds *DatasetJob) int64 {
@@ -528,6 +599,7 @@ func (p *ResultProcessor) ResultSummary(ctx context.Context, dsID string) (map[s
 	if entry := p.find(dsID); entry != nil {
 		out["indexed_rows"] = entry.RowCount
 		out["merged_parquet"] = entry.MergedParquet
+		out["certification"] = entry.Certification
 		out["from_block"] = entry.FromBlock
 		out["to_block"] = entry.ToBlock
 		out["indexed_at"] = entry.IndexedAt

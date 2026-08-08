@@ -61,6 +61,7 @@ func (p *SQDCloudAdapter) ExecuteRange(ctx context.Context, req RangeRequest) (*
 		ToBlock:   req.ToBlock,
 		Priority:  90,
 		Attempt:   1,
+		Tier:      req.CloudTier,
 	}
 	jobID, err := p.runtime.SubmitJob(ctx, job)
 	if err != nil {

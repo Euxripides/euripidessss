@@ -24,6 +24,7 @@ type RangeRequest struct {
 	ChainID      int64  `json:"chain_id"`
 	FromBlock    uint64 `json:"from_block"`
 	ToBlock      uint64 `json:"to_block"`
+	CloudTier    string `json:"cloud_tier,omitempty"`
 }
 
 // Record 中间记录（Phase 3 由 Normalizer 转 Canonical Schema；Phase 1 保持通用键字段）。

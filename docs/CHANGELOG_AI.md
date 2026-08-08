@@ -33,6 +33,98 @@
 - 前端结果页「导出数据」按钮 + 格式提示。
 - 验证：TestResultExportXLSXAndCSV 全绿；生产冒烟 XLSX 附件下载正确。
 
+#### 追加：SQD Cloud 弹性分级调度 V1.0
+
+- 新增 internal/smartdownload/cloudplanner（S/L/XL 评分、复杂度、直接/强制 XL、运行期升降级、预算守卫）；DatasetJob 保存 cloud_tier/score/reasons/cost/runtime；Cloud Job 携带 Tier；Ledger/SSE 增加 tier 事件；前端详情显示资源档。
+- 修复：ensureCloudPlanLocked 已分档不重算（防止每次领取把运行期升级打回原档）；PlanBatch 估算向上细化不覆盖人工值。
+- 验证：planner 单测（P0 Case 1/2/4/5 + 预算）、TestCloudTierAssignAndUpgrade（L→XL 自动升级、不重跑、账本事件）、TestCloudAdapterCarriesTier；全仓测试与构建全绿，生产 8000 重启成功。
+
+#### 追加：Discovery + 自适应调度闭环 V1.0
+
+- 新增 discovery 包（L0/L1/L2/分段/置信度/缓存/成本守卫/自适应 Range Planner）与 feedback 包（动作判定、历史画像、EWMA/P50/P95）。
+- 接入：CreateBatch 自适应 Range（生产默认开）、PlanBatch Discovery 估算、历史画像写入与调度加成、FEEDBACK_ACTION 账本/SSE、前端置信度展示。
+- 修复：采样候选顺序（SQD 优先）、Windows 文件名清洗、零置信度结果不缓存。
+- 验证：discovery/feedback/集成测试全绿；生产冒烟 conf=0.9 + 自适应单 Range + VALIDATED + profile 文件。
+
+#### 追加：Validation Pipeline V3 + Gap Repair Engine V1.0
+
+- 新增 internal/smartdownload/validation（IntervalSet、Gap Detector、GapStore、RepairPlanner）；L3 块级覆盖率、缺口/可疑空区间/COUNT_GAP 检测与二分、REPAIR 目的补洞（黑名单+3 次上限）、Validation Certificate、Final 原子发布 + manifest-v3、Registry CERTIFIED/PARTIAL、历史画像 gap/repair 率、SSE 校验/缺口/修复事件。
+- 修复：RecoverAll 与 CreateBatch 半成品竞态（地址误判完成）；manifest-v3 每数据集独立文件名。
+- 验证：validation 单测 + TestValidationV3CertificateAndRepair 全绿；生产冒烟证书 PASS（raw=unique=final、dup_sha=0）与 final/manifest-v3 发布成功。
+
+#### 追加：Progress Aggregator V2 + EWMA ETA + SSE 实时任务流
+
+- 新增 internal/smartdownload/progress（统一事件/快照、加权进度、EWMA+中位数 ETA、冷却叠加、切换重算、事件缓冲回放+resync、序列、合并器）；Dataset/Address/Batch 加权进度；SSE `id:` 序列 + Last-Event-ID + 过滤；Snapshot API。
+- 性能：10K 地址 BatchSnapshot 一次性分组计算 156ms；前端 resync 自动重拉。
+- 验证：progress 单测 + 集成（加权快照、10K、切换 ETA 重算）+ 生产冒烟（snapshot + SSE 事件链带序列）。
+
+#### 追加：前端 V2.1 任务中心 V3 与结果页优化
+
+- 任务中心：Batch 摘要条、地址级当前数据/Provider/云档、行点击、Tooltip、批次可读命名；Drawer 总览与切换提示。
+- 创建页：Discovery 反馈（数据规模分析）+ Local Hit 默认自动复用。
+- 结果页：按地址/数据集/覆盖分组、业务列序、时间/地址/金额格式化、方向 IN/OUT/SELF。
+- 后端：/jobs/{id}/summary、地址列表回填 current_dataset/current_provider/cloud_tier。
+- 验证：npm build 通过；生产冒烟 summary 与地址字段正常。
+
+#### 追加：Dataset Registry Coverage Index V2 + 跨任务复用
+
+- 新增 internal/smartdownload/registry（分片覆盖索引、区间查询、快照 TTL、兼容键、热缓存、Rebuild）；认证后写索引、coverage.updated 事件、/coverage/query API、创建复用统计、前端 LOCAL 已复用与命中统计。
+- 验证：registry 单测 + TestCoverageIndexFullHitAndQuery 全绿；生产冒烟 FULL HIT（ratio=1）与二次任务零网络复用、分片文件生成。
+- 收尾回归：go vet、全仓 Go 短测、前端生产构建全部通过；真实增量任务仅下载缺失区间（26 行/51 块），复用区间 local_hit，二次查询 800–900 FULL HIT（ratio=1），结果页分组/覆盖率/导出正常，无控制台错误。P1（Active Coverage、订阅、Lease、Reorg Window、Incremental FULL 追最新）仍未实现，边界已在 AI_HANDOFF 记录。
+
+#### 追加：Investigation Data Cache V2 + Graph Expansion Cache + Smart Prefetch V1
+
+- 新增 internal/graphcache（图扩展缓存：分片文件存储、TTL、构建聚合、增量 Merge、按地址/Dataset 失效）；internal/investigation/cache（上下文/地址画像/候选摘要缓存）；internal/investigation/prefetch（评分、规划、持久化队列、预算、反馈环、驱逐策略、低优先级后台管理器、Interactive 升级）。
+- Smart Download 批次增加 prefetch/prefetch_priority 标记；新增 /api/graph/expand、/api/investigations/{id}/prefetch[/pin|/upgrade]、/api/investigations/{id}/context、/api/prefetch/stats。
+- 前端：智能下载页「智能预取」Tab、任务中心「后台预取」标签、地址关系图聚焦自动预热图缓存。
+- 验证：go vet / 全仓 Go 短测 / 前端构建全绿；真实链路 图扩展→候选(HOT/WARM)→后台 prefetch 批次→READY→点击升级(命中率 1.0)；Pin 完整 Bundle 在 RPC 不可用时如实 FAILED（自动预取用 GraphBundle 规避）；UI 冒烟无控制台错误。
+
+#### 追加：Entity Intelligence Layer V1
+
+- 新增 internal/entityintel：实体模型/标签/证据溯源/已知实体映射/合约解析/行为模式（Deposit、Collector、Dormancy、Cashout）/COMMON_SWEEP 聚类/冲突持久化/案件标签隔离/调查线索；文件分片存储 + 索引 + events.ndjson。
+- API：/api/entity/resolve、/api/entity/resolve/batch、/api/entity/{id}/graph、/api/entity/labels、/api/investigations/{id}/entity-leads、/api/entity/stats。
+- 前端：新增「实体智能」页面；地址关系图节点卡显示实体名/类型/标签/可信度/证据数。
+- 验证：go vet / 全仓 Go 短测 / 前端构建全绿；真实冒烟已知实体 CONFIRMED、批量解析、案件标签隔离、实体图/统计/线索接口正常；UI 无控制台错误。边界：Graph Collapse、跨链/时间实体归属、外部标签数据集导入未实现。
+
+#### 追加：Fund Flow Intelligence V2
+
+- 新增 internal/fundflow：实体感知资金图、有界路径发现、路径评分（目标权重/噪声惩罚）、L0/L1 获利归因、沉淀评分、兑现候选、回流检测、资金守恒检查、文件缓存。
+- API：POST /api/fund-flow/analyze。
+- 前端：新增「资金流智能」页面（摘要卡/路径卡/获利表/沉淀表/兑现表/守恒告警）。
+- 验证：go vet / 全仓 Go 短测 / 前端构建全绿；真实 BSC 冒烟 DIRECT_CASHOUT→Binance 评分 0.748，缓存命中 24ms；UI 无控制台错误。边界：L2/L3 获利、跨链续追、多资产折算、增量重算未实现。
+
+#### 追加：Investigation Report Engine V2
+
+- 新增 internal/reportengine：结构化 Findings、证据引用层（SHA256 EvidenceHash）、证据时间线、规则叙事渲染 + 数字一致性检查、可重现快照、报告版本化、Diff、JSON/XLSX/DOCX/PDF/ZIP Case Package 导出。
+- API：POST/GET /api/investigations/{id}/reports、regenerate、export、diff、evidence 回溯。
+- 前端：新增「调查报告」页面（版本列表/章节/时间线/证据/导出）。
+- 验证：go vet / 全仓 Go 短测 / 前端构建全绿；真实生成 v1（PARTIAL 披露缺口）+ 五格式导出 + v2 Diff + Evidence 回溯；UI 无控制台错误。边界：Staleness/Lock/Manual Review/Graph Snapshot 未实现；PDF 为最小文本渲染器。
+
+#### 追加：资金流向图 V2 白底单人调查工作台
+
+- 白底主题 token 覆盖（可切换深色）；新增左侧筛选栏（六模式切换、过滤条件、关键路径列表、书签快照、自动补数/画像入口）；聚焦自动资金流分析；缩放分级 LOD；路径高亮。
+- 验证：前端构建通过；UI 冒烟（白底/模式/路径列表/聚焦/书签 localStorage）通过，无控制台错误。边界：实体折叠、结果/画像/调查反向开图、报告联动、搜索增强未实现。
+
+#### 追加：资金流向图 V3 单人深度调查分析工作台（P0）
+
+- 八种调查透镜、路径查询器（终点/金额/跳数/必经地址）、价值覆盖减噪（50-100%）、多选/临时组 + 实体假设验证、Ctrl+K 命令面板、图↔结果表联动、聚焦 Coverage 叠加；修复 ReactFlow 多选循环。
+- 验证：前端构建通过；UI 冒烟（透镜/查询/多选/命令/覆盖/结果联动）通过，无控制台错误。边界：时间回放、Graph Diff、多根调查、快照历史、跨资产连续追踪、Copilot 未实现。
+
+#### 追加：资金流向图 V3 继续实现（P1 主体 + 部分 P2）
+
+- 时间轴资金回放（后端补 block_number + 前端播放条/时间过滤）、时间线事件联动、图谱 Diff（基线对比）、多根联合调查（合并+共同节点）、快照/历史（书签+后退前进）、假设工作区（状态持久化+实体验证）、Copilot 规则建议。
+- 验证：go vet / 全仓 Go 短测 / 前端构建全绿；UI 冒烟（回放/多根/Diff/假设/Copilot/时间线）通过，无控制台错误。边界：跨资产连续追踪、Edge Timeline Preview、Snapshot Diff 未实现。
+
+#### 追加：剩余需求批量收尾
+
+- Fund Flow L2 成本基础获利；报告 Lock/Review/Outdated/Superseded；实体标签导入/聚类/搜索；Graph API V3（path-query/multi-root/reduction/hypothesis）；图谱实体名搜索定位；实体模式落盘与读取自愈。
+- 验证：go vet / 全仓 Go 短测 / 前端构建全绿；真实冒烟全部通过，UI 无控制台错误。边界：跨资产连续追踪、Edge Timeline Preview、Snapshot Diff、Prefetch 渐进窗口/Lease/Reorg、实体图折叠 UI、报告多语言/签名未实现。
+
+#### 追加：剩余需求全部实现
+
+- Asset Continuity（Swap/Bridge 转换 + USD 价格溯源）；Edge Timeline Preview；Snapshot V2 完整状态 + Diff；Prefetch Active Registry/Lease/Reorg/Progressive 7d-90d；实体跨链合并 + 标签历史版本；报告多语言/机构模板/SHA256 签名/LLM 润色（一致性校验）；Graph Agent 自动推理。
+- 验证：go vet / 全仓 Go 短测 / 前端构建全绿；真实冒烟（continuity、history、英文报告+签名+润色、agent-reason）全部通过。限制：Swap 依赖数据中的 Router/Bridge 节点；USD 仅稳定币锚定；跨链目标链解析未实现；LLM 依赖 DEEPSEEK_API_KEY。
+
 ### 2026-08-08 智能下载统一入口 Phase 3：Canonical Schema + Validation L3-L6 + ETA + SSE（部署）
 
 #### 新增

@@ -52,6 +52,405 @@
 - 前端结果页：当前数据集卡片右上角新增「导出数据」按钮 + 格式提示（XLSX ≤30 万 / CSV >30 万）。
 - 验证：`TestResultExportXLSXAndCSV` 全绿（XLSX 含表头行数一致、CSV 带 BOM 行数一致；阈值可注入测 CSV 分支）；生产冒烟 5 行数据集导出 XLSX 附件（Content-Type/Disposition 正确，PK 魔数，7444B）。
 
+### 2026-08-08 追加：SQD Cloud 弹性分级调度 V1.0（Cloud S/L/XL）
+
+> 设计：`D:\下载文件\SQD_Cloud_高性能服务器弹性调度设计_V1.0.md`
+
+1. 新增 `internal/smartdownload/cloudplanner/`：CloudTier S/L/XL、DatasetComplexity（balances 0.2 → trace 2.5）、EffectiveWorkload、CloudResourceScore（Row/Byte/Complexity/Memory/TempDisk/Partition/Runtime）、分档阈值（<30 S / <70 L / ≥70 XL）、直接 XL 候选与强制 XL 规则、运行期 Reevaluate（OOM/内存>85%/ETA>60min/ETA>2×原始估算 → 升级；XL 主阶段完成剩余小 Gap → 降级 L）、BudgetGuard（日/月预算、XL 并发、单任务成本超限 XL→L）。
+2. 接入 smartdownload：DatasetJob 新增 cloud_tier/cloud_score/cloud_reasons/cloud_estimated_cost/cloud_estimated_runtime_seconds；首次领取 sqd_cloud Range 时 `ensureCloudPlanLocked` 分档（已分档不重算，防升级被覆盖）；`updateProgressLocked` 内 `monitorCloudTierLocked` 运行期监控；Ledger 新增 CLOUD_TIER_ASSIGNED/UPGRADED/DOWNGRADED；SSE 新增 resource.switched。
+3. Cloud Job 携带 Tier：cloudruntime.Job.Tier + SQDCloudAdapter 透传（`TestCloudAdapterCarriesTier`）。
+4. 前端：任务详情 Drawer 对 sqd_cloud 数据集显示「资源 高性能（XL）/ 标准（S/L）」标签。
+5. PlanBatch 估算保留策略：已有估算优先，探测只做向上细化（防止小采样覆盖大估算）。
+6. 验收：planner 单测覆盖 P0 Case 1（100K→S）、Case 2 规划（3M→L）与升级（L→XL）、Case 4（OOM→XL）、Case 5（XL→L）、预算；集成 `TestCloudTierAssignAndUpgrade` 验证 L→XL 自动升级 + 已完成 Range 不重跑 + 账本事件；`TestCloudAdapterCarriesTier` 验证 Job 携带档位。
+
+### 2026-08-08 追加：Discovery + 自适应调度闭环 V1.0
+
+> 设计：`D:\下载文件\智能下载_Discovery与自适应调度闭环_V1.0.md`
+
+1. 新增 `internal/smartdownload/discovery/`：DiscoveryResult/ProviderCandidate/ActivitySegment、L0 Metadata（本地 Registry 全覆盖直接 total，confidence 0.95）、L1 首中尾轻量采样、L2 自适应加密采样 + 分段建模、Confidence（HIGH/MEDIUM/LOW）、文件缓存（活跃 1h / 普通 6h / 历史闭合长缓存；零置信度结果不缓存）、Probe 成本守卫（30s 上限）、Adaptive Range Planner（按密度动态 span，clamp 500~500k，目标 50k 行/Range）。
+2. 新增 `internal/smartdownload/feedback/`：ExecutionMetrics、Reevaluate 动作（KEEP/RETRY/THROTTLE/REDUCE_RANGE/SWITCH_PROVIDER/ENTER_CLOUD/SCALE_UP/SCALE_DOWN/FAIL）、HTTP 错误分类、Provider Historical Profile（文件持久化，EWMA rows/s、FinalSuccessRate、P50/P95、503/429 率、规模分桶，Windows 非法字符清洗）。
+3. 接入 smartdownload：CreateBatch 自适应 Range（生产默认开启，`SMART_DOWNLOAD_ADAPTIVE_RANGES=0` 关闭）、PlanBatch 使用 Discovery 估算（向上细化、保留人工值）、DatasetJob 持久化 discovery_confidence/suggested_range_span/activity_segments、执行成功/失败与最终验证写入历史画像、失败与校验缺口触发 FEEDBACK_ACTION 账本/SSE 事件、SmartScheduler.PlanDataset 加入历史画像加成。
+4. 前端：任务详情显示「预计 X 行 · 置信 高/中/低」。
+5. 修复：采样按调度候选顺序（SQD 优先）而非字典序（避免 RPC 探测失败导致 0 置信度）；Windows 文件名非法字符清洗；失败 Discovery 不缓存。
+6. 验收：discovery 单测（L0/L1/自适应分段/缓存/成本守卫/RangePlanner）、feedback 单测（触发动作/分类/画像持久化）、集成（自适应 Range 创建+校验、历史画像落盘、FEEDBACK_ACTION 账本）；生产冒烟：token_transfers 50 块 → discovery conf=0.9、span=208333、自适应单 Range、SQD 11 行 VALIDATED、provider-profile 文件生成。
+
+### 2026-08-08 追加：Validation Pipeline V3 + Gap Repair Engine V1.0
+
+> 设计：`D:\下载文件\智能下载_Validation_Pipeline_V3与Gap_Repair_Engine_V1.0.md`
+
+1. 新增 `internal/smartdownload/validation/`：IntervalSet（Add/Merge/Subtract/Intersect/FindGaps/CoverageRatio）、Gap Detector（RANGE_GAP / SUSPICIOUS_EMPTY / COUNT_GAP 二分定位）、GapStore（validation-state.json / validation-certificate.json / gap-ledger.ndjson / repair-attempts.ndjson）、RepairPlanner（补洞 Provider 选择：未使用 > RPC 精确补洞 > SQD > Cloud；黑名单避开疑似静默漏数据的 Provider；MaxRepairAttempts=3）。
+2. 接入：ValidationReport 增加 block_coverage/raw_rows/parts_duplicate_sha/gaps；L3 用 IntervalSet 按块覆盖率；缺口（含 SUSPICIOUS_EMPTY）写入 Gap Ledger 并并入补洞；补洞 RangeJob 带 Purpose=REPAIR 且强制选择补洞 Provider（黑名单排除）；补洞成功写 repair-attempts 成功记录并标记 REPAIRED；证书按 Gap Ledger 最新状态统计 detected/repaired/remaining。
+3. Final 原子发布：校验通过后 merged parquet 写入 `final/{dataset}/chain={chain}/`（tmp→rename），Registry 状态 CERTIFIED；PARTIAL 走 `staging/` 且 certification=PARTIAL；每数据集生成 `manifest-v3.json`（schema=3：parts/rows/providers/switches/validation_certificate）。
+4. Provider Reliability 回写：历史画像新增 gap_rate/repair_rate；校验缺口与补洞结果反馈给 Scheduler（final_success_rate 已存在）。
+5. SSE 新事件：validation.started / validation.completed / gap.detected / repair.started / repair.completed。
+6. 修复两个真实缺陷：启动 RecoverAll（2s 延迟）与 CreateBatch 半成品竞态（地址已存、数据集未存时被误判完成 → 批次 COMPLETED 但数据集 PENDING）——恢复扫描跳过恢复开始后新建的批次，且零数据集地址禁止判定完成；manifest-v3 改为每数据集独立文件名（原先共享文件名互相覆盖）。
+7. 验收：validation 单测（IntervalSet/RangeGaps/SuspiciousEmpty/CountBisect/RepairPlanner/GapStore+证书）；集成 `TestValidationV3CertificateAndRepair`（缺口→补洞→证书 PASS gaps repaired→CERTIFIED）；生产冒烟：证书 PASS coverage=1 raw=unique=final、dup_sha=0、final/ parquet + 每数据集 manifest-v3（schema 3）。
+
+### 2026-08-08 追加：Progress Aggregator V2 + EWMA ETA + SSE 实时任务流 V1.0
+
+> 设计：`D:\下载文件\智能下载_Progress_Aggregator_EWMA_ETA_SSE实时任务流_V1.0.md`
+
+1. 新增 `internal/smartdownload/progress/`：统一 ProgressEvent/Snapshot、RangeWeight+WeightedProgress（Σw×p/Σw）、ETAEngine（EWMA α 按 Provider 稳定度 + 滚动中位数 + Reset + 样本数）、ComputeETA（上下界 ±30%、HIGH/MEDIUM/LOW/UNKNOWN、冷却叠加、Recalculating）、EventBuffer（10k 有界回放 + 超界 resync）、Coalescer（状态事件即时、进度 300ms 合并）、SequenceStore（批次单调序列）。
+2. 接入：Dataset 进度改为 Range 加权（Discovery 分段估算行数优先，否则区块跨度）；Address 加权 = Σ(估算行数×DatasetComplexity×进度)；BatchSnapshot 加权 = Σ(地址权重×进度)，10K 地址一次性按地址分组计算（156ms）；Provider 切换/Cloud Tier 切换时 reset ETA 引擎并标记 recalculating（3 个样本后恢复）；ETA 叠加 Provider 冷却剩余时间；SSE 事件带 `id: sequence`，支持 Last-Event-ID 回放、超界 `resync_required`、batch_id/address_job_id 过滤；新增 `GET /jobs/{batch_id}/snapshot` 与 `/jobs/{batch_id}/addresses/{address_job_id}`。
+3. 前端：任务中心使用 Snapshot + SSE（resync_required → 重新拉取），批次卡片显示加权总进度与地址完成数。
+4. 验收：progress 单测（加权/EWMA/中位数/ETA 上下界与置信度/冷却/缓冲回放与 resync/序列/合并器）；集成（加权地址与批次快照、10K snapshot 156ms<2s、切换 ETA 重算）；生产冒烟：snapshot progress=1 ranges 1/1、SSE 输出 `id: 1/2` + 完整事件链（dataset.updated→range.completed→validation.started→completed→result.ready）。
+
+### 2026-08-08 追加：前端 V2.1 任务中心 V3 与结果页优化
+
+> 设计：`D:\下载文件\智能下载前端_V2.1_现状评估与优化方向.md`
+
+1. 任务中心 V3：Batch 顶部摘要（总进度/地址完成/运行中/排队/需关注/实时吞吐/ETA + 暂停全部/继续全部/取消）；地址级表新增“当前数据 / Provider（含 Cloud Tier）”列；整行点击打开详情；操作按钮全部加 Tooltip（含禁用原因）；批次主列改为可读名称（链 · 地址数 · 数据集 · 时间），UUID 放 Tooltip。
+2. 地址详情 Drawer：新增地址总览（链/范围/ETA/已下载）与“已自动切换下载方式（已完成数据不会重新下载）”提示（由 Ledger PROVIDER_SWITCHED 驱动）。
+3. 创建页：Local Hit 改为默认自动复用（复选框反转为“强制忽略本地缓存重新下载”，默认关）；点击开始后先显示“正在分析数据规模…”（地址数/预计行数/GB/S-M-L-XL 分布）再自动进入任务中心。
+4. 结果页：已入库结果按 地址 → 数据集 → 合并覆盖区间 分组（同地址同 Dataset 不再多行）；结果表格按业务列序（时间/区块/Tx Hash/方向/From/To/Token/Amount/…），block_time 转为日期（Hover 原值）、地址与 Hash 缩略+点击复制、按目标地址计算 IN/OUT/SELF 方向、金额千分位格式化。
+5. 后端补充：`GET /jobs/{batch_id}/summary`（状态计数+快照+吞吐）；地址列表接口回填 current_dataset/current_provider/cloud_tier。
+6. 验收：前端 `npm run build` 通过；生产冒烟：运行中地址返回 cur=balances provider=rpc、summary（progress/running/throughput）正常、批次 COMPLETED。
+
+### 2026-08-08 追加：Dataset Registry Coverage Index V2 + 跨任务复用与增量下载
+
+> 设计：`D:\下载文件\智能下载_Dataset_Registry_Coverage_Index_V2_跨任务复用与增量下载.md`
+
+1. 新增 `internal/smartdownload/registry/`：CoverageIndexEntry（chain/address/dataset → certified_ranges/snapshot/compatibility_key）、分片文件存储（`registry/coverage/{chain}/{shard}/{address}.json`，50K 热缓存 LRU）、区间 Resolve（covered/missing/ratio/full_hit）、Range 合并、快照类 Dataset（balances TTL 300s，过期 STALE 需刷新）、Schema 兼容键（不兼容不复用）、启动 Rebuild（只恢复 CERTIFIED）。
+2. 接入：校验通过并发布 CERTIFIED 后写覆盖索引（历史类写 certified_ranges，余额类写快照）；`coveredRangesFor` 优先走 Coverage Index（其次 Cloud Registry/结果回退）；启动 RecoverAll 先 Rebuild；覆盖更新触发 `coverage.updated` SSE 事件。
+3. API：`POST /api/smart-download/coverage/query`（chain/address/dataset/range → coverage_ratio/full_hit/covered/missing/certification/compatible）。
+4. 创建任务：返回本地复用统计（local_full_hits/local_partial_hits/local_misses/reused_ranges）；FULL HIT 零网络直接 local_hit 完成，PARTIAL HIT 只补缺失区间（既有 Range 级差量机制）。
+5. 前端：Provider 显示 LOCAL 已复用；创建页 Discovery 反馈加入“完全命中/部分命中/需下载/复用区间”统计。
+6. 验收：registry 单测（full/partial/merge/TTL 过期/不兼容/分片/Rebuild）+ 集成 `TestCoverageIndexFullHitAndQuery`（认证后 FULL HIT、二次任务全 LOCAL_REUSE、扩范围仅补缺口）；生产冒烟：查询 full=True ratio=1、复用批次 full_hits=1/reused_ranges=1、分片文件生成（bsc/88/0x8894….json）。
+
+#### 完整回归与真实增量验收（2026-08-08 收尾）
+
+- 全仓回归：`go vet ./...` 通过；`go test ./internal/... -short -count=1` 全包通过（含 registry 与新增集成测试）；`frontend && npm run build` 通过（仅保留既有 2MB 主包体积提示）。
+- 真实端到端增量：批 `b478e3c6-7fa8-4eb4-a3d4-d233ecad2de3`，BSC token_transfers，请求 114474800–114474900、`skip_covered=true`。创建返回 `local_partial_hits=1 / reused_ranges=1 / range_jobs=1 / local_misses=0`；任务约 2 秒完成。
+  - 复用区间 114474800–114474849：`provider=local_hit`、0 行下载、Range 终态 COMPLETED；缺失区间 114474850–114474900：`provider=sqd`、26 行。
+  - 校验 VALIDATED、Score 100、CERTIFIED；再次查询 800–900：`full_hit=true / coverage_ratio=1`，覆盖区间已合并为 `[800,900]`。
+  - 分片索引 `registry/coverage/bsc/88/0x8894e0a0c962cb723c1976a4421c95949be2d4e3.json` 已更新。
+- UI 真实冒烟（Playwright + Edge，1536×960）：任务中心 Drawer 可见 `local_hit` Range、`RANGE_REUSED` 时间线与 `sqd` Provider；结果页按地址分组显示 `0x8894e0a0…e2d4e3`、代币转账、覆盖 100.00%·26 行与 XLSX 导出；无控制台错误。截图：`v142-coverage-task-drawer.png`、`v142-coverage-results.png`。
+- 边界（P0 已完成，P1 未实现）：Active Coverage Registry / Cross-Task Subscription / Single Range Owner / Lease Recovery / Reorg Safety Window 以及 §56 Incremental FULL 的 latest finalized 追赶尚未实现；当前语义为“已认证数据默认复用 + 部分命中只补缺口”，正在运行任务的 Range 所有权与增量追最新未覆盖。
+
+## 2026-08-08 追加：Investigation Data Cache V2 + Graph Expansion Cache + Smart Prefetch V1（P0 完成）
+
+> 设计：`D:\下载文件\智能调查_Investigation_Data_Cache_V2_Graph_Expansion_Cache_Smart_Prefetch_V1.0.md`
+
+### 完成内容
+
+1. `internal/graphcache/`（Graph Expansion Cache V1）：
+   - `GraphExpansionKey`（chain/address/direction/dataset_set/token/from/to/depth/agg_version）+ 稳定 sha256 缓存键；
+   - 文件分片存储（`investigation/graphcache/{chain}/{shard}/{address}/{hash}.json`，原子写）；
+   - TTL：近实时区间（≥114000000 块）5 分钟，历史闭合区间 7 天；按地址/按 Dataset 失效；
+   - `Builder` 基于 analyticsapi Flows/Profile 聚合对手边/节点/总流入流出/覆盖度；`Merge` 支持缓存层增量合并。
+2. `internal/investigation/cache/`（Investigation Cache V2）：按 investigation_id 保存上下文快照（§39）、地址画像/覆盖状态（§45）、候选摘要（§40）、图缓存键；纯文件原子写。
+3. `internal/investigation/prefetch/`（Smart Prefetch Planner V1）：
+   - 候选生成（Top Inflow/Outflow、高频交互、路径下一跳、手工 Pin）+ §14 评分公式 + HOT/WARM/COLD 排名映射；
+   - Coverage Index 联动：FULL HIT 跳过、PARTIAL 只补缺口；持久化队列按 chain+address+token+range 去重（Case E），失败/驱逐任务原地复用；
+   - 预算（§33：每日地址数/网络/活动任务上限）、反馈环（§34-§37：used/unused/hit_rate/saved_latency/reuse_probability）、驱逐评分与磁盘阈值策略（§57-§58，Windows/Unix 磁盘使用率读取）；
+   - 低优先级后台循环：前台任务存在时暂停预取（Case C）、Interactive 升级复用同一 Batch 继续进度（Case B）、7 天未使用降权驱逐（Case F）。
+4. Smart Download 增加可选的 `prefetch`/`prefetch_priority` 批次标记（不影响核心调度语义）。
+5. API：
+   - `POST /api/graph/expand`（图扩展缓存查询 + 预取规划，§62/§46-§47）；
+   - `GET /api/investigations/{id}/prefetch`（§63）；
+   - `POST /api/investigations/{id}/prefetch/pin`（§64）；
+   - `POST /api/investigations/{id}/prefetch/upgrade`（Interactive 升级，§53-§54）；
+   - `POST /api/investigations/{id}/context`（§39）；
+   - `GET /api/prefetch/stats`（§77 指标）。
+6. 前端：智能下载页新增「智能预取」Tab（候选表 + HOT/WARM 徽标 + 状态 + 评分 + 区间 + Batch + 立即展开/Pin）；任务中心批次显示「后台预取」标签；地址关系图聚焦地址自动调用 `/api/graph/expand` 预热图缓存。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`、`frontend npm run build` 全部通过（新增 graphcache/cache/prefetch 单测 + API 路由测试 + smartdownload Prefetch 标记测试）。
+- 真实端到端：`/api/graph/expand`（BSC 114474800–114474850）→ 图缓存落盘 → 23 候选（3 HOT/10 WARM/10 COLD）→ 后台自动创建 `prefetch=true` 批次 → 任务 COMPLETED 后候选 READY；Pin 进入 HOT（含 balances 完整 Bundle）；点击升级 READY 任务成功（任务 ID 不变、feedback hit_rate=1、saved_latency=43.8s）。
+- 真实边界：Pin 完整 Bundle 含 balances，当前 RPC 无健康节点时该批次 FAILED（SQD 数据集不受影响）；自动预取默认使用不含 balances 的 GraphBundle，避免后台依赖 RPC。队列按新去重键启动时合并遗留重复任务（保留 READY 优先）。
+- UI 冒烟（Playwright + Edge 1536×960）：智能预取 Tab 显示统计与 HOT 候选、任务中心显示「后台预取」标签、无控制台错误。截图：`v143-prefetch-tab.png`、`v143-task-center-prefetch.png`。
+
+### 未完成/边界（P1/P2）
+
+- Progressive Prefetch（7/90 天渐进窗口）未实现，当前用调用方给定的有界区块范围；
+- Agent Prefetch Recommendation 未接入 AI Agent，当前通过 Pin 接口接收人工/外部推荐；
+- 增量 Graph Rebuild 仅实现缓存层 `Merge`，未接入全量重算调度；
+- Cloud 策略未显式禁止预取进入 SQD Cloud XL（依赖 Smart Download 现有 Cloud 兜底），预取云成本未计入预算；
+- 驱逐策略只做评分/暂停/标记 EVICTED，未实现 staging 文件物理清理（避免误删 Certified Final）；
+- 多案件共享缓存、实体级预取、交易所标签驱动、路径概率模型、用户行为学习（§68 P2）未实现。
+
+## 2026-08-08 追加：Entity Intelligence Layer V1（P0 完成 + 部分 P1）
+
+> 设计：`D:\下载文件\Entity_Intelligence_Layer_V1_地址标签实体映射与证据溯源.md`
+
+### 完成内容
+
+1. `internal/entityintel/`：
+   - 数据模型（§3-§9、§28）：EntityType / LabelSource / LabelScope / ConfidenceTier / AddressLabel / Entity / AddressCluster / EvidenceRef / InvestigationLead / AddressFeature / ConflictEntry / Resolution。
+   - 文件存储（§31-§32）：entities/addresses（hash 分片）/evidence/clusters/leads/manual/conflicts + events.ndjson + 三重索引（address→entity、entity→addresses、label→addresses），全部原子写。
+   - Evidence Provenance（§7）：每个标签携带 EvidenceRef（SourceType/SourceName/SourceURI/Observation/Confidence/ValidFrom/ValidTo）。
+   - Known Entity Mapping（§18、§51）：内置公开标签种子（Binance 公开标签关联地址、USDT/WBNB Token 合约、PancakeSwap Router V2），带来源与观察说明，不擅自下“充值/归集”结论。
+   - Contract Resolver（§19）：基于 Profile 合约判定 → CONTRACT / TOKEN_CONTRACT。
+   - 行为模式（P1，§20-§27）：Deposit/Sweep、Collector/Settlement、Hot Wallet、DormancyScore、Cashout Candidate → Investigation Lead（EXCHANGE_DEPOSIT 等）；行为推断只产生候选，绑定实体名称仅在归集目标命中已知实体时发生（§21、§48）。
+   - Entity Cluster Engine（P1，§11-§15）：COMMON_SWEEP 聚类（稳定归集去向），带 FalsePositiveRisk / MinEvidenceCount；Cluster 不直接等于 Entity。
+   - Conflict（§43-§44）：不同来源冲突持久化为 CONFLICT，不静默覆盖。
+   - Manual Label（§45-§46 Case F）：INVESTIGATION 作用域案件标签，独立存储，不污染全局实体。
+2. API（§53-§56）：
+   - `GET /api/entity/resolve`（缓存命中快速路径）
+   - `POST /api/entity/resolve/batch`（≤10,000 地址）
+   - `GET /api/entity/{id}/graph`
+   - `POST /api/entity/labels`（案件标签）
+   - `GET /api/investigations/{id}/entity-leads`
+   - `GET /api/entity/stats`（§71 指标）
+3. 前端：
+   - 新增「实体智能」页面（调查工作台）：单地址解析（实体/类型/可信度中文等级/标签/证据/冲突）、批量解析表、调查实体线索、案件自定义标签、统计卡。
+   - 地址关系图节点卡增加实体覆盖层（Graph Node Label Overlay）：聚焦地址自动解析并显示实体名、类型、标签、可信度、证据数。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`、`frontend npm run build` 全部通过（新增 entityintel 单测：已知实体解析/缓存命中、入金模式+聚类+线索、案件标签隔离、沉淀分数、冲突持久化、批量解析、实体图）。
+- 真实冒烟：已知地址解析 `CONFIRMED / EXCHANGE`（缓存命中）；Token 合约 `TOKEN_CONTRACT`；批量解析 3 个已知实体全部命中；案件标签仅调查作用域返回；实体图/统计/线索接口正常。
+- UI 冒烟（Playwright + Edge 1536×960）：实体智能页显示实体名、已确认、证据溯源；地址关系图节点卡显示实体覆盖；无控制台错误。截图：`v144-entity-page.png`、`v144-graph-entity-overlay.png`。
+
+### 未完成/边界
+
+- Entity Graph Collapse / Cluster View（§39-§40）未实现（关系图实体折叠 UI）；
+- Temporal Entity Ownership、Cross-chain Entity Mapping、Entity-level Flow Graph、Historical Entity Versioning（§62-§63 P2）未实现；
+- 聚类目前只实现 COMMON_SWEEP（高可信信号），COMMON_FUNDER / DEPOSIT_CLUSTER / 时间节奏等辅助信号未接入；
+- 已知实体库为内置种子，未接入外部标签数据集导入；
+- 行为模式依赖本地 DuckDB 数据；无数据时仅返回 UNVERIFIED。
+
+## 2026-08-08 追加：Fund Flow Intelligence V2（P0 完成 + 部分 P1）
+
+> 设计：`D:\下载文件\Fund_Flow_Intelligence_V2_路径评分获利归因与资金沉淀识别.md`
+
+### 完成内容
+
+1. `internal/fundflow/`：
+   - 资金流模型（§2-§5）：FlowEdge（含实体 ID/边类型/证据）、PathNode、Path、FlowSession 语义由路径表达。
+   - Entity-Aware Flow Graph（§6-§7）：有界 BFS 构建实体感知图，节点带 Gross Inflow/Outflow/Net Flow/实体信息，边自动分类（DEPOSIT/WITHDRAWAL/SWEEP/SWAP/BRIDGE/INTERNAL_ENTITY_TRANSFER 等），支持实体折叠计数。
+   - Path Finder（§34-§38）：深度 6 / 节点 500 / 每层 Top 10，路径类型 DIRECT_CASHOUT / MULTI_HOP_CASHOUT / BRIDGE_EXIT / COLLECT_AND_SETTLE / UNKNOWN，终点类型识别。
+   - Path Scoring（§29-§33）：ValueScore（相对根流量）、ProfitRelevance、SettlementLikelihood、EntityRelevance、TemporalContinuity、PathConfidence、Novelty、NoisePenalty；GoalProfile 基础版按 cashout/settlement/profit/collector 调权重。
+   - Profit Attribution（§12-§14、§19）：L0 Gross（累计流入筛查）与 L1 Net Flow（流入-流出），带置信度与证据 ID。
+   - Settlement Detection（§20-§25）：SettlementScore（净留存/持有时长/低流出/不活跃/路径终点性/实体相关性），类型 DORMANT_WALLET / CUSTODIAL_SETTLEMENT / UNKNOWN_SETTLEMENT。
+   - Cashout Candidate（§26-§27、Case A/B）：路径终点命中交易所/支付/托管实体 → DIRECT/MULTI_HOP_CASHOUT，输出来源/落点/金额/Token/置信度。
+   - Round Trip（P1，§40-§41 Case E）：路径回流检测。
+   - Flow Conservation（P1，§42-§43 Case H）：流入/流出偏差检查，异常触发 Revalidation 建议。
+   - Fund Flow Cache（§59-§60）：按 root/chain/token/range/goal/depth/scoring_version 缓存，30 分钟 TTL，原子写。
+2. API：`POST /api/fund-flow/analyze`（一次返回 paths/profit/settlements/cashouts/round_trips/conservation/graph/summary）。
+3. 前端：新增「资金流智能」页面（调查工作台）：
+   - 分析表单（根地址/链/Token/调查目标/最大深度/调查 ID）；
+   - 摘要卡（关键路径/兑现候选/沉淀候选/获利地址/回流/守恒通过率/缓存命中）；
+   - 路径卡（类型/评分/置信度/跳数/终点 + 点击展开证据）；
+   - 获利归因表（L0/L1）、沉淀候选表、交易所兑现候选表、回流与守恒告警。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`、`frontend npm run build` 全部通过（新增 fundflow 单测：缓存键/缓存回读、路径评分、净流、沉淀识别、回流、守恒异常、Engine 端到端+缓存命中）。
+- 真实冒烟（BSC）：根=Binance 公开标签地址 → 11.2s 首算（50 节点）、17 路径/24 沉淀/36 获利归因/50 守恒；缓存命中 24ms。
+- 真实兑现路径：根=上游地址 → DIRECT_CASHOUT → Binance（公开标签关联地址），路径评分 0.748，兑现候选 1 条。
+- UI 冒烟（Playwright + Edge 1536×960）：摘要/路径卡/获利表/沉淀表/兑现表/守恒全部可见，无控制台错误。截图：`v145-fund-flow-page.png`。
+
+### 未完成/边界（P1/P2）
+
+- L2 Cost-Basis Adjusted Profit、L3 Entity-Adjusted Profit、Self-Controlled Flow 排除未实现（L0/L1 是筛查指标，不是最终司法结论）；
+- Bridge Continuation / 跨链续追、Multi-Asset Conversion（USD 统一价值 + 价格溯源）、Incremental Flow Rebuild 未实现；
+- 前端“在关系图中定位路径”高亮联动未实现；
+- Goal-Aware Path Scoring 仅实现基础权重切换，路径概率模型/自动报告/Agent 集成（P2）未实现。
+
+## 2026-08-08 追加：Investigation Report Engine V2（P0 完成 + 部分 P1）
+
+> 设计：`D:\下载文件\Investigation_Report_Engine_V2_证据时间线调查叙事与案件包.md`
+
+### 完成内容
+
+1. `internal/reportengine/`：
+   - 数据模型（§4-§7、§10、§13、§25-§28）：InvestigationReport / ReportSection / Finding / EvidenceRef（含 SHA256 EvidenceHash）/ TimelineEvent / ReportCertification / ReportSnapshot。
+   - Structured Findings（§6-§7、§63）：Entity / Path / Profit / Settlement / Cashout / RoundTrip / Conservation / DataGap 全部转成标准 Finding，100% 带 Evidence IDs 与 Confidence。
+   - Evidence Citation Layer（§8-§11）：证据索引 + Canonical Record SHA256；报告每个结论可回溯 Evidence ID 与哈希。
+   - Evidence Timeline（§12-§16）：路径/落点/沉淀事件 + ImportanceScore，按重要性排序并截断 200 条；时间由区块号估算（BSC 3s/块）。
+   - Narrative Renderer（§17-§21、§64）：模板骨架 + Metric Binding + Evidence Binding；数字一律来自 Finding.Metrics；生成后执行 Fact Consistency Check（§75 数字一致性）。
+   - Report Snapshot（§27-§30）：版本号、数据集清单哈希、解析器/资金流/路径评分/获利归因/模板版本。
+   - Report Versioning（§31、§61）：`reports/report_v{N}/{report.json,snapshot.json,findings.json,timeline.json,evidence-index.json,exports/}` 原子写。
+   - Report Diff（P1，§32、§67）：新增/移除 Findings、指标变化、Summary 差异。
+   - Export（§36-§41）：JSON、XLSX（excelize 多表）、DOCX（标准库 OOXML 最小实现）、PDF（最小文本 PDF 渲染器）、Case Package ZIP（报告+证据+表+Manifest SHA256）。
+2. API（§65-§68）：
+   - `POST /api/investigations/{id}/reports`（生成）
+   - `GET /api/investigations/{id}/reports` / `GET /api/investigations/{id}/reports/{report_id}`
+   - `POST /api/investigations/{id}/reports/{report_id}/regenerate`（新版本）
+   - `POST /api/investigations/{id}/reports/{report_id}/export`（json/xlsx/docx/pdf/case_package）
+   - `GET /api/investigations/{id}/reports/diff/{a}/{b}`
+   - `GET /api/investigations/{id}/evidence/{evidence_id}`
+3. 前端：新增「调查报告」页面（调查工作台）：
+   - 调查 ID 选择、生成综合报告、版本列表（状态/路径/兑现/沉淀/获利/缺口）；
+   - 章节渲染（叙事 + Findings 表）、数据完整性披露、证据时间线、证据清单；
+   - 五种格式导出按钮、版本差异提示。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`、`frontend npm run build` 全部通过（新增 reportengine 单测：证据哈希、版本存储、生成、叙事一致性、全部导出格式、Diff、证据查找）。
+- 真实冒烟：default 调查生成 v1（5.1s，10 章节、89 Findings、45 时间线事件、79 证据、PARTIAL 披露 4 缺口）；五种导出全部 200 且落盘；regenerate v2（深度 4）后 Diff 正常（新增 49 / 移除 64 / 指标变化 1）；Evidence ID 回溯正常。
+- UI 冒烟（Playwright + Edge 1536×960）：版本列表/章节/时间线/证据/导出按钮全部可见，无控制台错误。截图：`v146-report-page.png`。
+
+### 未完成/边界（P1/P2）
+
+- Report Staleness 自动 OUTDATED、Report Lock、Manual Review（User Note 与 System Generated 区分）、Graph Snapshot Export、Interactive Evidence Links 未实现；
+- PDF 为最小文本渲染器（无中文嵌入字体、无复杂排版），正式文书建议用 DOCX 二次加工；
+- 未接入 LLM 语言润色（当前为纯规则模板，满足“LLM 不创造事实”约束）；
+- 多语言报告、机构模板、电子签名/Hash 归档（P2）未实现。
+
+## 2026-08-08 追加：资金流向图 V2 白底单人调查工作台（P0 主体）
+
+> 设计：`D:\下载文件\资金流向图_V2_白底单人调查工作台重构方案.md`
+
+### 完成内容
+
+1. 白底主题（§4-§6、§39-1）：`.graph-light` CSS token 覆盖整套深色变量（背景 #F7F9FC、画布 #FFF、浅灰网格、蓝色主交互、绿色交易所、红色风险），支持「白底/深色」一键切换；白底截图可直接用于报告。
+2. 左侧筛选栏（§9、§39-2）：新增 `FlowLeftPanel`：
+   - 调查上下文（根地址/链/模式）；
+   - 视图模式切换（普通图/关键路径/实体图/沉淀图/获利图/落点图，§8.2、§21）；
+   - 过滤条件（仅大额/隐藏合约/仅交易所/隐藏弱边/最小金额）；
+   - 关键路径列表面板（评分/类型/跳数，点击高亮图中路径，§26）；
+   - 书签/快照（保存当前根地址/方向/深度/模式/过滤，localStorage 持久化，§18、§39-11）；
+   - 节点操作（自动补数 → SmartFillPanel、进入地址画像）。
+3. 图 → Fund Flow 联动（§10.1、§26）：聚焦地址自动调用 `/api/fund-flow/analyze`（深度 2），路径列表/模式过滤/路径高亮直接消费分析结果。
+4. 缩放分级 LOD（§23、§39-5）：`zoom-far/medium/near` 按缩放隐藏节点文字、收缩节点卡片、简化边标签。
+5. 路径高亮（§39-7）：点击关键路径列表面板条目，图中路径节点加 `path-highlight` 高亮；再次点击取消。
+6. 自动补数（§32、§39-8）：左侧「自动补数」与 Inspector「智能补充」复用现有 SmartFillPanel（Coverage 检查 → Smart Download）。
+7. 详情联动保持并增强：Inspector 已含实体覆盖层、智能补充、加入调查；新增左侧「进入地址画像」。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`（后端本轮无改动）、`frontend npm run build` 全部通过。
+- UI 冒烟（Playwright + Edge 1536×960）：白底切换、左侧筛选栏、六模式切换、关键路径列表、聚焦模式、书签保存到 localStorage 全部通过；无控制台错误。截图：`v147-graph-v2-light.png`、`v147-graph-v2-focused.png`。
+
+### 未完成/边界（P1/P2）
+
+- 实体折叠/聚类级节点（§10.3-§10.4、§39-6 自动聚合）未实现，当前「实体图」模式为实体地址过滤，不做图形折叠；
+- 右侧详情栏多 Tab（§13.1 概览/资金/路径/数据/证据/操作）沿用现有 Tab，未新增「路径」与「数据」专项 Tab；
+- 结果数据/画像/调查反向开图（§33-§35）、报告联动（§16.5、§41）、路径导出增强（§38）未实现；
+- 布局缓存、视口裁剪、边合并等性能项（§28）未实现；
+- 搜索增强（实体名/TxHash/书签，§29）与节点右键菜单（§30）未实现。
+
+## 2026-08-08 追加：资金流向图 V3 单人深度调查分析工作台（P0 完成）
+
+> 设计：`D:\下载文件\资金流向图_V3_单人深度调查分析工作台升级方案.md`
+
+### 完成内容
+
+1. Investigation Lenses（§6-§12、§47-1）：左侧新增八种调查透镜（资金主干/大额流向/快速转移/沉淀/获利/交易所落点/风险暴露/跨链），一键切换视图模式与过滤预设。
+2. Path Query Builder（§13-§14、§47-2）：终点类型（任意/交易所/沉淀/跨链）、最小金额、最大跳数、必须经过地址；客户端过滤 Fund Flow 路径并返回列表，点击在图中高亮。
+3. Graph Reduction / Value Coverage（§24-§25、§47-3）：价值覆盖滑杆（50%-100%）保留解释目标比例资金的最小子图，其余低价值边折叠；配合「隐藏弱边/仅大额/隐藏合约/仅交易所」过滤。
+4. Flow Layout（§38、§47-4）：现有布局已是“上游在左、根居中、下游在右”的水平分层布局，符合 V3 默认要求，未改动。
+5. Coverage Overlay（§28、§47-5）：聚焦地址自动查询 Smart Download Coverage Index，左侧面板显示覆盖率/完整/缺失，根节点旁显示状态。
+6. 多选 / 临时组（§32-§33、§47-6）：ReactFlow 多选 + 左侧「多选工作区」：建立临时组（localStorage 持久化，明确 Temporary Investigation Group 不直接当 Entity）、建立假设（调用 Entity Intelligence 检查共同实体，输出 支持/弱支持反证/未验证，展示反证）。
+7. Command Palette（§37、§47-7）：Ctrl+K 打开命令面板，支持切沉淀/获利/落点图、保存快照、自动补数、打开地址画像。
+8. Graph ↔ Result Grid（§39、§47-8）：选中节点后左侧「结果数据联动」自动过滤落点/沉淀/获利/路径行；点击路径行在图中高亮。
+
+### 验证
+
+- `go vet ./...`、全仓 Go 短测（后端本轮无改动，仍全绿）、`frontend npm run build` 全部通过。
+- UI 冒烟（Playwright + Edge 1536×960）：透镜、价值覆盖、路径查询器、多选工作区、结果联动、命令面板、覆盖叠加全部可见；聚焦后路径列表加载、透镜切换、Ctrl+K 命令面板打开正常；无控制台错误。截图：`v148-graph-v3-workbench.png`。
+- 修复：ReactFlow `onSelectionChange` 挂载循环（React #185）改为函数式更新 + 相同选择不触发重渲染。
+
+### 未完成/边界（P1/P2）
+
+- Temporal Graph Replay（时间轴回放）、Evidence Timeline 联动、Edge Timeline Preview、Graph Diff、Multi-Root Investigation、Snapshot V2 + Workspace History（§48 P1）未实现；
+- Asset Continuity（Swap/Bridge 跨资产连续追踪）、完整 Hypothesis Workspace、Investigation Copilot（§49 P2）未实现；
+- 路径查询为客户端过滤（复用 Fund Flow 结果），未新增后端 `/api/graph/path-query`；
+- 后端 Graph API V3（query/diff/multi-root/reduction/hypothesis）未新增，后续可把客户端逻辑下沉。
+
+## 2026-08-08 追加：资金流向图 V3 继续实现（P1 主体 + 部分 P2）
+
+### 完成内容
+
+1. Temporal Graph Replay（§3-§5、§48-1）：
+   - 后端修复：Fund Flow 图边/路径节点携带 `block_number`（此前缺失导致时间轴无范围）；资金流缓存 ScoringVersion 升到 v2 使旧缓存失效。
+   - 前端：底部时间回放条（播放/暂停、拖动、1x/2x/5x），按时间推进过滤可见节点（根地址始终保留）。
+2. Evidence Timeline 联动（§48-2）：左侧新增「时间线事件」列表（路径节点事件按区块时间排序，最多 30 条），点击事件在图中高亮对应路径或选中地址。
+3. Graph Diff（§48-4）：左侧「图谱 Diff」支持保存当前分析为基线、对比当前分析，输出新增/移除路径数与新增落点/沉淀数（banner 展示）。
+4. Multi-Root Investigation（§22-§23、§48-5）：左侧「多根联合调查」支持添加多个根地址，依次调用 Fund Flow 并合并路径/获利/沉淀/落点/图；「仅显示共同节点」过滤出所有根共同出现的节点。
+5. Snapshot V2 + Workspace History（§34-§35、§48-6）：书签升级（含模式/过滤/透镜/路径状态）；新增后退/前进历史栈（视图模式、透镜、过滤状态）。
+6. Hypothesis Workspace（P2 部分，§32-§33、§49-4）：假设持久化（DRAFT/TESTING/SUPPORTED/WEAK/CONTRADICTED/UNRESOLVED），从多选建立，状态可更新；结合 Entity Intelligence 实体一致性检查（支持/反证/未验证）。
+7. Investigation Copilot（P2 部分，§27、§49-5）：规则建议列表（多跳路径建议展开下游、沉淀候选、落点证据、Coverage 不足建议补数、守恒异常建议校验），点击直接执行对应动作。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`、`frontend npm run build` 全部通过（fundflow 测试新增路径节点区块号断言）。
+- UI 冒烟（Playwright + Edge 1536×960）：时间回放条、多根联合调查（添加根地址/标签/共同节点）、图谱 Diff（基线+对比 banner）、假设工作区、Copilot 建议、时间线事件全部可见可操作；无控制台错误。截图：`v149-graph-v3-p1.png`。
+
+### 未完成/边界
+
+- Asset Continuity（Swap/Bridge 跨资产连续追踪，§17-§20、§49-1~§49-3）未实现；
+- Edge Timeline Preview（hover 迷你时间分布，§30）未实现；
+- Graph Snapshot 仅保存书签视图状态，未保存节点位置/展开状态/临时组；Snapshot Diff 未实现；
+- Copilot 为规则建议，未接入 LLM/Agent；
+- 多根合并为前端聚合，未新增后端 `/api/graph/multi-root`。
+
+## 2026-08-08 追加：剩余需求批量收尾
+
+### 完成内容
+
+1. Fund Flow P1：L2 Cost-Basis Adjusted Profit（§10-§11、§15）：成本基础=Top1 来源占比×累计流入×0.7（启发式，LOW 置信度，证据标注），L1/L2 同时返回；测试覆盖。
+2. Report Engine P1（§33、§58-§60）：报告 Lock / Review / Outdated 状态接口与前端按钮；regenerate 自动把上一版非 LOCKED 报告标记 SUPERSEDED（LOCKED 保留原版）。
+3. Entity Intelligence P1/P2 部分：
+   - 外部标签数据集导入 `POST /api/entity/labels/import`（§51）；
+   - 聚类列表 `GET /api/entity/clusters`；
+   - 实体名搜索 `GET /api/entity/search?q=`（§29 图谱搜索增强）；
+   - 修复：行为模式实体未落盘、读取时按标签回填占位实体；解析结果选择置信度最高的全局标签实体。
+4. Graph API V3（§45-§46）：
+   - `POST /api/graph/path-query`（终点/金额/跳数/必经地址服务端过滤 + 建议）；
+   - `POST /api/graph/multi-root`（多根合并 + 共同节点）；
+   - `POST /api/graph/reduction`（价值覆盖减噪服务端）；
+   - `POST /api/graph/hypothesis/test`（实体一致性 + 共同 Sweep/Funder + 置信度 + 证据）。
+5. 图谱搜索增强（§29）：输入实体名（如 Binance）可直接定位实体首个地址（本地图节点 → 书签 → 后端实体搜索三级回退）。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`、`frontend npm run build` 全部通过。
+- 真实冒烟：path-query（19 路径/3 建议）、reduction（折叠 40 边/保留 9 边/80% 覆盖）、multi-root（2 根合并/共同节点）、hypothesis（置信度+共同信号）、实体导入（1 条）与实体搜索（Binance 定位）、报告 lock/review/outdated 状态流转与 regenerate 自动 SUPERSEDED 全部通过。
+- UI 冒烟：报告操作按钮（审阅/锁定/过期）就位；图谱页输入 "Binance" 直接聚焦定位；无控制台错误。
+
+### 仍未实现（诚实边界）
+
+- Asset Continuity / Swap / Bridge 跨资产连续追踪（需 Swap/Bridge 解析与 USD 价格溯源）；
+- Edge Timeline Preview、Graph Snapshot V2 完整状态（节点位置/展开状态）与 Snapshot Diff；
+- Prefetch 的 Progressive 7/90 天窗口、Active Coverage Registry / Lease / Reorg Safety Window；
+- Entity Graph Collapse UI、跨链实体映射、历史实体版本重放；
+- 报告多语言/机构模板/电子签名、LLM 叙事润色；
+- 多根/假设验证为当前聚合实现，尚未进入 Agent 自动推理。
+
+## 2026-08-08 追加：剩余需求全部实现（跨资产/预览/快照/预取/实体/报告/Agent）
+
+### 完成内容
+
+1. Asset Continuity / Swap / Bridge（§17-§20、§44-§47）：
+   - `internal/fundflow/asset.go`：AssetConversionEvent（TxHash/From/To/USD/PriceSource/PriceMethod/Confidence）、ContinuitySegment、USD 价格溯源（已知稳定币按 1 USD 锚定 `STABLECOIN_PEG_1USD`，其余 `NO_PRICE_SOURCE` 低置信）；Router/DEX/Bridge 节点在 ±20 区块窗口内探测不同资产出边生成转换事件。
+   - API：`POST /api/fund-flow/continuity`。
+2. Edge Timeline Preview（§30）：边上 hover 显示首次/最后时间与迷你分布条（▁▂▇），数据来自 Fund Flow 图边区块时间聚合。
+3. Graph Snapshot V2 + Snapshot Diff（§34、§48-6）：书签升级为完整快照（节点位置/模式/透镜/过滤/价值覆盖/高亮路径/回放时间），恢复时回写节点坐标；保存时自动与上一快照对比（新增/移除节点数）。
+4. Prefetch P1：
+   - Active Coverage Registry（`active/active-coverage.json`）：正在预取 Range 所有权登记/释放；
+   - Lease Store（`leases/*.json`）：任务租约 + 心跳 + 释放，供恢复识别；
+   - Reorg Safety Window（默认 20 块）：head 未知或区间未越窗时暂不启动预取；
+   - Progressive 7d/90d：`NextStageCandidate` 按 201600/2592000 块窗口扩展，READY 后自动入队下一阶段。
+5. Entity Intelligence：
+   - 跨链实体合并 `POST /api/entity/cross-chain/merge`（同名多链实体合并为多链多地址主实体，旧 ID 保留别名）；
+   - 标签历史版本重放 `GET /api/entity/history/{chain}/{address}`（仅记录新增/变化标签，NDJSON 追加，新→旧返回）。
+6. Report Engine P2 部分：
+   - 多语言（zh/en 全套英文模板）、机构模板（institution 抬头）；
+   - 电子签名 `POST .../sign`（报告 JSON SHA256 + 方法 + 时间）；
+   - LLM 叙事润色 `POST .../polish`（DeepSeek 兼容接口，只润色语言，返回后做数字一致性校验，不一致拒绝回退）。
+7. Agent 自动推理：`POST /api/graph/agent-reason`——多根联合 + 实体假设 + Copilot 建议合并为结构化结论（SUPPORTED/WEAK/落点/沉淀）+ 推荐动作 + 可选 LLM 润色叙事。
+
+### 验证
+
+- `go vet ./...`、`go test ./internal/... -short -count=1`、`frontend npm run build` 全部通过（新增 asset continuity、prefetch active/lease/progressive/reorg、report language/sign/polish、entity cross-chain/history 单测）。
+- 真实冒烟：continuity 返回 24 段（当前数据无 Router/Bridge 节点，转换 0 条并附说明）；标签导入新置信度后 history=1 可重放；跨链合并（当前库无同名多链实体 → 0 合并，符合预期）；英文报告 v4（Summary 标题/机构 Test Firm）生成、签名 SHA256 成功、LLM 润色摘要一致性校验通过；agent-reason 输出 2 条结论 + 2 条建议。
+
+### 仍受环境/数据限制
+
+- Swap/Bridge 转换依赖数据集中存在 Router/DEX/Bridge 节点且同窗口多资产出边；USD 仅稳定币锚定，其余资产价格来源为 UNKNOWN；
+- 跨链续追仅产出 Bridge Exit 标记，未实现目标链地址解析；
+- Prefetch 的 Active/Lease 在无活动预取时文件为空（单测覆盖写入/释放）；Reorg 依赖 head 回调，生产未接入实时 head 时保守不最终化；
+- LLM 润色依赖 DEEPSEEK_API_KEY，未配置时返回 501。
+
+#### 追加补记：Entity Graph Collapse UI
+
+- 图谱实体图模式新增「实体折叠」开关：按实体 ID 将多个地址折叠为单个实体节点（金额/风险聚合），实体间边聚合为统计边；未折叠地址保持原样。
+- 验证：前端构建通过；UI 冒烟复选框可见，无控制台错误。
+
 ## 2026-08-08 智能下载统一入口 Phase 3：Canonical Schema + Validation L3-L6 + ETA + SSE（完成）
 
 > 实施方案：`D:\下载文件\智能下载系统_从V2.2到完整实现_实施方案_V1.1.md`（Phase 3）

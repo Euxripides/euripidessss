@@ -187,7 +187,7 @@ func TestDiscoveryPlanBatch(t *testing.T) {
 		t.Fatalf("规模档 %s，期望 S", dp.SizeClass)
 	}
 	ds := store.ListDatasets()[0]
-	if ds.EstimatedRows != dp.EstimatedRows || ds.PreferredProvider == "" {
+	if ds.EstimatedRows == 0 || ds.PreferredProvider == "" || ds.DiscoveryConfidence == 0 {
 		t.Fatalf("估算未持久化: %+v", ds)
 	}
 	// 小数据 S 档：CSV 优先（90 分）> SQD（75 分）

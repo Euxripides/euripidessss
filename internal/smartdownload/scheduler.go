@@ -2,6 +2,7 @@ package smartdownload
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -142,9 +143,10 @@ func sanitizeText(s string) string {
 
 // SmartScheduler 智能调度器：规则 + 评分选择 Provider（实施方案 §9-§10）。
 type SmartScheduler struct {
-	mu       sync.Mutex
-	adapters map[string]ProviderAdapter
-	health   *ProviderHealthTracker
+	mu           sync.Mutex
+	adapters     map[string]ProviderAdapter
+	health       *ProviderHealthTracker
+	historyBonus func(chainID int64, dataset, provider, bucket string) float64
 }
 
 func NewSmartScheduler() *SmartScheduler {
@@ -161,6 +163,13 @@ func (s *SmartScheduler) Register(a ProviderAdapter) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adapters[a.Name()] = a
+}
+
+// SetHistoryBonus 注入历史画像加成（Execution Feedback Loop Phase E）。
+func (s *SmartScheduler) SetHistoryBonus(fn func(chainID int64, dataset, provider, bucket string) float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.historyBonus = fn
 }
 
 func (s *SmartScheduler) Health() *ProviderHealthTracker { return s.health }
@@ -218,6 +227,12 @@ func (s *SmartScheduler) PlanDataset(ctx context.Context, req ProbeRequest) (*Da
 	for _, c := range cands {
 		c.Score = baseScore(c.Name, req.Dataset, best.EstimatedRows)
 		c.SizeClass = cls
+		if s.historyBonus != nil {
+			if bonus := s.historyBonus(req.ChainID, req.Dataset, c.Name, cls); bonus > 0 {
+				c.Score += int(bonus)
+				c.Reasons = append(c.Reasons, fmt.Sprintf("历史画像加成 +%.0f", bonus))
+			}
+		}
 		if s.health.Exhausted(c.Name) {
 			c.Score -= 30
 			c.Reasons = append(c.Reasons, "健康熔断冷却中")
