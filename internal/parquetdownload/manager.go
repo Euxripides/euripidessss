@@ -44,6 +44,13 @@ func (m *Manager) SetDataSourceManager(manager *datasourcemanager.Manager) {
 	m.mu.Unlock()
 }
 
+// SQDClient 返回底层 SQD 可靠性客户端（Smart Download Adapter 复用，不重写下载器）。
+func (m *Manager) SQDClient() *sqd.Client {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sqd
+}
+
 func (m *Manager) syncDataSourceConfig() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -215,9 +215,17 @@ func (m *Manager) leaseReaperLoop() {
 			return
 		case <-time.After(interval):
 		}
-		if err := m.reclaimExpiredLeases(context.Background()); err != nil {
-			logger.Log.Warn().Err(err).Msg("cloud_lease_reclaim_failed")
-		}
+		logger.Log.Debug().Msg("cloud_lease_reaper_tick")
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Log.Error().Interface("panic", r).Msg("cloud_lease_reaper_panic")
+				}
+			}()
+			if err := m.reclaimExpiredLeases(context.Background()); err != nil {
+				logger.Log.Warn().Err(err).Msg("cloud_lease_reclaim_failed")
+			}
+		}()
 	}
 }
 
@@ -230,6 +238,7 @@ func (m *Manager) reclaimExpiredLeases(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	logger.Log.Debug().Int("leases", len(objs)).Msg("cloud_lease_reclaim_scan")
 	for _, o := range objs {
 		if !strings.HasSuffix(o.Key, "/lease.json") {
 			continue
@@ -238,6 +247,7 @@ func (m *Manager) reclaimExpiredLeases(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
+		logger.Log.Debug().Str("key", o.Key).Msg("cloud_lease_reclaim_item")
 		var lease struct {
 			JobID          string `json:"job_id"`
 			ChunkID        string `json:"chunk_id"`
@@ -246,7 +256,10 @@ func (m *Manager) reclaimExpiredLeases(ctx context.Context) error {
 		if json.Unmarshal(payload, &lease) != nil || lease.JobID == "" {
 			continue
 		}
-		expires, err := time.Parse(time.RFC3339, lease.LeaseExpiresAt)
+		expires, err := time.Parse(time.RFC3339Nano, lease.LeaseExpiresAt)
+		if err != nil {
+			expires, err = time.Parse(time.RFC3339, lease.LeaseExpiresAt)
+		}
 		if err != nil || time.Now().Before(expires) {
 			continue // 未过期：Worker 仍在心跳
 		}
@@ -259,6 +272,7 @@ func (m *Manager) reclaimExpiredLeases(ctx context.Context) error {
 			continue
 		}
 		job := m.loadPersistedJob(lease.JobID, lease.ChunkID)
+		logger.Log.Debug().Str("job", lease.JobID).Bool("job_found", job != nil).Msg("cloud_lease_reclaim_job")
 		if job == nil {
 			continue // 本地无该 Job 证据，不自行重建（避免幽灵任务）
 		}
@@ -277,6 +291,7 @@ func (m *Manager) reclaimExpiredLeases(ctx context.Context) error {
 		logger.Log.Info().Str("job", lease.JobID).Str("chunk", lease.ChunkID).
 			Msg("cloud_lease_expired_requeued")
 	}
+	logger.Log.Debug().Msg("cloud_lease_reclaim_done")
 	return nil
 }
 

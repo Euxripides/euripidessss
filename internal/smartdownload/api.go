@@ -1,0 +1,506 @@
+package smartdownload
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/etl/backend/internal/downloadscheduler"
+)
+
+// Handler 智能下载统一 API（挂载于 /api/smart-download/*）。
+type Handler struct {
+	svc        *Service
+	bridge     *LegacyPlanBridge
+	planLookup func(planID string) *downloadscheduler.Plan
+}
+
+// NewHandler 创建 API handler。
+func NewHandler(svc *Service, planLookup func(planID string) *downloadscheduler.Plan) *Handler {
+	return &Handler{svc: svc, bridge: NewLegacyPlanBridge(svc), planLookup: planLookup}
+}
+
+// ServeHTTP 路由（路径已由 http.StripPrefix 去掉 /api/smart-download）。
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	switch {
+	case r.Method == http.MethodPost && path == "batches":
+		h.createBatch(w, r)
+	case r.Method == http.MethodGet && path == "batches":
+		h.listBatches(w, r)
+	case r.Method == http.MethodGet && path == "status":
+		h.status(w, r)
+	case r.Method == http.MethodGet && path == "events":
+		h.events(w, r)
+	case r.Method == http.MethodPost && path == "legacy/plan":
+		h.bridgePlan(w, r)
+	case r.Method == http.MethodPost && path == "import":
+		h.importFile(w, r)
+	case r.Method == http.MethodGet && path == "registry":
+		writeSmartJSON(w, http.StatusOK, map[string]any{"results": h.svc.Results().List()})
+	case strings.HasPrefix(path, "batches/"):
+		h.routeBatch(w, r, strings.TrimPrefix(path, "batches/"))
+	case strings.HasPrefix(path, "addresses/"):
+		h.routeAddress(w, r, strings.TrimPrefix(path, "addresses/"))
+	case strings.HasPrefix(path, "datasets/"):
+		h.routeDataset(w, r, strings.TrimPrefix(path, "datasets/"))
+	case strings.HasPrefix(path, "results/"):
+		h.routeResults(w, r, strings.TrimPrefix(path, "results/"))
+	default:
+		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown smart-download endpoint: " + path})
+	}
+}
+
+// importFile POST /import — 上传 TXT/CSV/XLSX 自动识别地址列。
+func (h *Handler) importFile(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "multipart 解析失败: " + err.Error()})
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "缺少 file 字段"})
+		return
+	}
+	defer file.Close()
+	result, err := h.svc.ImportAddresses(header.Filename, file)
+	if err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusOK, result)
+}
+
+// routeResults GET /results/{dsID} 与 /results/{dsID}/summary。
+func (h *Handler) routeResults(w http.ResponseWriter, r *http.Request, rest string) {
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "dataset id 缺失"})
+		return
+	}
+	id := parts[0]
+	if len(parts) == 2 && parts[1] == "summary" && r.Method == http.MethodGet {
+		summary, err := h.svc.Results().ResultSummary(r.Context(), id)
+		if err != nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, summary)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "export" && r.Method == http.MethodGet {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+		defer cancel()
+		path, format, rows, err := h.svc.Results().ExportDataset(ctx, id)
+		if err != nil {
+			writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
+			return
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
+			return
+		}
+		defer f.Close()
+		ext := ".xlsx"
+		contentType := "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		if format == "csv" {
+			ext = ".csv"
+			contentType = "text/csv; charset=utf-8"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(
+			`attachment; filename="smart_download_%s_%d%s"`, id[:min(len(id), 8)], rows, ext))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, f)
+		return
+	}
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		page, size := pagination(r)
+		sortCol := strings.TrimSpace(r.URL.Query().Get("sort"))
+		filter := strings.TrimSpace(r.URL.Query().Get("filter"))
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		rows, total, err := h.svc.Results().QueryResults(ctx, id, page, size, sortCol, filter)
+		if err != nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, map[string]any{
+			"rows": rows, "total": total, "page": page, "page_size": size,
+		})
+		return
+	}
+	writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown results endpoint: " + rest})
+}
+
+// ── 批次 ──
+
+func (h *Handler) createBatch(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var req CreateBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	resp, err := h.svc.CreateBatch(ctx, req)
+	if err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusCreated, resp)
+}
+
+func (h *Handler) listBatches(w http.ResponseWriter, r *http.Request) {
+	batches := h.svc.ListBatches()
+	writeSmartJSON(w, http.StatusOK, map[string]any{
+		"batches":  batches,
+		"total":    len(batches),
+		"adapters": h.svc.AdapterNames(),
+		"workers":  h.svc.Options().Workers,
+	})
+}
+
+func (h *Handler) routeBatch(w http.ResponseWriter, r *http.Request, rest string) {
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "batch id 缺失"})
+		return
+	}
+	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		detail := h.svc.SnapshotBatch(id)
+		if detail == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "批次不存在: " + id})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, detail)
+		return
+	}
+	if len(parts) == 2 && r.Method == http.MethodPost {
+		switch parts[1] {
+		case "start":
+			err := h.svc.Start(id)
+			if err != nil {
+				writeSmartJSON(w, http.StatusConflict, map[string]any{"detail": err.Error()})
+				return
+			}
+			writeSmartJSON(w, http.StatusOK, h.svc.GetBatch(id))
+			return
+		case "plan":
+			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+			defer cancel()
+			plan, err := h.svc.PlanBatch(ctx, id)
+			if err != nil {
+				writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+				return
+			}
+			writeSmartJSON(w, http.StatusOK, plan)
+			return
+		case "pause":
+			batch, err := h.svc.PauseBatch(id)
+			writeLifecycle(w, batch, err)
+			return
+		case "resume":
+			batch, err := h.svc.ResumeBatch(id)
+			writeLifecycle(w, batch, err)
+			return
+		case "cancel":
+			batch, err := h.svc.CancelBatch(id)
+			writeLifecycle(w, batch, err)
+			return
+		}
+	}
+	if len(parts) == 2 && parts[1] == "plan" && r.Method == http.MethodGet {
+		plan := h.planView(id)
+		if plan == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "批次不存在: " + id})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, plan)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "addresses" && r.Method == http.MethodGet {
+		h.listBatchAddresses(w, r, id)
+		return
+	}
+	writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown batch endpoint: " + rest})
+}
+
+// planView 从已保存的估算值构建执行计划视图（不重新探测）。
+func (h *Handler) planView(batchID string) *ExecutionPlan {
+	detail := h.svc.SnapshotBatch(batchID)
+	if detail == nil {
+		return nil
+	}
+	plan := &ExecutionPlan{BatchID: batchID}
+	for _, a := range detail.Addresses {
+		for _, dd := range a.Datasets {
+			plan.Datasets = append(plan.Datasets, &DatasetPlan{
+				Dataset:           dd.Dataset.Dataset,
+				Address:           a.Address.Address,
+				ChainKey:          a.Address.ChainKey,
+				EstimatedRows:     dd.Dataset.EstimatedRows,
+				EstimatedBytes:    dd.Dataset.EstimatedBytes,
+				SizeClass:         sizeClass(dd.Dataset.EstimatedRows),
+				PreferredProvider: dd.Dataset.PreferredProvider,
+			})
+		}
+	}
+	return plan
+}
+
+func (h *Handler) listBatchAddresses(w http.ResponseWriter, r *http.Request, batchID string) {
+	addresses := h.svc.store.ListAddressesByBatch(batchID)
+	if addresses == nil {
+		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "批次不存在: " + batchID})
+		return
+	}
+	page, size := pagination(r)
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	filtered := make([]*AddressJob, 0, len(addresses))
+	for _, a := range addresses {
+		if status != "" && strings.ToLower(string(a.Status)) != status {
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	start := (page - 1) * size
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + size
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	writeSmartJSON(w, http.StatusOK, map[string]any{
+		"addresses": filtered[start:end],
+		"total":     len(filtered),
+		"page":      page,
+		"page_size": size,
+	})
+}
+
+// ── 地址 ──
+
+func (h *Handler) routeAddress(w http.ResponseWriter, r *http.Request, rest string) {
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "address id 缺失"})
+		return
+	}
+	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		a := h.svc.GetAddress(id)
+		if a == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "地址任务不存在: " + id})
+			return
+		}
+		detail := &AddressDetail{Address: a}
+		for _, ds := range h.svc.store.ListDatasetsByAddress(id) {
+			detail.Datasets = append(detail.Datasets, &DatasetDetail{
+				Dataset: ds,
+				Ranges:  h.svc.store.ListRangesByDataset(ds.ID),
+			})
+		}
+		writeSmartJSON(w, http.StatusOK, detail)
+		return
+	}
+	if len(parts) == 2 && r.Method == http.MethodPost {
+		switch parts[1] {
+		case "pause":
+			a, err := h.svc.PauseAddress(id)
+			writeLifecycle(w, a, err)
+			return
+		case "resume":
+			a, err := h.svc.ResumeAddress(id)
+			writeLifecycle(w, a, err)
+			return
+		case "cancel":
+			a, err := h.svc.CancelAddress(id)
+			writeLifecycle(w, a, err)
+			return
+		}
+	}
+	writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown address endpoint: " + rest})
+}
+
+// ── 数据集 ──
+
+func (h *Handler) routeDataset(w http.ResponseWriter, r *http.Request, rest string) {
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "dataset id 缺失"})
+		return
+	}
+	id := parts[0]
+	if len(parts) == 2 && r.Method == http.MethodPost {
+		switch parts[1] {
+		case "pause":
+			ds, err := h.svc.PauseDataset(id)
+			writeLifecycle(w, ds, err)
+			return
+		case "cancel":
+			ds, err := h.svc.CancelDataset(id)
+			writeLifecycle(w, ds, err)
+			return
+		}
+	}
+	if len(parts) == 2 && r.Method == http.MethodGet {
+		switch parts[1] {
+		case "ledger":
+			entries, err := h.svc.LedgerEntries(id)
+			if err != nil {
+				writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
+				return
+			}
+			writeSmartJSON(w, http.StatusOK, map[string]any{"ledger": entries})
+			return
+		case "checkpoint":
+			cp, err := h.svc.Checkpoint(id)
+			if err != nil {
+				writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+				return
+			}
+			writeSmartJSON(w, http.StatusOK, cp)
+			return
+		case "validation":
+			ds := h.svc.GetDataset(id)
+			if ds == nil {
+				writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "数据集不存在: " + id})
+				return
+			}
+			writeSmartJSON(w, http.StatusOK, ds.Validation)
+			return
+		}
+	}
+	if len(parts) == 2 && parts[1] == "repair" && r.Method == http.MethodPost {
+		report, err := h.svc.RepairDatasetGaps(id)
+		if err != nil {
+			writeSmartJSON(w, http.StatusConflict, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, report)
+		return
+	}
+	writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown dataset endpoint: " + rest})
+}
+
+// events GET /events — SSE 实时事件流（Progress Aggregator 300ms 合并）。
+func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "SSE 需要 Flusher"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	id, ch := h.svc.Events().Subscribe()
+	defer h.svc.Events().Unsubscribe(id)
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev := <-ch:
+			payload, _ := json.Marshal(ev)
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, payload)
+			flusher.Flush()
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// ── Legacy 桥接 ──
+
+func (h *Handler) bridgePlan(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var body struct {
+		PlanID string                  `json:"plan_id,omitempty"`
+		Plan   *downloadscheduler.Plan `json:"plan,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+		return
+	}
+	var plan *downloadscheduler.Plan
+	if body.Plan != nil {
+		plan = body.Plan
+	} else if body.PlanID != "" && h.planLookup != nil {
+		plan = h.planLookup(body.PlanID)
+		if plan == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "plan 不存在: " + body.PlanID})
+			return
+		}
+	} else {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "需要 plan 或 plan_id"})
+		return
+	}
+	resp, err := h.bridge.BridgePlan(r.Context(), plan)
+	if err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusCreated, resp)
+}
+
+// ── 汇总 ──
+
+func (h *Handler) status(w http.ResponseWriter, _ *http.Request) {
+	batches := h.svc.ListBatches()
+	counts := map[string]int{}
+	for _, b := range batches {
+		counts[string(b.Status)]++
+	}
+	writeSmartJSON(w, http.StatusOK, map[string]any{
+		"batches":     len(batches),
+		"counts":      counts,
+		"adapters":    h.svc.AdapterNames(),
+		"workers":     h.svc.Options().Workers,
+		"retry_limit": h.svc.Options().RetryLimit,
+	})
+}
+
+// ── 辅助 ──
+
+func writeLifecycle(w http.ResponseWriter, v any, err error) {
+	if err != nil {
+		writeSmartJSON(w, http.StatusConflict, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusOK, v)
+}
+
+func pagination(r *http.Request) (page, size int) {
+	page, _ = strconv.Atoi(r.URL.Query().Get("page"))
+	if page <= 0 {
+		page = 1
+	}
+	size, _ = strconv.Atoi(r.URL.Query().Get("page_size"))
+	if size <= 0 {
+		size = 50
+	}
+	if size > 500 {
+		size = 500
+	}
+	return page, size
+}
+
+func writeSmartJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}

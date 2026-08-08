@@ -16,7 +16,7 @@ digraph CPG {
 		style=dashed;
 		"github.com/etl/backend/internal/analysis/duckdb" [label="duckdb (25 fn)"];
 		"github.com/etl/backend/internal/analyticsapi" [label="analyticsapi (41 fn)"];
-		"github.com/etl/backend/internal/api" [label="api (321 fn)"];
+		"github.com/etl/backend/internal/api" [label="api (325 fn)"];
 		"github.com/etl/backend/internal/balance" [label="balance (10 fn)"];
 		"github.com/etl/backend/internal/casefile" [label="casefile (18 fn)"];
 		"github.com/etl/backend/internal/chain" [label="chain (2 fn)"];
@@ -25,8 +25,8 @@ digraph CPG {
 		"github.com/etl/backend/internal/cryptodownload" [label="cryptodownload (655 fn)"];
 		"github.com/etl/backend/internal/cryptodownload/browser_stealth" [label="browser_stealth (5 fn)"];
 		"github.com/etl/backend/internal/cryptodownload/useragent" [label="useragent (2 fn)"];
-		"github.com/etl/backend/internal/datasetevents" [label="datasetevents (12 fn)"];
-		"github.com/etl/backend/internal/datasetsync" [label="datasetsync (31 fn)"];
+		"github.com/etl/backend/internal/datasetevents" [label="datasetevents (13 fn)"];
+		"github.com/etl/backend/internal/datasetsync" [label="datasetsync (35 fn)"];
 		"github.com/etl/backend/internal/datasource" [label="datasource (0 fn)"];
 		"github.com/etl/backend/internal/datasource/aws" [label="aws (5 fn)"];
 		"github.com/etl/backend/internal/datasource/rpc" [label="rpc (17 fn)"];
@@ -50,13 +50,15 @@ digraph CPG {
 		"github.com/etl/backend/internal/logger" [label="logger (6 fn)"];
 		"github.com/etl/backend/internal/model" [label="model (0 fn)"];
 		"github.com/etl/backend/internal/normalize" [label="normalize (12 fn)"];
-		"github.com/etl/backend/internal/parquetdownload" [label="parquetdownload (200 fn)"];
+		"github.com/etl/backend/internal/objectiveplanner" [label="objectiveplanner (3 fn)"];
+		"github.com/etl/backend/internal/parquetdownload" [label="parquetdownload (201 fn)"];
 		"github.com/etl/backend/internal/parser" [label="parser (85 fn)"];
 		"github.com/etl/backend/internal/provider" [label="provider (25 fn)"];
 		"github.com/etl/backend/internal/rpcmanager" [label="rpcmanager (110 fn)"];
 		"github.com/etl/backend/internal/rules" [label="rules (27 fn)"];
 		"github.com/etl/backend/internal/s3store" [label="s3store (23 fn)"];
 		"github.com/etl/backend/internal/scanner" [label="scanner (17 fn)"];
+		"github.com/etl/backend/internal/smartdownload" [label="smartdownload (300 fn)"];
 		"github.com/etl/backend/internal/storage" [label="storage (8 fn)"];
 		"github.com/etl/backend/internal/storage/control" [label="control (9 fn)"];
 		"github.com/etl/backend/internal/writer" [label="writer (8 fn)"];
@@ -88,12 +90,14 @@ digraph CPG {
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/investigationstore";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/logger";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/model";
+	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/objectiveplanner";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/parquetdownload";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/parser";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/rpcmanager";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/rules";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/s3store";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/scanner";
+	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/smartdownload";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/storage";
 	"github.com/etl/backend/internal/api" -> "github.com/etl/backend/internal/storage/control";
 	"github.com/etl/backend/internal/balance" -> "github.com/etl/backend/internal/analysis/duckdb";
@@ -136,6 +140,7 @@ digraph CPG {
 	"github.com/etl/backend/internal/downloadscheduler" -> "github.com/etl/backend/internal/datasetsync";
 	"github.com/etl/backend/internal/downloadscheduler" -> "github.com/etl/backend/internal/logger";
 	"github.com/etl/backend/internal/downloadscheduler" -> "github.com/etl/backend/internal/normalize";
+	"github.com/etl/backend/internal/downloadscheduler" -> "github.com/etl/backend/internal/objectiveplanner";
 	"github.com/etl/backend/internal/downloadscheduler" -> "github.com/etl/backend/internal/parquetdownload";
 	"github.com/etl/backend/internal/dynamicinvestigation" -> "github.com/etl/backend/internal/analyticsapi";
 	"github.com/etl/backend/internal/dynamicinvestigation" -> "github.com/etl/backend/internal/chain";
@@ -180,4 +185,11 @@ digraph CPG {
 	"github.com/etl/backend/internal/rules" -> "github.com/etl/backend/internal/parser";
 	"github.com/etl/backend/internal/scanner" -> "github.com/etl/backend/internal/parser";
 	"github.com/etl/backend/internal/scanner" -> "github.com/etl/backend/internal/rules";
+	"github.com/etl/backend/internal/smartdownload" -> "github.com/etl/backend/internal/analysis/duckdb";
+	"github.com/etl/backend/internal/smartdownload" -> "github.com/etl/backend/internal/chain";
+	"github.com/etl/backend/internal/smartdownload" -> "github.com/etl/backend/internal/cloudruntime";
+	"github.com/etl/backend/internal/smartdownload" -> "github.com/etl/backend/internal/datasource/sqd";
+	"github.com/etl/backend/internal/smartdownload" -> "github.com/etl/backend/internal/downloadscheduler";
+	"github.com/etl/backend/internal/smartdownload" -> "github.com/etl/backend/internal/logger";
+	"github.com/etl/backend/internal/smartdownload" -> "github.com/etl/backend/internal/writer";
 }

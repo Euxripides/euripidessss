@@ -7,6 +7,7 @@ package downloadscheduler
 import (
 	"time"
 
+	"github.com/etl/backend/internal/objectiveplanner"
 	"github.com/etl/backend/internal/parquetdownload"
 )
 
@@ -56,6 +57,10 @@ type Requirement struct {
 	Note      string   `json:"note,omitempty"`
 	// CloudEligible 是否允许触发应急 Cloud（设计 §78）：nil=允许（交互/调查/手动）。
 	CloudEligible *bool `json:"cloud_eligible,omitempty"`
+	// Objective 驱动规划（Phase 5.4 §7-§9）：目标决定数据集，不指定 Provider。
+	ObjectiveType        string                         `json:"objective_type,omitempty"`
+	ObjectiveDescription string                         `json:"objective_description,omitempty"`
+	ObjectiveConstraints objectiveplanner.Constraints   `json:"objective_constraints,omitempty"`
 }
 
 // CloudAllowed 判断任务是否允许触发 Cloud（nil 默认允许）。
@@ -154,11 +159,13 @@ const (
 	StatusWaitingRetry   PlanStatus = "WAITING_RETRY"   // Cloud 拒绝/失败，等待重试
 	StatusReady          PlanStatus = "READY_FOR_GRAPH"
 	StatusFailed         PlanStatus = "FAILED"
+	StatusCancelRequested PlanStatus = "CANCEL_REQUESTED" // Phase 5.4 §5：用户请求取消
+	StatusCancelled      PlanStatus = "CANCELLED"         // 独立终态：cancelled != failed
 )
 
 // Terminal 判断是否为终态。
 func (s PlanStatus) Terminal() bool {
-	return s == StatusReady || s == StatusFailed
+	return s == StatusReady || s == StatusFailed || s == StatusCancelled
 }
 
 // Budget 下载预算（设计文档 §16：地址数量限制/下载预算）。

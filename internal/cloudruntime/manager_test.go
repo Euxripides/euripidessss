@@ -291,9 +291,9 @@ func TestLeaseExpiryRequeuesSameJob(t *testing.T) {
 	// 模拟远端 Worker 领取并留下过期 lease（heartbeat 停止）
 	lease := map[string]any{
 		"job_id": id, "chunk_id": "chunk-1",
-		"leased_at":       time.Now().Add(-20 * time.Minute).Format(time.RFC3339),
-		"lease_expires_at": time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
-		"heartbeat_at":     time.Now().Add(-20 * time.Minute).Format(time.RFC3339),
+		"leased_at":       "2026-08-07T10:00:00.017Z",
+		"lease_expires_at": "2026-08-07T10:10:00.017Z", // TS toISOString 带毫秒
+		"heartbeat_at":     "2026-08-07T10:00:00.017Z",
 	}
 	payload, _ := json.Marshal(lease)
 	if err := store.Put(ctx, leasedChunkDir(id, "chunk-1")+"/lease.json", payload); err != nil {

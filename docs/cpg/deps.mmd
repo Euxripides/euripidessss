@@ -37,6 +37,7 @@ graph LR
 	github_com_etl_backend_internal_logger["logger"]
 	github_com_etl_backend_internal_model["model"]
 	github_com_etl_backend_internal_normalize["normalize"]
+	github_com_etl_backend_internal_objectiveplanner["objectiveplanner"]
 	github_com_etl_backend_internal_parquetdownload["parquetdownload"]
 	github_com_etl_backend_internal_parser["parser"]
 	github_com_etl_backend_internal_provider["provider"]
@@ -44,6 +45,7 @@ graph LR
 	github_com_etl_backend_internal_rules["rules"]
 	github_com_etl_backend_internal_s3store["s3store"]
 	github_com_etl_backend_internal_scanner["scanner"]
+	github_com_etl_backend_internal_smartdownload["smartdownload"]
 	github_com_etl_backend_internal_storage["storage"]
 	github_com_etl_backend_internal_storage_control["control"]
 	github_com_etl_backend_internal_writer["writer"]
@@ -73,12 +75,14 @@ graph LR
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_investigationstore
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_logger
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_model
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_objectiveplanner
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_parquetdownload
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_parser
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_rpcmanager
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_rules
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_s3store
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_scanner
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_smartdownload
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage_control
 	github_com_etl_backend_internal_balance --> github_com_etl_backend_internal_analysis_duckdb
@@ -121,6 +125,7 @@ graph LR
 	github_com_etl_backend_internal_downloadscheduler --> github_com_etl_backend_internal_datasetsync
 	github_com_etl_backend_internal_downloadscheduler --> github_com_etl_backend_internal_logger
 	github_com_etl_backend_internal_downloadscheduler --> github_com_etl_backend_internal_normalize
+	github_com_etl_backend_internal_downloadscheduler --> github_com_etl_backend_internal_objectiveplanner
 	github_com_etl_backend_internal_downloadscheduler --> github_com_etl_backend_internal_parquetdownload
 	github_com_etl_backend_internal_dynamicinvestigation --> github_com_etl_backend_internal_analyticsapi
 	github_com_etl_backend_internal_dynamicinvestigation --> github_com_etl_backend_internal_chain
@@ -165,4 +170,11 @@ graph LR
 	github_com_etl_backend_internal_rules --> github_com_etl_backend_internal_parser
 	github_com_etl_backend_internal_scanner --> github_com_etl_backend_internal_parser
 	github_com_etl_backend_internal_scanner --> github_com_etl_backend_internal_rules
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_analysis_duckdb
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_cloudruntime
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_datasource_sqd
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_downloadscheduler
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_logger
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_writer
 ```

@@ -1,3 +1,120 @@
+### 2026-08-08 智能下载统一入口 Phase 4+5：新前端 + 地址列识别 + Registry 复用 + 联动（部署）
+
+#### 新增
+
+1. `internal/smartdownload/`：import.go（列识别）、result.go（merged warehouse + Registry + 分页查询）、coverage.go（LOCAL HIT 复用）、pack.go（10K 快速创建）。
+2. 前端：`frontend/src/features/smart-download/`（SmartDownloadPage + smartDownloadApi），App.tsx 新增「智能下载」菜单。
+3. API：`/import`、`/registry`、`/results/{id}`、`/results/{id}/summary`。
+4. 联动：结果入库 → graphIncrementer + DATASET_INDEXED（调查/图谱复用现有事件链路）。
+
+#### 已验证
+
+- `go test ./internal/... -short` 全绿（新增 4 用例）；`go vet` 零告警；`npm run build` 通过；生产 8000 重启成功。
+- 真实：CSV 列识别；2 地址 token_transfers 全 VALIDATED；Registry merged parquet；results 分页带溯源列；10K 创建 380ms。
+
+#### 未完成与注意事项
+
+- 修复 DuckDB Hive 分区推断导致的 merged 读取多余 `chain` 列（查询显式 hive_partitioning=false）；10K 为创建/恢复/Worker 固定验收；SQD Cloud 回读与 logs 全量仍为后续增强。
+
+#### 追加：多链批量地址支持
+
+- `CreateBatchRequest.AddressChainOverrides` + 前端每行 `0x... 链名` 语法；混合链批次 chain_key=multi/chain_id=0，地址与数据集按链落盘。
+- 验证：TestMultiChainAddressOverride 全绿；生产冒烟 bsc 成功 / eth 未配置 RPC 如实失败。
+
+#### 追加：Range 级差量复用
+
+- `coverage.go` 重写：区间级覆盖源（Result Registry + Cloud Registry）、planReuse/mergeIntervals/subtractCovered 精确缺口；CreateBatch `skip_covered` 按区间差量创建 RangeJob。
+- `validation.go` L3 基于 RangeJob 集合计算覆盖；复用区间与下载区间共存。
+- 验证：TestRangeDiffPartialReuse 全绿；生产冒烟同区间全复用、扩区间仅补下载缺失区间。
+
+#### 追加：结果数据导出
+
+- `GET /api/smart-download/results/{dsID}/export`：≤30 万行 XLSX（excelize 流式）、>30 万行 CSV（UTF-8 BOM）；DuckDB COPY 直出 CSV 控制内存。
+- 前端结果页「导出数据」按钮 + 格式提示。
+- 验证：TestResultExportXLSXAndCSV 全绿；生产冒烟 XLSX 附件下载正确。
+
+### 2026-08-08 智能下载统一入口 Phase 3：Canonical Schema + Validation L3-L6 + ETA + SSE（部署）
+
+#### 新增
+
+1. `internal/smartdownload/`：canonical.go（统一列/唯一键/溯源）、validation.go（L1-L6 + Score + 交叉验证）、progress.go（EWMA ETA + EventBus/SSE 事件）、ParquetPartWriter（DuckDB Canonical Parquet）。
+2. API：`/events`（SSE）、`/datasets/{id}/validation`、`/datasets/{id}/repair`。
+3. 任务状态：Dataset VALIDATING/PARTIAL、Address PARTIAL；下载完成自动进入校验，缺口自动补洞。
+
+#### 修改
+
+- `internal/smartdownload/{model,service,executor,checkpoint,recovery}.go`：校验流程、补洞、ETA、事件发布、Parquet 命名按写入器扩展名。
+- `internal/api/handlers.go`：production 使用 ParquetPartWriter + SetDuckDB。
+
+#### 已验证
+
+- `go test ./internal/... -short` 全绿（新增 5 用例）；`go vet` 零告警；生产 8000 重启成功。
+- 真实：9 行 BEP20 USDT → Parquet Part → VALIDATED score=100 coverage=1 dup=0 expected=actual=9；SSE 四类事件实时到达。
+
+#### 未完成与注意事项
+
+- L6 依赖第二 Provider Probe；SQD Cloud 结果回读与前端结果表属 Phase 4/5；logs 仍为 Token 事件子集。
+
+### 2026-08-08 智能下载统一入口 Phase 2：Provider Adapter + Discovery + Range 级切换（部署）
+
+#### 新增
+
+1. `internal/smartdownload/`：discovery.go（Probe/外推）、scheduler.go（规模分级+评分+健康熔断）、sqd_adapter.go、rpc_adapter.go（扩展 token_transfers）、cloud_adapter.go、csv_adapter.go。
+2. ProviderAdapter 接口新增 Probe；RangeJob.FailedProviders；DatasetJob.PreferredProvider/EstimatedBytes；PlanBatch 与 `/api/smart-download/batches/{id}/plan`。
+3. `internal/parquetdownload/manager.go` 新增 SQDClient() 只读访问器。
+
+#### 修改
+
+- `internal/api/handlers.go`：setupSmartDownload 注册 sqd/rpc/csv/sqd_cloud Adapter。
+- `internal/smartdownload/service.go`：claim 阶段调度选路、失败切换、Provider 健康、总尝试预算。
+
+#### 已验证
+
+- `go test ./internal/... -short` 全绿（新增 CSV→SQD / SQD→RPC / RPC→Cloud / Discovery 4 用例）；`go vet` 零告警；生产 8000 重启成功。
+- 真实：SQD transactions 100 块 EMPTY（合法）；SQD token_transfers 100 块 32 行真实 BEP20 USDT（0x55d398…），Ledger/Checkpoint 齐全。
+
+#### 未完成与注意事项
+
+- SQD Cloud 结果回读/入库属 Phase 3；logs 为 Token 事件日志子集；切换验收用 Mock 注入；Part 仍为 JSONL。
+
+### 2026-08-08 智能下载统一入口 Phase 1：四层任务层落地（部署）
+
+#### 新增
+
+1. `internal/smartdownload/`：四层任务模型（Batch/Address/Dataset/Range）、FS StateStore、Universal Checkpoint V3、Range Ledger（ndjson）、Recovery Manager、Batch/Address/Dataset 级 Pause/Resume/Cancel、LegacyPlanBridge、ProviderAdapter 接口（生产注册 RPC 余额 Adapter）。
+2. `/api/smart-download/*`：status、batches（创建/列表/详情/start/pause/resume/cancel/分页地址）、addresses、datasets（pause/cancel/ledger/checkpoint）、legacy/plan 桥接。
+3. 测试：model/store/checkpoint/ledger/bridge + 端到端（kill→restart→resume→不重跑→dup=0）、取消保留 Part、失败重试，共 8 用例。
+
+#### 修改
+
+- `internal/api/handlers.go`：setupSmartDownload + 路由注册 + HandleSmartDownloadAPI。
+- `run.ps1` 后生产 8000 已更新；数据目录 `backend/data/smart_download/`。
+
+#### 已验证
+
+- `go test ./internal/... -short` 全绿（含新增 8 用例）；`go vet ./...` 零告警；`go build` 通过。
+- 真实 API：3 地址 × balances 全部 COMPLETED（RPC，每地址 1 行）；pause/resume 链路通过；重启后 Recovery 正确加载 2 个历史批次。
+
+#### 未完成与注意事项
+
+- Phase 2：SQD/AWS/RPC 恢复/Browser/Cloud Adapter + Discovery + Range 级 Provider 切换；当前生产仅有 RPC 余额。
+- Phase 3/4：Canonical Parquet、Validation L3-L6、EWMA ETA、SSE、新前端。
+- Part 目前为 JSONL+SHA256；同 Dataset Range 串行执行。
+
+### 2026-08-08 智能下载统一入口 V1.0 完整差距分析（只读）
+
+#### 新增
+
+1. `docs/smart_download_hub_v1_gap_analysis.md`：对照 V1.0 规格逐条差距矩阵（✅/🔶/❌），含 9 项结构性差距与 5 阶段实施顺序。
+
+#### 已验证
+
+- 未修改功能代码；证据来自 `internal/downloadscheduler`、`internal/parquetdownload`、`internal/datasetsync`、`internal/cloudruntime`、`internal/downloadengine`、`internal/api`、`frontend/src/App.tsx` 等。
+
+#### 未完成事项
+
+- 规格 P0（任务模型/Checkpoint V3/Range Ledger/Discovery/地址级控制/SSE/新前端/导入列识别/Validation L3-L6）待按报告阶段 1-5 实施。
+
 ### 2026-08-07 SQD Cloud 最终兜底 Provider 接入 V3.0（部署）
 
 #### 新增
@@ -6643,6 +6760,49 @@ ormalizeFilterBoundary 精确时间边界处理。
 ### 2026-08-07 SQD Cloud Phase 5.2：25 地址 × 50,000 Blocks 生产化验收与故障恢复
 
 ### 2026-08-07 SQD Cloud Phase 5.3：Investigation + Graph Cloud-Aware 自动联动与增量恢复
+
+### 2026-08-07 SQD Cloud Phase 5.4：Production Scale + Runtime Hardening + Objective Planner（部分 PASS）
+
+### 2026-08-07 SQD Cloud Phase 5.4.1：真实 Crash Resume Gate（PASS）
+
+#### 新增/修复
+
+1. TS：SQD_TEST_CRASH_AFTER_PARTS 测试开关（crash marker 防二次崩溃）；checkpoint 只记录已 flush 块/行；parts 按 sha 去重。
+2. Go：Manifest V2 权威对账（row_count=sum(parts.rows)，重写 manifest）；duplicate_part_sha_count Validator；Coverage Index；/api/scheduler/metrics。
+
+#### 验证
+
+- 真实 Gate A（ad2240cc）：crash（3 parts, rows_committed=3691）→ requeue → resume（114472387, rows_offset=3691）→ 完成。
+- 硬验收 PASS：manifest row_count=7042==sum(parts.rows)==registry rows；dup=0；range=0；Coverage HIT；R2 parts 9 个唯一 SHA；8116b54b/d236949e 对账后同样 COMPLETED。
+- go test -short 全绿；vet 零告警；构建通过；生产 8000 更新；测试 Worker 已删除。
+
+#### 未完成
+
+- 1K-100K 规模档未进入（需单独预算）；UI 状态/Graph Viewport/DPAPI 未实施。
+
+#### 新增/修复
+
+1. Multipart 正式阈值（blocks/rows flush）、part-NNNNNN 命名、checkpoint V2；sha256 去重修复重复上传 bug（7d0c4d17 验证 parts 唯一、dup=0）。
+2. Lease Reaper：RFC3339Nano 解析修复（TS 毫秒时间）、tick/item/job 诊断 + panic recover；过期 requeue 真实验证。
+3. Cancelled 独立终态（CANCELLED/CANCEL_REQUESTED + errTaskCancelled 哨兵）。
+4. Event Bus：跨进程文件锁、fsync、seq、损坏扫描。
+5. Objective Planner：目标矩阵、Cost Guard、Scheduler 展开、API objective 契约。
+
+#### 修改文件
+
+- 新增 internal/objectiveplanner/ 及测试
+- internal/downloadscheduler/{types,scheduler}.go、internal/cloudruntime/manager.go、internal/datasetevents/events.go、internal/api/download_scheduler_handlers.go
+- E:\Code\Processor-only\src\{main,upload}.ts
+- docs/AI_HANDOFF.md、PHASE5_IMPLEMENTATION_REPORT.md、docs/SQD_Cloud_Phase5.4_…报告.md
+
+#### 验证
+
+- go test ./... -short 全绿；vet 零告警；两端构建通过；生产 8000 更新。
+- 真实：9aa6aab0（258/2 parts）、7d0c4d17（2633/2 parts 唯一 sha、dup=0）；9cbd19e6 暴露并记录重复上传 bug。
+
+#### 未完成/边界
+
+- P0 真实中途 Crash Resume（带 parts）未演示；1K-100K 规模档未执行；Coverage Index / DPAPI Secret Store / UI 状态文案未实施。
 
 #### 新增
 

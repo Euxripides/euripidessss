@@ -123,6 +123,16 @@ Phase 5.3（事件总线 + Investigation 自动恢复 + Graph 增量 + Cancel �
 
 要点：DATASET_INDEXED 事件幂等驱动调查/图谱；Graph 增量去重（484,348 edges 无重复）；重启恢复；Cancel 新二进制重放；Manifest V2 sum(parts.rows)==row_count 实测。
 
+## 11. Phase 5.4 Runtime Hardening + Objective Planner（2026-08-07，部分 PASS）
+
+详见 `docs/SQD_Cloud_Phase5.4_ProductionScale_RuntimeHardening_ObjectivePlanner报告.md`。
+要点：Multipart 阈值/part 命名/checkpoint V2 真实通过；sha256 去重修复重复 part；Lease Reaper RFC3339Nano 修复；CANCELLED 独立终态；Objective Planner 矩阵+Cost Guard+展开；P0 中途 Crash Resume 与 1K-100K 规模档未完成。
+
+## 12. Phase 5.4.1 真实 Crash Resume Gate（2026-08-07，PASS）
+
+详见 `docs/SQD_Cloud_Phase5.4.1_真实CrashResume与规模验收报告.md`。
+要点：Gate A PASS（ad2240cc：crash→resume 114472387/rows_offset=3691→manifest row_count=7042==sum(parts.rows)==registry rows，dup=0，range=0，Coverage HIT）；新增 checkpoint 已 flush 语义、Manifest V2 权威对账、duplicate-part-SHA Validator、Coverage Index、Metrics；1K-100K 未进入（需单独预算）。
+
 ## 8. Phase 5.1 真实 Cloud Canary 验收结果（2026-08-07）
 
 ### PASS Gate

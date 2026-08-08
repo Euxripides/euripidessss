@@ -184,6 +184,27 @@ func TestSQDProviderFromToPassthrough(t *testing.T) {
 	}
 }
 
+func TestSubmitObjectiveExpansion(t *testing.T) {
+	s := newTestScheduler(nil, parquetdownload.StatusDone)
+	plan, err := s.Submit(context.Background(), []Requirement{{
+		Dataset: DatasetTokenTransfer, ChainKey: "bsc",
+		Addresses:    []string{"0x" + strings.Repeat("a", 40), "0x" + strings.Repeat("b", 40)},
+		FromBlock:    114450000,
+		ToBlock:      114499999,
+		ObjectiveType: "fund_sink",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	datasets := map[Dataset]bool{}
+	for _, task := range plan.Tasks {
+		datasets[task.Requirement.Dataset] = true
+	}
+	if !datasets[DatasetTokenTransfer] || !datasets[DatasetTransactions] || !datasets[DatasetBalance] {
+		t.Fatalf("objective expansion datasets = %v, want token_transfer+transactions+balance", datasets)
+	}
+}
+
 func TestCoverageNilSource(t *testing.T) {
 	s := NewScheduler(NewRegistry(), NewCoverageResolver(nil), "", DefaultBudget())
 	res, err := s.Coverage().Check(context.Background(), "bsc", []string{addrA}, nil)

@@ -71,15 +71,61 @@ type FileInfo struct {
 
 // Registry Cloud 数据登记表（JSON 文件，Phase 4 §30）。
 type Registry struct {
-	mu    sync.Mutex
-	path  string
-	items map[string]*Entry
+	mu       sync.Mutex
+	path     string
+	items    map[string]*Entry
+	coverage map[string]*CoverageEntry // address_dataset_coverage 索引（Phase 5.4.1 §3）
+}
+
+// CoverageEntry 地址×数据集覆盖索引项。
+type CoverageEntry struct {
+	ChainID   int64     `json:"chain_id"`
+	Dataset   string    `json:"dataset"`
+	FromBlock uint64    `json:"covered_from"`
+	ToBlock   uint64    `json:"covered_to"`
+	RowCount  int64     `json:"row_count"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // NewRegistry 创建/加载 Registry。
 func NewRegistry(path string) (*Registry, error) {
-	r := &Registry{path: path, items: loadRegistryFile(path)}
+	r := &Registry{path: path, items: loadRegistryFile(path), coverage: map[string]*CoverageEntry{}}
+	r.rebuildCoverageLocked()
 	return r, nil
+}
+
+func coverageKey(chainKey, address, dataset string) string {
+	return strings.ToLower(strings.TrimSpace(chainKey)) + "|" +
+		strings.ToLower(strings.TrimSpace(address)) + "|" +
+		strings.ToLower(strings.TrimSpace(dataset))
+}
+
+// rebuildCoverageLocked 从 ACTIVE 条目重建 address_dataset_coverage 索引。
+func (r *Registry) rebuildCoverageLocked() {
+	r.coverage = map[string]*CoverageEntry{}
+	for _, e := range r.items {
+		if !e.IsActive() {
+			continue
+		}
+		for _, addr := range e.Addresses {
+			key := coverageKey(e.ChainKey, addr, e.Dataset)
+			ce := r.coverage[key]
+			if ce == nil {
+				ce = &CoverageEntry{ChainID: e.ChainID, Dataset: e.Dataset}
+				r.coverage[key] = ce
+			}
+			if ce.FromBlock == 0 || e.FromBlock < ce.FromBlock {
+				ce.FromBlock = e.FromBlock
+			}
+			if e.ToBlock > ce.ToBlock {
+				ce.ToBlock = e.ToBlock
+			}
+			ce.RowCount += e.RowCount
+			if e.SyncedAt.After(ce.UpdatedAt) {
+				ce.UpdatedAt = e.SyncedAt
+			}
+		}
+	}
 }
 
 // loadRegistryFile 读取磁盘 Registry（不存在返回空）。
@@ -112,7 +158,11 @@ func (r *Registry) Register(e *Entry) error {
 		e.Status = "COMPLETED"
 	}
 	r.items[e.ChunkKey] = e
-	return r.saveLocked(e)
+	if err := r.saveLocked(e); err != nil {
+		return err
+	}
+	r.rebuildCoverageLocked()
+	return nil
 }
 
 // IsActive 判断条目是否参与 merged/coverage/统计（Phase 5.2 P0-1 §11/§12）。
@@ -240,18 +290,25 @@ func (r *Registry) AddressTxCount(ctx context.Context, address string) (int64, e
 	defer r.mu.Unlock()
 	r.refreshLocked()
 	var total int64
-	for _, e := range r.items {
-		if !e.IsActive() {
-			continue
-		}
-		for _, a := range e.Addresses {
-			if strings.EqualFold(a, addr) {
-				total += e.RowCount
-				break
-			}
+	match := "|" + addr + "|"
+	for key, ce := range r.coverage {
+		if strings.Contains(key, match) {
+			total += ce.RowCount
 		}
 	}
 	return total, nil
+}
+
+// AddressCoverage 返回指定地址×数据集覆盖范围（索引 O(1) 查询）。
+func (r *Registry) AddressCoverage(chainKey, address, dataset string) (CoverageEntry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshLocked()
+	ce, ok := r.coverage[coverageKey(chainKey, address, dataset)]
+	if !ok {
+		return CoverageEntry{}, false
+	}
+	return *ce, true
 }
 
 // refreshLocked 以磁盘为准刷新缓存（多实例共享 registry.json 时读取最新状态）。
@@ -262,6 +319,7 @@ func (r *Registry) refreshLocked() {
 	for key, e := range loadRegistryFile(r.path) {
 		r.items[key] = e
 	}
+	r.rebuildCoverageLocked()
 }
 
 func (r *Registry) saveLocked(updated ...*Entry) error {
