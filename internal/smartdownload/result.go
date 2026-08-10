@@ -24,19 +24,21 @@ const DefaultXLSXThreshold int64 = 300_000
 
 // IndexedResult 已入库结果（下游：地址画像/关系图/智能调查）。
 type IndexedResult struct {
-	ChunkKey      string    `json:"chunk_key"`
-	DatasetJobID  string    `json:"dataset_job_id"`
-	ChainKey      string    `json:"chain_key"`
-	ChainID       int64     `json:"chain_id"`
-	Dataset       string    `json:"dataset"`
-	Address       string    `json:"address"`
-	FromBlock     uint64    `json:"from_block"`
-	ToBlock       uint64    `json:"to_block"`
-	RowCount      int64     `json:"row_count"`
-	MergedParquet string    `json:"merged_parquet,omitempty"`
-	Validation    string    `json:"validation"`
-	Certification string    `json:"certification,omitempty"` // CERTIFIED / PARTIAL
-	IndexedAt     time.Time `json:"indexed_at"`
+	ChunkKey      string              `json:"chunk_key"`
+	DatasetJobID  string              `json:"dataset_job_id"`
+	ChainKey      string              `json:"chain_key"`
+	ChainID       int64               `json:"chain_id"`
+	Dataset       string              `json:"dataset"`
+	Address       string              `json:"address"`
+	FromBlock     uint64              `json:"from_block"`
+	ToBlock       uint64              `json:"to_block"`
+	RowCount      int64               `json:"row_count"`
+	MergedParquet string              `json:"merged_parquet,omitempty"`
+	Validation    string              `json:"validation"`
+	Certification string              `json:"certification,omitempty"` // CERTIFIED / PARTIAL
+	Writer        *IndexedWriteResult `json:"writer,omitempty"`
+	WriteError    string              `json:"write_error,omitempty"`
+	IndexedAt     time.Time           `json:"indexed_at"`
 }
 
 // ResultProcessor 结果处理器：Part → merged Parquet → Dataset Registry → 下游事件。
@@ -283,7 +285,7 @@ func (p *ResultProcessor) MergeDataset(ctx context.Context, dsID string) (*Index
 		IndexedAt:     time.Now().UTC(),
 	}
 	outRoot := "staging"
-	if ds.Status == DatasetCompleted {
+	if ds.Status == DatasetCompleted || ds.Status == DatasetIndexing || ds.Status == DatasetDBWriteFailed {
 		outRoot = "final"
 		entry.Certification = "CERTIFIED"
 	}
@@ -362,6 +364,46 @@ func (p *ResultProcessor) MergeDataset(ctx context.Context, dsID string) (*Index
 		Int64("rows", entry.RowCount).Str("merged", entry.MergedParquet).
 		Msg("smartdownload_result_indexed")
 	return entry, nil
+}
+
+// MarkWriteFailure keeps the merged Parquet retryable while revoking registry certification.
+func (p *ResultProcessor) MarkWriteFailure(dsID string, result IndexedWriteResult, message string) error {
+	return p.updateWriteState(dsID, &result, "DB_WRITE_FAILED", message)
+}
+
+// MarkWriteSuccess persists writer reconciliation in the certified registry entry.
+func (p *ResultProcessor) MarkWriteSuccess(dsID string, result IndexedWriteResult) error {
+	return p.updateWriteState(dsID, &result, "CERTIFIED", "")
+}
+
+func (p *ResultProcessor) updateWriteState(dsID string, result *IndexedWriteResult, certification, message string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entries := p.loadLocked()
+	found := false
+	for _, entry := range entries {
+		if entry.DatasetJobID == dsID {
+			entry.Writer = result
+			entry.Certification = certification
+			entry.WriteError = message
+			entry.IndexedAt = time.Now().UTC()
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("dataset %s registry entry not found", dsID)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].IndexedAt.After(entries[j].IndexedAt) })
+	payload, _ := json.MarshalIndent(entries, "", "  ")
+	if err := os.MkdirAll(filepath.Dir(p.path), 0o755); err != nil {
+		return err
+	}
+	tmp := p.path + ".tmp"
+	if err := os.WriteFile(tmp, payload, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p.path)
 }
 
 // writeManifestV3 生成 manifest-v3.json（设计 §64）。

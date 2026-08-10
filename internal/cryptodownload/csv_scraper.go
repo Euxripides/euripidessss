@@ -1250,6 +1250,7 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	apiURL := fmt.Sprintf("%s/download/explorer/v1/%s/%s/download/async?t=%s", c.baseURL, chain, kind.Endpoint, timestamp)
 	if c.browserEmailRequester != nil {
+		reportProgress(cfg, "CSV纯下载 %s: %s 使用 %s 申请邮件", strings.ToUpper(chain), kind.Name, csvBrowserEmailEngine(c.browserEmailRequester))
 		return c.browserEmailRequester.Request(ctx, csvBrowserEmailRequest{URL: apiURL, PageURL: referer, Body: string(body)})
 	}
 

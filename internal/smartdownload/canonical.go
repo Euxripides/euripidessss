@@ -17,8 +17,10 @@ func canonicalColumns(dataset string) []string {
 		"source_provider", "source_range_id", "ingested_at"}
 	switch dataset {
 	case DatasetTransactions:
-		return append(base, "transaction_index", "from_address", "to_address",
-			"value_raw", "input", "method_id", "status", "gas_used", "gas_price")
+		return append(base, "block_hash", "transaction_index", "from_address", "to_address", "nonce",
+			"value_raw", "native_symbol", "input", "method_id", "method_name", "method_confidence", "tx_type",
+			"gas_limit", "gas_price", "max_fee_per_gas", "max_priority_fee_per_gas", "effective_gas_price", "gas_used",
+			"transaction_fee_native", "transaction_fee_usd", "status", "is_contract_creation", "created_contract_address", "error_message")
 	case DatasetTokenTransfers:
 		return append(base, "log_index", "token_address", "from_address", "to_address",
 			"value_raw", "token_standard")
@@ -143,6 +145,7 @@ func canonicalTypedSQL(dataset string) string {
 	casts := map[string]string{
 		"chain_id": "BIGINT", "block_number": "BIGINT", "block_time": "BIGINT",
 		"transaction_index": "BIGINT", "log_index": "BIGINT", "trace_index": "BIGINT",
+		"nonce": "BIGINT", "gas_limit": "BIGINT",
 		"status": "BIGINT", "gas_used": "VARCHAR", "gas_price": "VARCHAR",
 	}
 	items := make([]string, 0, len(cols))

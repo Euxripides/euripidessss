@@ -102,7 +102,6 @@ export function CryptoParquetPanel() {
   const pollingRef = useRef<number | undefined>(undefined);
   const lastErrorRef = useRef<string | undefined>(undefined);
   const lastCancelNotifyRef = useRef<boolean>(false);
-  const lastCoverageJobRef = useRef<string | null>(null);
 
   const rawAddresses = Form.useWatch('addresses', form) ?? '';
   const selectedChain = Form.useWatch('chain_key', form) ?? 'bsc';
@@ -160,19 +159,6 @@ export function CryptoParquetPanel() {
       lastCancelNotifyRef.current = false;
     }
   }, [job?.status]);
-
-  useEffect(() => {
-    if (!job?.id || !job?.dataset_coverage) return;
-    if (job.dataset_coverage.coverage_percent >= 100) return;
-    if (lastCoverageJobRef.current === job.id) return;
-    lastCoverageJobRef.current = job.id;
-    notification.warning({
-      message: '数据覆盖尚未完整',
-      description: '页面中的交易数和资产数只代表已加载数据，零值不表示完整历史没有交易。',
-      placement: 'topRight',
-      duration: 6,
-    });
-  }, [job?.id, job?.dataset_coverage?.coverage_percent]);
 
   async function initialize() {
     setLoading(true);

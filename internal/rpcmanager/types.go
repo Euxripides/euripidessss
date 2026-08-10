@@ -16,29 +16,35 @@ const (
 )
 
 type EndpointInput struct {
-	Provider         string  `json:"provider"`
-	ChainKey         string  `json:"chain_key"`
-	DisplayName      string  `json:"display_name"`
-	EndpointURL      string  `json:"endpoint_url"`
-	TestEndpointURL  string  `json:"test_endpoint_url,omitempty"`
-	Priority         int     `json:"priority"`
-	Enabled          bool    `json:"enabled"`
-	MaxRPS           float64 `json:"max_rps"`
-	MaxConcurrency   int     `json:"max_concurrency"`
-	RequestTimeoutMS int     `json:"request_timeout_ms"`
+	Provider          string   `json:"provider"`
+	ChainKey          string   `json:"chain_key"`
+	DisplayName       string   `json:"display_name"`
+	EndpointURL       string   `json:"endpoint_url"`
+	TestEndpointURL   string   `json:"test_endpoint_url,omitempty"`
+	Priority          int      `json:"priority"`
+	Enabled           bool     `json:"enabled"`
+	MaxRPS            float64  `json:"max_rps"`
+	MaxConcurrency    int      `json:"max_concurrency"`
+	RequestTimeoutMS  int      `json:"request_timeout_ms"`
+	SupportedMethods  []string `json:"supported_methods,omitempty"`
+	ArchiveCapability bool     `json:"archive_capability"`
+	TraceCapability   bool     `json:"trace_capability"`
 }
 
 type EndpointPatch struct {
-	Provider         *string  `json:"provider,omitempty"`
-	ChainKey         *string  `json:"chain_key,omitempty"`
-	DisplayName      *string  `json:"display_name,omitempty"`
-	EndpointURL      *string  `json:"endpoint_url,omitempty"`
-	TestEndpointURL  *string  `json:"test_endpoint_url,omitempty"`
-	Priority         *int     `json:"priority,omitempty"`
-	Enabled          *bool    `json:"enabled,omitempty"`
-	MaxRPS           *float64 `json:"max_rps,omitempty"`
-	MaxConcurrency   *int     `json:"max_concurrency,omitempty"`
-	RequestTimeoutMS *int     `json:"request_timeout_ms,omitempty"`
+	Provider          *string   `json:"provider,omitempty"`
+	ChainKey          *string   `json:"chain_key,omitempty"`
+	DisplayName       *string   `json:"display_name,omitempty"`
+	EndpointURL       *string   `json:"endpoint_url,omitempty"`
+	TestEndpointURL   *string   `json:"test_endpoint_url,omitempty"`
+	Priority          *int      `json:"priority,omitempty"`
+	Enabled           *bool     `json:"enabled,omitempty"`
+	MaxRPS            *float64  `json:"max_rps,omitempty"`
+	MaxConcurrency    *int      `json:"max_concurrency,omitempty"`
+	RequestTimeoutMS  *int      `json:"request_timeout_ms,omitempty"`
+	SupportedMethods  *[]string `json:"supported_methods,omitempty"`
+	ArchiveCapability *bool     `json:"archive_capability,omitempty"`
+	TraceCapability   *bool     `json:"trace_capability,omitempty"`
 }
 
 type Endpoint struct {
@@ -58,9 +64,61 @@ type Endpoint struct {
 	CurrentRPS             float64   `json:"current_rps"`
 	MaxConcurrency         int       `json:"max_concurrency"`
 	RequestTimeoutMS       int       `json:"request_timeout_ms"`
+	SupportedMethods       []string  `json:"supported_methods,omitempty"`
+	ArchiveCapability      bool      `json:"archive_capability"`
+	TraceCapability        bool      `json:"trace_capability"`
 	CreatedAt              time.Time `json:"created_at"`
 	UpdatedAt              time.Time `json:"updated_at"`
 	Health                 Health    `json:"health"`
+}
+
+// EndpointPoolSnapshot is the non-secret, in-memory operating state for one
+// RPC endpoint. It is safe to expose to scheduling code and never contains a
+// decrypted or masked endpoint URL.
+type EndpointPoolSnapshot struct {
+	EndpointID          string   `json:"endpoint_id"`
+	Provider            string   `json:"provider"`
+	Enabled             bool     `json:"enabled"`
+	CurrentWorkers      int      `json:"current_workers"`
+	WorkerLimit         int      `json:"worker_limit"`
+	MaxWorkers          int      `json:"max_workers"`
+	CurrentRPS          float64  `json:"current_rps"`
+	LatencyMS           float64  `json:"latency_ms"`
+	LatencyP50MS        float64  `json:"latency_p50_ms"`
+	LatencyP95MS        float64  `json:"latency_p95_ms"`
+	SuccessRate         float64  `json:"success_rate"`
+	Rate429             float64  `json:"429_rate"`
+	TimeoutRate         float64  `json:"timeout_rate"`
+	SuccessCount        int64    `json:"success_count"`
+	RateLimitedCount    int64    `json:"rate_limited_count"`
+	TimeoutCount        int64    `json:"timeout_count"`
+	TodayRequests       int64    `json:"today_requests"`
+	SupportedMethods    []string `json:"supported_methods,omitempty"`
+	ArchiveCapability   bool     `json:"archive_capability"`
+	TraceCapability     bool     `json:"trace_capability"`
+	LegacyCompatibility bool     `json:"legacy_compatibility"`
+}
+
+// PoolSnapshot is an aggregate scheduler view plus endpoint-level evidence.
+type PoolSnapshot struct {
+	ChainKey          string                 `json:"chain_key"`
+	EndpointCount     int                    `json:"endpoint_count"`
+	CurrentWorkers    int                    `json:"current_workers"`
+	WorkerLimit       int                    `json:"worker_limit"`
+	LatencyMS         float64                `json:"latency_ms"`
+	LatencyP50MS      float64                `json:"latency_p50_ms"`
+	LatencyP95MS      float64                `json:"latency_p95_ms"`
+	SuccessRate       float64                `json:"success_rate"`
+	Rate429           float64                `json:"429_rate"`
+	TimeoutRate       float64                `json:"timeout_rate"`
+	SuccessCount      int64                  `json:"success_count"`
+	RateLimitedCount  int64                  `json:"rate_limited_count"`
+	TimeoutCount      int64                  `json:"timeout_count"`
+	TodayRequests     int64                  `json:"today_requests"`
+	SupportedMethods  []string               `json:"supported_methods,omitempty"`
+	ArchiveCapability bool                   `json:"archive_capability"`
+	TraceCapability   bool                   `json:"trace_capability"`
+	Endpoints         []EndpointPoolSnapshot `json:"endpoints"`
 }
 
 type Health struct {

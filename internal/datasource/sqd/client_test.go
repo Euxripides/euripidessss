@@ -2,6 +2,7 @@ package sqd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -56,5 +57,37 @@ func TestStreamLogsContinuesAndUsesAddressTopics(t *testing.T) {
 	}
 	if logs != 1 || requests != 2 {
 		t.Fatalf("unexpected stream: logs=%d requests=%d", logs, requests)
+	}
+}
+
+func TestStreamContractLogsUsesEmitterAddressFilter(t *testing.T) {
+	const pool = "0x703f1c0b4399a51704e798002281bf26d6f9c2e6"
+	var captured streamRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintln(writer, `{"header":{"number":100,"timestamp":1785196800},"logs":[{"address":"`+pool+`","topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x","logIndex":1,"transactionIndex":2,"transactionHash":"0xhash"}]}`)
+	}))
+	defer server.Close()
+
+	client := NewConfigured(server.Client(), server.URL, "")
+	network, _ := chain.Resolve("bsc")
+	var logs int
+	if err := client.StreamContractLogs(context.Background(), network, BlockRange{From: 100, To: 100}, []string{strings.ToUpper(pool)}, func(block Block) error {
+		logs += len(block.Logs)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if logs != 1 || len(captured.Logs) != 1 {
+		t.Fatalf("unexpected contract log stream: logs=%d filters=%+v", logs, captured.Logs)
+	}
+	addresses, ok := captured.Logs[0]["address"].([]any)
+	if !ok || len(addresses) != 1 || addresses[0] != pool {
+		t.Fatalf("contract filter must use unpadded emitter address: %+v", captured.Logs[0])
+	}
+	if _, exists := captured.Logs[0]["topic1"]; exists {
+		t.Fatalf("contract log filter must not use transfer participant topics: %+v", captured.Logs[0])
 	}
 }

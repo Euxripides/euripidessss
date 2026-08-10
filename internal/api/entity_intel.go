@@ -20,13 +20,15 @@ func setupEntityIntel() {
 	if entityResolver != nil {
 		return
 	}
-	var analyticsSvc *analyticsapi.Service
-	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
-		analyticsSvc = h.Service()
+	var featureSource entityintel.FeatureSource
+	if cfg.Analytics.DataSource != "duckdb" && clickHouseInvestigation != nil {
+		featureSource = clickHouseInvestigation
+	} else if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+		featureSource = h.Service()
 	}
 	root := filepath.Join(cfg.RootDir, "backend", "data", "entity-intelligence")
 	store := entityintel.NewStore(root)
-	resolver, err := entityintel.NewResolver(store, analyticsSvc,
+	resolver, err := entityintel.NewResolver(store, featureSource,
 		func(chainKey string) (int64, error) {
 			n, err := chain.Resolve(chainKey)
 			if err != nil {

@@ -1,6 +1,6 @@
 // V3 扩展调查面板：多根联合、图谱 Diff、假设工作区、Copilot、时间线、历史（§22-§23、§27、§32-§35、§48）。
 import { useState } from "react";
-import { Button, Checkbox, Divider, Input, Select, Space, Tag, Typography } from "antd";
+import { Button, Checkbox, Collapse, Divider, Input, Select, Space, Tag, Typography } from "antd";
 import { ExperimentOutlined, HistoryOutlined, NodeIndexOutlined, ThunderboltOutlined } from "@ant-design/icons";
 
 export interface Hypothesis {
@@ -74,34 +74,47 @@ export default function FlowV3Extras({
   return (
     <aside className="flow-v3-extras">
       <div className="flow-left-panel-inner">
-        <section className="flow-left-section">
-          <Space style={{ width: "100%", justifyContent: "space-between" }}>
-            <Typography.Text strong>多根联合调查</Typography.Text>
-            <NodeIndexOutlined />
-          </Space>
-          <Space size={6} style={{ marginTop: 6 }}>
-            <Input
-              size="small"
-              placeholder="根地址"
-              value={multiRootInput}
-              onChange={(e) => onMultiRootInput(e.target.value)}
-              style={{ width: 140 }}
-            />
-            <Button size="small" onClick={onAddMultiRoot}>
-              添加
-            </Button>
-          </Space>
-          <Space wrap size={4}>
-            {multiRoots.map((r) => (
-              <Tag key={r} closable onClose={() => onRemoveMultiRoot(r)}>
-                {r.slice(0, 8)}…
-              </Tag>
-            ))}
-          </Space>
-          <Checkbox checked={showCommonOnly} onChange={(e) => onShowCommonOnly(e.target.checked)} disabled={multiRoots.length < 2}>
-            仅显示共同节点
-          </Checkbox>
-        </section>
+        <Collapse
+          ghost
+          size="small"
+          defaultActiveKey={["multiroot"]}
+          items={[
+            {
+              key: "multiroot",
+              label: (
+                <Space size={6}>
+                  多根联合调查 <NodeIndexOutlined />
+                </Space>
+              ),
+              children: (
+                <div className="flow-left-section">
+                  <Space size={6} style={{ marginTop: 6 }}>
+                    <Input
+                      size="small"
+                      placeholder="根地址"
+                      value={multiRootInput}
+                      onChange={(e) => onMultiRootInput(e.target.value)}
+                      style={{ width: 140 }}
+                    />
+                    <Button size="small" onClick={onAddMultiRoot}>
+                      添加
+                    </Button>
+                  </Space>
+                  <Space wrap size={4}>
+                    {multiRoots.map((r) => (
+                      <Tag key={r} closable onClose={() => onRemoveMultiRoot(r)}>
+                        {r.slice(0, 8)}…
+                      </Tag>
+                    ))}
+                  </Space>
+                  <Checkbox checked={showCommonOnly} onChange={(e) => onShowCommonOnly(e.target.checked)} disabled={multiRoots.length < 2}>
+                    仅显示共同节点
+                  </Checkbox>
+                </div>
+              ),
+            },
+          ]}
+        />
 
         <Divider style={{ margin: "8px 0" }} />
 
@@ -186,4 +199,3 @@ export default function FlowV3Extras({
     </aside>
   );
 }
-

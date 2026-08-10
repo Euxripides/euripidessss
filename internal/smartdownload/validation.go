@@ -366,7 +366,7 @@ func (v *Validator) readParquetRecords(ctx context.Context, path string) ([]Reco
 		out = append(out, Record{
 			ChainID:         int64(toFloat(row["chain_id"])),
 			BlockNumber:     uint64(toFloat(row["block_number"])),
-			BlockTime:       int64(toFloat(row["block_time"])),
+			BlockTime:       int64(firstNumber(row, "block_time", "block_timestamp")),
 			TransactionHash: str(row["transaction_hash"]),
 			LogIndex:        uint64(toFloat(row["log_index"])),
 			Dataset:         datasetFromColumns(row),
@@ -381,6 +381,11 @@ func datasetFromColumns(row map[string]any) string {
 	if _, ok := row["token_standard"]; ok {
 		return DatasetTokenTransfers
 	}
+	if _, token := row["token_address"]; token {
+		if _, index := row["log_index"]; index {
+			return DatasetTokenTransfers
+		}
+	}
 	if _, ok := row["topics"]; ok {
 		return DatasetLogs
 	}
@@ -391,6 +396,15 @@ func datasetFromColumns(row map[string]any) string {
 		return DatasetBalances
 	}
 	return DatasetTransactions
+}
+
+func firstNumber(row map[string]any, keys ...string) float64 {
+	for _, key := range keys {
+		if value, ok := row[key]; ok && value != nil {
+			return toFloat(value)
+		}
+	}
+	return 0
 }
 
 func firstNonEmpty(row map[string]any, keys ...string) string {
@@ -454,7 +468,7 @@ func (v *Validator) crossCheck(ctx context.Context, ds *DatasetJob, cp *Checkpoi
 			Address: ds.Address, Dataset: ds.Dataset, ChainKey: ds.ChainKey,
 			FromBlock: w.From, ToBlock: w.To,
 		})
-		if err != nil {
+		if err != nil || probe.Confidence <= 0 {
 			continue
 		}
 		expected := probe.EstimatedRows
@@ -476,6 +490,10 @@ func (v *Validator) crossCheck(ctx context.Context, ds *DatasetJob, cp *Checkpoi
 			report.Details = append(report.Details, fmt.Sprintf(
 				"窗口 %d-%d: provider=%d local=%d", w.From, w.To, expected, actual))
 		}
+	}
+	if report.Compared == 0 {
+		report.Status = "SKIPPED"
+		report.Details = []string{fmt.Sprintf("第二 Provider %s 探测不可用，未生成伪零值比较", second.Name())}
 	}
 	return report
 }

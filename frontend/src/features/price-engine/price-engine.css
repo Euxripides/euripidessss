@@ -1,0 +1,37 @@
+.price-engine-page {
+  padding: 20px;
+  min-width: 0;
+}
+
+.price-engine-page .ant-statistic-content-value {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 767px) {
+  .price-engine-page {
+    padding: 12px;
+    overflow-x: hidden;
+  }
+
+  .price-engine-page .ant-form-inline {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .price-engine-page .ant-form-inline .ant-form-item,
+  .price-engine-page .ant-form-inline .ant-form-item-control,
+  .price-engine-page .ant-form-inline .ant-form-item-control-input,
+  .price-engine-page .ant-form-inline .ant-form-item-control-input-content,
+  .price-engine-page .ant-form-inline .ant-input,
+  .price-engine-page .ant-form-inline .ant-input-number,
+  .price-engine-page .ant-form-inline .ant-select {
+    width: 100% !important;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .price-engine-page .ant-descriptions-item-content {
+    overflow-wrap: anywhere;
+  }
+}

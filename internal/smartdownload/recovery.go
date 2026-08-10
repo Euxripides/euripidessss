@@ -18,11 +18,20 @@ import (
 //
 // 可信度顺序：Committed Part（磁盘 SHA 校验）> Range Ledger > Checkpoint > Task JSON。
 func (s *Service) RecoverAll(ctx context.Context) error {
+	if s.v33 != nil {
+		if err := s.v33.Recover(); err != nil {
+			logger.Log.Warn().Err(err).Msg("smartdownload_v33_registry_recover_failed")
+		}
+	}
 	// Coverage Index V2 重建：只恢复 CERTIFIED 资产（设计 §42）
 	if s.coverageIndex != nil {
 		var inputs []reg.RebuildInput
 		for _, e := range s.results.List() {
 			if e.Certification != "CERTIFIED" {
+				continue
+			}
+			ds := s.store.GetDataset(e.DatasetJobID)
+			if ds == nil || ds.Status != DatasetCompleted {
 				continue
 			}
 			inputs = append(inputs, reg.RebuildInput{
@@ -37,6 +46,15 @@ func (s *Service) RecoverAll(ctx context.Context) error {
 	scanTime := time.Now().UTC()
 	recovered := 0
 	for _, batch := range batches {
+		if batch.Status == BatchCanceled {
+			// A process can stop after the batch terminal state is persisted but
+			// before running descendants observe cancellation. Normalize the full
+			// tree on recovery so no READY/RUNNING shard remains under CANCELED.
+			s.mu.Lock()
+			s.cancelBatchLocked(batch.ID)
+			s.mu.Unlock()
+			continue
+		}
 		if batch.Status.Terminal() || batch.CreatedAt.After(scanTime) {
 			// 跳过恢复扫描开始后新建的批次（避免与 CreateBatch 半成品竞态）
 			continue
@@ -46,6 +64,9 @@ func (s *Service) RecoverAll(ctx context.Context) error {
 			continue
 		}
 		recovered++
+	}
+	if err := s.ReconcileAll(ctx); err != nil {
+		logger.Log.Warn().Err(err).Msg("smartdownload_status_reconcile_failed")
 	}
 	// 恢复后自动重新调度 RUNNING 批次
 	for _, batch := range batches {
@@ -69,6 +90,11 @@ func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
 		}
 		for _, ds := range s.store.ListDatasetsByAddress(a.ID) {
 			if ds.Status.Terminal() {
+				continue
+			}
+			if ds.Status == DatasetDBWriteFailed || ds.Status == DatasetIndexing {
+				// 已认证/已合并数据只重试索引；绝不重建或重新下载 Range。
+				go s.indexDataset(ds.ID)
 				continue
 			}
 			if err := s.recoverDataset(ctx, ds.ID); err != nil {

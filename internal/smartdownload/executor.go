@@ -17,14 +17,16 @@ import (
 
 // RangeRequest 单个 Range 的采集请求（Address × Dataset × Range）。
 type RangeRequest struct {
-	DatasetJobID string `json:"dataset_job_id"`
-	Address      string `json:"address"`
-	Dataset      string `json:"dataset"`
-	ChainKey     string `json:"chain_key"`
-	ChainID      int64  `json:"chain_id"`
-	FromBlock    uint64 `json:"from_block"`
-	ToBlock      uint64 `json:"to_block"`
-	CloudTier    string `json:"cloud_tier,omitempty"`
+	DatasetJobID string       `json:"dataset_job_id"`
+	Mode         DownloadMode `json:"mode,omitempty"`
+	Priority     int          `json:"priority,omitempty"`
+	Address      string       `json:"address"`
+	Dataset      string       `json:"dataset"`
+	ChainKey     string       `json:"chain_key"`
+	ChainID      int64        `json:"chain_id"`
+	FromBlock    uint64       `json:"from_block"`
+	ToBlock      uint64       `json:"to_block"`
+	CloudTier    string       `json:"cloud_tier,omitempty"`
 }
 
 // Record 中间记录（Phase 3 由 Normalizer 转 Canonical Schema；Phase 1 保持通用键字段）。

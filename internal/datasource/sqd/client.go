@@ -417,6 +417,37 @@ func (c *Client) StreamLogs(
 	return c.stream(ctx, network, request, validateLogBlock, handle)
 }
 
+// StreamContractLogs streams logs emitted by the requested contracts. It is
+// intentionally separate from StreamLogs: StreamLogs finds token-transfer
+// participation through indexed topics, while contract logs must filter the
+// EVM log address itself (for example, a DEX pool emitting Swap events).
+func (c *Client) StreamContractLogs(
+	ctx context.Context,
+	network chain.EVM,
+	blockRange BlockRange,
+	addresses []string,
+	handle func(Block) error,
+) error {
+	contracts := normalizeContractAddresses(addresses)
+	if len(contracts) == 0 {
+		return errors.New("SQD contract log query requires at least one contract address")
+	}
+	request := streamRequest{
+		Type:      "evm",
+		FromBlock: blockRange.From,
+		ToBlock:   blockRange.To,
+		Fields: map[string]map[string]bool{
+			"block": {"number": true, "timestamp": true},
+			"log": {
+				"address": true, "topics": true, "data": true, "logIndex": true,
+				"transactionIndex": true, "transactionHash": true,
+			},
+		},
+		Logs: []map[string]any{{"address": contracts}},
+	}
+	return c.stream(ctx, network, request, validateLogBlock, handle)
+}
+
 func (c *Client) StreamTraces(
 	ctx context.Context,
 	network chain.EVM,
@@ -838,6 +869,23 @@ func padAddresses(addresses []string) []string {
 	for _, address := range addresses {
 		address = strings.TrimPrefix(strings.ToLower(address), "0x")
 		result = append(result, "0x"+strings.Repeat("0", 24)+address)
+	}
+	return result
+}
+
+func normalizeContractAddresses(addresses []string) []string {
+	result := make([]string, 0, len(addresses))
+	seen := make(map[string]struct{}, len(addresses))
+	for _, address := range addresses {
+		address = strings.ToLower(strings.TrimSpace(address))
+		if len(address) != 42 || !strings.HasPrefix(address, "0x") {
+			continue
+		}
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		result = append(result, address)
 	}
 	return result
 }

@@ -13,6 +13,7 @@ import { HealthChart } from './HealthChart';
 import { SourceStatus } from './SourceStatus';
 
 const chainLabels: Record<string, string> = { bsc: 'BSC', eth: 'ETH', base: 'Base', arbitrum: 'Arbitrum' };
+const providerLabels: Record<string, string> = { ANKR: 'Ankr', CHAINSTACK: 'Chainstack', NODEREAL: 'NodeReal' };
 
 export function SourceCard({ source, wide, testing, onEdit, onTest, onLogs, onDelete }: {
   source: DataSourceItem;
@@ -26,13 +27,18 @@ export function SourceCard({ source, wide, testing, onEdit, onTest, onLogs, onDe
   const icon = source.type === 'STREAM'
     ? <RadarChartOutlined />
     : source.type === 'DATASET' ? <FileZipOutlined /> : <CloudServerOutlined />;
+  const providerLabel = source.type === 'RPC' ? providerLabels[source.provider.toUpperCase()] : undefined;
+  const displayName = providerLabel
+    ? `${providerLabel} · ${source.chain_keys.map((chain) => chainLabels[chain] || chain).join('/') || 'RPC'}`
+    : source.name;
+  const displayDescription = providerLabel ? `${source.name} · ${source.description}` : source.description;
   return (
     <article className={`datasource-card ${wide ? 'datasource-card-wide' : ''}`}>
       <header>
         <span className={`datasource-source-icon datasource-source-${source.type.toLowerCase()}`}>{icon}</span>
         <div>
-          <h3>{source.name}</h3>
-          <small>{source.description}</small>
+          <Tooltip title={source.name}><h3>{displayName}</h3></Tooltip>
+          <small>{displayDescription}</small>
         </div>
         <SourceStatus status={source.status} detail={source.last_error} />
       </header>

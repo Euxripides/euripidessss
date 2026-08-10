@@ -25,6 +25,7 @@ bin/
 # Logs and temporary output
 *.log
 tmp/
+/.asset_cleanup_*/
 backend/data/logs/
 backend/data/outputs/
 backend/data/uploads/

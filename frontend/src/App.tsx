@@ -6,11 +6,13 @@ const AnalyticsAddressPage = lazy(() => import("./features/analytics/AddressPage
 const AnalyticsGraphPage = lazy(() => import("./features/analytics/GraphPage"));
 const AnalyticsReportPage = lazy(() => import("./features/analytics/ReportPage"));
 const AnalyticsRiskPage = lazy(() => import("./features/analytics/RiskAnalysisPage"));
+const DataQualityPage = lazy(() => import("./features/quality/DataQualityPage"));
+const FinancialQualityPage = lazy(() => import("./features/financial-quality/FinancialQualityPage"));
+const PriceEnginePage = lazy(() => import("./features/price-engine/PriceEnginePage"));
 const SystemSettingsPage = lazy(() => import("./features/system/SystemSettingsPage"));
 const IntelligencePage = lazy(() => import("./features/intelligence/IntelligencePage"));
-const EntityIntelligencePage = lazy(() => import("./features/entity/EntityPage"));
-const FundFlowPage = lazy(() => import("./features/fundflow/FundFlowPage"));
 const ReportPage = lazy(() => import("./features/reports/ReportPage"));
+const ExplorerPage = lazy(() => import("./features/explorer-intelligence/ExplorerPage"));
 import {
   ApartmentOutlined,
   CloudDownloadOutlined,
@@ -18,23 +20,23 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   DownloadOutlined,
+  DollarOutlined,
   FileTextOutlined,
   FileZipOutlined,
   FundProjectionScreenOutlined,
   MenuOutlined,
-  NodeIndexOutlined,
   PlusOutlined,
   RightOutlined,
   RobotOutlined,
   SearchOutlined,
   SettingOutlined,
-  TagsOutlined,
   ThunderboltOutlined,
   UploadOutlined,
   WalletOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
 import {
+  App as AntdApp,
   Button,
   Collapse,
   ConfigProvider,
@@ -45,6 +47,7 @@ import {
   Layout,
   Menu,
   Space,
+  Tag,
   Table,
   Upload,
   message,
@@ -179,6 +182,7 @@ import {
 } from "./features/upload/uploadApi";
 import { TransferPanel } from "./features/upload/TransferPanel";
 import SmartDownloadPage from "./features/smart-download/SmartDownloadPage";
+import { loadSystemNavigationPreference } from "./features/system/systemSettingsStore";
 import {
   ENTITY_KIND_OPTIONS,
   SOURCE_FILTER_FIELDS,
@@ -219,61 +223,71 @@ import {
 } from "./features/flow/flowTypes";
 import { useFlowOperations } from "./hooks/useFlowOperations";
 import { useFlowModals } from "./hooks/useFlowModals";
+import { useAnalysisContext } from "./features/explorer-intelligence/analysisContext";
 
 const { Sider, Content } = Layout;
 
 dayjs.locale("zh-cn");
 
-const menuItems = [
-  { key: "analytics-dashboard", icon: <DashboardOutlined />, label: "仪表盘" },
+const menuItems: MenuProps["items"] = [
+  { key: "explorer", icon: <SearchOutlined />, label: "链上查询" },
+  { key: "analytics-graph", icon: <ApartmentOutlined />, label: "资金追踪" },
+  { key: "intelligence", icon: <RobotOutlined />, label: "调查工作台" },
   {
-    key: "assets",
-    icon: <DatabaseOutlined />,
-    label: "数据资产",
+    key: "analysis-center",
+    icon: <DashboardOutlined />,
+    label: "更多分析",
     children: [
-      { key: "smart-download", icon: <ThunderboltOutlined />, label: "智能下载" },
-      { key: "clean", icon: <UploadOutlined />, label: "数据集管理" },
-      { key: "crypto-parquet", icon: <FileZipOutlined />, label: "Parquet 数据" },
-      { key: "crypto-download", icon: <CloudDownloadOutlined />, label: "浏览器下载" },
-      { key: "download-dune", icon: <FileTextOutlined />, label: "Dune 下载" },
-      { key: "crypto-datasource", icon: <DatabaseOutlined />, label: "数据源管理" },
-    ],
-  },
-  {
-    key: "address-analysis",
-    icon: <WalletOutlined />,
-    label: "地址分析",
-    children: [
+      { key: "analytics-dashboard", label: "分析总览" },
       { key: "analytics-address", label: "地址画像" },
+      { key: "risk", label: "风险分析" },
+      { key: "analytics-report", label: "分析报告" },
+      { key: "graph", label: "导入资金路径" },
       { key: "crypto-address", label: "地址区分" },
     ],
   },
-  {
-    key: "investigation-workspace",
-    icon: <ApartmentOutlined />,
-    label: "调查工作台",
-    children: [
-      { key: "intelligence", icon: <RobotOutlined />, label: "智能调查" },
-      { key: "entity", icon: <TagsOutlined />, label: "实体智能" },
-      { key: "fund-flow", icon: <NodeIndexOutlined />, label: "资金流智能" },
-      { key: "reports", icon: <FileTextOutlined />, label: "调查报告" },
-      { key: "graph", icon: <FundProjectionScreenOutlined />, label: "资金路径" },
-      { key: "analytics-graph", icon: <ApartmentOutlined />, label: "地址关系图" },
-      { key: "analytics-report", icon: <FileTextOutlined />, label: "案件报告" },
-    ],
-  },
-  { key: "risk", icon: <WarningOutlined />, label: "风险分析" },
+  { key: "clean", icon: <DatabaseOutlined />, label: "数据资产" },
+  { key: "reports", icon: <FileTextOutlined />, label: "案件" },
 ];
 
-const systemMenuItems = [
-  { key: "crypto-rpc", icon: <CloudServerOutlined />, label: "RPC 管理" },
+const systemMenuItems: MenuProps["items"] = [
+  {
+    key: "download-center",
+    icon: <DownloadOutlined />,
+    label: "下载中心",
+    children: [
+      { key: "smart-download", label: "下载任务" },
+      {
+        key: "advanced-download",
+        label: "高级",
+        children: [
+          { key: "crypto-parquet", label: "Parquet 数据" },
+          { key: "crypto-download", label: "浏览器下载" },
+          { key: "download-dune", label: "Dune 下载" },
+        ],
+      },
+    ],
+  },
+  { key: "crypto-datasource", icon: <DatabaseOutlined />, label: "数据源" },
+  {
+    key: "data-quality-center",
+    icon: <WarningOutlined />,
+    label: "数据质量",
+    children: [
+      { key: "data-quality", label: "语义质量" },
+      { key: "financial-quality", label: "金融质量" },
+      { key: "price-engine", label: "历史价格" },
+    ],
+  },
   { key: "system-settings", icon: <SettingOutlined />, label: "系统设置" },
 ];
 
 export function App() {
-  const [active, setActive] = useState("analytics-dashboard");
+  const { state: analysisState, update: updateAnalysis } = useAnalysisContext();
+  const systemPreference = useMemo(() => loadSystemNavigationPreference(), []);
+  const [active, setActive] = useState(() => systemPreference.rememberLastPage ? window.localStorage.getItem("etl.app.active.v1") || systemPreference.defaultPage : systemPreference.defaultPage);
   const [activeAddressParam, setActiveAddressParam] = useState<string | undefined>(undefined);
-  const [sideCollapsed, setSideCollapsed] = useState(false);
+  const [sideCollapsed, setSideCollapsed] = useState(() => systemPreference.compactSidebar);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [globalQuery, setGlobalQuery] = useState("");
   const [serviceHealthy, setServiceHealthy] = useState<boolean | null>(null);
@@ -446,8 +460,11 @@ export function App() {
   const handleMenuClick: MenuProps["onClick"] = (item) => {
     const nextActive = String(item.key);
     setActive(nextActive);
-    // 进入地址关系图自动收起左侧导航（画布全屏）；其他页面恢复展开
-    setSideCollapsed(nextActive === "analytics-graph");
+    if (systemPreference.rememberLastPage) {
+      window.localStorage.setItem("etl.app.active.v1", nextActive);
+    }
+    // 进入资金追踪自动收起左侧导航（画布全屏）；其他页面恢复展开
+    setSideCollapsed(nextActive === "analytics-graph" || systemPreference.compactSidebar);
     setMobileNavOpen(false);
   };
 
@@ -455,6 +472,7 @@ export function App() {
   // 均自动收起左侧导航；离开该页不强制恢复（保留用户手动状态）
   useEffect(() => {
     if (active === "analytics-graph") setSideCollapsed(true);
+    if (active !== "analytics-graph" && systemPreference.compactSidebar) setSideCollapsed(true);
   }, [active]);
 
   // 全局搜索 → 地址详情页（图谱页搜索框合并复用同一入口）
@@ -467,12 +485,19 @@ export function App() {
       return;
     }
     setActiveAddressParam(normalized);
-    setActive("analytics-address");
+    updateAnalysis({ rootAddress: normalized, pendingQuery: "", tab: "overview" });
+    setActive("explorer");
     setMobileNavOpen(false);
   };
 
   const runGlobalSearch = () => {
-    openAddressDetail(globalQuery);
+    const normalized = globalQuery.trim().toLowerCase();
+    if (/^0x[0-9a-f]{40}$/.test(normalized)) {
+      openAddressDetail(normalized);
+      return;
+    }
+    updateAnalysis({ pendingQuery: globalQuery.trim() });
+    setActive("explorer");
   };
 
   return (
@@ -493,6 +518,7 @@ export function App() {
         },
       }}
     >
+      <AntdApp>
       <Button
         className="mobile-nav-trigger"
         type="primary"
@@ -511,18 +537,18 @@ export function App() {
         <Menu
           mode="inline"
           selectedKeys={[active]}
-          defaultOpenKeys={["assets", "address-analysis", "investigation-workspace"]}
           items={menuItems}
           onClick={handleMenuClick}
         />
         <div className="mobile-system-menu">
+          <div className="nav-section-label">系统</div>
           <Menu mode="inline" selectedKeys={[active]} items={systemMenuItems} onClick={handleMenuClick} />
         </div>
       </Drawer>
       <Layout className="app-shell">
         <Sider
-          width={212}
-          collapsedWidth={72}
+          width={208}
+          collapsedWidth={64}
           collapsed={sideCollapsed}
           className="side"
         >
@@ -536,17 +562,17 @@ export function App() {
           <Menu
             mode="inline"
             selectedKeys={[active]}
-            defaultOpenKeys={["assets", "address-analysis", "investigation-workspace"]}
             items={menuItems}
             onClick={handleMenuClick}
           />
           <div className="side-system">
+            {!sideCollapsed ? <div className="nav-section-label">系统</div> : null}
             <Menu mode="inline" selectedKeys={[active]} items={systemMenuItems} onClick={handleMenuClick} />
           </div>
         </Sider>
         <Layout className="app-main">
           {/* 地址关系图为沉浸式全屏工作台：隐藏顶部横条（搜索功能已并入图谱页搜索框） */}
-          {active !== "analytics-graph" ? (
+          {active !== "analytics-graph" && active !== "explorer" ? (
             <header className="app-header">
               <div className="app-header-search">
                 <Input
@@ -569,7 +595,7 @@ export function App() {
               </div>
             </header>
           ) : null}
-          <Content className={`content ${active === "graph" ? "content-graph" : ""}`}>
+          <Content className={`content ${active === "graph" ? "content-graph" : ""} ${active === "explorer" ? "content-explorer" : ""}`}>
             {active === "clean" && (
               <section className="topbar">
                 <div>
@@ -590,6 +616,7 @@ export function App() {
                 </Space>
               </section>
             )}
+            {active === "clean" && analysisState.rootAddress ? <div className="xi-inherited-context"><span>继承 Explorer 上下文</span><Tag>{analysisState.chain.toUpperCase()}</Tag><Tag>{analysisState.window}</Tag>{analysisState.direction !== "all" ? <Tag>{analysisState.direction.toUpperCase()}</Tag> : null}{analysisState.tokenSymbol ? <Tag>{analysisState.tokenSymbol}</Tag> : null}{analysisState.minUSD ? <Tag>USD ≥ {analysisState.minUSD}</Tag> : null}{analysisState.entityFilters.map((entity) => <Tag key={entity}>{entity}</Tag>)}</div> : null}
             <TransferPanel status={transferStatus} />
 
             {active === "clean" && (
@@ -647,14 +674,16 @@ export function App() {
             {active === "crypto-datasource" && <DataSourcePage onOpenRpc={() => setActive("crypto-rpc")} />}
             {active === "crypto-address" && <CryptoAddressPanel />}
             <Suspense fallback={null}>
+              {active === "explorer" && <ExplorerPage onNavigate={(page, address) => { if (address) updateAnalysis({ rootAddress: address }); setActive(page === "fund-flow" ? "analytics-graph" : page); }} />}
               {active === "analytics-dashboard" && <AnalyticsDashboardPage onNavigate={(p, a) => { if (a) setActiveAddressParam(a); setActive(p); }} />}
               {active === "analytics-address" && <AnalyticsAddressPage initialAddress={activeAddressParam} />}
               {active === "analytics-graph" && <AnalyticsGraphPage onOpenAddress={openAddressDetail} />}
               {active === "analytics-report" && <AnalyticsReportPage />}
               {active === "risk" && <AnalyticsRiskPage />}
+              {active === "data-quality" && <DataQualityPage />}
+              {active === "financial-quality" && <FinancialQualityPage />}
+              {active === "price-engine" && <PriceEnginePage />}
               {active === "intelligence" && <IntelligencePage />}
-              {active === "entity" && <EntityIntelligencePage />}
-              {active === "fund-flow" && <FundFlowPage />}
               {active === "reports" && <ReportPage />}
               {active === "system-settings" && <SystemSettingsPage />}
             </Suspense>
@@ -728,13 +757,15 @@ export function App() {
           flowOps.setDirectionRuleValues({});
         }}
       />
+      </AntdApp>
     </ConfigProvider>
   );
 
   function titleFor(key: string) {
     return {
+      explorer: "链上查询",
       clean: "数据集管理",
-      graph: "资金流分析",
+      graph: "导入资金路径",
       "download-dune": "Dune 下载",
       "crypto-download": "浏览器数据下载",
       "crypto-parquet": "链数据采集",
@@ -744,12 +775,10 @@ export function App() {
       "crypto-address": "地址区分",
       "analytics-dashboard": "仪表盘",
       "analytics-address": "地址画像",
-      "analytics-graph": "地址图谱",
+      "analytics-graph": "资金追踪",
       "analytics-report": "案件报告",
       risk: "风险分析",
-      intelligence: "智能调查",
-      entity: "实体智能",
-      "fund-flow": "资金流智能",
+      intelligence: "调查工作台",
       reports: "调查报告",
       "system-settings": "系统设置",
     }[key];

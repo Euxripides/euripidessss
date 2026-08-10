@@ -131,7 +131,7 @@ export default function DashboardPage({ onNavigate }: Props) {
     const investigations = state.investigations.slice(0, 3).map((item) => ({
       key: `investigation-${item.id}`,
       name: shortAddress(item.target),
-      type: "智能调查",
+      type: "调查工作台",
       progress: Math.round(item.progress || 0),
       status: item.status,
       updatedAt: item.updated_at,

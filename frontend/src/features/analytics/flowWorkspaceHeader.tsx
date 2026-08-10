@@ -52,8 +52,8 @@ export default function FlowWorkspaceHeader({
   return (
     <header className="flow-workspace-header">
       <div className="flow-workspace-brand">
-        <strong>资金流向追踪</strong>
-        <small>链上事实 · FIFO 案涉归因</small>
+        <strong>资金追踪</strong>
+        <small>链上资金路径与地址关系分析</small>
       </div>
 
       <div className="flow-workspace-search">

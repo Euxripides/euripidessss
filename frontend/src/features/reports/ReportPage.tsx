@@ -171,13 +171,6 @@ export default function ReportPage() {
       <Typography.Title level={4}>
         <FileTextOutlined /> 调查报告
       </Typography.Title>
-      <Alert
-        style={{ marginBottom: 16 }}
-        type="info"
-        showIcon
-        message="报告边界"
-        description="所有结论均来自结构化计算并带 Evidence ID 与哈希；数据不完整时报告标记 PARTIAL 并披露缺口；报告不替代正式司法/调证文书。"
-      />
       <Space wrap style={{ marginBottom: 16 }}>
         <Select
           value={invId}

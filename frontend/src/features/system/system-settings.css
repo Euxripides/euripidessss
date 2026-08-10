@@ -1,0 +1,154 @@
+.system-settings-page {
+  padding: 16px;
+}
+
+.system-settings-hero,
+.system-settings-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.system-settings-hero {
+  margin-bottom: 16px;
+}
+
+.system-settings-hero .ant-typography,
+.system-settings-section-head .ant-typography {
+  margin-bottom: 0;
+}
+
+.system-settings-kicker {
+  display: inline-block;
+  margin-bottom: 4px;
+  color: #8c8c8c;
+  font-size: 11px;
+  letter-spacing: .12em;
+}
+
+.system-settings-offline,
+.system-settings-overview,
+.system-settings-tabs {
+  margin-bottom: 12px;
+}
+
+.system-settings-card {
+  height: 100%;
+  overflow: hidden;
+  border-top: 3px solid #d9d9d9;
+}
+
+.system-settings-card.tone-blue { border-top-color: #1677ff; }
+.system-settings-card.tone-purple { border-top-color: #722ed1; }
+.system-settings-card.tone-cyan { border-top-color: #13c2c2; }
+.system-settings-card.tone-green { border-top-color: #52c41a; }
+.system-settings-card.tone-orange { border-top-color: #fa8c16; }
+
+.system-settings-icon {
+  margin-top: 2px;
+  color: #595959;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.system-settings-value {
+  margin-top: 4px;
+  color: #1f1f1f;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.system-settings-tabs .ant-card-body {
+  padding-top: 8px;
+}
+
+.system-settings-section {
+  min-height: 340px;
+  padding: 8px 2px 4px;
+}
+
+.system-settings-section-head {
+  margin-bottom: 20px;
+}
+
+.system-settings-section .ant-form-item {
+  margin-bottom: 18px;
+}
+
+.system-settings-subsection {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.system-cleanup-form {
+  margin-top: 18px;
+}
+
+.system-cleanup-form .ant-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+
+.system-cleanup-preview {
+  margin-top: 18px;
+  background: #fafafa;
+}
+
+.system-settings-list {
+  margin-top: 16px;
+  max-height: 390px;
+  overflow: auto;
+  border-top: 1px solid #f0f0f0;
+}
+
+.system-settings-list .ant-list-item {
+  align-items: flex-start;
+}
+
+.system-runtime-strip {
+  margin-top: 12px;
+}
+
+.system-runtime-strip .ant-descriptions-item-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.system-confirm-copy {
+  margin-top: 18px;
+}
+
+@media (max-width: 768px) {
+  .system-settings-page {
+    padding: 12px;
+  }
+
+  .system-settings-hero,
+  .system-settings-section-head {
+    flex-direction: column;
+  }
+
+  .system-settings-hero > .ant-btn,
+  .system-settings-section-head > .ant-btn {
+    width: 100%;
+  }
+
+  .system-settings-tabs .ant-card-body {
+    padding: 8px 12px 14px;
+  }
+
+  .system-settings-tabs .ant-tabs-nav-wrap {
+    overflow-x: auto;
+  }
+
+  .system-settings-section {
+    min-height: 0;
+  }
+
+  .system-settings-list .ant-list-item {
+    gap: 8px;
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-08-09T19:02:22.022Z",
+  "target": ".",
+  "depth": "standard",
+  "type": "all",
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "medium": 0,
+    "low": 0,
+    "total": 2
+  },
+  "findings": [
+    {
+      "severity": "HIGH",
+      "type": "SQL Injection",
+      "location": "src\\features\\clean\\DBExportModal.tsx:243",
+      "description": "Possible SQL injection"
+    },
+    {
+      "severity": "HIGH",
+      "type": "SQL Injection",
+      "location": "src\\features\\clean\\DBExportModal.tsx:256",
+      "description": "Possible SQL injection"
+    }
+  ]
+}

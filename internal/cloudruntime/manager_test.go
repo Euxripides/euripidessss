@@ -2,6 +2,8 @@ package cloudruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -291,7 +293,7 @@ func TestLeaseExpiryRequeuesSameJob(t *testing.T) {
 	// 模拟远端 Worker 领取并留下过期 lease（heartbeat 停止）
 	lease := map[string]any{
 		"job_id": id, "chunk_id": "chunk-1",
-		"leased_at":       "2026-08-07T10:00:00.017Z",
+		"leased_at":        "2026-08-07T10:00:00.017Z",
 		"lease_expires_at": "2026-08-07T10:10:00.017Z", // TS toISOString 带毫秒
 		"heartbeat_at":     "2026-08-07T10:00:00.017Z",
 	}
@@ -362,6 +364,30 @@ func TestCancelMarkerAndCompletedIdempotency(t *testing.T) {
 	}
 	if ok, _ := store.Exists(ctx, pendingChunkDir(id, "chunk-1")+"/request.json"); ok {
 		t.Fatal("stale pending must be cleaned after completed")
+	}
+}
+
+func TestMaterializeJobResultVerifiesManifestAndSHA(t *testing.T) {
+	root := t.TempDir()
+	store := s3store.NewLocalStore(filepath.Join(root, "store"))
+	m := New(Config{Mode: ModeCloud, DeployKey: "k", Store: store, JobsRoot: root,
+		CommandRunner: fakeSqdRunner("bsc-emergency-worker")})
+	id, chunk := "job-materialize", "chunk-1"
+	body := []byte("parquet-fixture")
+	sum := sha256.Sum256(body)
+	files := []FileInfo{{Path: "token_transfers/part.parquet", Bytes: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}}
+	manifest, _ := json.Marshal(map[string]any{"job_id": id, "chunk_id": chunk, "row_count": 1, "files": files})
+	ctx := context.Background()
+	_ = store.Put(ctx, completedChunkDir(id, chunk)+"/manifest.json", manifest)
+	_ = store.Put(ctx, completedChunkDir(id, chunk)+"/_SUCCESS", []byte(`{"completed":true}`))
+	_ = store.Put(ctx, leasedChunkDir(id, chunk)+"/token_transfers/part.parquet", body)
+	dir, err := m.MaterializeJobResult(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "token_transfers", "part.parquet"))
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("materialized artifact = %q, %v", got, err)
 	}
 }
 

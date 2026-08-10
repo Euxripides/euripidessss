@@ -60,8 +60,13 @@ func (p *SQDAdapter) sampleCount(ctx context.Context, network chain.EVM, dataset
 			count += uint64(len(b.Transactions))
 			return nil
 		})
-	case DatasetTokenTransfers, DatasetLogs:
+	case DatasetTokenTransfers:
 		err = p.client.StreamLogs(ctx, network, rng, addrs, func(b sqd.Block) error {
+			count += uint64(len(b.Logs))
+			return nil
+		})
+	case DatasetLogs:
+		err = p.client.StreamContractLogs(ctx, network, rng, addrs, func(b sqd.Block) error {
 			count += uint64(len(b.Logs))
 			return nil
 		})
@@ -125,7 +130,7 @@ func (p *SQDAdapter) ExecuteRange(ctx context.Context, req RangeRequest) (*Provi
 			return nil
 		})
 	case DatasetLogs:
-		err = p.client.StreamLogs(ctx, network, rng, addrs, func(b sqd.Block) error {
+		err = p.client.StreamContractLogs(ctx, network, rng, addrs, func(b sqd.Block) error {
 			for _, l := range b.Logs {
 				records = append(records, Record{
 					ChainID:         network.ID,

@@ -25,6 +25,7 @@ import {
   type ProfitAttribution,
   type SettlementResult,
 } from "./fundFlowApi";
+import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
 
 const chainOptions = [
   { value: "bsc", label: "BNB Smart Chain" },
@@ -60,6 +61,7 @@ const TERMINAL_LABELS: Record<string, string> = {
 };
 
 export default function FundFlowPage() {
+  const { state: analysisState, update: updateAnalysis } = useAnalysisContext();
   const [form] = Form.useForm();
   const [analysis, setAnalysis] = useState<FundFlowAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,6 +69,12 @@ export default function FundFlowPage() {
 
   const onAnalyze = async () => {
     const values = await form.validateFields();
+    updateAnalysis({
+      chain: values.chain_key,
+      rootAddress: values.root_address.trim().toLowerCase(),
+      tokens: values.token ? [values.token.trim().toLowerCase()] : [],
+      caseID: values.investigation_id || undefined,
+    });
     setLoading(true);
     try {
       const r = await analyzeFundFlow({
@@ -139,15 +147,9 @@ export default function FundFlowPage() {
       <Typography.Title level={4}>
         <NodeIndexOutlined /> 资金流智能
       </Typography.Title>
-      <Alert
-        style={{ marginBottom: 16 }}
-        type="info"
-        showIcon
-        message="证据边界"
-        description="路径评分、获利归因与沉淀识别均基于本地已认证数据；L0/L1 是筛查指标而非最终司法结论；L2 成本基础、L3 实体调整、跨链续追与多资产折算仍属后续阶段。"
-      />
+      {analysisState.rootAddress ? <Space wrap style={{ marginBottom: 12 }}><Typography.Text type="secondary">继承 Explorer 上下文：</Typography.Text><Tag>{analysisState.window}</Tag>{analysisState.direction !== "all" ? <Tag>{analysisState.direction.toUpperCase()}</Tag> : null}{analysisState.tokenSymbol ? <Tag>{analysisState.tokenSymbol}</Tag> : null}{analysisState.minUSD ? <Tag>USD ≥ {analysisState.minUSD}</Tag> : null}{analysisState.maxUSD ? <Tag>USD ≤ {analysisState.maxUSD}</Tag> : null}{analysisState.entityFilters.map((entity) => <Tag key={entity}>{entity}</Tag>)}{analysisState.protocolFilters.map((protocol) => <Tag key={protocol}>{protocol}</Tag>)}</Space> : null}
       <Card style={{ marginBottom: 16 }}>
-        <Form form={form} layout="inline" initialValues={{ chain_key: "bsc", goal: "cashout", max_depth: 4 }}>
+        <Form form={form} layout="inline" initialValues={{ chain_key: analysisState.chain, root_address: analysisState.rootAddress || undefined, token: analysisState.tokens[0], investigation_id: analysisState.caseID, goal: "cashout", max_depth: 4 }}>
           <Form.Item label="链" name="chain_key">
             <Select options={chainOptions} style={{ width: 150 }} />
           </Form.Item>
@@ -291,4 +293,3 @@ export default function FundFlowPage() {
     </div>
   );
 }
-

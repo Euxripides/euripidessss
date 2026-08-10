@@ -46,6 +46,10 @@ interface FlowCanvasShellProps {
   onViewportChange: (zoom: number) => void;
   zoomLevel: "far" | "medium" | "near";
   onSelectionChange: (nodeIds: string[]) => void;
+  pending?: boolean;
+  emptyDescription?: string;
+  globalTitle?: string;
+  globalHint?: string;
 }
 
 function roleLabel(meta: EnhancedNodeData, relation: WorkspaceRelation): string {
@@ -137,6 +141,7 @@ const FlowEdgeView = memo(function FlowEdgeView({
         >
           <strong>{fmtEdgeAmount(meta.amount)}</strong>
           <span>{meta.token ?? "—"} · {meta.txCount} 笔</span>
+          <span>{Number(meta.historicalValueUSDT || 0) > 0 ? `≈ ${Number(meta.historicalValueUSDT).toLocaleString("en-US", { maximumFractionDigits: 2 })} USDT` : "历史估值 —"}</span>
         </div>
         {preview && timeline.length > 0 && (
           <div
@@ -180,6 +185,10 @@ export default function FlowCanvasShell({
   onViewportChange,
   zoomLevel,
   onSelectionChange,
+  pending,
+  emptyDescription,
+  globalTitle,
+  globalHint,
 }: FlowCanvasShellProps) {
   const shellRef = useRef<HTMLDivElement | null>(null);
   const idleTimer = useRef<number>(0);
@@ -204,7 +213,7 @@ export default function FlowCanvasShell({
         </div>
       ) : !graph ? (
         <div className="flow-canvas-center-state">
-          <Empty description="图谱数据尚未生成，请先完成图谱分析" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description={emptyDescription ?? "图谱数据尚未生成，请先完成图谱分析"} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       ) : nodes.length === 0 ? (
         <div className="flow-canvas-center-state">
@@ -238,15 +247,20 @@ export default function FlowCanvasShell({
 
       {/* 画布左上：模式标签（设计 §5.3/§7.2） */}
       <div className="flow-canvas-mode-label">
-        {focus ? (
+        {pending ? (
+          <>
+            <span className="flow-canvas-mode-title">待分析</span>
+            <span className="flow-canvas-mode-hint">输入 EVM 地址开始追踪，或点击顶部「全局视图」查看全部关系</span>
+          </>
+        ) : focus ? (
           <>
             <span className="flow-canvas-mode-title"><AimOutlined /> 聚焦模式</span>
             <span className="flow-canvas-mode-hint">点击任一相邻地址可继续追踪</span>
           </>
         ) : (
           <>
-            <span className="flow-canvas-mode-title">全局视图</span>
-            <span className="flow-canvas-mode-hint">搜索地址或点击任一地址开始聚焦追踪</span>
+            <span className="flow-canvas-mode-title">{globalTitle ?? "全局视图"}</span>
+            <span className="flow-canvas-mode-hint">{globalHint ?? "搜索地址或点击任一地址开始聚焦追踪"}</span>
           </>
         )}
       </div>
