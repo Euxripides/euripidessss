@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-08-09T17:26:22.402Z",
+  "target": "./internal/datawarehouse",
+  "depth": "standard",
+  "type": "code",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "total": 0
+  },
+  "findings": []
+}

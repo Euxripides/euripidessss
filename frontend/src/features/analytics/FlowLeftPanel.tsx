@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Collapse,
   Divider,
   Input,
   InputNumber,
@@ -106,6 +107,8 @@ interface FlowLeftPanelProps {
   onRemoveGroup: (name: string) => void;
   onTestHypothesis: () => void;
   onCommandPalette: () => void;
+  canShowGlobal: boolean;
+  onShowGlobalExtension: () => void;
 }
 
 const MODE_OPTIONS = [
@@ -161,6 +164,8 @@ export default function FlowLeftPanel({
   onRemoveGroup,
   onTestHypothesis,
   onCommandPalette,
+  canShowGlobal,
+  onShowGlobalExtension,
 }: FlowLeftPanelProps) {
   const [query, setQuery] = useState<PathQuery>({ terminal: "ANY", minAmount: 0, maxHops: 5, mustPass: "" });
   const [groupName, setGroupName] = useState("");
@@ -169,36 +174,47 @@ export default function FlowLeftPanel({
   return (
     <aside className="flow-left-panel">
       <div className="flow-left-panel-inner">
-        <section className="flow-left-section">
-          <Space style={{ width: "100%", justifyContent: "space-between" }}>
-            <Typography.Text strong>调查上下文</Typography.Text>
-            <Tag color={lightMode ? "gold" : "purple"} onClick={() => onLightMode(!lightMode)} style={{ cursor: "pointer" }}>
-              {lightMode ? "白底" : "深色"}
-            </Tag>
-          </Space>
-          <div className="flow-left-meta">
-            {focusAddress ? <code title={focusAddress}>{focusAddress.slice(0, 12)}…{focusAddress.slice(-6)}</code> : "未聚焦"}
-            <Tag color="blue">BSC</Tag>
-          </div>
-          <Space size={4} wrap>
-            <Button size="small" icon={<ReloadOutlined />} onClick={onAnalyze} loading={analyzing} disabled={!focusAddress}>
-              分析关键路径
-            </Button>
-            <Tooltip title="Ctrl+K 命令面板">
-              <Button size="small" icon={<AimOutlined />} onClick={onCommandPalette}>
-                命令
-              </Button>
-            </Tooltip>
-          </Space>
-          {coverage && (
-            <div className="flow-left-coverage">
-              本地覆盖：{(coverage.coverage_ratio * 100).toFixed(1)}%
-              <Tag color={coverage.full_hit ? "green" : "orange"} style={{ marginLeft: 6 }}>
-                {coverage.full_hit ? "完整" : coverage.certification ?? "缺失"}
-              </Tag>
-            </div>
-          )}
-        </section>
+        <Collapse
+          ghost
+          size="small"
+          defaultActiveKey={["context"]}
+          items={[
+            {
+              key: "context",
+              label: "调查上下文",
+              children: (
+                <div className="flow-left-section">
+                  <Typography.Text strong>当前焦点</Typography.Text>
+                  <div className="flow-left-meta">
+                    {focusAddress ? <code title={focusAddress}>{focusAddress.slice(0, 12)}…{focusAddress.slice(-6)}</code> : "未聚焦"}
+                    <Tag color="blue">BSC</Tag>
+                  </div>
+                  <Space size={4} wrap>
+                    <Button size="small" icon={<ReloadOutlined />} onClick={onAnalyze} loading={analyzing} disabled={!focusAddress}>
+                      分析关键路径
+                    </Button>
+                    <Button size="small" disabled={!canShowGlobal} onClick={onShowGlobalExtension}>
+                      全局延伸视图
+                    </Button>
+                    <Tooltip title="Ctrl+K 命令面板">
+                      <Button size="small" icon={<AimOutlined />} onClick={onCommandPalette}>
+                        命令
+                      </Button>
+                    </Tooltip>
+                  </Space>
+                  {coverage && (
+                    <div className="flow-left-coverage">
+                      本地覆盖：{(coverage.coverage_ratio * 100).toFixed(1)}%
+                      <Tag color={coverage.full_hit ? "green" : "orange"} style={{ marginLeft: 6 }}>
+                        {coverage.full_hit ? "完整" : coverage.certification ?? "缺失"}
+                      </Tag>
+                    </div>
+                  )}
+                </div>
+              ),
+            },
+          ]}
+        />
 
         <Divider style={{ margin: "8px 0" }} />
 

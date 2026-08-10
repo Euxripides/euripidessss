@@ -1,0 +1,50 @@
+.financial-quality-page {
+  display: grid;
+  gap: 16px;
+}
+
+.financial-quality-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.financial-quality-snapshot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  color: var(--color-text-secondary, #475467);
+  font-size: 13px;
+}
+
+.financial-quality-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.financial-quality-card .ant-statistic-title span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.financial-quality-card-foot {
+  margin-top: 6px;
+  color: var(--color-text-secondary, #667085);
+  font-size: 12px;
+}
+
+.financial-quality-notice {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .financial-quality-actions,
+  .financial-quality-actions .ant-select,
+  .financial-quality-actions .ant-btn {
+    width: 100%;
+  }
+}
+

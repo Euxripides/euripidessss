@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-08-08T19:45:25.621Z",
+  "target": "./internal/financialquality",
+  "depth": "deep",
+  "type": "code",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "total": 0
+  },
+  "findings": []
+}

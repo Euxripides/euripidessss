@@ -16,6 +16,9 @@ func (b BudgetGuard) Allow(plan ResourcePlan, todayUsed, monthUsed float64, xlAc
 	if !b.Enabled {
 		return true, ""
 	}
+	if b.MaxSingleJobCost > 0 && plan.EstimatedCost > b.MaxSingleJobCost {
+		return false, fmt.Sprintf("单任务 Cloud 成本超限（预计 ¥%.2f）", plan.EstimatedCost)
+	}
 	if b.MonthlyBudget > 0 && monthUsed+plan.EstimatedCost > b.MonthlyBudget {
 		return false, fmt.Sprintf("月度 Cloud 预算超限（预计 +¥%.2f）", plan.EstimatedCost)
 	}

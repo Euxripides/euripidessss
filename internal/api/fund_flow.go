@@ -19,11 +19,22 @@ func setupFundFlow() {
 		return
 	}
 	var analyticsSvc *analyticsapi.Service
+	var flowSource fundflow.FlowSource
+	if cfg != nil && cfg.Analytics.DataSource != "duckdb" && clickHouseInvestigation != nil {
+		flowSource = clickHouseInvestigation
+	}
 	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
 		analyticsSvc = h.Service()
+		if flowSource == nil {
+			flowSource = analyticsSvc
+		}
 	}
 	cacheRoot := filepath.Join(cfg.RootDir, "backend", "data", "fund-flow-cache")
-	fundFlowEngine = fundflow.NewEngine(analyticsSvc, entityResolver, fundflow.NewCache(cacheRoot), fundflow.DefaultConfig())
+	flowConfig := fundflow.DefaultConfig()
+	if flowSource == clickHouseInvestigation {
+		flowConfig.ScoringVersion = "clickhouse-v1"
+	}
+	fundFlowEngine = fundflow.NewEngine(flowSource, entityResolver, fundflow.NewCache(cacheRoot), flowConfig)
 	log.Info().Str("cache", cacheRoot).Msg("fund_flow_intelligence_v2_ready")
 }
 

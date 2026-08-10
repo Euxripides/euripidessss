@@ -34,12 +34,12 @@ import (
 	"github.com/etl/backend/internal/etl"
 	"github.com/etl/backend/internal/flow"
 	"github.com/etl/backend/internal/fundflow"
-	"github.com/etl/backend/internal/graphincrement"
 	"github.com/etl/backend/internal/graphcache"
+	"github.com/etl/backend/internal/graphincrement"
 	"github.com/etl/backend/internal/intelligence"
 	invcache "github.com/etl/backend/internal/investigation/cache"
-	"github.com/etl/backend/internal/investigationstore"
 	"github.com/etl/backend/internal/investigation/prefetch"
+	"github.com/etl/backend/internal/investigationstore"
 	"github.com/etl/backend/internal/model"
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/etl/backend/internal/parser"
@@ -49,6 +49,7 @@ import (
 	"github.com/etl/backend/internal/s3store"
 	"github.com/etl/backend/internal/scanner"
 	"github.com/etl/backend/internal/smartdownload"
+	"github.com/etl/backend/internal/smartdownload/cloudplanner"
 	"github.com/etl/backend/internal/storage"
 	"github.com/etl/backend/internal/storage/control"
 )
@@ -200,17 +201,19 @@ func Setup(c *config.Config) {
 	})
 	if analysisEngine.Available() {
 		st := analysisEngine.Status()
-		log.Info().Str("version", st.Version).Str("db", st.Database).Msg("duckdb_engine_ready")
+		log.Info().Str("version", st.Version).Str("db", st.Database).
+			Bool("reader_enabled", c.Analytics.DuckDBReaderEnabled).Msg("duckdb_engine_ready")
 	} else {
 		log.Warn().Str("error", analysisEngine.Status().Error).Msg("duckdb_engine_unavailable")
 	}
+	setupClickHouse(c)
 	if handler, err := parquetdownload.NewHandler(c.RootDir, analysisEngine); err != nil {
 		log.Warn().Err(err).Msg("crypto_parquet_api_unavailable")
 	} else {
 		parquetDownload = handler
 	}
 	// V2.1 RC2: 分析服务 API（基于 sqd-200k-warehouse Parquet 数据资产）
-	if analysisEngine.Available() {
+	if c.Analytics.DuckDBReaderEnabled && analysisEngine.Available() {
 		warehouseParquet := `E:\codex\etl\stress-data\bsc_real\sqd-200k-warehouse\logs.parquet`
 		if _, err := os.Stat(warehouseParquet); err == nil {
 			analyticsAPI = analyticsapi.NewHandler(analysisEngine, warehouseParquet)
@@ -218,6 +221,8 @@ func Setup(c *config.Config) {
 		} else {
 			log.Warn().Err(err).Msg("analytics_api_unavailable_warehouse")
 		}
+	} else if !c.Analytics.DuckDBReaderEnabled {
+		log.Info().Str("datasource", c.Analytics.DataSource).Msg("duckdb_parquet_reader_disabled")
 	}
 	if manager, err := rpcmanager.New(`E:\codex\bsc_analytics`); err != nil {
 		log.Warn().Err(err).Msg("crypto_rpc_api_unavailable")
@@ -268,7 +273,9 @@ func Setup(c *config.Config) {
 // 数据源复用 analyticsapi.Service，执行器复用 parquetdownload.Manager + SQD 客户端。
 func setupDynamicInvestigation() {
 	var source dynamicinvestigation.DiscoverySource
-	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
+	if cfg.Analytics.DataSource != "duckdb" && clickHouseInvestigation != nil {
+		source = &clickHouseDiscoverySource{repository: clickHouseInvestigation}
+	} else if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
 		source = dynamicinvestigation.NewAnalyticsSource(h.Service())
 	} else {
 		// 分析服务不可用时仍提供队列/评分 API（空源）
@@ -331,7 +338,13 @@ func setupIntelligence() {
 	// ── Runtime V2（设计 §13）：运行时事件日志（backend/data/logs/runtime-events.log）──
 	eventLog := intelligence.NewRuntimeEventLog(filepath.Join(dataRoot, "logs", "runtime-events.log"))
 	agent := intelligence.NewAgent(intelligence.AgentOptions{
-		Service:         svc,
+		Service: svc,
+		FlowSource: func() intelligence.FlowSource {
+			if cfg.Analytics.DataSource != "duckdb" && clickHouseInvestigation != nil {
+				return &clickHouseIntelligenceSource{repository: clickHouseInvestigation}
+			}
+			return nil
+		}(),
 		Expansion:       expansion,
 		DeepSeekKey:     "", // 回退环境变量 DEEPSEEK_API_KEY
 		MemoryDir:       memoryDir,
@@ -561,17 +574,68 @@ func setupSmartDownload() {
 			opts.Workers = n
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_TURBO_TAIL_BLOCKS")); v != "" {
+		if n, convErr := strconv.ParseUint(v, 10, 64); convErr == nil && n > 0 {
+			opts.TurboTailBlocks = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_TURBO_REBALANCE_SECONDS")); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n >= 10 && n <= 30 {
+			opts.AllocatorInterval = time.Duration(n) * time.Second
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_CLOUD_BURST_MAX_JOBS")); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 32 {
+			opts.CloudBurstMaxJobs = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_RPC_HARD_CLAIMS")); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 128 {
+			opts.RPCHardClaims = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_TARGET_ROWS_PER_SHARD")); v != "" {
+		if n, convErr := strconv.ParseUint(v, 10, 64); convErr == nil && n > 0 {
+			opts.TargetRowsPerShard = n
+		}
+	}
+	// Smart Download uses an isolated DuckDB file.  Sharing flow.duckdb with
+	// graph refresh/import work can hold the engine mutex for minutes and block
+	// Cloud artifact materialization even though read_parquet itself is
+	// independent of the analytics warehouse.
+	smartDuckDB := duckdb.Open(cfg.RootDir, root, duckdb.AnalyticsConfig{
+		DuckDBPath:     cfg.Analytics.DuckDBPath,
+		DuckDBDatabase: "smart_download.duckdb",
+	})
 	var partWriter smartdownload.PartWriter = smartdownload.NewJSONLPartWriter(root)
-	if analysisEngine != nil && analysisEngine.Available() {
-		partWriter = smartdownload.NewParquetPartWriter(root, analysisEngine)
+	if smartDuckDB.Available() {
+		partWriter = smartdownload.NewParquetPartWriter(root, smartDuckDB)
+		log.Info().Str("db", smartDuckDB.Status().Database).Msg("smart_download_duckdb_ready")
+	} else {
+		log.Warn().Str("error", smartDuckDB.Status().Error).Msg("smart_download_duckdb_unavailable")
 	}
 	svc := smartdownload.NewService(store, opts, partWriter)
 	smartDownloadService = svc
-	if analysisEngine != nil {
-		svc.SetDuckDB(analysisEngine)
+	svc.SetV32ResourceMetricsSource(&smartDownloadResourceMetrics{root: root, rpcManager: rpcManager})
+	dailyCloudBudget := envFloat64("SMART_DOWNLOAD_CLOUD_DAILY_BUDGET")
+	monthlyCloudBudget := envFloat64("SMART_DOWNLOAD_CLOUD_MONTHLY_BUDGET")
+	maxSingleCloudCost := envFloat64("SMART_DOWNLOAD_CLOUD_MAX_SINGLE_JOB_COST")
+	maxXLWorkers := int(envUint64("SMART_DOWNLOAD_CLOUD_MAX_XL_WORKERS"))
+	svc.SetCloudBudget(cloudplanner.BudgetGuard{
+		Enabled:          dailyCloudBudget > 0 || monthlyCloudBudget > 0 || maxSingleCloudCost > 0 || maxXLWorkers > 0,
+		DailyBudget:      dailyCloudBudget,
+		MonthlyBudget:    monthlyCloudBudget,
+		MaxXLWorkers:     maxXLWorkers,
+		MaxSingleJobCost: maxSingleCloudCost,
+	})
+	if smartDuckDB.Available() {
+		svc.SetDuckDB(smartDuckDB)
 	}
+	configureSmartDownloadWriter(svc, smartDuckDB)
 	if rpcManager != nil {
-		svc.RegisterAdapter(smartdownload.NewRPCTransferAdapter(rpcManager))
+		rpcAdapter := smartdownload.NewRPCTransferAdapter(rpcManager)
+		svc.RegisterAdapter(rpcAdapter)
+		svc.SetRPCPoolMetricsSource(rpcAdapter)
 	}
 	if parquetDownload != nil {
 		if c := parquetDownload.Manager().SQDClient(); c != nil {
@@ -580,7 +644,9 @@ func setupSmartDownload() {
 	}
 	svc.RegisterAdapter(smartdownload.NewCSVAdapter())
 	if smartCloudRuntime != nil {
-		svc.RegisterAdapter(smartdownload.NewSQDCloudAdapter(smartCloudRuntime))
+		cloudAdapter := smartdownload.NewSQDCloudAdapter(smartCloudRuntime)
+		cloudAdapter.SetResultReader(svc.ReadProviderParquetRecords)
+		svc.RegisterAdapter(cloudAdapter)
 	}
 	svc.SetRangeCoverageSource(&smartRangeCoverage{svc: svc, registry: downloadDSRegistry})
 	svc.SetOnDatasetIndexed(func(ir *smartdownload.IndexedResult) {
@@ -640,6 +706,7 @@ func setupSmartDownload() {
 		planLookup = downloadScheduler.Plan
 	}
 	smartDownloadAPI = http.StripPrefix("/api/smart-download", smartdownload.NewHandler(svc, planLookup))
+	setupSemanticJobsV2()
 	setupInvestigationCacheV2(svc)
 	// 启动恢复：回放 Range Ledger → 校验 Parts → 未完成 Range 重新入队
 	go func() {
@@ -759,6 +826,9 @@ func (c *smartRangeCoverage) CoveredRanges(ctx context.Context, chainKey, addres
 
 // Shutdown closes the control store
 func Shutdown() {
+	if semanticJobServiceV2 != nil {
+		semanticJobServiceV2.Close()
+	}
 	if prefetchManager != nil {
 		prefetchManager.Stop()
 	}
@@ -784,6 +854,8 @@ func Shutdown() {
 func RegisterRoutes(r *gin.Engine) {
 	api := r.Group("/api")
 	{
+		registerSystemSettingsRoutes(api)
+		registerClickHouseRoutes(api)
 		api.POST("/process", HandleProcess)
 		api.GET("/process/progress/:job_id", HandleProcessProgress)
 		api.GET("/process/artifact/:job_id/:artifact_id", HandleProcessArtifact)

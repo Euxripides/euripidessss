@@ -1027,7 +1027,7 @@
 
 - 菜单重组为 5 个一级菜单：Dashboard / 数据资产（数据集管理、数据下载[浏览器下载+Dune下载+链数据采集]、数据源管理、RPC节点管理）/ 链上分析（地址画像、地址区分、资金流分析、地址图谱、风险分析）/ 报告中心 / 系统设置（建设中）
 - 风险分析页（RiskAnalysisPage）：风险地址总数 + 单地址风险评分/等级/原因/维度指标 + 评分说明
-- 系统设置占位页（SystemSettingsPage）
+- 系统设置页（SystemSettingsPage）：运行态总控台，提供服务健康、RPC 健康、Cloud Runtime 快照，以及默认入口/页面记忆/自动刷新/紧凑侧栏等本机偏好
 
 #### 验证
 
@@ -1039,10 +1039,12 @@
 - `frontend/src/App.tsx`
 - `frontend/src/features/analytics/RiskAnalysisPage.tsx`（新增）
 - `frontend/src/features/system/SystemSettingsPage.tsx`（新增）
+- `frontend/src/features/system/systemSettingsStore.ts`（新增）
+- `frontend/src/features/system/system-settings.css`（新增）
 
 #### 未完成
 
-- 系统设置子项（服务状态/日志/配置/系统信息）待实现
+- 系统设置已改为可用的运行态控制台；后续若要共享配置，再补后端持久化接口
 - 风险分析暂为单地址查询，无风险地址列表接口
 
 ### 2026-08-01 01:20 V2.1 RC2 地址图谱页面卡死修复
@@ -7010,3 +7012,536 @@ ormalizeFilterBoundary 精确时间边界处理。
 - 本机到 R2/cloud.sqd.dev 网络被安全软件拦截（ECONNRESET → DNS no such host）；Cloud Worker 已部署但本地无法完成状态回读与同步。恢复后重跑 Canary。
 
 ### 2026-08-07 真实 R2 Canary + S3Store Security-Token 修复
+### 2026-08-08 ClickHouse E 盘部署（需重启续装）
+
+#### 新增
+
+1. `deploy/clickhouse/` 一键部署与验收：专用 `clickhouse-bsc` WSL2 发行版固定到 E 盘、ClickHouse 稳定仓库安装、登录自启动、随机最小权限应用账户、E 盘 Storage Guard。
+2. 初始化 11 张链上资产核心表，覆盖区块、交易、Token Transfer、Internal Tx、合约创建、合约、Token、Address Activity/Summary、Coverage 和迁移审计。
+3. 创建 `E:\database\clickhouse` 全部规划目录；凭据固定写入 E 盘并限制当前用户 ACL。
+
+#### 已验证
+
+- PowerShell AST 3/3 PASS；Bash `-n` PASS；管理员特性启用阶段执行成功并返回需要重启码 3010；RunOnce 自动续装项已登记。
+
+#### 未完成与注意事项
+
+- Windows 当前 Hypervisor 尚未加载，必须重启一次；重启登录后脚本自动继续实际安装、建表和服务验收。重启前 ClickHouse 服务未运行，不标记为完整 PASS。
+- 未修改后端接口或前端组件；未变更现有文件系统业务数据。
+### 2026-08-08 ClickHouse E 盘部署（最终 PASS）
+
+#### 完成与修复
+
+1. 专用 WSL2 `clickhouse-bsc` 实际安装到 `E:\database\clickhouse\runtime\wsl\clickhouse-bsc`；ClickHouse stable `26.7.3.19` 安装并启用。
+2. `onchain` 数据库 11 张核心链上资产表初始化完成；`etl_app` 最小范围账户与 E 盘凭据文件完成。
+3. 修复 PowerShell 5.1 随机数 API 兼容；修复 WSL 启动进程退出后端口消失，增加隐藏常驻 keeper 和 HTTP ready 轮询。
+4. 8123/9000 限本机回环监听；数据、日志、tmp 均在 E 盘 WSL VHD 内，Migration/Export/Backup Windows 路径均固定 E 盘。
+
+#### 已验证
+
+- 部署 exit 0；验收脚本 exit 0；版本 26.7.3.19；数据库 onchain；表数 11；Storage HEALTHY（E 盘 free 55.36%）。
+- WSL terminate/restart 回归 PASS；服务 enabled/active；应用账户鉴权查询 `etl_app / onchain / 11`；凭据 ACL 仅当前用户。
+
+#### 边界
+
+- 本次为 ClickHouse 基础设施与 Schema 部署，不代表 Go 业务数据源已切换；Writer、Backfill、Explorer 和 `/api/v1/system/storage` 仍属后续 P0 实现。
+
+### 2026-08-08 ClickHouse Data Plane V1.0 P0
+
+#### 新增/修复
+
+1. 新增 ClickHouse 配置和标准库 HTTP Client；凭据文件 BOM 兼容、秘密脱敏、回环限制、4 MiB 有界 Explorer 查询、流式 CSV 批量写入及健康指标。
+2. Smart Download 认证 Parquet 接入统一 Writer，覆盖 transactions、token transfers、internal transactions、contract creations 和 address_activity。
+3. 新增 `INDEXING/DB_WRITE_FAILED`、数据库阶段独立重试和重启恢复；数据库失败不再误标 COMPLETED，也不影响 Provider 健康。
+4. Schema 增加 `ingest_job_id/source_range_id`；Writer 使用 `FINAL` 做任务级精确对账，重复写入保持逻辑唯一。
+5. 新增 ClickHouse Explorer Repository、稳定 keyset pagination 及 7 个健康/地址 API；地址画像和资金流前端切换 ClickHouse。
+6. 修复 0-row 数据集误报 `merged parquet is required`；修复 keeper 存活时启动器不会恢复已停服务。
+
+#### 验证
+
+- Go 全包测试、go vet、后端构建、前端生产构建通过。
+- 真实 ClickHouse transaction/token 双次重跑：源表逻辑唯一 1、Address Activity 2、Explorer HTTP 200，测试行已清理。
+- ClickHouse 停机/恢复：健康端点 503→200，启动器可恢复服务；部署验收 26.7.3.19 / 11 tables / E 盘 / HEALTHY。
+
+#### 边界
+
+- 完成 P0 Writer 与 Explorer 地址读取；P1 summary 物化和 P2 Graph/Investigation/Export 尚未切换。
+- 本次未执行文档指定的 10k/100k/100k+ 规模压测，不宣称规模验收完成。
+
+### 2026-08-08 ClickHouse Data Plane V1.0 P1/P2 完成与全规模验收
+
+#### 新增/修复
+
+1. P1：物化 Address Summary/Counterparty/Daily，Token Metadata、Transaction/Contract Detail；Writer 成功后刷新地址聚合，移除公开昂贵 Refresh 入口。
+2. P2：新增 ClickHouse Analytics、Graph、Investigation、Export Repository，并将旧 Analytics 前端兼容 API、Fund Flow、Dynamic Investigation、Intelligence、Entity Intelligence 全部接到 ClickHouse。
+3. Export 固定 `E:\database\clickhouse\export_spool`，白名单编译、流式 CSV、原子文件、取消/下载/删除完整接线。
+4. 增加 `EXPLORER_DATASOURCE`、默认关闭的 `DUCKDB_READER_ENABLED` 和 7 项 ClickHouse Writer/Query 指标；健康接口公开实际读源开关。
+5. 新增 `address_counterparty_stats`、`address_daily_stats`，启动 DDL 幂等；P1 Schema 已应用真实 ClickHouse。
+
+#### 验证
+
+- 全量 Go 测试、Go Vet、后端构建、前端生产构建 PASS。
+- Writer：Transactions/Token Transfers 各 10K/100K/1M PASS；1M 约 16.37s/15.62s，错误 0。
+- Query：1M/10M/50M 六类矩阵 PASS；50M 首屏 37.5-94.3ms，精确 Summary 4.33s。
+- Pagination：100,001 行、501 页、0 重复、0 遗漏。
+- Dual Read：count=4、in=7、out=30、netflow=-23 完全一致。
+- Large Export：5,000,000 行、395,000,021 bytes、21.96s，流式扫描行数正确并清理。
+- DuckDB Reader=false：Explorer/Analytics/Graph/Investigation/Export 全部可用；恢复和 DB_WRITE_FAILED 只重试索引 PASS。
+- `internal` 安全深扫 0 issue；真实 P1/Graph/Investigation SQL 集成均 PASS。
+- 最终 `run.ps1` 启动 PID 12968；生产为 ClickHouse reader、DuckDB reader=false，8000 核心页面/API 全部 200。ClickHouse 验收 26.7.3.19 / 13 tables / E 盘 HEALTHY，临时表、测试行和 export spool 清理为 0。
+
+#### 边界
+
+- 风险评分仅为确定性规则筛查，不是调查结论；在线 Summary 必须走物化表。
+- 前端保留既有大包体积警告；旧 P0 节未完成项已由本节全部取代。
+
+### 2026-08-09 Historical Price V1.0：Financial Quality 子模块
+
+#### 新增
+
+1. `internal/financialquality/**`：历史价格覆盖、Fallback 比例、缺失价格、未知成本基础、DEX/Bridge 解码覆盖和实体覆盖的 ClickHouse-only 质量报告。
+2. `frontend/src/features/financial-quality/**`：支持链/窗口选择的 Ant Design 页面；不可用比例使用 JSON `null` 并显示“未知”。
+3. 严格窗口白名单与 chain 白名单；CUSTOM 时间由 `time.Time` 编译，不接受 SQL 片段。
+
+#### 数据库与接口
+
+- 无 Schema 变更；只读 `token_transfers`、`address_activity`、`address_labels`、`entity_registry FINAL`。
+- Repository 已完成；共享路由目标为 `GET /api/v2/financial-quality/:chain?window=...`，由总集成任务接线。
+- 当前没有 Canonical Cost Basis Ledger，成本覆盖明确为不可用，不输出虚假 0。
+
+#### 验证
+
+- 包测试、Go Vet、生产 ClickHouse BSC/ALL 实库 SQL、前端生产构建全部通过。
+- `internal/financialquality` 与 `frontend/src/features/financial-quality` 深度安全扫描均为 0 issue。
+
+#### 未完成与注意事项
+
+- 待共享 API、App 菜单和懒加载入口接线；接线完成后由总任务统一执行 `run.ps1` 与 HTTP 验收。
+
+### 2026-08-09 Historical Price & Financial Analytics V1.0：完整接线
+
+#### 新增/变更
+
+1. 新增 `pricing`、`financialanalytics`、`financialflow`、`financialpnl`、`financialintegration` 五个后端包；补齐历史价、Price Gap/Backfill、金融摘要、CEX/DEX/Bridge、严格 FIFO、PnL/Position Ledger、历史 USD Graph/Export。
+2. 新增 `financial_schema.sql`、`pnl_schema.sql`，启动自动执行；新增 5 张表并增量扩展 `token_prices`。
+3. 新增 Financial V1 API 路由；`retention/fast-pass-through` 切换为 `address+token` 严格 FIFO。
+4. Financial Quality 改读 Canonical Position Events 计算已知成本覆盖；无事件时继续使用 `null/unknown`。
+5. `FinancialQualityPage` 已接入 App 菜单与懒加载。
+6. BSC USDT 种子价改为带明确 provenance 的 `PEG_FALLBACK` 与 `COINGECKO_HISTORICAL`；非稳定币缺价保持 MISSING。
+
+#### 验证
+
+- 全 internal 测试、金融包 Vet/单测、前端生产构建通过。
+- Pricing、Financial Analytics、PnL Producer→FIFO→Snapshot、Financial Quality、Financial Integration、Graph 均完成真实 ClickHouse 验收；测试行清理。
+- PnL 受控验收：100K 成本、150K 卖出、1K Gas，Realized PnL=49K；Transfer Out 不计 Sell。
+- Label/Entity 受控验收：Graph 与 Financial Counterparty 均返回同一 CEX/DEPOSIT Canonical Label；清理后残留 0。
+- 最终 `run.ps1` PID 31216；Health、Financial Quality、Price AVAILABLE/MISSING、FIFO 空账本、PnL 空账本均 HTTP 200，ClickHouse query errors=0。
+
+#### 注意事项
+
+- DuckDB 保留用于认证 Parquet 合并/Writer 与传统本地文件流图；在线链上读面已使用 ClickHouse。
+- 2025 USDT=1 是显式低置信 Peg Fallback；没有真实历史价时绝不输出假 0。
+- 新增真实 ClickHouse 50M 合成事实 + 实际 `token_prices FINAL` ASOF Join：693ms、50,000,004 read rows、381.47MiB read、34.12MiB memory；不落盘、不污染业务表。
+
+
+### 2026-08-09 Explorer Intelligence UI V1.0
+
+#### 新增/变更
+
+1. 新增 Explorer 默认主入口与 OKLink 风格高级调查信息架构：全局多类型搜索、地址头部、覆盖/历史 USD 指标、共享时间窗、8 面板概览、活动表格、详情抽屉、调查/资金流/导出联动。
+2. 新增 `AnalysisContext`，将链、核心地址、时间、Token、方向、USD 条件、case/tab 同步到 URL 和 sessionStorage；Fund Flow 与链上图继承核心地址。
+3. 新增 4 个 Explorer BFF 路由：search、home、address header、block detail；复用 Canonical、Registry、Financial Analytics 与 Cursor Activity。
+4. 严格区分不可用与 0：余额、价格、估值、关联身份缺失显示 `--`/unavailable；关系不冒充身份，净流量不冒充收益。
+5. 新增 ImageGen 概念稿 `docs/design/explorer-intelligence-v1-concept.png` 与桌面/移动响应式实现。
+
+#### 验证
+
+- API 单测、相关 Go Vet、全 internal 编译、前端生产构建 PASS。
+- 实库搜索/Home/Header HTTP PASS；注入文本返回 400。
+- Bundled Playwright 1536×960、390×844 验收：首页→USDT 详情→地址工作区，URL 持久化，console issues=0。
+- 安全扫描器忽略 path 后仅报全仓既有两个 frontend 启发式项；新增接口经严格白名单/正则与恶意请求实测。
+- `run.ps1` 最终服务 PID 23592。
+
+#### 边界
+
+- 当前事实表为空，验收不宣称生产资产余额或交易覆盖；余额 Producer 未就绪时资产面板保持不可用。
+- 完整 Go 测试首轮在后续长耗时包无新输出后人工终止，本轮证据为 API 完整单测与全包编译，不误报全量测试完成。
+
+### 2026-08-09 Explorer UI Rebuild V1.1
+
+#### 新增/整改
+
+1. 删除双搜索、后台 BI 六指标和 8 个空 Card，改为单一搜索、紧凑 Address Header、四指标、四个核心分析区及 Recent Activity。
+2. Sidebar 收敛为 5 个业务入口和 4 个系统入口；下载实现细节下沉至 Advanced。
+3. Header 主操作改为资金流向/调查/导出；保存与分享进入更多菜单。Tabs 统一中文，分析能力进入下拉。
+4. 重构交易/代币表格，加入 Quick Filter、筛选 Chips、高级筛选、列管理和 Cursor。
+5. 内置 Zero/Dead Address SYSTEM 语义；BFF 无效时间返回 null；NO_DATA 不再显示 CEX/DEX/Bridge=0 或技术口径字符串。
+6. 接入严格 FIFO Retention、Pass-through、PnL 现有接口；无关联证据时不推断关联钱包。
+7. 移除 BUILD 标记；新增 `explorer-ui-rebuild-v1.1-concept.png`。
+
+#### 验证
+
+- API 测试、相关 Go Vet、全 internal 编译、前端生产构建 PASS。
+- Zero/Dead 搜索与 Zero Header 实库 HTTP 200；SYSTEM/Zero Address/null 时间确认。
+- Playwright 1920×1080：单搜索、Header、4 指标、Tabs、四分析区、Recent Activity 6+ 行同屏；Quick Filter/列管理 PASS。
+- 真实 NO_DATA：无空卡片、无零时间、无假 0、无 Debug 文案；移动 390×844 PASS；console issues=0。
+- 最终服务 PID 25932，health=200。
+
+#### 边界
+
+- 生产事实表为空；完整数据截图使用浏览器受控响应，只作为 UI 信息密度证据。
+- 本次不改 ClickHouse Schema、Writer、Graph、Investigation 或 Export 数据面。
+
+## 2026-08-09 — Explorer Interaction Layer V1.2
+
+### 新增
+
+- Transaction / Token Transfer 高密度表格 V2，默认 100 条 Cursor 分页和 50/100/200 page size。
+- Quick Filters：全部、转入、转出、大额、CEX、DEX、Bridge、USDT。
+- 7 组 Advanced Filter、可关闭 Filter Chips、Clear All、URL State 完整恢复。
+- Transaction / Token Transfer Drawer、行菜单、右键菜单、键盘 Enter 打开详情。
+- Column Manager、5 个列预设、Saved Views、多选和批量动作。
+- 60 秒前端查询缓存、下一页预取、Skeleton 首次加载、保留旧页局部 Loading。
+- Explorer → Fund Flow / Investigation / Data Assets / Export 的统一 AnalysisContext 继承。
+
+### 变更
+
+- `analysisContext.tsx` 升级到 v2，加入地址/Token/USD/实体/协议/Method/Status/选择行/分页/排序状态，并写入可复制 URL。
+- Explorer Tabs 保持挂载，保留每个表格交互状态。
+- Fund Flow、Intelligence、数据资产页面显示继承的调查条件。
+- Empty State 分离筛选无结果、覆盖不完整和无数据。
+- CSV 导出阻断公式注入，详情 URL 编码交易哈希。
+
+### 数据库/API
+
+- 无数据库结构变更；无后端 API 变更；不修改 ClickHouse Data Plane。
+
+### 验证
+
+- `npm run build` PASS。
+- Playwright 桌面/移动端：URL 恢复、详情抽屉、多选、高级筛选、列预设、Cursor 翻页、刷新和复制 URL 复现全部 PASS，console errors=0。
+- `run.ps1` 部署完成，服务 PID 1836，重启后 health=200 且 Playwright 回归 PASS。
+- 受控 100,001 Activity 场景仅验证前端交互；生产事实表为空，不作为全量数据证明。
+- 安全扫描 CLI 仍报告两个既有全仓启发式项；本次增加 CSV 公式注入防护且未新增 SQL。
+
+## 2026-08-09 — BSC 免费全历史 Token Price Engine V1.0
+
+### 新增/变更
+
+1. 新增 Price Engine E 盘配置与目录、7 张 ClickHouse 表、Binance Public Data 1m Anchor、Checksum/断点复用、PancakeSwap V2/V3 Decoder、DEX 1m 聚合/异常过滤/Coverage/Resolution Audit。
+2. 新增 Price Health、Point、Candles、Batch Value、Coverage、Anchor Backfill、Pool Discovery、DEX Rebuild、Smart Download DEX Backfill API。
+3. Smart Download RPC Provider 新增原始 Logs 与区块时间小窗口恢复；Canonical Event Registry 新增 PancakeSwap V3 Swap/PoolCreated。
+4. 新增“数据质量 → 历史价格”页面及移动端响应式样式。
+
+### 验证
+
+- 真实 Binance BNB 2025-01：44,640 行、SHA-256 通过、重复回填 0 新行、Coverage=1；指定分钟、小时 K 线、批量估值与缺价 NULL 均通过。
+- 受控 ClickHouse V2 Pool→Swap→1m→Point 全链路通过，测试行清理残留 0；V3 ABI/数学单测通过。
+- ClickHouse 34 tables、E 盘 HEALTHY；全 `internal` 测试、相关 Vet、前端构建通过。
+- 新增后端/前端目录 Deep Security Scan 0 issue；Playwright 桌面/移动真实交互、console 和横向溢出检查通过。
+
+### 边界
+
+- 只实际保留 BNB 2025-01 Anchor；其余资产/月份按需回填。V3 未做指定主网 Pool 全历史回填；AWS 大窗口继续复用既有 Parquet 数据基础设施。
+
+## 2026-08-09 — 恢复完整前端导航与地址关系图容错
+
+### 修复
+
+1. 恢复「地址关系图」一级菜单；恢复「更多分析」下的分析总览、地址画像、风险分析、实体智能、分析报告、导入资金路径和地址区分入口。
+2. 保留 Explorer、资金流向、智能调查、数据资产、案件及系统区现有入口，核心功能不再因 Explorer 侧栏收敛而不可见。
+3. 图谱统计接口缺失 `completeness` 时不再崩溃；空图状态跳过 warehouse 统计请求，避免无数据环境的 503 控制台噪音。
+
+### 接口/数据库
+
+- 无 API、数据库结构或后端代码变更；无新增依赖。
+
+### 验证
+
+- `frontend npm run build` 通过（3366 modules）。
+- Playwright 1536×960 / 390×844：地址关系图和地址画像实际点击通过，「更多分析」7 个入口全部可见，移动抽屉可滚动；页面非空、无错误遮罩、无横向溢出、console/page errors=0、失败响应=0。
+- `/api/health` 返回 `status=ok`；后端未修改，未执行 `run.ps1`。
+
+## 2026-08-09 — Explorer Token Logo 与历史价格证据
+
+### 新增/变更
+
+1. Token Transfer 与资产列表新增 Logo、Symbol、名称、合约短地址组合身份；BNB/WBNB/USDT/USDC 使用真实 Trust Wallet Assets 图标。
+2. 未知 Token 使用链+合约稳定生成占位图，远程图片失败自动回退；Logo 白名单阻止任意外链。
+3. Explorer 活动查询按链+合约关联 Token Metadata，并用 ASOF JOIN 获取交易时点历史价格；Native Token 映射 `native:<chain_id>`，不按 Symbol 关联。
+4. 新增可展开历史价格证据：历史单价、历史 USD、价格时间、来源、可信度。NULL 缺价显示“暂无历史价格”，不显示错误 `$0`。
+5. 交易详情和 CSV 导出同步增加 Token 与价格证据字段；修复价格 Popover 被表格宽度撑满屏幕的问题。
+
+### 接口/数据库
+
+- 不改 API 路径，仅为 Activity JSON 增加可选 Token Metadata 与价格证据字段。
+- 不新增表，复用 `token_metadata_registry`、`token_prices`、`address_activity`。
+
+### 验证
+
+- ClickHouse 受控真实查询：AUDT 数量 4、历史单价 2.5、历史 USD 10、来源 CODEX_ACCEPTANCE、可信度 HIGH；清理残留 0。
+- 相关 Go Test/Vet、前端生产构建通过；全 internal 仅既有 cloudruntime 临时目录清理竞争失败，精确重跑通过。
+- `run.ps1` 重启成功，PID 28988，health=ok。
+- Playwright 1536×960 / 390×844：3 个真实图标、未知币回退、破图 0、“暂无历史价格”、证据 Popover 全字段通过；console/page errors=0、失败响应=0。
+
+## 2026-08-09 — FIST 历史价格真实下载验证
+
+### 结果
+
+- 链上识别 `0xc988…bc6a` 为 FistToken/FIST（6 decimals），选用真实 PancakeSwap V2 FIST/USDT Pool `0x703f…c2e6`。
+- SQD 24h 下载 1,598 行约 39 秒，但交叉验证失败、状态 PARTIAL，且未包含目标 Pool Swap；Price Job 的 swaps=0/bars=0 不作为成功证据。
+- RPC_FALLBACK 按 Pool+Swap topic 精确下载 8,001 blocks：17 个唯一 Swap、重复 0，重建 12 个成交分钟价格。
+- `2026-08-09T06:21:30Z` 本地价 `0.206333212500910069 USD`；约 12 分钟后同池 DexScreener 为 `0.2063 USD`。
+
+### 数据/接口/代码
+
+- 新增真实 FIST Metadata、Pool、17 Parsed Events、12 分钟 Bar/Canonical Price；无 Schema 或代码变更，不需重启服务。
+- 发现质量边界：Coverage `trade_count` 当前固定为 0；SQD logs/交叉验证以及 PARTIAL→COMPLETED 价格任务判定需要后续修复。修复前必须以 Swap/Bar 明细计数作为验收条件。
+
+## 2026-08-09 — SQD Pool Swap 修复、RPC 审计与百万区块价格回填
+
+### 修复/优化
+
+1. SQD Raw Logs 改为按日志 emitter address 查询 Pool；Token Transfer topic 参与地址语义保持独立。
+2. DEX Backfill 对 PARTIAL/FAILED、0 Pool、0 Swap、0 Bar 失败关闭。
+3. RPC Logs 对区块跨度限制自适应二分；不可用探测不再产生 provider=0 的伪比较。
+4. `logs` 加入认证数仓 Writer 白名单，Pool Logs 解码进入 `parsed_events`。
+5. DEX Backfill 新增兼容可选参数 `refresh`，支持强制重下已覆盖范围。
+6. ABI Registry 增加 5 分钟 chain+contract+topic0 缓存，1,601 行实测入库约 5 秒。
+
+### 真实验收
+
+- FIST/USDT Pool 百万区块 `113880126-114880126`：最终 Swap=3,805、分钟 Bar=2,188；价格覆盖 `2026-08-04T01:21:00Z` 至 `2026-08-09T06:21:00Z`。
+- SQD 主段 6,026 Logs/3,009 Swap；强制刷新最后 24h 1,601 Logs/796 Swap/436 Bars。
+- RPC 首/中/尾三个 100-block 窗口按 10-block 请求拆分，SQD/RPC 为 2/2、8/8、2/2，事件键完全一致，无需补洞。
+- 最终 Price Job：`22c48996-89be-42a1-9b6a-ffc4caf017ef`；最终 Batch：`2e149a44-e8a4-4c4d-8bc1-310f47d59fd5`。
+
+### 文件、接口与验证
+
+- 修改 SQD、Smart Download、Price API、ClickHouse ABI Registry 及对应测试；更新 `docs/AI_HANDOFF.md`、`docs/CHANGELOG_AI.md`。
+- 无数据库 Schema 和前端变化；API 仅为 `POST /api/price/backfill/dex` 增加可选 `refresh`。
+- 相关 5 个后端包 Go Test/Vet 通过；`run.ps1` 最终部署 PID 564，Health 正常。
+- SQD 不提供 USD 历史价格字段；系统从 Pool Swap 原始数量计算成交比例，并经稳定币/WBNB 锚定后生成 `DEX_RECONSTRUCTED` 分钟价。
+
+## 2026-08-09 — Explorer 历史 USDT 估值与前端展示 V1.0
+
+### 新增/变更
+
+1. Explorer Activity/Token Transfer 使用单条 ClickHouse 精确分钟 + 24h Last Known 集合式估值，加入 USDT 1:1 与 USDC/BUSD/FDUSD Peg 降级；缺价保持 NULL。
+2. API 新增历史价格、历史 USDT 价值、价格时间/来源/路由/类型/年龄/数值可信度/估值状态，旧字段保留兼容。
+3. Explorer 表格、最近活动、详情、CSV、新增五个历史估值组件；真实图标、未知占位和图片失败回退沿用 Token Identity 安全策略。
+4. 首页大额活动改按历史 USDT 阈值与降序；关系图 Edge 同时显示原始 Token Amount 和聚合历史 USDT；Investigation 导出增加完整估值证据列。
+5. 新增 ClickHouse 实库四场景验收和 100 行性能验收测试。
+
+### 接口/数据库
+
+- API 路径不变，仅增量扩展 Activity/Graph JSON 字段；首页 `large_transfers` 的 `usd_value` 兼容字段现在与 `historical_value_usdt` 同值。
+- 无数据库 Schema 变化，复用既有价格与活动事实表；所有核心金额乘法在 ClickHouse Decimal 中完成，不使用 Go `float64`。
+
+### 验证
+
+- 实库：USDT、精确分钟、Last Known、NO_PRICE 四场景通过；100 行 20 次 P50=82.7787ms、P95=85.0931ms，单请求一次查询，无 N+1。
+- `go test ./internal/... -count=1`、`go vet ./...`、前端生产构建全部通过。
+- `run.ps1` 部署 PID 24540；首页和 Activity 真实 HTTP 均 200。
+- Playwright 1440×1000 / 390×844：估值与证据交互、真实/占位图标、NULL 非 `$0`、console/page errors=0。
+
+### 边界
+
+- 自动缺价回填队列尚未接线；当前缺价返回 NO_PRICE，前端已具备 BACKFILLING 显示。旧 Address Summary/FIFO 累计值仍需后续按动态历史估值重物化。
+
+## 2026-08-09 — 地址关系图空数组归一化修复
+
+- 修复旧版/不完整 Graph 响应缺少 `edges` 时执行 `undefined.filter` 导致的前端渲染错误。
+- `fetchGraph` 与 `buildWorkspaceGraph` 双层将非数组 `nodes/edges` 归一化为空数组，缓存或旧调用方同样安全。
+- 前端生产构建通过；Playwright 用 `{nodes:[]}` 精确复现验证空状态正常、错误遮罩缺失、console/page errors=0。
+- 无后端、API、数据库或依赖变化，不需要重启服务。
+
+## 2026-08-09 — 主导航与分析入口收敛
+
+- `Explorer` 改名“链上查询”。
+- “地址关系图”与“资金流向/资金流智能”合并为唯一主入口“资金追踪”，所有 Explorer 资金路径动作统一打开关系图工作台。
+- “智能调查”改名“调查工作台”；“实体智能”移出主导航，但实体视图、标签和证据能力继续保留在资金追踪及调查流程中。
+- 移除 App 对独立 FundFlow/Entity 页面的懒加载，构建模块 3373→3371；保留旧 `fund-flow` key 到 `analytics-graph` 的兼容映射。
+- 前端生产构建通过；Playwright 桌面/移动验证新入口、旧入口隐藏和两个主入口实际点击，console/page errors=0。
+- 无后端/API/数据库变化，不需重启。
+
+## 2026-08-09 — Smart Download Turbo V3.0 生产部署
+
+- 新增 AUTO/TURBO、SQD Cloud bulk 与 RPC tail/repair 非重叠 lane、运行时模式切换、Turbo 指标、Range owner/lane/priority 和可审计 Ledger 事件。
+- Cloud Adapter/Runtime 完成 R2 远端 Parquet 物化、路径与 SHA256 校验；RPC 只有链上确有配置时才报告可用。
+- Cloud Worker 修复 Token Contract 传参、精确 TO_BLOCK、稀疏合约全区块推进、提前空 manifest、滚动发布重复 lease；部署 `supreme/bsc-emergency-worker@v2` hash `7c254595d31a57dcfd0465c80078ec5ab6eabd5a`。
+- 修复 Cloud Worker Parquet 缺少 token_standard 导致 Token Transfer 被误写成 Transactions、log_index 丢失及 1,135→323 假重复；修复 Dataset FAILED 未向 Address/Batch 传播。
+- Smart Download 使用独立 `smart_download.duckdb`，ClickHouse Writer 同步隔离；`run.ps1` 递归清理服务子进程，避免孤儿 DuckDB 锁库。
+- 前端 Smart Download 增加模式选择、模式切换、状态 Tag、Cloud/RPC Range 数、覆盖率、吞吐和首数据耗时。
+- 新增 API：`POST /api/smart-download/batches/{id}/mode`、`GET /api/smart-download/batches/{id}/turbo-status`；无 ClickHouse Schema 变更。
+- 真实 Batch `6b4e42b2-59c1-43e3-8b1c-0b3aa70daea2`：`94800000-94810000`，SQD Cloud 1,135 行，unique=1,135、duplicate=0、coverage=100%、CERTIFIED，全部层级 COMPLETED；RPC 回执抽样 51/51 且事件键差异 0。
+- 后端定向 Test/Vet、前端/Worker build、安全扫描通过；最终服务 PID 19932、health=ok、Cloud queue=0。Worker 上游 Parquet 包仍传递两个 thrift high advisory，官方 latest 未提供安全版本，未做破坏性强制降级。
+- 全 internal 补跑仅出现既有 Cloud Idle Reaper Windows 临时目录清理竞态；该用例随后精确连续 3 次通过。
+
+## 2026-08-09 — RPC 数据源恢复
+
+- 定位数据源中心缺少 Chainstack/Ankr/NodeReal 的根因：生产 `rpc_control.sqlite` 是新建空库，原库和 DPAPI 主密钥被整体移动到 `.asset_cleanup_20260808-203719\bsc_analytics\config`。
+- 从原 SQLite+WAL 一致恢复 8 个 Endpoint、Health 与历史 Metrics，并恢复匹配 DPAPI 密钥；恢复前空库保存在 `E:\codex\bsc_analytics\config\pre_rpc_restore_20260809_234557`。
+- 数据源 API 现返回 10 个 Source；保留原启用状态。Chainstack、Ankr 和 3 个公共 BSC RPC 手动请求成功；Chainstack 随后因落后参考头 41 blocks 被健康路由标为 UNAVAILABLE。NodeReal BSC/ETH 当前返回供应商限流。
+- `.gitignore` 新增 `/.asset_cleanup_*/` 防止本地加密配置/密钥备份误提交；未暴露明文 Endpoint。
+- RPC Manager/Data Source Manager Test/Vet 与安全扫描通过；服务 PID 15796、health=ok。无 API、Schema 或前端代码变化。
+
+## 2026-08-10 — RPC 数据源首屏可见性
+
+- 数据源管理中心默认打开 `RPC (8)`，各过滤标签显示实时数量，避免恢复后的 RPC 被 SQD/AWS 大卡片挤到首屏下方。
+- “全部”视图统一卡片宽度；RPC 卡片以标准 Provider 名显示 Ankr、Chainstack、NodeReal，同时保留底层 Endpoint ID、原配置名、启用状态和加密密钥配置。
+- 修改 `frontend/src/features/crypto/datasource/DataSourcePage.tsx`、`frontend/src/features/crypto/datasource/components/SourceCard.tsx`；无 API、数据库、后端或依赖变化。
+- 前端生产构建和数据源目录安全扫描通过；Playwright 验证默认 8 张 RPC、全部 10 张、Provider 标题正确、console/page errors=0。
+
+## 2026-08-10 — Turbo 调用全部 RPC 配置并提升最高优先级
+
+- Turbo RPC 路由可临时调用全部已配置 Endpoint，包括 `enabled=false` 节点；AUTO 仍只使用启用节点，Turbo 不会永久启用任何节点。
+- 新增内部 `rpcmanager.CallTurbo` / `HasAnyConfigured`；Turbo 在全部配置节点间轮转和故障切换，同时保留 RPS、并发、超时、熔断及密钥加密边界。
+- Turbo Cloud/RPC/repair Range 优先级提升为 1000/1010/1020，领取时高优先级优先，Cloud Job 继承 Range 优先级。
+- Smart Download 页面明确显示“最高优先级调用 SQD Cloud 与全部 RPC（含禁用节点）”及“全配置可用（含禁用）”。
+- RPC Manager/Smart Download 定向 Test、Vet、安全扫描和前端构建通过；新用例证明禁用节点可被 Turbo 轮转调用且调用后仍保持禁用。
+- 全 internal 回归仅既有 `TestBatchCollect500KAddresses` 因外部 SQD HTTP/2 流等待达到 10 分钟超时，其余包通过；本次相关包全部通过。
+- `run.ps1` 部署 PID 33632，health=ok；实际 8 个 RPC 保持启用 4/禁用 4。Playwright 页面验证 console/page errors=0。
+
+## 2026-08-10 — CSV 邮件浏览器升级为 Crawl4AI / Patchright
+
+- 新增 Go→Python 严格 JSON bridge，默认 `auto` 优先 Crawl4AI 0.9.2 + Patchright 1.61.2，运行时不可用时兼容回退 Node/Chrome CDP；不改变 CSV 直连、50113 回退、IMAP、checkpoint 和部分数据保护状态机。
+- Patchright 使用 `%LOCALAPPDATA%\wallet-exporter\browser\crawl4ai-patchright-profile` persistent context、跨进程锁及 `D:\文件\c_cache\playwright` 浏览器缓存；bridge 只触发邮件请求，`accept_downloads=false`。
+- 增加 OKLink HTTPS host/端口/endpoint/地址页/chain/kind/address/body URL/timestamp 白名单，移除浏览器安全降级参数；子进程最小环境、1 MiB 输入、64 KiB 分离输出、严格 code、脱敏、100/120 秒分层超时与 Windows Job Object 进程树回收。
+- 新增 `oklink_crawl4ai_email.py`、Windows/非 Windows 进程控制与单测；修改 `csv_browser_email.go`、`csv_scraper.go` 和 Node 兼容脚本。无 HTTP API、数据库 Schema 或前端变化。
+- 验证：cryptodownload Test/Vet、`go vet ./...`、Python `-W error` 编译、Node check、后端/前端构建、真实 Crawl4AI/Patchright runtime probe、Patchright Chrome 149 启停及无残留子进程均通过。
+- 全 internal 回归中本次模块通过；无关 SQD mock 有定时波动，工作区同时变化的 Smart Download 缺少 `v31Runtime` 等定义阻断最终重新编译。已验证二进制含本次 bridge，`.\run.ps1 -SkipBuild` 重启 PID 31032，health=ok。
+- 未主动发送真实 OKLink 邮件，避免重复请求；下次受控 CSV 任务仍需核验邮件、CSV 行数、目标地址和 checkpoint。共享 Python 当前仍依赖用户级 Playwright 1.54.0 且存在既有 `pip check` 债务，未宣称隔离环境。
+
+## 2026-08-10 — Historical Price Reconstruction V1.0 部署补齐
+
+- Pool Discovery 只信任 BSC PancakeSwap 官方 V2/V3 Factory 且校验事件类型；`dex_pools` 增加 protocol/verified/liquidity 审计字段并兼容旧可信 Factory 记录。
+- Canonical Swap 增加 `token_in/amount_in/token_out/amount_out/price_token0_token1/usd_value/dataset=DEX_SWAP`；Coverage `trade_count` 改为真实分钟 Bar 成交数。
+- 新增 `GET /api/price/pools`、`POST /api/price/gaps/repair`；Gap Repair 自动选择可信 Pool，复用 Smart Download Turbo 下载 Logs 后重建 Swap/1m Price，不重新下载 Token Transfer。
+- 历史价格页面新增 Coverage/连续缺口、可信 Pool Discovery、`⚡ 极速补价格`、Turbo Batch/Swap/Bar 状态；移动端表单与表格适配完成。
+- 修改 `internal/pricing/**`、`internal/api/price_engine_handlers*.go`、`deploy/clickhouse/price_engine_schema.sql`、`frontend/src/features/price-engine/**`；同步更新 `docs/AI_HANDOFF.md` 与 `docs/CHANGELOG_AI.md`。无 SQLite 变化、无新依赖。
+- Price/API/Explorer Test、Vet、全包编译、前端构建通过；生产 ClickHouse 集成验证迁移幂等和 Canonical Swap 新字段写入/读回，受控行已清理；downloadengine 排除既有 500K 外部 SQD 用例后全包 PASS（254.449s）。
+- 全 internal 唯一失败为既有 `TestBatchCollect500KAddresses` 外部 SQD HTTP/2 stream 10 分钟超时；本次价格路径不在堆栈。安全扫描仍只报告全仓既有两个 SQL 启发式项。
+- `run.ps1` 部署完成，端口 8000 Listener PID `31032`；Health/Price/ClickHouse 为 ok。ClickHouse 26.7.3.19、34 tables、E 盘 HEALTHY；8 个 Canonical Swap 新列齐全、受控测试残留 0。Playwright 桌面/移动通过，console/page errors=0、移动横向溢出=false。
+- BNBUSDT 2025-01 Anchor 回填幂等复用已校验缓存：44,640 分钟、Coverage=100%；`2025-01-15T12:34:30Z` 本地历史价 `$689.91`、HIGH。FIST 当前仍为 Pool 0 / Price MISSING，不把 BNB 或受控测试覆盖外推到其他 Token。
+
+## 2026-08-10 — Smart Download Turbo V3.1 真双通道弹性调度
+
+- 新增 EMERGENCY、URGENT/HIGH/NORMAL/BACKGROUND、P0-P4 与相关区间；EMERGENCY/L3 强制 URGENT，相关区间认证后自动降 TURBO。
+- 新增 10-30 秒动态 allocator、Cloud/RPC 双 Lane、Pending work stealing、density-aware re-shard、checkpoint 边界抢占/自动恢复、P0/P1 Hedge first-certified-winner 与渐进认证/TTFR；RUNNING 和已完成 Coverage 不重分配。
+- RPC Manager 增加 method/archive/trace capability、SQLite additive migration、Endpoint 独立 worker/RPS AIMD、429/timeout/latency spike 隔离和无密钥 PoolSnapshot；Turbo 含禁用节点语义保持。
+- ClickHouse Writer 增加 128 次滚动 P95；实际下载速率、Writer 插入速率/P95 与 RPC Pool Snapshot 已接入 Governor。新增四个 V3.1 环境配置，无 ClickHouse Schema 或新依赖。
+- 前端加入三档模式、四档优先级、相关 Range、Emergency Burst/Cost Guard、一键升档和完整 Turbo Dashboard；API 安全归一化兼容缺失/旧字段。
+- Case A-G、抢占恢复、Hedge 零逻辑重复及相关包 Test/Vet 全过；V3.1 用例连续 5 次通过，前端构建通过，Smart/RPC/Data Warehouse/API 安全扫描 0 issues。
+- 全 internal 仍仅受既有 500K SQD 外部 HTTP/2 用例 5 分钟超时影响；Cloud 临时目录竞态精确复跑通过。
+- `run.ps1` 部署 PID `30640`，health=ok；RPC 8 个（启用 4/禁用 4）未改变。受控 API Batch `d8f133ea-10c2-4f78-b286-b0714b51fb9c` 验证 `relevant_range + L3 => EMERGENCY/URGENT` 后取消为 CANCELED。
+- Playwright Dashboard 验证 EMERGENCY/URGENT/TTFR/Backpressure/Work stealing/Re-shard/Hedge，console/page errors=0；截图 `smart-download-v31-dashboard.png`。
+
+## 2026-08-10 — Smart Download Turbo Production Hardening V3.2
+
+- 新增无副作用 `POST /api/smart-download/preflight`，估算 blocks/rows/bytes/Cloud Jobs/RPC Calls/磁盘增长与 ETA V2，并给出 STANDARD/PERFORMANCE/EXTREME 资源配置、置信等级和估算依据。
+- 创建/启动接入 Storage、RPC Quota、Cloud Budget 三类硬守卫；真实磁盘剩余空间、RPC UTC 当日持久调用量和显式 Cloud 日/月/单任务预算超限时拒绝，未知指标保持 UNKNOWN。
+- 新增 Pipeline/Bottleneck、Stall Detector、单 Range/单 DB stage Self Recovery、重启 Reconciler；不重跑终态 Range 或已完成 Coverage。
+- Preflight 对非法 Range Mode 直接 400，防止误扩为 FULL；Reconciler 不再刷新无变化终态任务时间戳，Recent Jobs 保留真实排序。
+- 新增 Task Templates、Performance History、Recent Jobs、终态自动 Job Report、Compare Runs；模板/报告/历史使用原子文件持久化，无数据库 Schema 变化。
+- 新增 API：`GET /batches/{id}/hardening`、`GET/POST/DELETE /templates`、`POST /templates/{id}/instantiate`、`GET /batches/{id}/report`、`POST /compare`、`GET /performance-history`；创建请求增加 `resource_profile`。
+- RPC PoolSnapshot 增加 `today_requests`；Cloud Budget Guard 修复 `MaxSingleJobCost` 定义存在但准入未执行的问题。
+- 前端加入 Profile+Preflight Guard、ETA/Pipeline/Bottleneck、Stall/Recovery/Failure、最近任务、模板、报告和运行对比；旧/缺字段均安全归一化，Advanced 默认折叠。
+- Case A-F、模板重启持久化、Smart Download/RPC/API/Data Warehouse 测试与 Vet 全过；前端构建通过；三个变更目录 security scan 均 0 issues。
+- 明确未实现 Predictive Prefetch / investigation prediction；Cloud 预算尚未接供应商真实账单消耗，当前余量是显式配置上限，不能表述为账单对账结果。
+
+## 2026-08-10 — Smart Download Batch Accelerator V3.3
+
+- 新增只读 `POST /api/smart-download/planner-v2` 与 `GET /batches/{id}/accelerator`；返回 Address Groups、Dataset Bundles、Shared Workloads 和真实复用/节省指标。
+- 新增 canonical SHA-256 SharedWork fingerprint、Active SharedWork Registry 原子持久化、跨 Batch JOIN、原子 claim、ref_count 取消语义、共享重试、重启 RUNNING→READY、失败二分与 poison 地址隔离。
+- `RangeJob` 增加 `shared_work_id`；只有实现 `GroupProviderAdapter` 的 Provider 才接管共享工作，普通 Provider 保持原单地址 failover 和 10K pack 性能。
+- RPC Group Adapter 支持最多 100 地址一次无 topics `eth_getLogs`，同一 raw payload fan-out 为 token_transfers/logs；地址严格校验、lower/sort/dedup，非法链/ChainID/范围/地址/bundle 在 Provider I/O 前 fail closed。
+- RPC 返回 Range-limit 错误或达到 9,000 条结果上限时按 block range 二分，地址组保持不拆；Transactions 不声明 bundle，避免虚报“一次扫描三个数据集”。
+- 前端新增批量规划器 V2 KPI、批量下载加速器及“批次→数据集→地址组→共享工作负载”折叠视图；缺失指标显示 `—`。
+- 新增 `v33.go`、`v33_test.go`、`v33_rpc_test.go`；修改 smartdownload model/service/recovery/api/rpc_adapter 及前端三个文件。无数据库 Schema 变化、无新依赖。
+- V3.3 定向、旧 Provider 切换/Gap Repair/Cloud Tier/10K 性能、smartdownload 全包测试全部通过；Vet、前端 build 和深度安全扫描通过。首轮能力边界回归暴露并修复了普通 Provider 被错误接管的问题。
+- `run.ps1` 部署 PID `7576`、health=ok；生产 Preview 验证 6→1 workload、Provider saved=5 且 Batch 数 27→27 无副作用。受控 Batch `ead2fdf2-a01d-492f-9457-bece5678d761` 验证 ref_count=6 后取消为 CANCELED；Playwright V3.3 面板通过且 console/page errors=0。
+
+## 2026-08-10 — System Settings 完善
+
+- 将“系统设置”页从空壳改成可用控制台，提供常用行为、服务状态、配置摘要、导出设置和恢复默认。
+- 系统设置与 App 初始行为接通：默认首页、记住上次页面、自动刷新服务状态、侧栏默认收起、下载进度提示、资金图默认边数上限通过统一偏好生效。
+- 新增/调整文件：`frontend/src/features/system/SystemSettingsPage.tsx`、`frontend/src/features/system/systemSettingsStore.ts`、`frontend/src/App.tsx`。
+- 已验证：`cd frontend && npm run build` PASS。
+- 注意事项：该设置页仅影响前端行为，不修改后端配置或业务数据；如需系统级开关需另做后端接口。
+
+## 2026-08-10 — 盘古 BSC 资金数据导入 ClickHouse（ledgerimport）
+
+### 新增
+
+1. `internal/ledgerimport/`：盘古 4 个数据源（FIST/FNXAI/1FNXAI/MSN/CMSN 全量账本 + 资金流水明细逐地址导出）流式解析、staging、跨源去重、正式表写入、address_activity 派生与 provenance 记录。
+2. `cmd/ledgerimport/main.go`：CLI 入口（`-ledger-root` / `-flows-root` / `-job-id` / `-skip-completed`），日志输出到控制台与数据目录旁 `ledger_import.log`。
+
+### 已验证
+
+- 五个代币账本与交付说明逐行一致：FIST 20,290,887 / FNXAI 1,915,945 / 1FNXAI 182,254 / MSN 283,386 / CMSN 53,700；另导入地址导出中账本未覆盖的真实增量（FIST +283、MSN +268）及其余 2,500+ 代币。
+- 最终 `token_transfers` 22,752,034 行、`chain_transactions` 553,582 行、`address_activity` 46,566,454 行、`tokens` 2,562；物理行数=逻辑行数，无重复键。
+- `go test ./internal/ledgerimport/ -count=1` 全过；受控集成测试（`CLICKHOUSE_LEDGER_IMPORT_INTEGRATION=1`）通过且已清理；`go vet` 与全包编译 PASS。
+- Explorer API 已可直接读取：`/api/v1/explorer/bsc/address/0x92e102725a90a1ac0d60560cb1807b9c5820b0a9/token-transfers` 返回锚点 FIST 转账，`/api/health` ok。
+
+### 注意事项
+
+- 去重口径：账本按 (tx_hash, log_index) 事件键；无 logIndex 导出按事件身份合成索引；被账本覆盖的导出跳过（11,203 行）；ClickHouse 内存上限下用 staging ReplacingMergeTree + OPTIMIZE FINAL 控制峰值。
+- 交易流水状态：无 Receipt 的来源置 UNKNOWN/MISSING；仅 p1+p0/OKLink 带 Receipt 状态列置 RECEIPT。13 行无法解析已记录拒绝数。
+- 未导入重复/衍生文件：`代币\output` 分片副本、`下载情况.xlsx`、核验源数据、FIST 衍生 CSV。
+
+### 2026-08-10 Explorer 首页报错修复与覆盖提示移除
+
+#### 修复
+
+1. Explorer 首页 503：`historical_value_usdt>=100000` 误用外层字符串别名列比较，ClickHouse 报 `NO_COMMON_TYPE`；子查询加别名 `t` 后按数值列过滤/排序，`/api/v2/explorer/:chain/home` 恢复 200，“最近交易”“大额活动”正常返回。
+2. 删除三处“数据覆盖尚未完整”notification（DataSourcePage 打开即弹、CryptoParquetPanel 覆盖<100%、AddressAnalyticsPanel 覆盖不足），不再显示“零值不代表完整历史没有交易”文案。
+
+#### 验证
+
+- `go test ./internal/api -run TestExplorer -count=1` PASS、`go build` PASS、`npm run build` PASS。
+- `run.ps1` 重启 PID 12828，health=200；home 接口 200 并返回真实 `latest_transactions`/`large_transfers`；日志无新增 `explorer_intelligence_query_failed`。
+
+#### 注意事项
+
+- `chain_blocks` 为空导致首页 `latest_block=0`，与本次修复无关；无 API/Schema 变更。
+
+### 2026-08-10 全局消息弹窗样式与动画升级
+
+#### 新增/变更
+
+1. ConfigProvider 内接入 antd v5 `App` 上下文。
+2. 全局 `message.config`/`notification.config`：位置、时长（3s/4s）、数量上限（3/4）。
+3. 新增 `frontend/src/styles/feedback.css`：圆角白卡、细边框、双层阴影、类型色条、消息 pop 动画、通知 hover 抬升、关闭按钮 hover 旋转、reduced-motion 降级。
+
+#### 验证
+
+- `npm run build` PASS；Playwright 渲染验收 message/notification 动画与计算样式正确；临时 demo 已移除，最终构建无残留、console errors=0。
+
+#### 注意事项
+
+- 无后端/API/Schema 变更；既有弹窗调用点自动生效。
+
+### 2026-08-10 消息弹窗玻璃拟态风格
+
+#### 新增/变更
+
+- `frontend/src/styles/feedback.css` 升级为深色玻璃拟态：深蓝半透明磨砂底（blur 18/20px + saturate 160%）、白边、双层阴影、内高光、玻璃高光渐变、霓虹类型色条/图标，圆角 14/16px。
+
+#### 验证
+
+- `npm run build` PASS；Playwright 计算样式验收通过，临时 demo 已移除，最终构建无残留、console errors=0。
+
+#### 注意事项
+
+- 无后端/API/Schema 变更；样式全局生效。
+
+### 2026-08-10 玻璃拟态弹窗底色改为白色
+
+#### 新增/变更
+
+- `frontend/src/styles/feedback.css`：深蓝玻璃底改为白色磨砂玻璃（`rgba(255,255,255,0.8/0.82)` + blur/saturate），文字改为深色，保留高光渐变、阴影与霓虹类型色条。
+
+#### 验证
+
+- `npm run build` PASS；Playwright 计算样式验收通过；临时 demo 已移除，最终构建无残留、console errors=0。

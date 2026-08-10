@@ -29,20 +29,35 @@ var evmAddressRE = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 
 // Options 服务配置。
 type Options struct {
-	Workers         int    // 单批次并发 Worker 数
-	RetryLimit      int    // 单个 Range 重试上限
-	DefaultEndBlock uint64 // FULL 模式未显式给 to_block 时的默认终点
-	RangeChunkSize  uint64 // Range 切分大小（区块数）
-	AdaptiveRanges  bool   // Discovery 驱动自适应 Range（默认固定分块）
+	Workers            int           // 单批次并发 Worker 数
+	RetryLimit         int           // 单个 Range 重试上限
+	DefaultEndBlock    uint64        // FULL 模式未显式给 to_block 时的默认终点
+	RangeChunkSize     uint64        // Range 切分大小（区块数）
+	AdaptiveRanges     bool          // Discovery 驱动自适应 Range（默认固定分块）
+	TurboTailBlocks    uint64        // TURBO 中由 RPC 负责的动态链尾窗口
+	AllocatorInterval  time.Duration // V3.1 动态分配周期（10~30 秒）
+	CloudBurstMaxJobs  int           // Cloud hard concurrency guard
+	RPCHardClaims      int           // RPC hard claim quota
+	TargetRowsPerShard uint64        // density-aware shard target
+	StallTimeout       time.Duration // V3.2 stage stall threshold
+	StallCheckInterval time.Duration // V3.2 detector cadence
+	DiskReserveBytes   uint64        // estimated growth must leave this reserve
 }
 
 // DefaultOptions 返回 Phase 1 默认值。
 func DefaultOptions() Options {
 	return Options{
-		Workers:         4,
-		RetryLimit:      2,
-		DefaultEndBlock: 50_000_000,
-		RangeChunkSize:  50_000,
+		Workers:            4,
+		RetryLimit:         2,
+		DefaultEndBlock:    50_000_000,
+		RangeChunkSize:     50_000,
+		AllocatorInterval:  20 * time.Second,
+		CloudBurstMaxJobs:  4,
+		RPCHardClaims:      16,
+		TargetRowsPerShard: 100_000,
+		StallTimeout:       90 * time.Second,
+		StallCheckInterval: 15 * time.Second,
+		DiskReserveBytes:   2 << 30,
 	}
 }
 
@@ -63,6 +78,7 @@ type Service struct {
 	rangeCoverage RangeCoverageSource
 	results       *ResultProcessor
 	onIndexed     func(*IndexedResult)
+	indexedWriter IndexedWriter
 	cloudPlanner  *cloudplanner.Planner
 	history       *feedback.History
 	coverageIndex *reg.Store
@@ -70,6 +86,9 @@ type Service struct {
 	cancel        context.CancelFunc
 	workers       map[string]bool
 	cpCache       map[string]*CheckpointV3
+	v31           *v31Runtime
+	v32           *v32Runtime
+	v33           *v33Runtime
 	wg            sync.WaitGroup
 }
 
@@ -87,6 +106,27 @@ func NewService(store *Store, opts Options, writer PartWriter) *Service {
 	if opts.DefaultEndBlock == 0 {
 		opts.DefaultEndBlock = 50_000_000
 	}
+	if opts.AllocatorInterval < 10*time.Second || opts.AllocatorInterval > 30*time.Second {
+		opts.AllocatorInterval = 20 * time.Second
+	}
+	if opts.CloudBurstMaxJobs <= 0 {
+		opts.CloudBurstMaxJobs = 4
+	}
+	if opts.RPCHardClaims <= 0 {
+		opts.RPCHardClaims = 16
+	}
+	if opts.TargetRowsPerShard == 0 {
+		opts.TargetRowsPerShard = 100_000
+	}
+	if opts.StallTimeout <= 0 {
+		opts.StallTimeout = 90 * time.Second
+	}
+	if opts.StallCheckInterval <= 0 {
+		opts.StallCheckInterval = 15 * time.Second
+	}
+	if opts.DiskReserveBytes == 0 {
+		opts.DiskReserveBytes = 2 << 30
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
 		store:      store,
@@ -102,6 +142,9 @@ func NewService(store *Store, opts Options, writer PartWriter) *Service {
 		cancel:     cancel,
 		workers:    map[string]bool{},
 		cpCache:    map[string]*CheckpointV3{},
+		v31:        newV31Runtime(opts),
+		v32:        newV32Runtime(opts),
+		v33:        newV33Runtime(store.Root()),
 	}
 	svc.validator = NewValidator(svc)
 	svc.results = NewResultProcessor(svc)
@@ -117,6 +160,7 @@ func NewService(store *Store, opts Options, writer PartWriter) *Service {
 	svc.scheduler.SetHistoryBonus(func(chainID int64, dataset, provider, bucket string) float64 {
 		return svc.history.ScoreBonus(chainID, dataset, provider, bucket)
 	})
+	svc.startV32Monitor()
 	return svc
 }
 
@@ -134,6 +178,13 @@ func (s *Service) SetOnDatasetIndexed(fn func(*IndexedResult)) {
 	s.onIndexed = fn
 }
 
+// SetIndexedWriter 注入认证数据集写入器（ClickHouse 适配器由装配层提供）。
+func (s *Service) SetIndexedWriter(writer IndexedWriter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.indexedWriter = writer
+}
+
 // Results 返回结果处理器（API 查询用）。
 func (s *Service) Results() *ResultProcessor { return s.results }
 
@@ -142,6 +193,12 @@ func (s *Service) SetDuckDB(engine *duckdb.Engine) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.duckdbEngine = engine
+}
+
+// ReadProviderParquetRecords converts a provider artifact to the canonical
+// in-memory record boundary used by PartWriter and Validation.
+func (s *Service) ReadProviderParquetRecords(ctx context.Context, path string) ([]Record, error) {
+	return s.validator.readParquetRecords(ctx, path)
 }
 
 func (s *Service) duckdb() *duckdb.Engine {
@@ -224,6 +281,13 @@ func (s *Service) Shutdown() {
 
 // CreateBatch 创建批量任务（Batch → Address → Dataset → Range 全树落盘）。
 func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*CreateBatchResponse, error) {
+	preflight, err := s.Preflight(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if !preflight.Guards.Allowed {
+		return nil, fmt.Errorf("preflight guard 拒绝启动: %s", preflight.Guards.Reason())
+	}
 	network, err := chain.Resolve(req.ChainKey)
 	if err != nil {
 		return nil, err
@@ -239,6 +303,48 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 	}
 	if len(datasets) == 0 {
 		return nil, fmt.Errorf("没有合法的数据集")
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = DownloadModeAuto
+	}
+	burstLevel := strings.ToUpper(strings.TrimSpace(req.BurstLevel))
+	if req.EmergencyBurst || burstLevel == "L3" || burstLevel == string(CloudBurstL3) {
+		mode = DownloadModeEmergency
+	} else if burstLevel == "L2" || burstLevel == string(CloudBurstL2) {
+		if mode == DownloadModeAuto {
+			mode = DownloadModeTurbo
+		}
+	}
+	if !mode.Valid() {
+		return nil, fmt.Errorf("非法下载模式 %q（仅支持 AUTO/TURBO/EMERGENCY）", mode)
+	}
+	priority := req.Priority
+	if mode == DownloadModeEmergency {
+		priority = PriorityUrgent
+	} else if priority == "" {
+		priority = PriorityNormal
+		if req.Prefetch {
+			priority = PriorityBackground
+		}
+	}
+	if !priority.Valid() {
+		return nil, fmt.Errorf("非法任务优先级 %q", priority)
+	}
+	if burstLevel == "L2" || burstLevel == string(CloudBurstL2) {
+		if jobPriorityRank(priority) < jobPriorityRank(PriorityHigh) {
+			priority = PriorityHigh
+		}
+	}
+	if isTurboMode(mode) {
+		for _, dataset := range datasets {
+			rpc, cloud := s.adapters["rpc"], s.adapters["sqd_cloud"]
+			rpcOK := adapterAvailableForMode(rpc, network.Key, mode) && rpc.Supports(dataset)
+			cloudOK := cloud != nil && cloud.Available() && cloud.Supports(dataset)
+			if !rpcOK && !cloudOK {
+				return nil, fmt.Errorf("Turbo 模式没有可用的 SQD Cloud/RPC lane: dataset=%s", dataset)
+			}
+		}
 	}
 	spec := RangeSpec{Mode: RangeModeFull}
 	if req.DefaultRange != nil && req.DefaultRange.Mode != "" {
@@ -271,16 +377,20 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 	batchID := uuid.NewString()
 	now := time.Now().UTC()
 	batch := &BatchJob{
-		ID:           batchID,
-		ChainKey:     network.Key,
-		ChainID:      network.ID,
-		Status:       BatchCreated,
-		AddressCount: len(valid),
-		DatasetTypes: datasets,
-		Prefetch:     req.Prefetch,
+		ID:               batchID,
+		ChainKey:         network.Key,
+		ChainID:          network.ID,
+		Status:           BatchCreated,
+		AddressCount:     len(valid),
+		DatasetTypes:     datasets,
+		Mode:             mode,
+		Priority:         priority,
+		ResourceProfile:  preflight.Estimate.ResourceProfile,
+		Preflight:        &preflight.Estimate,
+		Prefetch:         req.Prefetch,
 		PrefetchPriority: req.PrefetchPriority,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if err := s.store.SaveBatch(batch); err != nil {
 		return nil, err
@@ -292,7 +402,9 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 	if packMode {
 		pack = &BatchPack{Batch: batch}
 	}
-	skipCovered := req.SkipCovered != nil && *req.SkipCovered
+	// Coverage-first is the safe default. Callers must explicitly send false to
+	// force a redownload of certified local coverage.
+	skipCovered := req.SkipCovered == nil || *req.SkipCovered
 	chains := map[string]bool{network.Key: true}
 	for _, addr := range valid {
 		addrSpec := spec
@@ -375,7 +487,7 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 				}
 			}
 			pendingRanges := SplitBlockRange(requested.From, requested.To, s.opts.RangeChunkSize)
-			if s.opts.AdaptiveRanges && !packMode {
+			if s.opts.AdaptiveRanges && !packMode && !isTurboMode(mode) {
 				if dr, derr := s.discoverDataset(ctx, dsJob, requested.From, requested.To); derr == nil &&
 					len(dr.Segments) > 0 && dr.Confidence > 0 {
 					spans := discovery.PlanSegments(requested.From, requested.To, dr.Segments, 50_000)
@@ -406,7 +518,9 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 						ID: uuid.NewString(), DatasetJobID: dsID, BatchID: batchID,
 						AddressJobID: addrID, Address: addr, Dataset: ds,
 						FromBlock: r.From, ToBlock: r.To, Status: RangePending,
-						CreatedAt: now, UpdatedAt: now,
+						PriorityClass: initialRangePriority(req, addr, r, requested, priority),
+						Relevant:      rangeIsRelevant(req, addr, r),
+						CreatedAt:     now, UpdatedAt: now,
 					})
 				}
 				pack.Datasets = append(pack.Datasets, dsJob)
@@ -423,17 +537,19 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 			for _, r := range cp.PendingRanges {
 				rangeID := uuid.NewString()
 				rj := &RangeJob{
-					ID:           rangeID,
-					DatasetJobID: dsID,
-					BatchID:      batchID,
-					AddressJobID: addrID,
-					Address:      addr,
-					Dataset:      ds,
-					FromBlock:    r.From,
-					ToBlock:      r.To,
-					Status:       RangePending,
-					CreatedAt:    now,
-					UpdatedAt:    now,
+					ID:            rangeID,
+					DatasetJobID:  dsID,
+					BatchID:       batchID,
+					AddressJobID:  addrID,
+					Address:       addr,
+					Dataset:       ds,
+					FromBlock:     r.From,
+					ToBlock:       r.To,
+					Status:        RangePending,
+					PriorityClass: initialRangePriority(req, addr, r, requested, priority),
+					Relevant:      rangeIsRelevant(req, addr, r),
+					CreatedAt:     now,
+					UpdatedAt:     now,
 				}
 				if err := s.store.SaveRange(rj); err != nil {
 					return nil, err
@@ -461,6 +577,17 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 		if err := s.store.SaveBatch(batch); err != nil {
 			return nil, err
 		}
+	}
+	if isTurboMode(mode) {
+		s.mu.Lock()
+		err := s.applyModePlanLocked(batchID, mode)
+		s.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := s.attachBatchAccelerator(batchID); err != nil {
+		return nil, fmt.Errorf("V3.3 batch accelerator attach: %w", err)
 	}
 	logger.Log.Info().Str("batch_id", batchID).Str("chain", network.Key).
 		Int("addresses", len(valid)).Int("dataset_jobs", datasetJobs).Int("range_jobs", rangeJobs).
@@ -507,9 +634,25 @@ func (s *Service) Start(batchID string) error {
 	if batch.Status.Terminal() {
 		return fmt.Errorf("批次已处于终态 %s", batch.Status)
 	}
-	// 先探测、后下载（Phase 2）：探测失败不阻断，沿用默认候选
-	s.planBatchIfNeeded(batchID)
+	preflight, err := s.PreflightBatch(context.Background(), batchID)
+	if err != nil {
+		return fmt.Errorf("启动前 preflight 失败: %w", err)
+	}
+	if !preflight.Guards.Allowed {
+		return fmt.Errorf("启动前 guard 拒绝: %s", preflight.Guards.Reason())
+	}
+	// AUTO 先探测/竞速；TURBO 已由确定性 lane planner 分配，禁止常规 Provider 探测。
+	if !isTurboMode(batch.Mode) {
+		s.planBatchIfNeeded(batchID)
+	}
 	s.mu.Lock()
+	if isTurboMode(batch.Mode) {
+		if err := s.rebalanceBatchLocked(batchID, time.Now().UTC(), true); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	s.preemptLowerPriorityLocked(batch)
 	if s.workers[batchID] {
 		s.mu.Unlock()
 		return nil
@@ -763,7 +906,11 @@ func (s *Service) ResumeBatch(batchID string) (*BatchJob, error) {
 }
 
 func (s *Service) CancelBatch(batchID string) (*BatchJob, error) {
-	return s.flagBatch(batchID, false, true)
+	batch, err := s.flagBatch(batchID, false, true)
+	if err == nil {
+		s.releaseSharedRefs(func(ref SharedWorkRef) bool { return ref.BatchID == batchID })
+	}
+	return batch, err
 }
 
 func (s *Service) PauseAddress(addressID string) (*AddressJob, error) {
@@ -859,6 +1006,7 @@ func (s *Service) CancelAddress(addressID string) (*AddressJob, error) {
 		}
 	}
 	s.mu.Unlock()
+	s.releaseSharedRefs(func(ref SharedWorkRef) bool { return ref.AddressJobID == addressID })
 	return s.store.GetAddress(addressID), nil
 }
 
@@ -867,7 +1015,11 @@ func (s *Service) PauseDataset(datasetJobID string) (*DatasetJob, error) {
 }
 
 func (s *Service) CancelDataset(datasetJobID string) (*DatasetJob, error) {
-	return s.flagDataset(datasetJobID, false, true)
+	dataset, err := s.flagDataset(datasetJobID, false, true)
+	if err == nil {
+		s.releaseSharedRefs(func(ref SharedWorkRef) bool { return ref.DatasetJobID == datasetJobID })
+	}
+	return dataset, err
 }
 
 func (s *Service) flagDataset(datasetJobID string, pause, cancel bool) (*DatasetJob, error) {
@@ -956,11 +1108,31 @@ func (s *Service) runBatch(batchID string) {
 		delete(s.workers, batchID)
 		s.mu.Unlock()
 	}()
+	workerCount := s.profileConfigForBatch(batchID).Workers
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer workers.Done()
+			s.runBatchWorker(batchID)
+		}()
+	}
+	workers.Wait()
+}
+
+func (s *Service) runBatchWorker(batchID string) {
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		default:
+		}
+		if shared := s.claimSharedWork(batchID); shared != nil {
+			s.executeSharedWork(shared)
+			continue
 		}
 		claim := s.claimNext(batchID)
 		if claim == nil {
@@ -1003,7 +1175,12 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 		}
 		_ = s.store.SaveBatch(batch)
 	}
-	for _, a := range s.store.ListAddressesByBatch(batchID) {
+	if isTurboMode(batch.Mode) {
+		_ = s.rebalanceBatchLocked(batchID, time.Now().UTC(), false)
+	}
+	addresses := s.store.ListAddressesByBatch(batchID)
+	s.sortAddressesByPriority(batchID, addresses)
+	for _, a := range addresses {
 		if a.Status.Terminal() {
 			continue
 		}
@@ -1040,12 +1217,23 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 				}
 				continue
 			}
-			// Phase 1：同一 Dataset 的 Range 串行执行（避免并发写同一 Checkpoint/Part）。
-			if s.datasetHasRunningRange(ds.ID) {
+			// AUTO 保持单 Dataset 串行；TURBO 的唯一 owner + 确定性 Part 名允许
+			// Cloud bulk 与 RPC fast lane 并发提交不同 Range。
+			if !isTurboMode(batch.Mode) && s.datasetHasRunningRange(ds.ID) {
 				continue
 			}
-			for _, r := range s.store.ListRangesByDataset(ds.ID) {
+			ranges := s.store.ListRangesByDataset(ds.ID)
+			if isTurboMode(batch.Mode) {
+				sort.SliceStable(ranges, func(i, j int) bool { return ranges[i].Priority > ranges[j].Priority })
+			}
+			for _, r := range ranges {
+				if r.SharedWorkID != "" {
+					continue
+				}
 				if r.Status == RangePending || r.Status == RangeReady {
+					if isTurboMode(batch.Mode) && !s.canClaimLaneLocked(batchID, r.Owner) {
+						continue
+					}
 					adapter, provider, ok := s.selectProviderLocked(ds, r)
 					if !ok {
 						adapter, provider = nil, ""
@@ -1096,6 +1284,8 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 					})
 					req := RangeRequest{
 						DatasetJobID: ds.ID,
+						Mode:         batch.Mode,
+						Priority:     r.Priority,
 						Address:      a.Address,
 						Dataset:      ds.Dataset,
 						ChainKey:     a.ChainKey,
@@ -1146,6 +1336,11 @@ func (s *Service) executeRange(claim *claimedRange) {
 	}
 	blockRange := BlockRange{From: claim.req.FromBlock, To: claim.req.ToBlock}
 	if len(result.Records) == 0 {
+		rj := s.store.GetRange(claim.rangeID)
+		if !s.acceptHedgeWinnerLocked(rj) {
+			s.mu.Unlock()
+			return
+		}
 		cp.ConfirmEmpty(blockRange)
 		_ = s.cp.Save(cp)
 		_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
@@ -1153,12 +1348,12 @@ func (s *Service) executeRange(claim *claimedRange) {
 			RangeID: blockRange.Key(), FromBlock: blockRange.From, ToBlock: blockRange.To,
 			Provider: claim.provider,
 		})
-		rj := s.store.GetRange(claim.rangeID)
 		rj.Status = RangeEmpty
 		rj.Provider = claim.provider
 		now := time.Now().UTC()
 		rj.FinishedAt = &now
 		rj.UpdatedAt = now
+		s.certifyRangeLocked(rj)
 		_ = s.store.SaveRange(rj)
 		s.updateProgressLocked(ds.ID)
 		s.finalizeDatasetIfDoneLocked(ds.ID)
@@ -1171,7 +1366,8 @@ func (s *Service) executeRange(claim *claimedRange) {
 		})
 		return
 	}
-	partName := cp.NextPartName(s.writer.Extension())
+	partName := fmt.Sprintf("part-%012d-%012d-%s%s", blockRange.From, blockRange.To,
+		claim.rangeID[:min(8, len(claim.rangeID))], s.writer.Extension())
 	s.mu.Unlock() // Part 写入是 I/O，不持锁
 	written, werr := s.writer.WritePart(ctx, PartMeta{
 		DatasetJobID: claim.datasetJobID,
@@ -1187,6 +1383,11 @@ func (s *Service) executeRange(claim *claimedRange) {
 	s.mu.Lock()
 	ds = s.store.GetDataset(claim.datasetJobID)
 	cp = s.checkpointLocked(claim.datasetJobID)
+	rj := s.store.GetRange(claim.rangeID)
+	if !s.acceptHedgeWinnerLocked(rj) {
+		s.mu.Unlock()
+		return
+	}
 	part := PartInfo{
 		Name: partName, SHA256: written.SHA256, Rows: written.Rows,
 		Bytes: written.Bytes, RangeFrom: blockRange.From, RangeTo: blockRange.To,
@@ -1203,7 +1404,6 @@ func (s *Service) executeRange(claim *claimedRange) {
 		RangeID: blockRange.Key(), FromBlock: blockRange.From, ToBlock: blockRange.To,
 		Provider: claim.provider, Part: partName, Rows: part.Rows,
 	})
-	rj := s.store.GetRange(claim.rangeID)
 	rj.Status = RangeCompleted
 	rj.Provider = claim.provider
 	rj.FailedProviders = nil // 成功后清空失败记录（当前 Range 已闭环）
@@ -1212,6 +1412,7 @@ func (s *Service) executeRange(claim *claimedRange) {
 	now := time.Now().UTC()
 	rj.FinishedAt = &now
 	rj.UpdatedAt = now
+	s.certifyRangeLocked(rj)
 	_ = s.store.SaveRange(rj)
 	runtime := time.Duration(0)
 	if rj.StartedAt != nil {
@@ -1286,18 +1487,15 @@ func (s *Service) failRange(claim *claimedRange, err error) {
 	now := time.Now().UTC()
 	rj.FinishedAt = &now
 	_ = s.store.SaveRange(rj)
-	if ds != nil && !ds.Status.Terminal() {
-		ds.Status = DatasetFailed
+	// A single exhausted shard must not terminate a Turbo dataset while other
+	// Cloud/RPC shards are still running. Settle only after every range reaches a
+	// terminal state; Validation can then classify/repair the exact gap.
+	if ds != nil {
 		ds.Error = err.Error()
 		ds.UpdatedAt = now
 		_ = s.store.SaveDataset(ds)
-	}
-	a := s.store.GetAddress(claim.addressJobID)
-	if a != nil && !a.Status.Terminal() {
-		a.Status = AddressFailed
-		a.Error = err.Error()
-		a.UpdatedAt = now
-		_ = s.store.SaveAddress(a)
+		s.updateProgressLocked(ds.ID)
+		s.finalizeDatasetIfDoneLocked(ds.ID)
 	}
 }
 
@@ -1325,6 +1523,24 @@ func progressPercent(ds *DatasetJob) float64 {
 // selectProviderLocked 为 Range 选择 Provider（跳过已失败/冷却 Provider；Cloud 最后兜底）。
 // 调用方必须持 service.mu。
 func (s *Service) selectProviderLocked(ds *DatasetJob, rj *RangeJob) (ProviderAdapter, string, bool) {
+	if batch := s.store.GetBatch(rj.BatchID); batch != nil && isTurboMode(batch.Mode) {
+		provider := ownerProvider(rj.Owner)
+		adapter := s.adapters[provider]
+		if adapterAvailableForMode(adapter, ds.ChainKey, batch.Mode) && adapter.Supports(ds.Dataset) &&
+			!(rj.Owner == RangeOwnerCloud && containsString(rj.FailedProviders, provider)) {
+			return adapter, provider, true
+		}
+		// Cloud lane may transfer ownership to RPC after a real failure/unavailability;
+		// the same range is never executed by both owners concurrently.
+		if rj.Owner == RangeOwnerCloud {
+			if rpc := s.adapters["rpc"]; adapterAvailableForMode(rpc, ds.ChainKey, batch.Mode) && rpc.Supports(ds.Dataset) {
+				rj.Owner, rj.Lane, rj.Priority = RangeOwnerRPC, "repair", turboRepairPriority
+				_ = s.store.SaveRange(rj)
+				return rpc, "rpc", true
+			}
+		}
+		return nil, "", false
+	}
 	name, ok := s.scheduler.SelectProvider(ds.Dataset, rj.FailedProviders)
 	if !ok {
 		// 全部候选已失败：允许同 Provider 重试（瞬态抖动），由 Attempts 预算兜底
@@ -1443,13 +1659,12 @@ func (s *Service) validateDatasetAndFinalize(dsID string) {
 		s.events.Publish(Event{Type: EventResultReady, DatasetJobID: dsID, Status: "PARTIAL", Message: "存在未覆盖区间"})
 		return
 	default:
-		ds.Status = DatasetCompleted
+		// 校验通过还不是完成：必须等待认证 Parquet 合并及可选数仓写入成功。
+		ds.Status = DatasetIndexing
 		ds.Validation = report
-		ds.FinishedAt = &now
+		ds.FinishedAt = nil
 		ds.UpdatedAt = now
 		_ = s.store.SaveDataset(ds)
-		s.finalizeAddressIfDoneLocked(ds.AddressJobID)
-		s.recordFinalHistory(ds, true)
 		s.mu.Unlock()
 		s.events.Publish(Event{Type: EventResultReady, DatasetJobID: dsID, Status: "VALIDATED", Message: "完整性校验通过"})
 		go s.indexDataset(dsID)
@@ -1475,8 +1690,55 @@ func (s *Service) indexDataset(dsID string) {
 	entry, err := s.results.MergeDataset(ctx, dsID)
 	if err != nil {
 		logger.Log.Warn().Str("dataset_job", dsID).Err(err).Msg("smartdownload_index_failed")
+		s.failIndexing(dsID, DatasetFailed, "INDEX_FAILED: "+err.Error(), false)
 		return
 	}
+	s.mu.Lock()
+	writer := s.indexedWriter
+	ds := s.store.GetDataset(dsID)
+	s.mu.Unlock()
+	shouldWrite := entry.RowCount > 0 || entry.MergedParquet != "" || (ds != nil && ds.DownloadedRows > 0)
+	if writer != nil && entry.Certification == "CERTIFIED" && shouldWrite && isWarehouseDataset(entry.Dataset) {
+		writeResult, writeErr := writer.WriteIndexed(ctx, IndexedWriteRequest{
+			DatasetJobID: entry.DatasetJobID, ChainKey: entry.ChainKey, ChainID: entry.ChainID,
+			Dataset: entry.Dataset, Address: entry.Address, FromBlock: entry.FromBlock,
+			ToBlock: entry.ToBlock, RowCount: entry.RowCount, MergedParquet: entry.MergedParquet,
+			SourceProvider: providerOfDataset(ds), ParserVersion: "smartdownload-v1",
+			NormalizerVersion: "canonical-writer-v2", SchemaVersion: 2,
+		})
+		if writeErr != nil {
+			_ = s.results.MarkWriteFailure(dsID, writeResult, writeErr.Error())
+			s.markCertificateDBWriteFailed(dsID)
+			s.failIndexing(dsID, DatasetDBWriteFailed, "DB_WRITE_FAILED: "+writeErr.Error(), true)
+			return
+		}
+		if writeResult.InputRows != writeResult.InsertedRows+writeResult.RejectedRows {
+			err := fmt.Errorf("writer reconciliation failed: input=%d success=%d reject=%d",
+				writeResult.InputRows, writeResult.InsertedRows, writeResult.RejectedRows)
+			_ = s.results.MarkWriteFailure(dsID, writeResult, err.Error())
+			s.markCertificateDBWriteFailed(dsID)
+			s.failIndexing(dsID, DatasetDBWriteFailed, "DB_WRITE_FAILED: "+err.Error(), true)
+			return
+		}
+		entry.Writer = &writeResult
+		_ = s.results.MarkWriteSuccess(dsID, writeResult)
+		s.markCertificateWriteSuccess(dsID)
+	}
+	s.mu.Lock()
+	ds = s.store.GetDataset(dsID)
+	if ds == nil || (ds.Status != DatasetIndexing && ds.Status != DatasetDBWriteFailed) {
+		s.mu.Unlock()
+		return
+	}
+	now := time.Now().UTC()
+	ds.Status = DatasetCompleted
+	ds.Error = ""
+	ds.FinishedAt = &now
+	ds.UpdatedAt = now
+	_ = s.store.SaveDataset(ds)
+	s.finalizeAddressIfDoneLocked(ds.AddressJobID)
+	s.recordFinalHistory(ds, true)
+	s.mu.Unlock()
 	// Coverage Index V2：只有 CERTIFIED 才写认证覆盖；余额类写快照（TTL 300s）
 	if s.coverageIndex != nil && entry.Certification == "CERTIFIED" {
 		var snapshot *reg.SnapshotCoverage
@@ -1495,6 +1757,85 @@ func (s *Service) indexDataset(dsID string) {
 	if fn != nil {
 		fn(entry)
 	}
+}
+
+func isWarehouseDataset(dataset string) bool {
+	return dataset == DatasetTransactions || dataset == DatasetTokenTransfers ||
+		dataset == DatasetInternalTransactions || dataset == DatasetContractCreations ||
+		dataset == DatasetLogs
+}
+
+func providerOfDataset(ds *DatasetJob) string {
+	if ds == nil {
+		return ""
+	}
+	return ds.CurrentProvider
+}
+
+func (s *Service) markCertificateDBWriteFailed(dsID string) {
+	store := v3.NewGapStore(s.store.Root(), dsID)
+	if cert, err := store.LoadCertificate(); err == nil {
+		cert.Status = "DB_WRITE_FAILED"
+		_ = store.SaveCertificate(cert)
+	}
+	_ = store.SaveState(v3.StateFailed, "db_write_failed")
+}
+
+func (s *Service) markCertificateWriteSuccess(dsID string) {
+	store := v3.NewGapStore(s.store.Root(), dsID)
+	if cert, err := store.LoadCertificate(); err == nil && cert.Status == "DB_WRITE_FAILED" {
+		cert.Status = "PASS"
+		cert.CertifiedAt = time.Now().UTC()
+		_ = store.SaveCertificate(cert)
+	}
+	_ = store.SaveState(v3.StatePass, "certified_and_indexed")
+}
+
+func (s *Service) failIndexing(dsID string, status DatasetStatus, message string, retryable bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ds := s.store.GetDataset(dsID)
+	if ds == nil {
+		return
+	}
+	now := time.Now().UTC()
+	ds.Status = status
+	ds.Error = message
+	ds.UpdatedAt = now
+	if retryable {
+		ds.FinishedAt = nil
+	} else {
+		ds.FinishedAt = &now
+	}
+	_ = s.store.SaveDataset(ds)
+	if !retryable {
+		s.finalizeAddressIfDoneLocked(ds.AddressJobID)
+	}
+	s.events.Publish(Event{Type: EventError, DatasetJobID: dsID, Status: string(status), Message: message})
+}
+
+// RetryIndexedDataset 仅重试已合并 Parquet 的数仓写入，不重新下载 Range。
+func (s *Service) RetryIndexedDataset(dsID string) error {
+	s.mu.Lock()
+	ds := s.store.GetDataset(dsID)
+	if ds == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("dataset %s 不存在", dsID)
+	}
+	if ds.Status != DatasetDBWriteFailed {
+		s.mu.Unlock()
+		return fmt.Errorf("dataset %s status %s is not retryable DB write failure", dsID, ds.Status)
+	}
+	ds.Status = DatasetIndexing
+	ds.Error = ""
+	ds.UpdatedAt = time.Now().UTC()
+	if err := s.store.SaveDataset(ds); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	go s.indexDataset(dsID)
+	return nil
 }
 
 // repairDatasetGapsLocked 创建缺失 Range 的补洞任务（调用方持 service.mu；上限 2 轮）。
@@ -1735,12 +2076,16 @@ func (s *Service) finalizeAddressIfDoneLocked(addressID string) {
 		Msg("DEBUG_finalize_address")
 	done := 0
 	partial := false
+	failed := false
 	for _, ds := range datasets {
 		if ds.Status.Terminal() {
 			done++
 		}
 		if ds.Status == DatasetPartial {
 			partial = true
+		}
+		if ds.Status == DatasetFailed || ds.Status == DatasetDBWriteFailed {
+			failed = true
 		}
 	}
 	if done != len(datasets) {
@@ -1752,6 +2097,8 @@ func (s *Service) finalizeAddressIfDoneLocked(addressID string) {
 		a.Status = AddressCanceled
 	case a.PauseRequested:
 		a.Status = AddressPaused
+	case failed:
+		a.Status = AddressFailed
 	case partial:
 		a.Status = AddressPartial
 	default:
@@ -1846,6 +2193,10 @@ func (s *Service) trySettle(batchID string) bool {
 		batch.FinishedAt = &now
 		batch.UpdatedAt = now
 		_ = s.store.SaveBatch(batch)
+		if batch.Status == BatchCompleted || batch.Status == BatchPartial || batch.Status == BatchFailed {
+			_, _ = s.ensureJobReportLocked(batchID)
+		}
+		s.resumePreemptedLocked(batchID)
 		return true
 	}
 	return false
@@ -1859,7 +2210,11 @@ func (s *Service) transitionBatchPausedLocked(batchID string) {
 		return
 	}
 	batch.PauseRequested = false
-	batch.Status = BatchPaused
+	if batch.PausedByPriority {
+		batch.Status = BatchPausedByPriority
+	} else {
+		batch.Status = BatchPaused
+	}
 	batch.UpdatedAt = time.Now().UTC()
 	_ = s.store.SaveBatch(batch)
 	for _, a := range s.store.ListAddressesByBatch(batchID) {

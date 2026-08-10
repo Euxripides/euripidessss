@@ -298,15 +298,6 @@ export default function SmartFillPanel({ open, address, chain, onClose, onRefres
           </section>
         )}
 
-        {/* 数据源边界说明 */}
-        <Alert
-          className="smart-fill-boundary"
-          type="info"
-          showIcon
-          message="数据源边界"
-          description="新数据落盘于 Parquet 数据资产（E:\codex\bsc_analytics\warehouse），可在「虚拟币 → Parquet下载」查看任务与文件；当前地址关系图的数据源为固定快照数据集，刷新图谱后仅在数据源一致时可见新数据。"
-        />
-
         {/* 操作区 */}
         <div className="smart-fill-footer">
           {!running && !done && (

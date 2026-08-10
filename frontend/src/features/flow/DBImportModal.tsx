@@ -678,7 +678,6 @@ const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
                 label: '数据编辑',
                 children: (
                   <div className="db-edit-panel">
-                    <Alert type="info" showIcon message="写操作需要数据库账号具备权限；修改和删除必须提供主键或唯一条件，后端会拒绝无条件 update/delete。" />
                     <Select value={editOperation} onChange={setEditOperation} options={[
                       { value: 'insert', label: '新增' },
                       { value: 'update', label: '修改' },

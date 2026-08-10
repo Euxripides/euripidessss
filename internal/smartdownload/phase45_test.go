@@ -567,7 +567,7 @@ func TestCloudAdapterCarriesTier(t *testing.T) {
 	defer cancel()
 	_, _ = a.ExecuteRange(ctx, RangeRequest{
 		DatasetJobID: "d1", Address: addrA, Dataset: DatasetTokenTransfers,
-		ChainKey: "bsc", ChainID: 56, FromBlock: 1, ToBlock: 10, CloudTier: "XL",
+		ChainKey: "bsc", ChainID: 56, FromBlock: 1, ToBlock: 10, CloudTier: "XL", Priority: turboBulkPriority,
 	})
 	if rt.submitted == nil {
 		t.Fatal("Cloud Job 未提交")
@@ -575,7 +575,10 @@ func TestCloudAdapterCarriesTier(t *testing.T) {
 	if rt.submitted.Tier != "XL" {
 		t.Fatalf("Cloud Job tier=%s，期望 XL", rt.submitted.Tier)
 	}
-	if rt.submitted.FromBlock != 1 || rt.submitted.ToBlock != 10 || len(rt.submitted.Addresses) != 1 {
+	if rt.submitted.Priority != turboBulkPriority {
+		t.Fatalf("Cloud Job priority=%d，期望 %d", rt.submitted.Priority, turboBulkPriority)
+	}
+	if rt.submitted.FromBlock != 1 || rt.submitted.ToBlock != 10 || len(rt.submitted.Addresses) != 0 || rt.submitted.TokenContract != addrA {
 		t.Fatalf("Cloud Job 参数不符: %+v", rt.submitted)
 	}
 }

@@ -30,6 +30,10 @@ func NewHandler(svc *Service, planLookup func(planID string) *downloadscheduler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	switch {
+	case r.Method == http.MethodPost && path == "planner-v2":
+		h.plannerV2(w, r)
+	case r.Method == http.MethodPost && path == "preflight":
+		h.preflight(w, r)
 	case r.Method == http.MethodPost && path == "batches":
 		h.createBatch(w, r)
 	case r.Method == http.MethodGet && path == "batches":
@@ -46,6 +50,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeSmartJSON(w, http.StatusOK, map[string]any{"results": h.svc.Results().List()})
 	case r.Method == http.MethodPost && path == "coverage/query":
 		h.coverageQuery(w, r)
+	case path == "templates" || strings.HasPrefix(path, "templates/"):
+		h.routeTemplates(w, r, strings.TrimPrefix(path, "templates"))
+	case r.Method == http.MethodPost && path == "compare":
+		h.compareRuns(w, r)
+	case r.Method == http.MethodGet && path == "performance-history":
+		h.performanceHistory(w)
 	case strings.HasPrefix(path, "batches/"):
 		h.routeBatch(w, r, strings.TrimPrefix(path, "batches/"))
 	case strings.HasPrefix(path, "addresses/"):
@@ -59,6 +69,136 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown smart-download endpoint: " + path})
 	}
+}
+
+func (h *Handler) preflight(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var req CreateBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	result, err := h.svc.Preflight(ctx, req)
+	if err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) plannerV2(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var req CreateBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	plan, err := h.svc.PlannerV2(ctx, req)
+	if err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusOK, plan)
+}
+
+func (h *Handler) routeTemplates(w http.ResponseWriter, r *http.Request, rest string) {
+	rest = strings.TrimPrefix(rest, "/")
+	if rest == "" {
+		switch r.Method {
+		case http.MethodGet:
+			items, err := h.svc.ListTemplates()
+			if err != nil {
+				writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
+				return
+			}
+			writeSmartJSON(w, http.StatusOK, map[string]any{"templates": items, "total": len(items)})
+			return
+		case http.MethodPost:
+			r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+			var body struct {
+				ID              string              `json:"id,omitempty"`
+				Name            string              `json:"name"`
+				Description     string              `json:"description,omitempty"`
+				ResourceProfile ResourceProfile     `json:"resource_profile,omitempty"`
+				Request         *CreateBatchRequest `json:"request,omitempty"`
+				Configuration   json.RawMessage     `json:"configuration,omitempty"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+				return
+			}
+			var request CreateBatchRequest
+			if body.Request != nil {
+				request = *body.Request
+			} else if len(body.Configuration) > 0 && string(body.Configuration) != "null" {
+				if err := json.Unmarshal(body.Configuration, &request); err != nil {
+					writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "configuration 解析失败: " + err.Error()})
+					return
+				}
+			}
+			if body.ResourceProfile != "" {
+				request.ResourceProfile = body.ResourceProfile
+			}
+			input := SaveTemplateRequest{ID: body.ID, Name: body.Name, Description: body.Description, Request: request}
+			template, err := h.svc.SaveTemplate(input)
+			if err != nil {
+				writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+				return
+			}
+			writeSmartJSON(w, http.StatusCreated, template)
+			return
+		}
+	}
+	parts := strings.Split(rest, "/")
+	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if err := h.svc.DeleteTemplate(id); err != nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "instantiate" && r.Method == http.MethodPost {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		result, err := h.svc.InstantiateTemplate(ctx, id)
+		if err != nil {
+			writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusCreated, result)
+		return
+	}
+	writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "unknown template endpoint"})
+}
+
+func (h *Handler) compareRuns(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var req CompareRunsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+		return
+	}
+	result, err := h.svc.CompareRuns(req)
+	if err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) performanceHistory(w http.ResponseWriter) {
+	runs, err := h.svc.PerformanceHistory()
+	if err != nil {
+		writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeSmartJSON(w, http.StatusOK, map[string]any{"runs": runs, "total": len(runs)})
 }
 
 // coverageQuery POST /coverage/query — Coverage Index V2 区间查询（设计 §45）。
@@ -272,6 +412,18 @@ func (h *Handler) routeBatch(w http.ResponseWriter, r *http.Request, rest string
 	}
 	if len(parts) == 2 && r.Method == http.MethodPost {
 		switch parts[1] {
+		case "mode":
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+			var body struct {
+				Mode DownloadMode `json:"mode"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "请求体解析失败: " + err.Error()})
+				return
+			}
+			batch, err := h.svc.SetBatchMode(id, body.Mode)
+			writeLifecycle(w, batch, err)
+			return
 		case "start":
 			err := h.svc.Start(id)
 			if err != nil {
@@ -303,6 +455,42 @@ func (h *Handler) routeBatch(w http.ResponseWriter, r *http.Request, rest string
 			writeLifecycle(w, batch, err)
 			return
 		}
+	}
+	if len(parts) == 2 && parts[1] == "turbo-status" && r.Method == http.MethodGet {
+		status, err := h.svc.TurboStatus(id)
+		if err != nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, status)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "hardening" && r.Method == http.MethodGet {
+		status, err := h.svc.HardeningStatus(id)
+		if err != nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, status)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "accelerator" && r.Method == http.MethodGet {
+		plan := h.svc.BatchAccelerator(id)
+		if plan == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "批次不存在: " + id})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, plan)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "report" && r.Method == http.MethodGet {
+		report, err := h.svc.GetJobReport(id)
+		if err != nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+			return
+		}
+		writeSmartJSON(w, http.StatusOK, report)
+		return
 	}
 	if len(parts) == 2 && parts[1] == "plan" && r.Method == http.MethodGet {
 		plan := h.planView(id)

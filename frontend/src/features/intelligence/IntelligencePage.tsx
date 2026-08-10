@@ -43,6 +43,7 @@ import {
 } from "./intelligenceApi";
 import { InvestigationRequestInput } from "./investigationRequestInput";
 import { AgentTimeline, PlanPreview } from "./investigationPlanView";
+import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
 import { InvestigationRequestSummary, InvestigationScorePanel, ProfitReportPanel } from "./investigationResultSummary";
 import { EvidenceViewer } from "./investigationEvidenceViewer";
 import { DetailPanel, PageHeader } from "../../design-system/DesignSystem";
@@ -114,8 +115,9 @@ function flowStepIndex(status: string): number {
 }
 
 export default function IntelligencePage() {
-  const [target, setTarget] = useState("");
-  const [chainId, setChainId] = useState("bsc");
+  const { state: analysisState, update: updateAnalysis } = useAnalysisContext();
+  const [target, setTarget] = useState(analysisState.rootAddress);
+  const [chainId, setChainId] = useState(analysisState.chain);
   // ── V2 调查请求输入（设计 §3：目的/期望结果/模式）──
   const [objective, setObjective] = useState("");
   const [expectedResult, setExpectedResult] = useState<string[]>([]);
@@ -171,6 +173,11 @@ export default function IntelligencePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (analysisState.rootAddress) setTarget(analysisState.rootAddress);
+    setChainId(analysisState.chain);
+  }, [analysisState.chain, analysisState.rootAddress]);
+
   const handleStart = async () => {
     const addr = target.trim().toLowerCase();
     if (!addr) {
@@ -183,6 +190,7 @@ export default function IntelligencePage() {
     }
     setLoading(true);
     try {
+      updateAnalysis({ rootAddress: addr, chain: chainId as typeof analysisState.chain });
       const result = await createInvestigation({
         address: addr,
         chain: chainId,
@@ -298,9 +306,11 @@ export default function IntelligencePage() {
   return (
     <div className="ds-page analytics-page intelligence-page">
       <PageHeader
-        title="智能调查"
+        title="调查工作台"
         description="启动多轮链上调查，持续接收实时进度，并在同一工作区核验证据、路径、实体、风险与 AI 结论。"
       />
+
+      {analysisState.rootAddress ? <div className="xi-inherited-context"><Typography.Text type="secondary">继承 Explorer 上下文：</Typography.Text><Tag>{analysisState.chain.toUpperCase()}</Tag><Tag>{analysisState.window}</Tag>{analysisState.direction !== "all" ? <Tag>{analysisState.direction.toUpperCase()}</Tag> : null}{analysisState.tokenSymbol ? <Tag>{analysisState.tokenSymbol}</Tag> : null}{analysisState.tokens.map((token) => <Tag key={token}>{token.slice(0, 10)}…</Tag>)}{analysisState.minUSD ? <Tag>USD ≥ {analysisState.minUSD}</Tag> : null}{analysisState.entityFilters.map((entity) => <Tag key={entity}>{entity}</Tag>)}</div> : null}
 
       {/* 启动调查 */}
       <DetailPanel
@@ -330,7 +340,7 @@ export default function IntelligencePage() {
             ]}
           />
           <Button type="primary" icon={<ThunderboltOutlined />} loading={loading} onClick={handleStart}>
-            启动智能调查
+            启动调查
           </Button>
         </div>
         <InvestigationRequestInput

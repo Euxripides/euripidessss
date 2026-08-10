@@ -29,11 +29,10 @@ import {
   Typography,
   Tooltip,
   message,
-  notification,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import {
   loadAddressActivity,
@@ -79,7 +78,6 @@ export function AddressAnalyticsPanel() {
   const [nfts, setNFTs] = useState<PageResult<AddressAsset> | null>(null);
   const [counterparties, setCounterparties] = useState<PageResult<AddressCounterparty> | null>(null);
   const chainKey = summary?.chain_key ?? 'bsc';
-  const coverageNotifyRef = useRef(false);
   const [useFirstSeen, setUseFirstSeen] = useState(true);
   const [firstSeen, setFirstSeen] = useState<FirstSeen | null>(null);
   const [firstSeenLoading, setFirstSeenLoading] = useState(false);
@@ -155,19 +153,6 @@ export function AddressAnalyticsPanel() {
       setLoading(false);
     }
   }
-
-  useEffect(() => {
-    if (!summary || coverageNotifyRef.current) return;
-    if (summary.data_complete === false && summary.dataset_coverage) {
-      coverageNotifyRef.current = true;
-      notification.warning({
-        message: `数据覆盖尚未完整 · Coverage ${summary.dataset_coverage.coverage_percent.toFixed(2)}%`,
-        description: summary.data_status_message || '当前统计仅代表已加载数据，交易数为 0 不代表完整历史没有交易。',
-        placement: 'topRight',
-        duration: 6,
-      });
-    }
-  }, [summary]);
 
   return (
     <div className="address-analytics-shell">

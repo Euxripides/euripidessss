@@ -161,13 +161,6 @@ export default function EntityPage() {
       <Typography.Title level={4}>
         <TagsOutlined /> 实体智能
       </Typography.Title>
-      <Alert
-        style={{ marginBottom: 16 }}
-        type="info"
-        showIcon
-        message="证据边界"
-        description="地址≠实体，标签≠事实，推断≠证明。所有标签均带来源、证据与置信度；行为模式只能产生候选，不自动生成现实身份结论。"
-      />
       <Space wrap style={{ marginBottom: 16 }}>
         <Card size="small" style={{ minWidth: 120 }}>
           <div>实体 {stats?.entities ?? 0}</div>
@@ -325,4 +318,3 @@ export default function EntityPage() {
     </div>
   );
 }
-

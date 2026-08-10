@@ -41,6 +41,32 @@ export const RELATION_COLORS: Record<WorkspaceRelation, string> = {
   cross: "#3a536c", // 非聚焦关系（焦点间交叉边）
 };
 
+const DARK_COLORS: Record<WorkspaceRelation, string> = {
+  selected: "#26d9e8",
+  upstream: "#3f97ff",
+  downstream: "#f59e32",
+  exchange: "#d7b34d",
+  global: "#3a536c",
+  cross: "#3a536c",
+};
+
+const LIGHT_COLORS: Record<WorkspaceRelation, string> = {
+  selected: "#2563eb",
+  upstream: "#0ea5e9",
+  downstream: "#f59e0b",
+  exchange: "#10b981",
+  global: "#cbd5e1",
+  cross: "#cbd5e1",
+};
+
+/** 切换关系边配色（白底工作台用浅色系，深色工作台用原色系）。 */
+export function setGraphColorScheme(light: boolean) {
+  const palette = light ? LIGHT_COLORS : DARK_COLORS;
+  (Object.keys(palette) as WorkspaceRelation[]).forEach((k) => {
+    RELATION_COLORS[k] = palette[k];
+  });
+}
+
 export function riskTone(score: number): "risk" | "warning" | "normal" {
   if (score >= 60) return "risk";
   if (score >= 30) return "warning";
@@ -75,10 +101,14 @@ export function fmtEdgeAmount(value: number): string {
  * （当前数据集无此字段，预留语义位）。
  */
 export function buildWorkspaceGraph(graph: GraphData, mode: WorkspaceMode): WorkspaceGraph {
-  const kindEdges = mode.kindFilter === "all" ? graph.edges : graph.edges.filter((e) => e.kind === mode.kindFilter);
+  const safeGraph: GraphData = {
+    nodes: Array.isArray(graph?.nodes) ? graph.nodes : [],
+    edges: Array.isArray(graph?.edges) ? graph.edges : [],
+  };
+  const kindEdges = mode.kindFilter === "all" ? safeGraph.edges : safeGraph.edges.filter((e) => e.kind === mode.kindFilter);
 
   if (mode.kind === "focus") {
-    const focused = buildFocusGraph({ ...graph, edges: kindEdges }, {
+    const focused = buildFocusGraph({ ...safeGraph, edges: kindEdges }, {
       address: mode.center,
       direction: mode.direction,
       depth: mode.depth,
@@ -109,7 +139,7 @@ export function buildWorkspaceGraph(graph: GraphData, mode: WorkspaceMode): Work
     };
   }
 
-  const layered = buildLayeredGraph(graph, mode.kindFilter, GLOBAL_EDGE_LIMIT);
+  const layered = buildLayeredGraph(safeGraph, mode.kindFilter, GLOBAL_EDGE_LIMIT);
   return {
     nodes: layered.nodes.map((node) => ({
       id: node.id,
@@ -365,6 +395,8 @@ function buildLayeredGraph(graph: GraphData, kind: GraphKind, nodeLimit: number)
       kind: edge.kind,
       token: edge.token,
       amount: parseAmount(edge.amount),
+      historicalValueUSDT: parseAmount(edge.historical_value_usdt),
+      valuationStatus: edge.valuation_status,
       txCount: edge.tx_count ?? 1,
       discovery: discoveryEdges.has(edgeKey(edge)),
     } satisfies EnhancedEdgeData,

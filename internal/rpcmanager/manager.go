@@ -35,6 +35,7 @@ type Manager struct {
 	runtimes    map[string]*endpointRuntime
 	cacheHits   atomic.Int64
 	cacheMisses atomic.Int64
+	turboCursor atomic.Uint64
 	close       chan struct{}
 	closed      chan struct{}
 	jobMu       sync.Mutex
@@ -47,9 +48,16 @@ type endpointRuntime struct {
 	preflightMu    sync.Mutex
 	nextAllowed    time.Time
 	currentRPS     float64
-	concurrency    chan struct{}
+	maxWorkers     int
+	workerLimit    int
+	currentWorkers int
+	workerNotify   chan struct{}
 	latencies      []float64
 	outcomes       []bool
+	successCount   int64
+	failureCount   int64
+	rateLimitCount int64
+	timeoutCount   int64
 	circuitOpen    time.Time
 	halfOpenActive bool
 }
@@ -161,7 +169,10 @@ func (m *Manager) Create(ctx context.Context, input EndpointInput) (Endpoint, er
 		Priority: input.Priority, Enabled: input.Enabled, MaxRPS: input.MaxRPS,
 		CurrentRPS: input.MaxRPS, MaxConcurrency: input.MaxConcurrency,
 		RequestTimeoutMS: input.RequestTimeoutMS, CreatedAt: now, UpdatedAt: now,
-	}, EncryptedURL: encrypted, EncryptedTestURL: encryptedTest}
+		SupportedMethods: input.SupportedMethods, ArchiveCapability: input.ArchiveCapability,
+		TraceCapability: input.TraceCapability,
+	}, EncryptedURL: encrypted, EncryptedTestURL: encryptedTest,
+		CapabilitiesConfigured: capabilitiesConfigured(input.SupportedMethods, input.ArchiveCapability, input.TraceCapability)}
 	if err := m.store.insertEndpoint(item); err != nil {
 		return Endpoint{}, err
 	}
@@ -184,6 +195,8 @@ func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (E
 		Provider: item.Provider, ChainKey: item.ChainKey, DisplayName: item.DisplayName,
 		Priority: item.Priority, Enabled: item.Enabled, MaxRPS: item.MaxRPS,
 		MaxConcurrency: item.MaxConcurrency, RequestTimeoutMS: item.RequestTimeoutMS,
+		SupportedMethods:  append([]string(nil), item.SupportedMethods...),
+		ArchiveCapability: item.ArchiveCapability, TraceCapability: item.TraceCapability,
 	}
 	if patch.Provider != nil {
 		input.Provider = *patch.Provider
@@ -208,6 +221,15 @@ func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (E
 	}
 	if patch.RequestTimeoutMS != nil {
 		input.RequestTimeoutMS = *patch.RequestTimeoutMS
+	}
+	if patch.SupportedMethods != nil {
+		input.SupportedMethods = append([]string{}, (*patch.SupportedMethods)...)
+	}
+	if patch.ArchiveCapability != nil {
+		input.ArchiveCapability = *patch.ArchiveCapability
+	}
+	if patch.TraceCapability != nil {
+		input.TraceCapability = *patch.TraceCapability
 	}
 	existingURL, err := m.secure.decrypt(item.EncryptedURL)
 	if err != nil {
@@ -261,6 +283,11 @@ func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (E
 	item.Priority, item.Enabled, item.MaxRPS = input.Priority, input.Enabled, input.MaxRPS
 	item.CurrentRPS, item.MaxConcurrency = input.MaxRPS, input.MaxConcurrency
 	item.RequestTimeoutMS, item.UpdatedAt = input.RequestTimeoutMS, time.Now().UTC()
+	item.SupportedMethods = append([]string(nil), input.SupportedMethods...)
+	item.ArchiveCapability, item.TraceCapability = input.ArchiveCapability, input.TraceCapability
+	if patch.SupportedMethods != nil || patch.ArchiveCapability != nil || patch.TraceCapability != nil {
+		item.CapabilitiesConfigured = true
+	}
 	if err := m.store.updateEndpoint(item); err != nil {
 		return Endpoint{}, err
 	}
@@ -293,6 +320,13 @@ func (m *Manager) Endpoints() ([]Endpoint, error) {
 
 func (m *Manager) HasConfigured(chainKey string) bool {
 	items, err := m.store.endpoints(chainKey, true)
+	return err == nil && len(items) > 0
+}
+
+// HasAnyConfigured reports whether a chain has any persisted endpoint. Turbo
+// uses this without changing the endpoint's normal enabled state.
+func (m *Manager) HasAnyConfigured(chainKey string) bool {
+	items, err := m.store.endpoints(chainKey, false)
 	return err == nil && len(items) > 0
 }
 
@@ -404,6 +438,72 @@ func (m *Manager) HealthResponse() (HealthResponse, error) {
 	}, nil
 }
 
+// PoolSnapshot returns a non-secret view of the per-endpoint adaptive pool.
+// Disabled endpoints are included because Turbo may route to them, while the
+// Enabled field preserves the distinction needed by normal scheduling.
+func (m *Manager) PoolSnapshot(chainKey string) (PoolSnapshot, error) {
+	network, err := chain.Resolve(chainKey)
+	if err != nil {
+		return PoolSnapshot{}, err
+	}
+	items, err := m.store.endpoints(network.Key, false)
+	if err != nil {
+		return PoolSnapshot{}, err
+	}
+	result := PoolSnapshot{ChainKey: network.Key, EndpointCount: len(items), Endpoints: make([]EndpointPoolSnapshot, 0, len(items))}
+	methodSet := make(map[string]struct{})
+	var latencies []float64
+	var totalOutcomes int64
+	for _, item := range items {
+		runtime := m.runtime(item)
+		runtime.mu.Lock()
+		p50, p95 := percentiles(runtime.latencies)
+		rate := successRate(runtime.outcomes)
+		outcomes := runtime.successCount + runtime.failureCount
+		endpoint := EndpointPoolSnapshot{
+			EndpointID: item.ID, Provider: item.Provider, Enabled: item.Enabled,
+			CurrentWorkers: runtime.currentWorkers, WorkerLimit: runtime.workerLimit,
+			MaxWorkers: runtime.maxWorkers, CurrentRPS: runtime.currentRPS,
+			LatencyMS: average(runtime.latencies), LatencyP50MS: p50, LatencyP95MS: p95, SuccessRate: rate,
+			SuccessCount: runtime.successCount, RateLimitedCount: runtime.rateLimitCount,
+			TimeoutCount: runtime.timeoutCount, SupportedMethods: append([]string(nil), item.SupportedMethods...),
+			ArchiveCapability: item.ArchiveCapability, TraceCapability: item.TraceCapability,
+			LegacyCompatibility: !item.CapabilitiesConfigured, TodayRequests: m.store.endpointRequestsToday(item.ID),
+		}
+		if outcomes > 0 {
+			endpoint.Rate429 = float64(runtime.rateLimitCount) / float64(outcomes) * 100
+			endpoint.TimeoutRate = float64(runtime.timeoutCount) / float64(outcomes) * 100
+		}
+		result.CurrentWorkers += runtime.currentWorkers
+		result.WorkerLimit += runtime.workerLimit
+		result.SuccessCount += runtime.successCount
+		result.RateLimitedCount += runtime.rateLimitCount
+		result.TimeoutCount += runtime.timeoutCount
+		result.TodayRequests += endpoint.TodayRequests
+		totalOutcomes += runtime.successCount + runtime.failureCount
+		latencies = append(latencies, runtime.latencies...)
+		runtime.mu.Unlock()
+		result.ArchiveCapability = result.ArchiveCapability || item.ArchiveCapability
+		result.TraceCapability = result.TraceCapability || item.TraceCapability
+		for _, method := range item.SupportedMethods {
+			methodSet[method] = struct{}{}
+		}
+		result.Endpoints = append(result.Endpoints, endpoint)
+	}
+	result.LatencyP50MS, result.LatencyP95MS = percentiles(latencies)
+	result.LatencyMS = average(latencies)
+	if totalOutcomes > 0 {
+		result.SuccessRate = float64(result.SuccessCount) / float64(totalOutcomes) * 100
+		result.Rate429 = float64(result.RateLimitedCount) / float64(totalOutcomes) * 100
+		result.TimeoutRate = float64(result.TimeoutCount) / float64(totalOutcomes) * 100
+	}
+	for method := range methodSet {
+		result.SupportedMethods = append(result.SupportedMethods, method)
+	}
+	sort.Strings(result.SupportedMethods)
+	return result, nil
+}
+
 func (m *Manager) RefreshHealth(ctx context.Context) {
 	items, err := m.store.endpoints("", true)
 	if err != nil {
@@ -430,11 +530,25 @@ func (m *Manager) RefreshHealth(ctx context.Context) {
 }
 
 func (m *Manager) Call(ctx context.Context, chainKey, method string, params any) (json.RawMessage, string, error) {
-	items, err := m.store.endpoints(chainKey, true)
+	return m.callWithPolicy(ctx, chainKey, method, params, false)
+}
+
+// CallTurbo routes over every configured endpoint, including endpoints that
+// are disabled for normal traffic. It never persists Enabled=true and still
+// enforces each endpoint's rate limit, concurrency, timeout and circuit state.
+func (m *Manager) CallTurbo(ctx context.Context, chainKey, method string, params any) (json.RawMessage, string, error) {
+	return m.callWithPolicy(ctx, chainKey, method, params, true)
+}
+
+func (m *Manager) callWithPolicy(ctx context.Context, chainKey, method string, params any, includeDisabled bool) (json.RawMessage, string, error) {
+	items, err := m.store.endpoints(chainKey, !includeDisabled)
 	if err != nil {
 		return nil, "", err
 	}
 	if len(items) == 0 {
+		if includeDisabled {
+			return nil, "", errors.New("该链未配置 RPC 节点")
+		}
 		return nil, "", errors.New("该链未配置可用 RPC 节点")
 	}
 	sort.SliceStable(items, func(i, j int) bool {
@@ -444,20 +558,33 @@ func (m *Manager) Call(ctx context.Context, chainKey, method string, params any)
 		}
 		return items[i].Priority < items[j].Priority
 	})
+	if includeDisabled && len(items) > 1 {
+		start := int((m.turboCursor.Add(1) - 1) % uint64(len(items)))
+		items = append(items[start:], items[:start]...)
+	}
 	var last error
+	compatible := 0
 	attempts := 0
+	maxAttempts := 5
+	if includeDisabled {
+		maxAttempts = len(items) * 2
+	}
 	for _, item := range items {
-		if attempts >= 5 {
+		if attempts >= maxAttempts {
+			break
+		}
+		if !endpointSupportsMethod(item, method) {
 			continue
 		}
+		compatible++
 		if preflightErr := m.ensureEndpointReady(ctx, item); preflightErr != nil {
 			last = preflightErr
 			continue
 		}
-		if !m.routeAllowed(item) {
+		if !m.routeAllowed(item, includeDisabled) {
 			continue
 		}
-		for endpointAttempt := 0; endpointAttempt < 2 && attempts < 5; endpointAttempt++ {
+		for endpointAttempt := 0; endpointAttempt < 2 && attempts < maxAttempts; endpointAttempt++ {
 			attempts++
 			result, callErr := m.callEndpoint(ctx, item, method, params)
 			if callErr == nil {
@@ -476,7 +603,11 @@ func (m *Manager) Call(ctx context.Context, chainKey, method string, params any)
 		}
 	}
 	if last == nil {
-		last = errors.New("当前没有健康的 RPC 节点")
+		if compatible == 0 {
+			last = fmt.Errorf("没有 RPC 节点声明支持方法 %s", redactMessage(method))
+		} else {
+			last = errors.New("当前没有健康的 RPC 节点")
+		}
 	}
 	return nil, "", fmt.Errorf("RPC_UNAVAILABLE: %w", last)
 }
@@ -496,6 +627,9 @@ func (m *Manager) ensureEndpointReady(ctx context.Context, item endpointRecord) 
 		return err
 	}
 	health := healthFromTest(item.ID, result)
+	if !item.Enabled {
+		health.Status = StatusDisabled
+	}
 	_ = m.store.saveHealth(health)
 	if !result.Success {
 		return fmt.Errorf("RPC_PREFLIGHT_%s: %s", result.ErrorClass, result.ErrorMessage)
@@ -603,9 +737,20 @@ func rawRPCCall(ctx context.Context, client *http.Client, endpointURL, method st
 func (m *Manager) onSuccess(item endpointRecord, runtime *endpointRuntime, method string, latency time.Duration) {
 	now := time.Now().UTC()
 	runtime.mu.Lock()
-	runtime.currentRPS = math.Min(item.MaxRPS, runtime.currentRPS+0.1)
-	runtime.latencies = appendBounded(runtime.latencies, float64(latency.Microseconds())/1000, 100)
+	latencyMS := float64(latency.Microseconds()) / 1000
+	spike := latencySpike(item, runtime.latencies, latencyMS)
+	if spike {
+		runtime.multiplyDecrease()
+	} else {
+		runtime.currentRPS = math.Min(item.MaxRPS, runtime.currentRPS+0.1)
+		if runtime.workerLimit < runtime.maxWorkers {
+			runtime.workerLimit++
+			runtime.signalWorkersLocked()
+		}
+	}
+	runtime.latencies = appendBounded(runtime.latencies, latencyMS, 100)
 	runtime.outcomes = appendBounded(runtime.outcomes, true, 100)
+	runtime.successCount++
 	runtime.circuitOpen = time.Time{}
 	runtime.halfOpenActive = false
 	p50, p95 := percentiles(runtime.latencies)
@@ -613,6 +758,12 @@ func (m *Manager) onSuccess(item endpointRecord, runtime *endpointRuntime, metho
 	runtime.mu.Unlock()
 	health := m.store.health(item.ID)
 	health.Status, health.HealthScore = StatusHealthy, healthScore(successRate, p95)
+	if spike {
+		health.Status = StatusDegraded
+	}
+	if !item.Enabled {
+		health.Status = StatusDisabled
+	}
 	health.LatencyP50MS, health.LatencyP95MS, health.SuccessRate5M = p50, p95, successRate
 	health.ConsecutiveFailures, health.CircuitState, health.CircuitOpenUntil = 0, CircuitClosed, nil
 	health.LastSuccessAt, health.CheckedAt = &now, &now
@@ -626,11 +777,19 @@ func (m *Manager) onFailure(item endpointRecord, runtime *endpointRuntime, metho
 	runtime.mu.Lock()
 	runtime.outcomes = appendBounded(runtime.outcomes, false, 100)
 	runtime.latencies = appendBounded(runtime.latencies, float64(latency.Microseconds())/1000, 100)
+	runtime.failureCount++
 	if callErr.rateLimited {
-		runtime.currentRPS = math.Max(0.25, runtime.currentRPS/2)
+		runtime.rateLimitCount++
+	}
+	if callErr.timeout {
+		runtime.timeoutCount++
+	}
+	if callErr.rateLimited || callErr.timeout || latencySpike(item, runtime.latencies[:len(runtime.latencies)-1], float64(latency.Microseconds())/1000) {
+		runtime.multiplyDecrease()
 	}
 	p50, p95 := percentiles(runtime.latencies)
 	rate := successRate(runtime.outcomes)
+	outcomeCount := len(runtime.outcomes)
 	runtime.mu.Unlock()
 	health := m.store.health(item.ID)
 	health.ConsecutiveFailures++
@@ -647,20 +806,23 @@ func (m *Manager) onFailure(item endpointRecord, runtime *endpointRuntime, metho
 		health.Status, health.CircuitState = StatusRateLimited, CircuitOpen
 		open := now.Add(60 * time.Second)
 		health.CircuitOpenUntil = &open
-	case health.ConsecutiveFailures >= 5 || (len(runtime.outcomes) >= 20 && rate < 50):
+	case health.ConsecutiveFailures >= 5 || (outcomeCount >= 20 && rate < 50):
 		health.Status, health.CircuitState = StatusUnavailable, CircuitOpen
 		open := now.Add(30 * time.Second)
 		health.CircuitOpenUntil = &open
 	default:
 		health.Status, health.CircuitState = StatusDegraded, CircuitClosed
 	}
+	if !item.Enabled {
+		health.Status = StatusDisabled
+	}
 	_ = m.store.saveHealth(health)
 	m.store.recordMetric(item.ID, item.ChainID, method, false, callErr.rateLimited, callErr.timeout, latency)
 }
 
-func (m *Manager) routeAllowed(item endpointRecord) bool {
+func (m *Manager) routeAllowed(item endpointRecord, allowDisabled bool) bool {
 	health := m.store.health(item.ID)
-	if health.Status == StatusDisabled || health.Status == StatusMisconfigured {
+	if health.Status == StatusMisconfigured || (health.Status == StatusDisabled && !allowDisabled) {
 		return false
 	}
 	if health.CircuitState != CircuitOpen || health.CircuitOpenUntil == nil {
@@ -674,6 +836,51 @@ func (m *Manager) routeAllowed(item endpointRecord) bool {
 	return true
 }
 
+func endpointSupportsMethod(item endpointRecord, method string) bool {
+	method = strings.TrimSpace(method)
+	if method == "" {
+		return false
+	}
+	if len(item.SupportedMethods) > 0 {
+		matched := false
+		for _, supported := range item.SupportedMethods {
+			if supported == "*" || strings.EqualFold(supported, method) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	// NULL capability columns identify pre-V3.1 endpoints. They keep their
+	// historical routing behavior until an operator explicitly configures them.
+	if !item.CapabilitiesConfigured {
+		return true
+	}
+	lower := strings.ToLower(method)
+	if methodRequiresTrace(lower) && !item.TraceCapability {
+		return false
+	}
+	if methodRequiresArchive(lower) && !item.ArchiveCapability {
+		return false
+	}
+	return true
+}
+
+func methodRequiresTrace(method string) bool {
+	return strings.HasPrefix(method, "trace_") || strings.HasPrefix(method, "debug_trace")
+}
+
+func methodRequiresArchive(method string) bool {
+	switch method {
+	case "eth_getlogs", "eth_getproof":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Manager) runtime(item endpointRecord) *endpointRuntime {
 	m.runtimesMu.Lock()
 	defer m.runtimesMu.Unlock()
@@ -681,8 +888,8 @@ func (m *Manager) runtime(item endpointRecord) *endpointRuntime {
 		return existing
 	}
 	runtime := &endpointRuntime{
-		currentRPS:  item.MaxRPS,
-		concurrency: make(chan struct{}, item.MaxConcurrency),
+		currentRPS: item.MaxRPS, maxWorkers: item.MaxConcurrency,
+		workerLimit: item.MaxConcurrency, workerNotify: make(chan struct{}),
 	}
 	m.runtimes[item.ID] = runtime
 	return runtime
@@ -695,10 +902,23 @@ func (m *Manager) resetRuntime(id string) {
 }
 
 func (r *endpointRuntime) acquire(ctx context.Context, maxRPS float64) error {
-	select {
-	case r.concurrency <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
+	for {
+		r.mu.Lock()
+		if r.workerNotify == nil {
+			r.workerNotify = make(chan struct{})
+		}
+		if r.currentWorkers < r.workerLimit {
+			r.currentWorkers++
+			r.mu.Unlock()
+			break
+		}
+		notify := r.workerNotify
+		r.mu.Unlock()
+		select {
+		case <-notify:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	r.mu.Lock()
 	rps := r.currentRPS
@@ -715,7 +935,7 @@ func (r *endpointRuntime) acquire(ctx context.Context, maxRPS float64) error {
 	if wait > 0 {
 		select {
 		case <-ctx.Done():
-			<-r.concurrency
+			r.release()
 			return ctx.Err()
 		case <-time.After(wait):
 		}
@@ -723,7 +943,35 @@ func (r *endpointRuntime) acquire(ctx context.Context, maxRPS float64) error {
 	return nil
 }
 
-func (r *endpointRuntime) release() { <-r.concurrency }
+func (r *endpointRuntime) release() {
+	r.mu.Lock()
+	if r.currentWorkers > 0 {
+		r.currentWorkers--
+	}
+	r.signalWorkersLocked()
+	r.mu.Unlock()
+}
+
+func (r *endpointRuntime) multiplyDecrease() {
+	r.currentRPS = math.Max(0.25, r.currentRPS/2)
+	r.workerLimit = maxInt(1, (r.workerLimit+1)/2)
+}
+
+func (r *endpointRuntime) signalWorkersLocked() {
+	close(r.workerNotify)
+	r.workerNotify = make(chan struct{})
+}
+
+func latencySpike(item endpointRecord, previous []float64, latencyMS float64) bool {
+	if item.RequestTimeoutMS > 0 && latencyMS >= float64(item.RequestTimeoutMS)*0.8 {
+		return true
+	}
+	if len(previous) < 3 {
+		return false
+	}
+	_, p95 := percentiles(previous)
+	return latencyMS >= 500 && p95 > 0 && latencyMS > p95*2
+}
 
 func (m *Manager) publicEndpoint(item endpointRecord) Endpoint {
 	item.EndpointMasked = maskEndpointFromHost(item.EndpointHost)
@@ -826,7 +1074,55 @@ func validateEndpointInput(input EndpointInput) (EndpointInput, chain.EVM, strin
 	if input.RequestTimeoutMS < 1000 || input.RequestTimeoutMS > 30000 {
 		return input, network, "", errors.New("请求超时必须在 1000～30000 毫秒之间")
 	}
+	input.SupportedMethods, err = normalizeSupportedMethods(input.SupportedMethods)
+	if err != nil {
+		return input, network, "", err
+	}
 	return input, network, endpointURL, nil
+}
+
+func normalizeSupportedMethods(methods []string) ([]string, error) {
+	if methods == nil {
+		return nil, nil
+	}
+	if len(methods) > 256 {
+		return nil, errors.New("supported_methods 不能超过 256 项")
+	}
+	result := make([]string, 0, len(methods))
+	seen := make(map[string]struct{}, len(methods))
+	for _, method := range methods {
+		method = strings.TrimSpace(method)
+		if method == "" || len(method) > 128 {
+			return nil, errors.New("supported_methods 包含空值或超长方法名")
+		}
+		if method != "*" {
+			for _, char := range method {
+				if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+					(char >= '0' && char <= '9') || char == '_' {
+					continue
+				}
+				return nil, errors.New("supported_methods 包含非法方法名")
+			}
+		}
+		key := strings.ToLower(method)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, method)
+	}
+	return result, nil
+}
+
+func capabilitiesConfigured(methods []string, archive, trace bool) bool {
+	return methods != nil || archive || trace
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func validateOptionalEndpointURL(value string) (string, error) {
@@ -1062,6 +1358,17 @@ func successRate(values []bool) float64 {
 		}
 	}
 	return float64(success) / float64(len(values)) * 100
+}
+
+func average(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	var total float64
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values))
 }
 
 func healthScore(successRate, p95 float64) float64 {

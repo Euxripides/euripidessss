@@ -1,14 +1,23 @@
 ```mermaid
 graph LR
+	github_com_etl_backend_cmd_ledgerimport["ledgerimport"]
 	github_com_etl_backend_cmd_server["server"]
 	github_com_etl_backend_internal_analysis_duckdb["duckdb"]
 	github_com_etl_backend_internal_analyticsapi["analyticsapi"]
 	github_com_etl_backend_internal_api["api"]
 	github_com_etl_backend_internal_balance["balance"]
+	github_com_etl_backend_internal_canonicalapi["canonicalapi"]
+	github_com_etl_backend_internal_canonicalregistry["canonicalregistry"]
 	github_com_etl_backend_internal_casefile["casefile"]
 	github_com_etl_backend_internal_chain["chain"]
+	github_com_etl_backend_internal_clickhouse["clickhouse"]
+	github_com_etl_backend_internal_clickhouseanalytics["clickhouseanalytics"]
+	github_com_etl_backend_internal_clickhouseexport["clickhouseexport"]
+	github_com_etl_backend_internal_clickhousegraph["clickhousegraph"]
+	github_com_etl_backend_internal_clickhouseinvestigation["clickhouseinvestigation"]
 	github_com_etl_backend_internal_cloudruntime["cloudruntime"]
 	github_com_etl_backend_internal_config["config"]
+	github_com_etl_backend_internal_contractintelligence["contractintelligence"]
 	github_com_etl_backend_internal_cryptodownload["cryptodownload"]
 	github_com_etl_backend_internal_cryptodownload_browser_stealth["browser_stealth"]
 	github_com_etl_backend_internal_cryptodownload_useragent["useragent"]
@@ -20,6 +29,7 @@ graph LR
 	github_com_etl_backend_internal_datasource_sqd["sqd"]
 	github_com_etl_backend_internal_datasource_sqd_scheduler["scheduler"]
 	github_com_etl_backend_internal_datasourcemanager["datasourcemanager"]
+	github_com_etl_backend_internal_datawarehouse["datawarehouse"]
 	github_com_etl_backend_internal_dbimport["dbimport"]
 	github_com_etl_backend_internal_downloadengine["downloadengine"]
 	github_com_etl_backend_internal_downloadengine_provider["provider"]
@@ -29,6 +39,13 @@ graph LR
 	github_com_etl_backend_internal_dynamicinvestigation["dynamicinvestigation"]
 	github_com_etl_backend_internal_entityintel["entityintel"]
 	github_com_etl_backend_internal_etl["etl"]
+	github_com_etl_backend_internal_eventdecoder["eventdecoder"]
+	github_com_etl_backend_internal_explorer["explorer"]
+	github_com_etl_backend_internal_financialanalytics["financialanalytics"]
+	github_com_etl_backend_internal_financialflow["financialflow"]
+	github_com_etl_backend_internal_financialintegration["financialintegration"]
+	github_com_etl_backend_internal_financialpnl["financialpnl"]
+	github_com_etl_backend_internal_financialquality["financialquality"]
 	github_com_etl_backend_internal_flow["flow"]
 	github_com_etl_backend_internal_fundflow["fundflow"]
 	github_com_etl_backend_internal_graphcache["graphcache"]
@@ -39,18 +56,23 @@ graph LR
 	github_com_etl_backend_internal_investigation_cache["cache"]
 	github_com_etl_backend_internal_investigation_prefetch["prefetch"]
 	github_com_etl_backend_internal_investigationstore["investigationstore"]
+	github_com_etl_backend_internal_ledgerimport["ledgerimport"]
 	github_com_etl_backend_internal_logger["logger"]
 	github_com_etl_backend_internal_model["model"]
 	github_com_etl_backend_internal_normalize["normalize"]
 	github_com_etl_backend_internal_objectiveplanner["objectiveplanner"]
 	github_com_etl_backend_internal_parquetdownload["parquetdownload"]
 	github_com_etl_backend_internal_parser["parser"]
+	github_com_etl_backend_internal_pricing["pricing"]
 	github_com_etl_backend_internal_provider["provider"]
 	github_com_etl_backend_internal_reportengine["reportengine"]
 	github_com_etl_backend_internal_rpcmanager["rpcmanager"]
 	github_com_etl_backend_internal_rules["rules"]
 	github_com_etl_backend_internal_s3store["s3store"]
 	github_com_etl_backend_internal_scanner["scanner"]
+	github_com_etl_backend_internal_semanticanalytics["semanticanalytics"]
+	github_com_etl_backend_internal_semanticjobs["semanticjobs"]
+	github_com_etl_backend_internal_semanticquality["semanticquality"]
 	github_com_etl_backend_internal_smartdownload["smartdownload"]
 	github_com_etl_backend_internal_smartdownload_cloudplanner["cloudplanner"]
 	github_com_etl_backend_internal_smartdownload_discovery["discovery"]
@@ -61,6 +83,7 @@ graph LR
 	github_com_etl_backend_internal_storage["storage"]
 	github_com_etl_backend_internal_storage_control["control"]
 	github_com_etl_backend_internal_writer["writer"]
+	github_com_etl_backend_cmd_ledgerimport --> github_com_etl_backend_internal_ledgerimport
 	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_api
 	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_config
 	github_com_etl_backend_cmd_server --> github_com_etl_backend_internal_logger
@@ -69,19 +92,35 @@ graph LR
 	github_com_etl_backend_internal_analyticsapi --> github_com_etl_backend_internal_logger
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_analysis_duckdb
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_analyticsapi
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_canonicalapi
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_canonicalregistry
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_chain
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_clickhouse
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_clickhouseanalytics
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_clickhouseexport
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_clickhousegraph
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_clickhouseinvestigation
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_cloudruntime
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_config
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_contractintelligence
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_cryptodownload
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_datasetevents
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_datasetsync
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_datasourcemanager
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_datawarehouse
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_dbimport
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_downloadscheduler
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_dunetools
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_dynamicinvestigation
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_entityintel
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_etl
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_eventdecoder
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_explorer
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_financialanalytics
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_financialflow
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_financialintegration
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_financialpnl
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_financialquality
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_flow
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_fundflow
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_graphcache
@@ -95,22 +134,32 @@ graph LR
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_objectiveplanner
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_parquetdownload
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_parser
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_pricing
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_reportengine
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_rpcmanager
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_rules
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_s3store
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_scanner
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_semanticanalytics
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_semanticjobs
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_semanticquality
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_smartdownload
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_smartdownload_cloudplanner
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage
 	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_storage_control
+	github_com_etl_backend_internal_api --> github_com_etl_backend_internal_writer
 	github_com_etl_backend_internal_balance --> github_com_etl_backend_internal_analysis_duckdb
 	github_com_etl_backend_internal_balance --> github_com_etl_backend_internal_analyticsapi
 	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_analysis_duckdb
 	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_analyticsapi
 	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_balance
 	github_com_etl_backend_internal_casefile --> github_com_etl_backend_internal_investigation
+	github_com_etl_backend_internal_clickhouse --> github_com_etl_backend_internal_config
+	github_com_etl_backend_internal_clickhouseinvestigation --> github_com_etl_backend_internal_analyticsapi
+	github_com_etl_backend_internal_clickhouseinvestigation --> github_com_etl_backend_internal_investigation
 	github_com_etl_backend_internal_cloudruntime --> github_com_etl_backend_internal_logger
 	github_com_etl_backend_internal_cloudruntime --> github_com_etl_backend_internal_s3store
+	github_com_etl_backend_internal_config --> github_com_etl_backend_internal_writer
 	github_com_etl_backend_internal_cryptodownload --> github_com_etl_backend_internal_cryptodownload_useragent
 	github_com_etl_backend_internal_datasetsync --> github_com_etl_backend_internal_analysis_duckdb
 	github_com_etl_backend_internal_datasetsync --> github_com_etl_backend_internal_logger
@@ -126,6 +175,8 @@ graph LR
 	github_com_etl_backend_internal_datasourcemanager --> github_com_etl_backend_internal_datasource_aws
 	github_com_etl_backend_internal_datasourcemanager --> github_com_etl_backend_internal_datasource_sqd
 	github_com_etl_backend_internal_datasourcemanager --> github_com_etl_backend_internal_rpcmanager
+	github_com_etl_backend_internal_datawarehouse --> github_com_etl_backend_internal_eventdecoder
+	github_com_etl_backend_internal_datawarehouse --> github_com_etl_backend_internal_smartdownload
 	github_com_etl_backend_internal_dbimport --> github_com_etl_backend_internal_model
 	github_com_etl_backend_internal_dbimport --> github_com_etl_backend_internal_parser
 	github_com_etl_backend_internal_downloadengine_provider --> github_com_etl_backend_internal_analysis_duckdb
@@ -175,6 +226,7 @@ graph LR
 	github_com_etl_backend_internal_investigation_prefetch --> github_com_etl_backend_internal_graphcache
 	github_com_etl_backend_internal_investigation_prefetch --> github_com_etl_backend_internal_investigation_cache
 	github_com_etl_backend_internal_investigation_prefetch --> github_com_etl_backend_internal_smartdownload
+	github_com_etl_backend_internal_ledgerimport --> github_com_etl_backend_internal_clickhouse
 	github_com_etl_backend_internal_normalize --> github_com_etl_backend_internal_chain
 	github_com_etl_backend_internal_normalize --> github_com_etl_backend_internal_datasource_sqd
 	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_analysis_duckdb
@@ -188,6 +240,7 @@ graph LR
 	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_normalize
 	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_rpcmanager
 	github_com_etl_backend_internal_parquetdownload --> github_com_etl_backend_internal_writer
+	github_com_etl_backend_internal_pricing --> github_com_etl_backend_internal_config
 	github_com_etl_backend_internal_provider --> github_com_etl_backend_internal_model
 	github_com_etl_backend_internal_provider --> github_com_etl_backend_internal_parser
 	github_com_etl_backend_internal_provider --> github_com_etl_backend_internal_rules
@@ -204,6 +257,7 @@ graph LR
 	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_datasource_sqd
 	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_downloadscheduler
 	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_logger
+	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_rpcmanager
 	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_smartdownload_cloudplanner
 	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_smartdownload_discovery
 	github_com_etl_backend_internal_smartdownload --> github_com_etl_backend_internal_smartdownload_feedback

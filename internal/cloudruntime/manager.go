@@ -2,6 +2,8 @@ package cloudruntime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -491,6 +493,65 @@ func (m *Manager) JobStatus(id string) (Job, error) {
 	return Job{}, errors.New("Cloud 任务不存在: " + id)
 }
 
+// MaterializeJobResult downloads certified remote Cloud artifacts into the
+// local job directory. Paths and SHA256 values come only from the completed
+// manifest; traversal and checksum mismatches fail closed.
+func (m *Manager) MaterializeJobResult(ctx context.Context, id string) (string, error) {
+	job, err := m.remoteJobStatus(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if job.State != "done" || job.ChunkID == "" {
+		return "", fmt.Errorf("Cloud 任务 %s 尚未完成", id)
+	}
+	completedDir := completedChunkDir(id, job.ChunkID)
+	payload, err := m.store.Get(ctx, completedDir+"/manifest.json")
+	if err != nil {
+		return "", err
+	}
+	var manifest struct {
+		JobID   string     `json:"job_id"`
+		ChunkID string     `json:"chunk_id"`
+		Files   []FileInfo `json:"files"`
+	}
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		return "", err
+	}
+	if manifest.JobID != id || manifest.ChunkID != job.ChunkID {
+		return "", fmt.Errorf("Cloud manifest 身份不匹配")
+	}
+	destRoot := filepath.Join(m.jobsDir, id, job.ChunkID, "remote-result")
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		return "", err
+	}
+	for _, file := range manifest.Files {
+		rel := filepath.Clean(filepath.FromSlash(file.Path))
+		if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("Cloud manifest 含非法路径")
+		}
+		body, err := m.store.Get(ctx, leasedChunkDir(id, job.ChunkID)+"/"+filepath.ToSlash(rel))
+		if err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256(body)
+		if file.SHA256 != "" && !strings.EqualFold(file.SHA256, hex.EncodeToString(sum[:])) {
+			return "", fmt.Errorf("Cloud artifact SHA256 不匹配: %s", file.Path)
+		}
+		dest := filepath.Join(destRoot, rel)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return "", err
+		}
+		tmp := dest + ".tmp"
+		if err := os.WriteFile(tmp, body, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.Rename(tmp, dest); err != nil {
+			return "", err
+		}
+	}
+	return destRoot, nil
+}
+
 // Jobs 返回全部已知任务（新→旧）。
 func (m *Manager) Jobs() []Job {
 	m.mu.Lock()
@@ -885,8 +946,8 @@ func (m *Manager) listCloudWorkers(ctx context.Context) (string, error) {
 // ── 队列与产物辅助 ──
 
 const (
-	queuePrefix    = "bsc/jobs/"
-	cancelPrefix   = "bsc/jobs/cancel/"
+	queuePrefix     = "bsc/jobs/"
+	cancelPrefix    = "bsc/jobs/cancel/"
 	cancelledPrefix = "bsc/jobs/cancelled/"
 	requeuedPrefix  = "bsc/jobs/requeued/"
 )

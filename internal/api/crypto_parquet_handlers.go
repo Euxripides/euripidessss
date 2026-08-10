@@ -32,6 +32,9 @@ func HandleFirstSeen(c *gin.Context) {
 
 // HandleAnalyticsAPI 转发 /api/analytics/* 到分析服务（V2.1 RC2）。
 func HandleAnalyticsAPI(c *gin.Context) {
+	if handleClickHouseAnalyticsCompatibility(c) {
+		return
+	}
 	if analyticsAPI == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "分析服务不可用：warehouse 数据未就绪"})
 		return

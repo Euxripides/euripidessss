@@ -39,6 +39,8 @@ export interface EnhancedEdgeData {
   kind: string;
   token?: string;
   amount: number;
+  historicalValueUSDT?: number;
+  valuationStatus?: string;
   txCount: number;
   discovery: boolean; // 是否发现路径（聚焦 BFS 主干）
   [key: string]: unknown; // ReactFlow Edge.data 需要索引签名
@@ -234,6 +236,8 @@ export function buildFocusGraph(graph: GraphData, selection: FocusSelection): Fo
       kind: edge.kind,
       token: edge.token,
       amount: parseAmount(edge.amount),
+      historicalValueUSDT: parseAmount(edge.historical_value_usdt),
+      valuationStatus: edge.valuation_status,
       txCount: edge.tx_count ?? 1,
       discovery: discoveryEdges.has(edgeKey(edge)),
     } satisfies EnhancedEdgeData,

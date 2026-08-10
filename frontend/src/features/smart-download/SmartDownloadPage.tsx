@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Checkbox,
+  Collapse,
   DatePicker,
   Drawer,
   Form,
@@ -15,6 +16,7 @@ import {
   Radio,
   Select,
   Space,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -45,33 +47,56 @@ import {
   batchAction,
   batchSnapshot,
   batchSummary,
+  compareBatchRuns,
   createBatch,
+  deleteTaskTemplate,
   datasetLedger,
   downloadResultExport,
   expandGraphCache,
+  getBatchHardening,
+  getBatchAccelerator,
+  getBatchReport,
   getPrefetchStats,
   getPrefetchStatus,
+  getTurboStatus,
   importAddressFile,
   listBatchAddresses,
   listBatches,
   listRegistry,
+  listTaskTemplates,
   pinPrefetch,
   planBatch,
+  previewPlannerV2,
+  preflightBatch,
   queryResults,
   resultSummary,
+  saveTaskTemplate,
+  switchBatchMode,
   upgradePrefetch,
   type AddressDetail,
   type AddressJob,
   type BatchSummary,
   type BatchSnapshot,
   type BatchJob,
+  type BatchAcceleratorStatus,
+  type CompareRunsResult,
+  type CreateBatchRequest,
   type Dataset,
+  type DownloadMode,
+  type DownloadPriority,
+  type HardeningStatus,
   type ImportResult,
   type IndexedResult,
+  type JobReport,
   type LedgerEntry,
+  type PlannerV2Preview,
+  type PreflightEstimate,
   type RangeSpec,
+  type ResourceProfile,
   type PrefetchCandidateView,
   type PrefetchStatus,
+  type TurboStatus,
+  type TaskTemplate,
 } from "./smartDownloadApi";
 import "./smart-download.css";
 
@@ -151,6 +176,429 @@ function StatusPill({ status }: { status?: string }) {
   return <span className={`sd-status-pill ${statusClass(status)}`}>{status ?? "—"}</span>;
 }
 
+function ModeTag({ mode }: { mode?: DownloadMode }) {
+  const effectiveMode = mode ?? "AUTO";
+  return (
+    <Tag
+      color={effectiveMode === "EMERGENCY" ? "red" : effectiveMode === "TURBO" ? "gold" : "blue"}
+      icon={effectiveMode === "AUTO" ? undefined : <ThunderboltOutlined />}
+    >
+      {effectiveMode}
+    </Tag>
+  );
+}
+
+function metricNumber(value?: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatRate(value?: number): string {
+  const rate = metricNumber(value);
+  return rate > 0 ? Math.round(rate).toLocaleString() : "—";
+}
+
+function formatDuration(value?: number): string {
+  const seconds = metricNumber(value);
+  if (seconds <= 0) return "—";
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  if (minutes < 60) return `${minutes}m ${rest}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function formatBytes(value?: number): string {
+  const bytes = metricNumber(value);
+  if (bytes <= 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / 1024 ** index).toFixed(index > 2 ? 2 : 1)} ${units[index]}`;
+}
+
+const PROFILE_TO_MODE: Record<ResourceProfile, DownloadMode> = {
+  STANDARD: "AUTO",
+  PERFORMANCE: "TURBO",
+  EXTREME: "EMERGENCY",
+};
+
+const BOTTLENECK_LABELS: Record<string, string> = {
+  SOURCE: "数据源",
+  NETWORK: "网络",
+  RPC: "RPC",
+  CLOUD: "SQD Cloud",
+  PARSER: "解析器",
+  CLICKHOUSE: "ClickHouse 写入",
+  DISK: "磁盘",
+  VALIDATION: "数据校验",
+  UNKNOWN: "尚未识别",
+};
+
+function GuardTag({ label, guard }: { label: string; guard?: { status?: string; message?: string } }) {
+  const status = guard?.status ?? "UNKNOWN";
+  const color = status === "OK" ? "green" : status === "WARNING" ? "gold" : status === "BLOCKED" || status === "CRITICAL" ? "red" : "default";
+  return <Tooltip title={guard?.message ?? "暂无详细信息"}><Tag color={color}>{label} · {status}</Tag></Tooltip>;
+}
+
+function TurboMetric({
+  label,
+  value,
+  suffix,
+  detail,
+}: {
+  label: string;
+  value: string;
+  suffix?: string;
+  detail?: string;
+}) {
+  return (
+    <div className="sd-turbo-metric">
+      <span className="sd-turbo-metric-label">{label}</span>
+      <strong>{value}</strong>
+      {suffix ? <span className="sd-turbo-metric-suffix">{suffix}</span> : null}
+      {detail ? <small>{detail}</small> : null}
+    </div>
+  );
+}
+
+function plannerCount(value?: number): string {
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value).toLocaleString() : "—";
+}
+
+function plannerRatio(value?: number): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+}
+
+function PlannerV2Metrics({ preview, compact = false }: { preview: PlannerV2Preview; compact?: boolean }) {
+  return (
+    <div className={`sd-planner-grid ${compact ? "is-compact" : ""}`}>
+      <TurboMetric label="地址数" value={plannerCount(preview.address_count)} />
+      <TurboMetric label="原始任务单元" value={plannerCount(preview.input_jobs)} />
+      <TurboMetric
+        label="合并后工作负载"
+        value={plannerCount(preview.merged_workloads)}
+        detail={preview.bundle_savings === undefined ? undefined : `Dataset Bundle 再节省 ${plannerCount(preview.bundle_savings)}`}
+      />
+      <TurboMetric
+        label="地址组"
+        value={plannerCount(preview.address_groups)}
+        detail={preview.heavy_address_count === undefined && preview.split_count === undefined
+          ? undefined
+          : `Heavy ${plannerCount(preview.heavy_address_count)} · Split ${plannerCount(preview.split_count)}`}
+      />
+      <TurboMetric
+        label="Coverage 复用"
+        value={plannerRatio(preview.coverage_reuse_ratio)}
+        detail={preview.coverage_hits === undefined ? undefined : `${plannerCount(preview.coverage_hits)} hits`}
+      />
+      <TurboMetric
+        label="Provider 请求节省"
+        value={plannerCount(preview.provider_requests_saved)}
+        detail={preview.provider_request_reduction_ratio === undefined ? undefined : `减少 ${plannerRatio(preview.provider_request_reduction_ratio)}`}
+      />
+      <TurboMetric
+        label="重复工作已避免"
+        value={plannerCount(preview.duplicate_work_avoided)}
+        detail={preview.duplicate_work_ratio === undefined ? undefined : plannerRatio(preview.duplicate_work_ratio)}
+      />
+      <TurboMetric
+        label="下载放大"
+        value={preview.download_amplification === undefined ? "—" : `${preview.download_amplification.toFixed(2)}×`}
+        detail="越接近 1 越好"
+      />
+    </div>
+  );
+}
+
+function AcceleratorFlag({ label, active, color }: { label: string; active: boolean; color: string }) {
+  return active ? <Tag color={color}>{label}</Tag> : null;
+}
+
+function AcceleratorPanel({ accelerator }: { accelerator: BatchAcceleratorStatus }) {
+  const assignedWorkloads = new Set(
+    accelerator.datasets.flatMap((dataset) =>
+      dataset.groups.flatMap((group) => group.workloads.map((workload) => workload.id)),
+    ),
+  );
+  const rootWorkloads = accelerator.shared_workloads.filter((workload) => !assignedWorkloads.has(workload.id));
+  const datasetItems = accelerator.datasets.map((dataset) => ({
+    key: `dataset-${dataset.dataset}`,
+    label: (
+      <Space wrap>
+        <b>{DATASET_LABELS[dataset.dataset] ?? dataset.dataset}</b>
+        <StatusPill status={dataset.status} />
+        <span className="sd-meta">{plannerCount(dataset.address_count)} 地址 · {plannerCount(dataset.group_count)} groups · {plannerCount(dataset.workload_count)} workloads</span>
+      </Space>
+    ),
+    children: dataset.groups.length > 0 ? (
+      <Collapse
+        className="sd-accelerator-groups"
+        size="small"
+        items={dataset.groups.map((group) => ({
+          key: group.id,
+          label: (
+            <Space wrap>
+              <code>{abbr(group.id)}</code>
+              <StatusPill status={group.status} />
+              <span>{plannerCount(group.address_count)} 地址</span>
+              <span>{plannerCount(group.workloads.length)} workloads</span>
+              <AcceleratorFlag label="重负载地址" active={group.heavy_address} color="volcano" />
+              <AcceleratorFlag label="异常地址" active={group.poison_address} color="red" />
+              <AcceleratorFlag label="已拆分" active={group.split} color="orange" />
+            </Space>
+          ),
+          children: group.workloads.length > 0 ? (
+            <div className="sd-shared-workloads">
+              {group.workloads.map((workload) => (
+                <div className="sd-shared-workload" key={workload.id}>
+                  <div>
+                    <Space wrap>
+                      <code>{abbr(workload.id)}</code>
+                      <StatusPill status={workload.status} />
+                      {workload.provider ? <Tag>{workload.provider.toUpperCase()}</Tag> : null}
+                      <AcceleratorFlag label="复用运行中任务" active={workload.join_existing} color="cyan" />
+                      <AcceleratorFlag label="命中本地覆盖" active={workload.coverage_hit} color="green" />
+                      <AcceleratorFlag label="重负载" active={workload.heavy_address} color="volcano" />
+                      <AcceleratorFlag label="异常" active={workload.poison_address} color="red" />
+                      <AcceleratorFlag label="已拆分" active={workload.split} color="orange" />
+                    </Space>
+                    <div className="sd-workload-meta">
+                      <span>Range {Number.isFinite(workload.from_block) ? workload.from_block?.toLocaleString() : "—"} – {Number.isFinite(workload.to_block) ? workload.to_block?.toLocaleString() : "—"}</span>
+                      <span>{plannerCount(workload.address_count)} 地址</span>
+                      <span>ref_count {plannerCount(workload.ref_count)}</span>
+                      {workload.datasets.length > 0 ? <span>{workload.datasets.map((item) => DATASET_LABELS[item] ?? item).join(" / ")}</span> : null}
+                    </div>
+                  </div>
+                  {workload.error ? <Typography.Text type="danger" ellipsis={{ tooltip: workload.error }}>{workload.error}</Typography.Text> : null}
+                </div>
+              ))}
+            </div>
+          ) : <Typography.Text type="secondary">后端未返回该组的共享工作负载明细。</Typography.Text>,
+        }))}
+      />
+    ) : <Typography.Text type="secondary">后端未返回该数据集的地址组明细。</Typography.Text>,
+  }));
+  if (rootWorkloads.length > 0) {
+    datasetItems.push({
+      key: "root-shared-workloads",
+      label: <Space><b>共享工作负载</b><span className="sd-meta">{rootWorkloads.length} 个跨任务工作负载</span></Space>,
+      children: (
+        <div className="sd-shared-workloads">
+          {rootWorkloads.map((workload) => (
+            <div className="sd-shared-workload" key={workload.id}>
+              <Space wrap>
+                <code>{abbr(workload.id)}</code>
+                <StatusPill status={workload.status} />
+                <span>ref_count {plannerCount(workload.ref_count)}</span>
+                <AcceleratorFlag label="复用运行中任务" active={workload.join_existing} color="cyan" />
+                <AcceleratorFlag label="命中本地覆盖" active={workload.coverage_hit} color="green" />
+              </Space>
+            </div>
+          ))}
+        </div>
+      ),
+    });
+  }
+  return (
+    <Card
+      className="sd-accelerator"
+      size="small"
+      title={<Space><span>批量下载加速器</span><Tag color="geekblue">V3.3</Tag><StatusPill status={accelerator.status} /></Space>}
+      extra={accelerator.updated_at ? <span className="sd-meta">更新 {new Date(accelerator.updated_at).toLocaleString()}</span> : null}
+    >
+      <PlannerV2Metrics preview={accelerator.summary} compact />
+      <div className="sd-accelerator-hint">批次 → 数据集 → 地址组 → 共享工作负载；默认折叠，单地址仅在需要时进入详情。</div>
+      {datasetItems.length > 0 ? (
+        <Collapse className="sd-accelerator-tree" items={datasetItems} />
+      ) : (
+        <Typography.Text type="secondary">加速器已返回汇总，但未提供可展开的层级明细。</Typography.Text>
+      )}
+    </Card>
+  );
+}
+
+function TurboState({ label, active }: { label: string; active?: boolean }) {
+  return <Tag color={active ? "processing" : "default"}>{label} {active ? "ON" : "IDLE"}</Tag>;
+}
+
+function TurboDashboard({ status }: { status: TurboStatus }) {
+  const coverage = Math.max(0, Math.min(100, metricNumber(status.coverage_percent)));
+  const reportedRelevantCoverage = metricNumber(status.relevant_range_coverage_percent);
+  const relevantCertification = status.relevant_range_certification ??
+    (reportedRelevantCoverage >= 100 ? "CERTIFIED" : "PENDING");
+  const relevantCertified = reportedRelevantCoverage >= 99.999 ||
+    ["CERTIFIED", "RANGE_CERTIFIED", "BATCH_CERTIFIED"].includes(relevantCertification.toUpperCase());
+  const relevantCoverage = Math.max(
+    0,
+    Math.min(100, reportedRelevantCoverage || (relevantCertified ? 100 : 0)),
+  );
+
+  return (
+    <Card
+      size="small"
+      className={`sd-turbo-dashboard ${status.mode === "EMERGENCY" ? "is-emergency" : ""}`}
+      style={{ marginTop: 16 }}
+      title={<Space><ThunderboltOutlined />Turbo Dashboard <ModeTag mode={status.mode} /></Space>}
+      extra={<Tag color={status.priority === "URGENT" ? "red" : "blue"}>{status.priority ?? "NORMAL"}</Tag>}
+    >
+      <div className="sd-turbo-grid">
+        <TurboMetric label="当前可用覆盖" value={`${coverage.toFixed(2)}%`} />
+        <TurboMetric
+          label="当前相关区间"
+          value={`${relevantCoverage.toFixed(2)}%`}
+          detail={relevantCertification}
+        />
+        <TurboMetric
+          label="SQD Cloud"
+          value={`${metricNumber(status.cloud_jobs).toLocaleString()} jobs`}
+          detail={`${formatRate(status.cloud_rows_per_second)} rows/s`}
+        />
+        <TurboMetric
+          label="RPC"
+          value={`${metricNumber(status.rpc_workers).toLocaleString()} workers`}
+          detail={`${formatRate(status.rpc_rows_per_second)} rows/s`}
+        />
+        <TurboMetric label="Parser" value={formatRate(status.parser_rows_per_second)} suffix="rows/s" />
+        <TurboMetric label="ClickHouse" value={formatRate(status.clickhouse_rows_per_second)} suffix="rows/s" />
+        <TurboMetric label="TTFA" value={formatDuration(status.time_to_first_data_seconds)} />
+        <TurboMetric label="TTFR" value={formatDuration(status.time_to_first_relevant_range_seconds)} />
+        <TurboMetric label="ETA" value={formatDuration(status.eta_seconds)} />
+      </div>
+      <div className="sd-turbo-certification">
+        <Tag color={relevantCertified ? "green" : relevantCoverage > 0 ? "gold" : "default"}>
+          相关区间 {relevantCertification}
+        </Tag>
+        <span>相关区间优先认证；整批任务可在后台继续完成。</span>
+      </div>
+      <div className="sd-turbo-states">
+        <TurboState label={`Burst ${status.burst_level ?? "L1"}`} active={status.burst_active} />
+        <TurboState label="Backpressure" active={status.backpressure_active} />
+        <TurboState label="Preemption" active={status.preemption_active} />
+        <TurboState label="Work stealing" active={status.work_stealing_active} />
+        <TurboState label="Re-shard" active={status.reshard_active} />
+        <TurboState label="Hedge" active={status.hedge_active} />
+      </div>
+      <Collapse
+        ghost
+        size="small"
+        className="sd-turbo-advanced"
+        items={[{
+          key: "advanced",
+		  label: "高级 · 底层通道与 Range 信息",
+          children: (
+            <div className="sd-turbo-advanced-grid">
+              <span>Cloud ranges <b>{metricNumber(status.cloud_ranges).toLocaleString()}</b></span>
+              <span>RPC ranges <b>{metricNumber(status.rpc_ranges).toLocaleString()}</b></span>
+              <span>运行 <b>{metricNumber(status.running_ranges).toLocaleString()}</b></span>
+              <span>待处理 <b>{metricNumber(status.pending_ranges).toLocaleString()}</b></span>
+              <span>完成 <b>{metricNumber(status.completed_ranges).toLocaleString()}</b></span>
+              <span>失败 <b>{metricNumber(status.failed_ranges).toLocaleString()}</b></span>
+              <span>覆盖区块 <b>{metricNumber(status.covered_blocks).toLocaleString()}</b> / {metricNumber(status.total_blocks).toLocaleString()}</span>
+              <span>总吞吐 <b>{formatRate(status.rows_per_second)}</b> rows/s</span>
+              <span>Cloud <b>{status.cloud_available ? "AVAILABLE" : "UNAVAILABLE"}</b></span>
+              <span>RPC <b>{status.rpc_available ? "AVAILABLE" : "UNAVAILABLE"}</b></span>
+            </div>
+          ),
+        }]}
+      />
+    </Card>
+  );
+}
+
+function ProfileTag({ profile }: { profile?: ResourceProfile }) {
+  const value = profile ?? "STANDARD";
+  const label = value === "EXTREME" ? "极速" : value === "PERFORMANCE" ? "高性能" : "标准";
+  return <Tag color={value === "EXTREME" ? "red" : value === "PERFORMANCE" ? "gold" : "blue"}>{label}</Tag>;
+}
+
+function HardeningPanel({ status, report }: { status: HardeningStatus; report: JobReport | null }) {
+  const pipeline = [
+    { key: "DOWNLOAD", label: "Download", value: status.pipeline.download },
+    { key: "PARSER", label: "Parse", value: status.pipeline.parse },
+    { key: "CLICKHOUSE", label: "ClickHouse", value: status.pipeline.clickhouse },
+  ];
+  const bottleneck = (status.slowest_stage ?? status.bottleneck).toUpperCase();
+  const slowest = ["SOURCE", "NETWORK", "RPC", "CLOUD"].includes(bottleneck) ? "DOWNLOAD" : bottleneck;
+  const advanced = [
+    ["Cloud Jobs", status.cloud_jobs],
+    ["RPC Workers", status.rpc_workers],
+    ["Range Ledger", status.range_ledger],
+    ["Retries", status.retries],
+    ["Errors", status.errors],
+    ["Checkpoints", status.checkpoints],
+    ["Gap Repair", status.gap_repairs],
+  ] as const;
+  return (
+    <Card className="sd-hardening" size="small" title="Production Hardening" extra={<Tag color="blue">V3.2</Tag>}>
+      <div className="sd-hardening-summary">
+        <TurboMetric label="ETA V2" value={formatDuration(status.eta_seconds)} detail={`区间 ${formatDuration(status.eta_lower_seconds)} – ${formatDuration(status.eta_upper_seconds)} · 置信 ${(status.eta_confidence * 100).toFixed(0)}%`} />
+        <TurboMetric label="统一瓶颈" value={BOTTLENECK_LABELS[status.bottleneck.toUpperCase()] ?? status.bottleneck} detail={status.slowest_stage ? `最慢层 ${status.slowest_stage}` : undefined} />
+        <TurboMetric label="Stall Detector" value={status.stalled ? "STALL" : "正常"} detail={status.stalled ? `${status.stall_stage ?? "UNKNOWN"} · ${formatDuration(status.stall_seconds)}` : "持续检测进度"} />
+        <TurboMetric label="Self Recovery" value={status.self_recovery ? "恢复中" : status.recovery_status ?? "待命"} detail={status.recovery_actions.join(" / ") || "最小范围恢复"} />
+      </div>
+      <div className="sd-pipeline">
+        {pipeline.map((stage) => (
+          <div key={stage.key} className={`sd-pipeline-stage ${slowest.includes(stage.key) ? "is-slowest" : ""}`}>
+            <span>{stage.label}</span>
+            <b>{formatRate(stage.value.rows_per_second)} rows/s</b>
+            <small>{stage.value.status ?? "RUNNING"}{stage.value.queue_depth ? ` · Queue ${stage.value.queue_depth}` : ""}</small>
+          </div>
+        ))}
+      </div>
+      {slowest !== "UNKNOWN" ? <Alert className="sd-hardening-alert" type="warning" showIcon message={`当前最慢层：${BOTTLENECK_LABELS[status.bottleneck.toUpperCase()] ?? status.slowest_stage ?? status.bottleneck}`} /> : null}
+      <div className="sd-hardening-guards">
+        <GuardTag label="Storage" guard={status.guards.storage} />
+        <GuardTag label="RPC Quota" guard={status.guards.rpc} />
+        <GuardTag label="Cloud Budget" guard={status.guards.cloud} />
+        <GuardTag label="ClickHouse" guard={status.guards.clickhouse} />
+      </div>
+      {status.failure ? (
+        <Alert
+          className="sd-hardening-alert"
+          type="error"
+          showIcon
+          message={`${status.failure.error_type ?? "任务失败"} · ${status.failure.stage ?? "UNKNOWN"}`}
+          description={`Dataset ${status.failure.dataset ?? "—"} · Range ${status.failure.range ?? "—"} · Provider ${status.failure.provider ?? "—"} · 完成 ${status.failure.completed_percent ?? 0}% · 恢复点 ${status.failure.checkpoint ?? "—"} · 建议 ${status.failure.recommended_action ?? "检查错误后从 checkpoint 继续"}`}
+        />
+      ) : null}
+      {report ? (
+        <div className="sd-job-report">
+          <b>Job Report</b>
+          <span>Rows {report.rows.toLocaleString()}</span>
+          <span>Coverage {report.coverage.toFixed(2)}%</span>
+          <span>Duplicates {report.duplicates.toLocaleString()}</span>
+          <span>TTFA {formatDuration(report.ttfa_seconds)}</span>
+          <span>总耗时 {formatDuration(report.total_duration_seconds)}</span>
+          <span>峰值 {formatRate(report.peak_throughput_rows_per_sec)} rows/s</span>
+          <span>平均 {formatRate(report.average_throughput_rows_per_sec)} rows/s</span>
+          <span>Retry {report.retry_count} · Gap Repair {report.gap_repair_count}</span>
+          <StatusPill status={report.certification ?? report.result} />
+        </div>
+      ) : null}
+      <Collapse
+        ghost
+        className="sd-hardening-advanced"
+        items={[{
+          key: "hardening-advanced",
+		  label: "高级 · 执行明细",
+          children: (
+            <div className="sd-hardening-advanced-grid">
+              {advanced.map(([label, values]) => (
+                <div key={label}>
+                  <b>{label}</b><Tag>{values.length}</Tag>
+                  <Typography.Text ellipsis={{ tooltip: values.length > 0 ? JSON.stringify(values.slice(0, 3)) : "暂无记录" }}>
+                    {values.length > 0 ? JSON.stringify(values.slice(0, 3)) : "暂无记录"}
+                  </Typography.Text>
+                </div>
+              ))}
+            </div>
+          ),
+        }]}
+      />
+    </Card>
+  );
+}
+
 function ProgressBar({
   percent,
   status,
@@ -195,7 +643,10 @@ function batchDisplayName(b: BatchJob): string {
   const ds = (b.dataset_types ?? [])
     .map((d) => DATASET_LABELS[d] ?? d)
     .join("/");
-  return `${b.chain_key.toUpperCase()} · ${b.address_count} 地址 · ${ds} · ${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`;
+  const time = Number.isNaN(t.getTime())
+    ? "历史任务"
+    : `${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`;
+  return `${b.chain_key.toUpperCase()} · ${b.address_count} 地址 · ${ds || "未记录数据集"} · ${time}`;
 }
 
 function abbr(v?: unknown): string {
@@ -472,6 +923,12 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importing, setImporting] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [preflighting, setPreflighting] = useState(false);
+  const [preflight, setPreflight] = useState<PreflightEstimate | null>(null);
+  const [plannerPreview, setPlannerPreview] = useState<PlannerV2Preview | null>(null);
+  const [preflightRequest, setPreflightRequest] = useState<CreateBatchRequest | null>(null);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [templateName, setTemplateName] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [planSummary, setPlanSummary] = useState<{
     rows: number;
@@ -484,6 +941,12 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   } | null>(null);
   const [submittedCount, setSubmittedCount] = useState(0);
 
+  const refreshTemplates = () => void listTaskTemplates().then(setTemplates);
+
+  useEffect(() => {
+    refreshTemplates();
+  }, []);
+
   const handleFile = async (file: File) => {
     setImporting(true);
     const res = await importAddressFile(file);
@@ -493,6 +956,9 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
       return false;
     }
     setImportResult(res);
+    setPreflight(null);
+    setPlannerPreview(null);
+    setPreflightRequest(null);
     void message.success(
       `识别地址列「${res.selected_column}」：有效 ${res.valid} / 重复 ${res.duplicates} / 无效 ${res.invalid}`,
     );
@@ -508,6 +974,14 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     to_block?: number;
     date_range?: unknown[];
     force_redownload?: boolean;
+    mode: DownloadMode;
+    priority: DownloadPriority;
+    relevant_range_enabled?: boolean;
+    reuse_relevant_range?: boolean;
+    relevant_from_block?: number;
+    relevant_to_block?: number;
+    emergency_burst?: boolean;
+    resource_profile: ResourceProfile;
   }) => {
     let addresses: string[] = importResult?.final_addresses ?? [];
     setSubmittedCount(addresses.length > 0 ? addresses.length : values.addresses?.split(/[\n,，;；\s]+/).filter(Boolean).length ?? 0);
@@ -528,22 +1002,75 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     if (values.range_mode === "BLOCK") {
       defaultRange.from_block = Number(values.from_block) || 0;
       defaultRange.to_block = Number(values.to_block) || 0;
+      if (defaultRange.from_block > defaultRange.to_block) {
+        void message.warning("下载区间的起始区块不能大于结束区块");
+        return;
+      }
     }
     if (values.range_mode === "TIME" && Array.isArray(values.date_range) && values.date_range.length === 2) {
       const [from, to] = values.date_range as [Dayjs, Dayjs];
       defaultRange.start_time = from.toISOString();
       defaultRange.end_time = to.toISOString();
     }
+    let relevantRange: RangeSpec | undefined;
+    if (values.relevant_range_enabled) {
+      if (values.reuse_relevant_range && defaultRange.mode !== "FULL") {
+        relevantRange = { ...defaultRange };
+      } else {
+        const relevantFrom = Number(values.relevant_from_block);
+        const relevantTo = Number(values.relevant_to_block);
+        if (!Number.isFinite(relevantFrom) || !Number.isFinite(relevantTo) || relevantFrom < 0 || relevantTo < relevantFrom) {
+          void message.warning("请输入有效的相关区块范围，且起始区块不能大于结束区块");
+          return;
+        }
+        relevantRange = { mode: "BLOCK", from_block: relevantFrom, to_block: relevantTo };
+      }
+    }
+    const request = {
+      chain_key: values.chain_key,
+      mode: values.mode,
+      addresses,
+      datasets: values.datasets,
+      priority: values.priority,
+      relevant_range: relevantRange,
+      relevant_ranges: relevantRange ? [relevantRange] : undefined,
+      emergency_burst: values.mode === "EMERGENCY" && Boolean(values.emergency_burst),
+      burst_level: values.mode === "EMERGENCY" && values.emergency_burst
+        ? "L3" as const
+        : values.mode === "TURBO"
+          ? "L2" as const
+          : "L1" as const,
+      resource_profile: values.resource_profile,
+      default_range: defaultRange.mode === "FULL" ? undefined : defaultRange,
+      skip_covered: !values.force_redownload,
+      address_chain_overrides: Object.keys(chainOverrides).length > 0 ? chainOverrides : undefined,
+    };
+    setPreflightRequest(request);
+    if (!preflight) {
+      setPreflighting(true);
+      try {
+        const [estimate, nextPlannerPreview] = await Promise.all([
+          preflightBatch(request),
+          previewPlannerV2(request),
+        ]);
+        setPreflight(estimate);
+        setPlannerPreview(nextPlannerPreview);
+        if (!estimate) {
+          void message.error("生产预检失败，未创建任务");
+        } else if (estimate.blocked) {
+          void message.error("资源保护策略已阻止启动，请调整范围或资源档位");
+        } else {
+          void message.success("生产预检通过，请确认估算后开始下载");
+        }
+      } finally {
+        setPreflighting(false);
+      }
+      return;
+    }
+    if (preflight.blocked) return;
     setCreating(true);
     try {
-      const res = await createBatch({
-        chain_key: values.chain_key,
-        addresses,
-        datasets: values.datasets,
-        default_range: defaultRange.mode === "FULL" ? undefined : defaultRange,
-        skip_covered: !values.force_redownload,
-        address_chain_overrides: Object.keys(chainOverrides).length > 0 ? chainOverrides : undefined,
-      });
+      const res = await createBatch(request);
       if (!res?.batch) {
         void message.error("创建失败");
         return;
@@ -551,11 +1078,12 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
       // Discovery 反馈：先分析数据规模，再自动进入任务中心（不要求用户确认）
       setAnalyzing(true);
       const plan = await planBatch(res.batch.id);
-      if (plan && plan.datasets.length > 0) {
+      const plannedDatasets = plan?.datasets ?? [];
+      if (plannedDatasets.length > 0) {
         const buckets: Record<string, number> = { S: 0, M: 0, L: 0, XL: 0 };
         let rows = 0;
         let bytes = 0;
-        for (const d of plan.datasets) {
+        for (const d of plannedDatasets) {
           rows += d.estimated_rows || 0;
           bytes += d.estimated_bytes || 0;
           buckets[d.size_class] = (buckets[d.size_class] ?? 0) + 1;
@@ -573,9 +1101,66 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
       await batchAction(res.batch.id, "start");
       setAnalyzing(false);
       onCreated(res.batch.id);
+      setPreflight(null);
+      setPlannerPreview(null);
+      setPreflightRequest(null);
     } finally {
       setCreating(false);
     }
+  };
+
+  const loadTemplate = (template: TaskTemplate) => {
+    const config = template.configuration ?? {};
+    const range = config.default_range as RangeSpec | undefined;
+    form.setFieldsValue({
+      chain_key: template.chain_key ?? config.chain_key ?? "bsc",
+      addresses: Array.isArray(config.addresses) ? config.addresses.join("\n") : "",
+      datasets: template.datasets.length > 0 ? template.datasets : config.datasets,
+      resource_profile: template.resource_profile,
+      mode: config.mode ?? PROFILE_TO_MODE[template.resource_profile],
+      priority: config.priority ?? "NORMAL",
+      range_mode: range?.mode ?? "FULL",
+      from_block: range?.from_block,
+      to_block: range?.to_block,
+      force_redownload: config.skip_covered === false,
+      relevant_range_enabled: Boolean(config.relevant_range || config.relevant_ranges?.length),
+      relevant_from_block: config.relevant_range?.from_block ?? config.relevant_ranges?.[0]?.from_block,
+      relevant_to_block: config.relevant_range?.to_block ?? config.relevant_ranges?.[0]?.to_block,
+      emergency_burst: Boolean(config.emergency_burst),
+    });
+    setImportResult(null);
+    setPreflight(null);
+    setPlannerPreview(null);
+    setPreflightRequest(null);
+    void message.success(`已加载模板「${template.name}」，请执行生产预检`);
+  };
+
+  const saveTemplate = async () => {
+    const name = templateName.trim();
+    if (!name) {
+      void message.warning("请输入模板名称");
+      return;
+    }
+    if (!preflightRequest) {
+      void message.warning("请先执行生产预检，再保存已验证的任务配置");
+      return;
+    }
+    const profile = preflightRequest.resource_profile ?? "STANDARD";
+    const saved = await saveTaskTemplate({
+      name,
+      resource_profile: profile,
+      configuration: preflightRequest,
+    });
+    if (!saved) return;
+    setTemplateName("");
+    refreshTemplates();
+    void message.success("任务模板已保存");
+  };
+
+  const removeTemplate = async (template: TaskTemplate) => {
+    if (!await deleteTaskTemplate(template.id)) return;
+    refreshTemplates();
+    void message.success(`已删除模板「${template.name}」`);
   };
 
   return (
@@ -584,8 +1169,49 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         form={form}
         layout="vertical"
         onFinish={onCreate}
-        initialValues={{ chain_key: "bsc", datasets: ["transactions", "token_transfers", "balances"], range_mode: "FULL", force_redownload: false }}
+        onValuesChange={() => { setPreflight(null); setPlannerPreview(null); setPreflightRequest(null); }}
+		initialValues={{
+          chain_key: "bsc",
+          mode: "AUTO",
+          resource_profile: "STANDARD",
+          priority: "NORMAL",
+          datasets: ["transactions", "token_transfers", "balances"],
+          range_mode: "FULL",
+          force_redownload: false,
+          relevant_range_enabled: false,
+          reuse_relevant_range: true,
+          emergency_burst: false,
+        }}
       >
+        <div className="sd-template-bar">
+          <div>
+            <b>任务模板</b>
+            <span>保存常用链、数据集、区间和资源档位；模板不会自动启动任务。</span>
+          </div>
+          <Space wrap>
+            <Select
+              allowClear
+              placeholder="加载已有模板"
+              style={{ width: 250 }}
+              options={templates.map((template) => ({ value: template.id, label: template.name }))}
+              onChange={(id) => {
+                const template = templates.find((item) => item.id === id);
+                if (template) loadTemplate(template);
+              }}
+            />
+            <Input value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="新模板名称" style={{ width: 180 }} maxLength={80} />
+            <Button onClick={() => void saveTemplate()}>保存当前配置</Button>
+          </Space>
+          {templates.length > 0 ? (
+            <div className="sd-template-list">
+              {templates.map((template) => (
+                <Tag key={template.id} closable onClose={(event) => { event.preventDefault(); void removeTemplate(template); }}>
+                  {template.name} · {template.resource_profile}
+                </Tag>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <Form.Item
           label="地址"
           name="addresses"
@@ -622,7 +1248,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             description={
               <div>
                 列候选：
-                {importResult.detected_columns
+                {(importResult.detected_columns ?? [])
                   .filter((c) => c.valid > 0)
                   .map((c) => `${c.name}(${(c.confidence * 100).toFixed(1)}%)`)
                   .join("，")}
@@ -630,8 +1256,72 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             }
           />
         )}
-        <Form.Item label="网络" name="chain_key" rules={[{ required: true }]}>
-          <Select options={chainOptions} style={{ width: 240 }} />
+        <Space size="large" wrap align="start">
+          <Form.Item label="网络" name="chain_key" rules={[{ required: true }]}>
+            <Select options={chainOptions} style={{ width: 240 }} />
+          </Form.Item>
+          <Form.Item
+            label="任务优先级"
+            name="priority"
+            rules={[{ required: true }]}
+            extra="URGENT 会抢占 NORMAL / BACKGROUND；完成后后台任务自动恢复"
+          >
+            <Select
+              style={{ width: 210 }}
+              options={[
+                { value: "URGENT", label: "URGENT · 当前调查" },
+                { value: "HIGH", label: "HIGH · 高优先" },
+                { value: "NORMAL", label: "NORMAL · 普通" },
+                { value: "BACKGROUND", label: "BACKGROUND · 后台" },
+              ]}
+            />
+          </Form.Item>
+        </Space>
+        <Form.Item label="资源档位" name="resource_profile" rules={[{ required: true }]} extra="只选择目标速度，系统自动配置 Cloud、RPC 和 Writer 资源。">
+          <Radio.Group className="sd-mode-selector">
+            <Radio.Button value="STANDARD" onClick={() => form.setFieldValue("mode", "AUTO")}>
+              <span className="sd-mode-option"><b>标准</b><small>STANDARD · 低资源，适合普通任务</small></span>
+            </Radio.Button>
+            <Radio.Button value="PERFORMANCE" onClick={() => form.setFieldValue("mode", "TURBO")}>
+              <span className="sd-mode-option"><b>高性能</b><small>PERFORMANCE · 更多 Cloud / RPC，适合大批量任务</small></span>
+            </Radio.Button>
+            <Radio.Button value="EXTREME" onClick={() => form.setFieldValue("mode", "EMERGENCY")}>
+              <span className="sd-mode-option"><b>极速</b><small>EXTREME · Turbo 时间优先，仍受全部 Guard 保护</small></span>
+            </Radio.Button>
+          </Radio.Group>
+        </Form.Item>
+        <Collapse
+          ghost
+          size="small"
+          items={[{
+            key: "mode-compat",
+			label: "高级 · 兼容执行模式",
+            children: (
+              <Form.Item label="执行模式" name="mode" rules={[{ required: true }]} extra="保留 AUTO / TURBO / EMERGENCY 兼容；一般无需手动调整。">
+                <Radio.Group options={["AUTO", "TURBO", "EMERGENCY"]} optionType="button" />
+              </Form.Item>
+            ),
+          }]}
+        />
+        <Form.Item noStyle shouldUpdate={(prev, cur) => prev.mode !== cur.mode}>
+          {({ getFieldValue }) => {
+            const emergencyMode = getFieldValue("mode") === "EMERGENCY";
+            return (
+              <div className={`sd-emergency-control ${emergencyMode ? "is-active" : ""}`}>
+                <div>
+                  <b>紧急资源爆发</b>
+                  <p>允许更多 Cloud jobs、更多 RPC workers、更高 Writer priority，并可暂停低优先级任务。</p>
+                </div>
+                <Form.Item name="emergency_burst" valuePropName="checked" style={{ margin: 0 }}>
+                  <Switch disabled={!emergencyMode} checkedChildren="开启" unCheckedChildren="关闭" />
+                </Form.Item>
+                <div className="sd-cost-guard">
+                  <b>Cost Guard 始终生效</b>
+                  <span>即使开启 Emergency，Cloud Jobs 硬上限、RPC hard quota、磁盘保护与 ClickHouse 吞吐保护也不会解除；接入供应商预算指标后还会执行金额预算止损。</span>
+                </div>
+              </div>
+            );
+          }}
         </Form.Item>
         <Form.Item label="数据" name="datasets" rules={[{ required: true }]}>
           <Checkbox.Group options={datasetOptions} />
@@ -668,6 +1358,51 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             return null;
           }}
         </Form.Item>
+        <Form.Item
+          noStyle
+          shouldUpdate={(prev, cur) =>
+            prev.range_mode !== cur.range_mode ||
+            prev.relevant_range_enabled !== cur.relevant_range_enabled ||
+            prev.reuse_relevant_range !== cur.reuse_relevant_range
+          }
+        >
+          {({ getFieldValue }) => {
+            const enabled = Boolean(getFieldValue("relevant_range_enabled"));
+            const rangeMode = getFieldValue("range_mode") as RangeSpec["mode"];
+            const canReuse = rangeMode !== "FULL";
+            const reuse = canReuse && Boolean(getFieldValue("reuse_relevant_range"));
+            return (
+              <div className="sd-relevant-range">
+                <Form.Item name="relevant_range_enabled" valuePropName="checked" style={{ marginBottom: enabled ? 10 : 0 }}>
+                  <Checkbox>
+                    <b>设置当前相关区间</b>（优先完成并认证，用于缩短 TTFR）
+                  </Checkbox>
+                </Form.Item>
+                {enabled ? (
+                  <>
+                    {canReuse ? (
+                      <Form.Item name="reuse_relevant_range" valuePropName="checked" style={{ marginBottom: reuse ? 0 : 10 }}>
+                        <Checkbox>复用上方下载区间作为相关区间</Checkbox>
+                      </Form.Item>
+                    ) : null}
+                    {!reuse ? (
+                      <Space wrap align="start">
+                        <Form.Item name="relevant_from_block" label="相关起始区块" style={{ marginBottom: 0 }}>
+                          <InputNumber min={0} precision={0} placeholder="如 94000000" />
+                        </Form.Item>
+                        <Form.Item name="relevant_to_block" label="相关结束区块" style={{ marginBottom: 0 }}>
+                          <InputNumber min={0} precision={0} placeholder="如 95000000" />
+                        </Form.Item>
+                      </Space>
+                    ) : (
+                      <span className="sd-meta">将复用当前{rangeMode === "TIME" ? "时间" : "区块"}范围。</span>
+                    )}
+                  </>
+                ) : null}
+              </div>
+            );
+          }}
+        </Form.Item>
         <Form.Item name="force_redownload" valuePropName="checked" style={{ marginBottom: 8 }}>
           <Checkbox>强制忽略本地缓存重新下载（默认自动复用本地已验证数据）</Checkbox>
         </Form.Item>
@@ -684,8 +1419,56 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             }
           />
         )}
-        <Button type="primary" htmlType="submit" icon={<CloudDownloadOutlined />} loading={creating}>
-          开始智能下载
+        {preflight ? (
+          <div className={`sd-preflight ${preflight.blocked ? "is-blocked" : "is-ready"}`}>
+            <div className="sd-preflight-head">
+              <div>
+                <b>生产预检 {preflight.blocked ? "未通过" : "已通过"}</b>
+                <span>置信度 {(preflight.confidence * 100).toFixed(0)}% · {preflight.resource_profile}</span>
+              </div>
+              <Space wrap>
+                <GuardTag label="Storage" guard={preflight.guards.storage} />
+                <GuardTag label="RPC Quota" guard={preflight.guards.rpc} />
+                <GuardTag label="Cloud Budget" guard={preflight.guards.cloud} />
+              </Space>
+            </div>
+            <div className="sd-preflight-grid">
+              <TurboMetric label="预计区块" value={preflight.estimated_blocks.toLocaleString()} />
+              <TurboMetric label="地址 / Dataset" value={`${preflight.address_count} / ${preflight.dataset_count}`} />
+              <TurboMetric label="预计 Rows" value={preflight.estimated_rows.toLocaleString()} />
+              <TurboMetric label="预计数据量" value={formatBytes(preflight.estimated_bytes)} />
+              <TurboMetric label="Cloud Jobs" value={preflight.estimated_cloud_jobs.toLocaleString()} />
+              <TurboMetric label="RPC Calls" value={preflight.estimated_rpc_calls.toLocaleString()} />
+              <TurboMetric label="预计 ETA" value={formatDuration(preflight.estimated_eta_seconds)} />
+              <TurboMetric label="磁盘增长" value={formatBytes(preflight.estimated_disk_growth_bytes)} />
+            </div>
+            <div className="sd-preflight-basis">
+              <span>资源配置：Workers {preflight.profile.workers} · Cloud {preflight.profile.cloud_jobs} · RPC {preflight.profile.rpc_workers}</span>
+              <span>估算依据：{preflight.basis.length > 0 ? preflight.basis.join(" / ") : "实时资源与历史性能样本"}</span>
+              {preflight.block_reasons.length > 0 ? <b>{preflight.block_reasons.join("；")}</b> : null}
+            </div>
+          </div>
+        ) : null}
+        {plannerPreview ? (
+          <div className="sd-planner-preview">
+            <div className="sd-planner-head">
+              <div>
+                <b>批量规划器 V2 预览</b>
+                <span>先合并地址、Range 与 Dataset，再交给 Provider；地址数不会直接放大成同等数量的下载任务。</span>
+              </div>
+              <Tag color="geekblue">WORKLOAD-CENTRIC</Tag>
+            </div>
+            <PlannerV2Metrics preview={plannerPreview} />
+          </div>
+        ) : null}
+        <Button
+          type="primary"
+          htmlType="submit"
+          icon={<CloudDownloadOutlined />}
+          loading={creating || preflighting}
+          disabled={Boolean(preflight?.blocked)}
+        >
+          {preflight ? "预检通过，开始智能下载" : "先执行生产预检"}
         </Button>
       </Form>
     </Card>
@@ -698,6 +1481,7 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   const [batches, setBatches] = useState<BatchJob[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<string | null>(null);
   const [addresses, setAddresses] = useState<AddressJob[]>([]);
+  const [addressesExpanded, setAddressesExpanded] = useState(false);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
@@ -706,9 +1490,35 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   const [ledgers, setLedgers] = useState<Record<string, LedgerEntry[]>>({});
   const [batchSnap, setBatchSnap] = useState<BatchSnapshot | null>(null);
   const [summary, setSummary] = useState<BatchSummary | null>(null);
+  const [turboStatus, setTurboStatus] = useState<TurboStatus | null>(null);
+  const [hardening, setHardening] = useState<HardeningStatus | null>(null);
+  const [accelerator, setAccelerator] = useState<BatchAcceleratorStatus | null>(null);
+  const [jobReport, setJobReport] = useState<JobReport | null>(null);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [compareResult, setCompareResult] = useState<CompareRunsResult | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const [switchingMode, setSwitchingMode] = useState(false);
 
   const load = () => {
-    void listBatches().then(setBatches);
+    void listBatches().then(async (items) => {
+      const reports = await Promise.all(items.map((batch) =>
+        ["COMPLETED", "PARTIAL", "FAILED", "CANCELED"].includes(batch.status)
+          ? getBatchReport(batch.id)
+          : Promise.resolve(null),
+      ));
+      setBatches(items.map((batch, index) => {
+        const report = reports[index];
+        return report ? {
+          ...batch,
+          resource_profile: report.resource_profile ?? batch.resource_profile,
+          rows: report.rows,
+          duration_seconds: report.total_duration_seconds,
+          ttfa_seconds: report.ttfa_seconds,
+          average_throughput_rows_per_sec: report.average_throughput_rows_per_sec,
+          result: report.certification ?? report.result ?? batch.status,
+        } : batch;
+      }));
+    });
   };
 
   useEffect(() => {
@@ -719,22 +1529,74 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   useEffect(() => {
     if (!selectedBatch) {
       setAddresses([]);
+      setAddressesExpanded(false);
       setBatchSnap(null);
+      setSummary(null);
+      setTurboStatus(null);
+      setHardening(null);
+      setAccelerator(null);
+      setJobReport(null);
       return;
     }
-    void batchSnapshot(selectedBatch).then(setBatchSnap);
-    void batchSummary(selectedBatch).then(setSummary);
-    void listBatchAddresses(selectedBatch, page, 50, statusFilter).then((res) => {
-      if (res) {
-        setAddresses(res.addresses);
-        setTotal(res.total);
-      }
+    const selectedStatus = batches.find((batch) => batch.id === selectedBatch)?.status;
+    const reportRequest = selectedStatus && ["COMPLETED", "PARTIAL", "FAILED", "CANCELED"].includes(selectedStatus)
+      ? getBatchReport(selectedBatch)
+      : Promise.resolve(null);
+    void Promise.all([
+      batchSnapshot(selectedBatch),
+      batchSummary(selectedBatch),
+      getTurboStatus(selectedBatch),
+      getBatchHardening(selectedBatch),
+      getBatchAccelerator(selectedBatch),
+      reportRequest,
+    ]).then(([snapshot, nextSummary, nextTurboStatus, nextHardening, nextAccelerator, nextReport]) => {
+      setBatchSnap(snapshot);
+      setSummary(nextSummary);
+      setTurboStatus(nextTurboStatus);
+      setHardening(nextHardening);
+      setAccelerator(nextAccelerator);
+      setJobReport(nextReport);
     });
-  }, [selectedBatch, page, statusFilter, refreshKey]);
+    if (addressesExpanded) {
+      void listBatchAddresses(selectedBatch, page, 50, statusFilter).then((res) => {
+        if (res) {
+          setAddresses(res.addresses);
+          setTotal(res.total);
+        }
+      });
+    }
+  }, [selectedBatch, page, statusFilter, refreshKey, addressesExpanded]);
 
   const runBatchAction = async (id: string, action: string) => {
     await batchAction(id, action);
     load();
+  };
+
+  const runModeSwitch = async (mode: DownloadMode) => {
+    if (!selectedBatch) return;
+    setSwitchingMode(true);
+    try {
+      const updated = await switchBatchMode(selectedBatch, mode);
+      if (!updated) return;
+      setBatches((current) => current.map((batch) => (batch.id === updated.id ? updated : batch)));
+      setTurboStatus(await getTurboStatus(selectedBatch));
+      void message.success(`已切换为 ${mode} 模式`);
+    } finally {
+      setSwitchingMode(false);
+    }
+  };
+
+  const runCompare = async () => {
+    if (compareIds.length !== 2) {
+      void message.warning("请选择两个批次进行对比");
+      return;
+    }
+    setComparing(true);
+    try {
+      setCompareResult(await compareBatchRuns(compareIds[0], compareIds[1]));
+    } finally {
+      setComparing(false);
+    }
   };
 
   const runAddressAction = async (id: string, action: string) => {
@@ -770,6 +1632,14 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
     list.some((e) => e.event === "PROVIDER_SWITCHED"),
   );
 
+  const selectBatch = (batchId: string) => {
+    setSelectedBatch(batchId);
+    setAddressesExpanded(false);
+    setAddresses([]);
+    setTotal(0);
+    setPage(1);
+  };
+
   const batchColumns: ColumnsType<BatchJob> = [
     {
       title: "任务",
@@ -784,19 +1654,26 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
     },
     { title: "链", dataIndex: "chain_key", width: 70, render: (v) => v?.toUpperCase() },
     { title: "地址数", dataIndex: "address_count", width: 80 },
+    { title: "档位", dataIndex: "resource_profile", width: 88, render: (v) => <ProfileTag profile={v} /> },
+    { title: "模式", dataIndex: "mode", width: 100, render: (v) => <ModeTag mode={v} /> },
+    { title: "Rows", dataIndex: "rows", width: 105, render: (v) => metricNumber(v).toLocaleString() },
+    { title: "耗时", dataIndex: "duration_seconds", width: 90, render: (v) => formatDuration(v) },
+    { title: "TTFA", dataIndex: "ttfa_seconds", width: 80, render: (v) => formatDuration(v) },
+    { title: "平均吞吐", dataIndex: "average_throughput_rows_per_sec", width: 120, render: (v) => `${formatRate(v)} rows/s` },
     {
       title: "状态",
       dataIndex: "status",
       width: 110,
       render: (v) => <StatusPill status={v} />,
     },
+    { title: "结果", dataIndex: "result", width: 105, render: (v, r) => <StatusPill status={v ?? r.status} /> },
     {
       title: "操作",
       width: 220,
       render: (_, r) => (
         <Space size={4}>
           <Tooltip title="查看地址任务">
-            <Button size="small" onClick={() => setSelectedBatch(r.id)}>
+            <Button size="small" onClick={() => selectBatch(r.id)}>
               地址
             </Button>
           </Tooltip>
@@ -829,6 +1706,9 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
       ),
     },
   ];
+
+  const currentBatch = batches.find((batch) => batch.id === selectedBatch);
+  const modeSwitchDisabled = !currentBatch || ["COMPLETED", "CANCELED", "FAILED"].includes(currentBatch.status);
 
   const addressColumns: ColumnsType<AddressJob> = [
     {
@@ -927,7 +1807,7 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   return (
     <div className="sd-task-center">
       <Card
-        title={`任务列表（${batches.length}）`}
+		title={`最近任务（${batches.length}）`}
         extra={
           <Space>
             <Select
@@ -948,13 +1828,79 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
           rowKey="id"
           columns={batchColumns}
           dataSource={batches}
+          scroll={{ x: 1500 }}
           pagination={false}
           size="small"
-          onRow={(r) => ({ onClick: () => setSelectedBatch(r.id), style: { cursor: "pointer" } })}
+          onRow={(r) => ({ onClick: () => selectBatch(r.id), style: { cursor: "pointer" } })}
         />
+      </Card>
+	  <Card className="sd-compare-card" size="small" title="运行对比" style={{ marginTop: 16 }}>
+        <Space wrap>
+          <Select
+            mode="multiple"
+            maxTagCount={2}
+            value={compareIds}
+            placeholder="选择两个批次"
+            style={{ minWidth: 460 }}
+            options={batches.map((batch) => ({ value: batch.id, label: batchDisplayName(batch) }))}
+            onChange={(ids) => {
+              setCompareIds(ids.slice(-2));
+              setCompareResult(null);
+            }}
+          />
+          <Button disabled={compareIds.length !== 2} loading={comparing} onClick={() => void runCompare()}>对比运行</Button>
+        </Space>
+        {compareResult ? (
+          <Table
+            style={{ marginTop: 12 }}
+            rowKey="batch_id"
+            size="small"
+            pagination={false}
+            dataSource={compareResult.runs}
+            columns={[
+              { title: "Run", dataIndex: "label", render: (v, r) => v ?? abbr(r.batch_id) },
+              { title: "档位", dataIndex: "resource_profile", render: (v) => <ProfileTag profile={v} /> },
+              { title: "Rows", dataIndex: "rows", render: (v) => metricNumber(v).toLocaleString() },
+              { title: "TTFA", dataIndex: "ttfa_seconds", render: (v) => formatDuration(v) },
+              { title: "总耗时", dataIndex: "total_duration_seconds", render: (v) => formatDuration(v) },
+              { title: "平均吞吐", dataIndex: "average_throughput_rows_per_sec", render: (v) => `${formatRate(v)} rows/s` },
+              { title: "失败率", dataIndex: "failure_rate", render: (v) => `${(metricNumber(v) * (metricNumber(v) <= 1 ? 100 : 1)).toFixed(2)}%` },
+            ]}
+          />
+        ) : null}
       </Card>
       {selectedBatch && (
         <>
+          {currentBatch && (
+            <Card size="small" style={{ marginTop: 16 }}>
+              <Space size="middle" wrap>
+                <span><b>一键升档</b></span>
+                <Radio.Group
+                  size="small"
+                  optionType="button"
+                  buttonStyle="solid"
+                  value={currentBatch.mode ?? "AUTO"}
+                  disabled={modeSwitchDisabled || switchingMode}
+                  onChange={(event) => void runModeSwitch(event.target.value as DownloadMode)}
+                  options={[
+                    { label: "AUTO", value: "AUTO" },
+                    { label: "TURBO", value: "TURBO" },
+                    { label: "EMERGENCY", value: "EMERGENCY" },
+                  ]}
+                />
+                <span className="sd-meta">
+                  {switchingMode
+                    ? "切换中…"
+                    : currentBatch.mode === "EMERGENCY"
+                      ? "紧急弹性爆发；已完成 Coverage 永不重做，相关区间认证后可自动降档"
+                      : currentBatch.mode === "TURBO"
+                        ? "SQD Cloud 与 RPC 真双通道并行，动态 Range 分配"
+                        : "系统按覆盖、速度、成本与可靠性自动调度"}
+                </span>
+                {currentBatch.mode_switched_at ? <span className="sd-meta">切换于 {new Date(currentBatch.mode_switched_at).toLocaleString()}</span> : null}
+              </Space>
+            </Card>
+          )}
           {summary && (
             <Card size="small" style={{ marginTop: 16 }}>
               <Space size="large" wrap>
@@ -985,10 +1931,41 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
               </Space>
             </Card>
           )}
-          <Card
-            title={
+          {turboStatus && (
+            <TurboDashboard
+              status={{
+                ...turboStatus,
+                mode: currentBatch?.mode ?? turboStatus.mode,
+                priority: currentBatch?.priority ?? turboStatus.priority,
+                burst_active: currentBatch?.emergency_burst ?? turboStatus.burst_active,
+                burst_level: currentBatch?.burst_level ?? turboStatus.burst_level,
+                eta_seconds: turboStatus.eta_seconds || summary?.snapshot.eta?.seconds,
+              }}
+            />
+          )}
+          {hardening ? <HardeningPanel status={hardening} report={jobReport} /> : null}
+          {accelerator ? <AcceleratorPanel accelerator={accelerator} /> : null}
+          {!hardening && jobReport ? (
+            <Card size="small" title="Job Report" style={{ marginTop: 16 }}>
+              <Space wrap size="large">
+                <span>Rows <b>{jobReport.rows.toLocaleString()}</b></span>
+                <span>Coverage <b>{jobReport.coverage.toFixed(2)}%</b></span>
+                <span>Duplicates <b>{jobReport.duplicates}</b></span>
+                <span>TTFA <b>{formatDuration(jobReport.ttfa_seconds)}</b></span>
+                <span>总耗时 <b>{formatDuration(jobReport.total_duration_seconds)}</b></span>
+                <span>平均吞吐 <b>{formatRate(jobReport.average_throughput_rows_per_sec)} rows/s</b></span>
+                <StatusPill status={jobReport.certification ?? jobReport.result} />
+              </Space>
+            </Card>
+          ) : null}
+          <Collapse
+            className="sd-address-on-demand"
+            onChange={(keys) => setAddressesExpanded((Array.isArray(keys) ? keys : [keys]).includes("addresses"))}
+            items={[{
+              key: "addresses",
+              label: (
               <Space>
-                <span>地址任务（共 {total}）</span>
+                <b>单地址任务（按需展开{total > 0 ? ` · 共 ${total}` : ""}）</b>
                 {batchSnap && (
                   <span style={{ width: 260, display: "inline-block" }}>
                     <ProgressBar
@@ -1000,18 +1977,20 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
                   </span>
                 )}
               </Space>
-            }
-            style={{ marginTop: 16 }}
-          >
-            <Table
-              rowKey="id"
-              columns={addressColumns}
-              dataSource={addresses}
-              size="small"
-              onRow={(r) => ({ onClick: () => void openDetail(r.id), style: { cursor: "pointer" } })}
-              pagination={{ current: page, pageSize: 50, total, onChange: setPage, showSizeChanger: false }}
-            />
-          </Card>
+              ),
+              children: (
+                <Table
+                  rowKey="id"
+                  columns={addressColumns}
+                  dataSource={addresses}
+                  size="small"
+                  loading={addressesExpanded && addresses.length === 0 && total === 0}
+                  onRow={(r) => ({ onClick: () => void openDetail(r.id), style: { cursor: "pointer" } })}
+                  pagination={{ current: page, pageSize: 50, total, onChange: setPage, showSizeChanger: false }}
+                />
+              ),
+            }]}
+          />
         </>
       )}
       <Drawer className="sd-drawer" title="地址详情" width={760} open={detailOpen} onClose={() => setDetailOpen(false)}>

@@ -12,21 +12,31 @@ import (
 
 // Range Ledger 事件类型（实施方案 §5：恢复和审计的事实账本）。
 const (
-	LedgerRangeCreated        = "RANGE_CREATED"
-	LedgerRangeStarted        = "RANGE_STARTED"
-	LedgerPartCommitted       = "PART_COMMITTED"
-	LedgerRangeCompleted      = "RANGE_COMPLETED"
-	LedgerRangeEmpty          = "RANGE_EMPTY"
-	LedgerRangeFailed         = "RANGE_FAILED"
-	LedgerProviderFailed      = "PROVIDER_FAILED"
-	LedgerProviderSwitched    = "PROVIDER_SWITCHED"
-	LedgerCloudTierAssigned   = "CLOUD_TIER_ASSIGNED"
-	LedgerCloudTierUpgraded   = "CLOUD_TIER_UPGRADED"
-	LedgerCloudTierDowngraded = "CLOUD_TIER_DOWNGRADED"
-	LedgerFeedbackAction      = "FEEDBACK_ACTION"
-	LedgerPaused              = "PAUSED"
-	LedgerResumed             = "RESUMED"
-	LedgerCanceled            = "CANCELED"
+	LedgerRangeCreated            = "RANGE_CREATED"
+	LedgerRangeStarted            = "RANGE_STARTED"
+	LedgerPartCommitted           = "PART_COMMITTED"
+	LedgerRangeCompleted          = "RANGE_COMPLETED"
+	LedgerRangeEmpty              = "RANGE_EMPTY"
+	LedgerRangeFailed             = "RANGE_FAILED"
+	LedgerProviderFailed          = "PROVIDER_FAILED"
+	LedgerProviderSwitched        = "PROVIDER_SWITCHED"
+	LedgerCloudTierAssigned       = "CLOUD_TIER_ASSIGNED"
+	LedgerCloudTierUpgraded       = "CLOUD_TIER_UPGRADED"
+	LedgerCloudTierDowngraded     = "CLOUD_TIER_DOWNGRADED"
+	LedgerFeedbackAction          = "FEEDBACK_ACTION"
+	LedgerPaused                  = "PAUSED"
+	LedgerResumed                 = "RESUMED"
+	LedgerCanceled                = "CANCELED"
+	LedgerRangeAssigned           = "RANGE_ASSIGNED"
+	LedgerModeSwitched            = "MODE_SWITCHED"
+	LedgerRangeResharded          = "RANGE_RESHARDED"
+	LedgerRangeCertified          = "RANGE_CERTIFIED"
+	LedgerDatasetPartialCertified = "DATASET_PARTIAL_CERTIFIED"
+	LedgerHedgeStarted            = "HEDGE_STARTED"
+	LedgerHedgeWon                = "HEDGE_WON"
+	LedgerPausedByPriority        = "PAUSED_BY_PRIORITY"
+	LedgerAutoResumed             = "AUTO_RESUMED_BY_PRIORITY"
+	LedgerSelfRecovery            = "SELF_RECOVERY"
 )
 
 // LedgerEntry 单条 Range Ledger 记录。
@@ -38,6 +48,7 @@ type LedgerEntry struct {
 	FromBlock    uint64    `json:"from_block,omitempty"`
 	ToBlock      uint64    `json:"to_block,omitempty"`
 	Provider     string    `json:"provider,omitempty"`
+	Owner        string    `json:"owner,omitempty"`
 	Part         string    `json:"part,omitempty"`
 	SHA256       string    `json:"sha256,omitempty"`
 	Rows         int64     `json:"rows,omitempty"`

@@ -21,7 +21,7 @@ const chrome = spawn(findChrome(), [
   "--disable-background-networking",
   "--disable-sync",
   "--disable-translate",
-  "--disable-features=Translate,OptimizationGuideModelDownloading,IsolateOrigins,site-per-process",
+  "--disable-features=Translate,OptimizationGuideModelDownloading",
   "--disable-client-side-phishing-detection",
   "--disable-component-update",
   "--disable-domain-reliability",
@@ -44,7 +44,6 @@ try {
   cdp = await connectCDP(target.webSocketDebuggerUrl);
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
-
   await cdp.send("Page.navigate", { url: input.pageUrl });
   await waitForPage(cdp);
 
@@ -85,6 +84,8 @@ function findChrome() {
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
     process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
+    "D:\\文件\\c_cache\\playwright\\chromium-1228\\chrome-win64\\chrome.exe",
+    "D:\\文件\\c_cache\\playwright\\chromium_headless_shell-1228\\chrome-headless-shell.exe",
   ].filter(Boolean);
   const path = candidates.find(existsSync);
   if (!path) throw new Error("Google Chrome was not found; set OKLINK_CHROME_PATH");
@@ -192,73 +193,3 @@ async function waitForExit(child, timeout) {
     delay(timeout),
   ]);
 }
-
-// ── stealth injection (loaded before any page javascript) ──
-
-const STEALTH_INJECT = `
-(function(){
-  // Canvas noise — low-bit flip to break fingerprint hashing without visual change.
-  const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-  HTMLCanvasElement.prototype.toDataURL = function() {
-    try {
-      const ctx = this.getContext('2d');
-      if (ctx && this.width > 0 && this.height > 0) {
-        const img = ctx.getImageData(0, 0, this.width, this.height);
-        for (let i = 0; i < img.data.length; i += 4) { img.data[i] ^= (i & 3); }
-        ctx.putImageData(img, 0, 0);
-      }
-    } catch (_) {}
-    return origToDataURL.apply(this, arguments);
-  };
-  const origToBlob = HTMLCanvasElement.prototype.toBlob;
-  HTMLCanvasElement.prototype.toBlob = function(cb, type, quality) {
-    try {
-      const ctx = this.getContext('2d');
-      if (ctx && this.width > 0 && this.height > 0) {
-        const img = ctx.getImageData(0, 0, this.width, this.height);
-        for (let i = 0; i < img.data.length; i += 4) { img.data[i] ^= (i & 3); }
-        ctx.putImageData(img, 0, 0);
-      }
-    } catch (_) {}
-    return origToBlob.apply(this, [cb, type, quality]);
-  };
-
-  // WebGL vendor/renderer spoof — return consistent desktop GPU strings.
-  if (typeof WebGLRenderingContext !== 'undefined') {
-    const gp = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(p) {
-      if (p === 37445) return 'Google Inc. (NVIDIA)';
-      if (p === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Ti Direct3D11 vs_5_0 ps_5_0)';
-      return gp.call(this, p);
-    };
-  }
-  if (typeof WebGL2RenderingContext !== 'undefined') {
-    const gp2 = WebGL2RenderingContext.prototype.getParameter;
-    WebGL2RenderingContext.prototype.getParameter = function(p) {
-      if (p === 37445) return 'Google Inc. (NVIDIA)';
-      if (p === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Ti Direct3D11 vs_5_0 ps_5_0)';
-      return gp2.call(this, p);
-    };
-  }
-
-  // WebDriver marker removal.
-  Object.defineProperty(navigator, 'webdriver', { get: function() { return false; } });
-  window.chrome = { runtime: {} };
-  const origQuery = navigator.permissions.query.bind(navigator.permissions);
-  navigator.permissions.query = function(params) {
-    if (params.name === 'notifications') return Promise.resolve({ state: Notification.permission });
-    return origQuery(params);
-  };
-  Object.defineProperty(navigator, 'plugins', { get: function() { return [1, 2, 3, 4, 5]; } });
-  Object.defineProperty(navigator, 'languages', { get: function() { return ['zh-CN', 'zh', 'en']; } });
-
-  // CDP runtime detection — hide the fact that Runtime domain was enabled.
-  const origCall = Function.prototype.call;
-  Function.prototype.call = function(thisArg) {
-    if (this === window.constructor.prototype.constructor && arguments.length > 0) {
-      if (String(arguments[0]).includes('cdp')) return origCall.apply(this, arguments);
-    }
-    return origCall.apply(this, arguments);
-  };
-})();
-`;

@@ -9,8 +9,8 @@ import {
   SearchOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import { Button, Drawer, Empty, Input, Segmented, Space, Spin, Tag, Tooltip, message, notification } from 'antd';
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Drawer, Empty, Input, Segmented, Space, Spin, Tag, Tooltip, message } from 'antd';
+import { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
 import { dataSourceApi } from './api/datasource-api';
 import { MetricsCard } from './components/MetricsCard';
 import { SourceCard } from './components/SourceCard';
@@ -37,7 +37,7 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
   const [snapshot, setSnapshot] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [filter, setFilter] = useState<'ALL' | DataSourceType>('ALL');
+  const [filter, setFilter] = useState<'ALL' | DataSourceType>('RPC');
   const [query, setQuery] = useState('');
   const [configOpen, setConfigOpen] = useState(false);
   const [editing, setEditing] = useState<DataSourceConfig | null>(null);
@@ -45,7 +45,6 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
   const [testResult, setTestResult] = useState<DataSourceTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [logSource, setLogSource] = useState<DataSourceItem | null>(null);
-  const coverageNotifyRef = useRef(false);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -65,17 +64,6 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
-  useEffect(() => {
-    if (coverageNotifyRef.current) return;
-    coverageNotifyRef.current = true;
-    notification.info({
-      message: '数据覆盖尚未完整',
-      description: '页面中的交易数和资产数只代表已加载数据，零值不表示完整历史没有交易。',
-      placement: 'topRight',
-      duration: 6,
-    });
-  }, []);
-
   const visibleSources = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return snapshot.sources.filter((source) =>
@@ -83,6 +71,15 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
       && (!normalized || `${source.name} ${source.provider} ${source.chain_keys.join(' ')}`.toLowerCase().includes(normalized)),
     );
   }, [filter, query, snapshot.sources]);
+
+  const sourceCounts = useMemo(() => snapshot.sources.reduce<Record<'ALL' | DataSourceType, number>>(
+    (counts, source) => {
+      counts.ALL += 1;
+      counts[source.type] += 1;
+      return counts;
+    },
+    { ALL: 0, STREAM: 0, DATASET: 0, RPC: 0 },
+  ), [snapshot.sources]);
 
   const metrics = [
     { label: '数据源数量', value: snapshot.overview.source_count, suffix: '个', icon: <DatabaseOutlined />, tone: 'blue', help: 'SQD、AWS及各RPC Endpoint总数' },
@@ -175,10 +172,10 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
           value={filter}
           onChange={(value) => setFilter(value as typeof filter)}
           options={[
-            { value: 'ALL', label: '全部' },
-            { value: 'STREAM', label: 'SQD' },
-            { value: 'DATASET', label: 'AWS' },
-            { value: 'RPC', label: 'RPC' },
+            { value: 'RPC', label: `RPC (${sourceCounts.RPC})` },
+            { value: 'STREAM', label: `SQD (${sourceCounts.STREAM})` },
+            { value: 'DATASET', label: `AWS (${sourceCounts.DATASET})` },
+            { value: 'ALL', label: `全部 (${sourceCounts.ALL})` },
           ]}
         />
         <Input allowClear prefix={<SearchOutlined />} placeholder="搜索名称、Provider或链" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -191,7 +188,7 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
               <SourceCard
                 key={source.source_id}
                 source={source}
-                wide={source.type !== 'RPC'}
+                wide={filter !== 'ALL' && source.type !== 'RPC'}
                 testing={testingSource?.source_id === source.source_id && testing}
                 onEdit={() => void editSource(source)}
                 onTest={() => void testSource(source)}

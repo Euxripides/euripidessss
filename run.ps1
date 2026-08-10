@@ -53,23 +53,35 @@ if (-not $SkipBuild) {
     exit 1
 }
 
-# ---- Kill old process ----
-$oldPid = $null
-$proc = Get-Process -Name "etl-server" -ErrorAction SilentlyContinue
-if ($proc) {
-    $oldPid = $proc.Id
-    Write-Host "[STOP] Stopping old process (PID: $oldPid)..."
-    Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
+# ---- Kill old process tree ----
+function Get-DescendantProcessIds {
+    param([int]$RootProcessId)
+    $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$RootProcessId" -ErrorAction SilentlyContinue)
+    foreach ($child in $children) {
+        Get-DescendantProcessIds -RootProcessId ([int]$child.ProcessId)
+        [int]$child.ProcessId
+    }
+}
+
+$oldProcesses = @(Get-Process -Name "etl-server" -ErrorAction SilentlyContinue)
+foreach ($oldProcess in $oldProcesses) {
+    $oldProcessId = [int]$oldProcess.Id
+    $descendantIds = @(Get-DescendantProcessIds -RootProcessId $oldProcessId)
+    Write-Host "[STOP] Stopping old process tree (PID: $oldProcessId, children: $($descendantIds.Count))..."
+    foreach ($descendantId in $descendantIds) {
+        Stop-Process -Id $descendantId -Force -ErrorAction SilentlyContinue
+    }
+    Stop-Process -Id $oldProcessId -Force -ErrorAction SilentlyContinue
 
     for ($i = 0; $i -lt $MaxRetry; $i++) {
         Start-Sleep -Seconds $RetryInterval
-        $p = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
-        if (-not $p) {
-            Write-Host "[STOP] Old process exited"
+        $oldProcessCheck = Get-Process -Id $oldProcessId -ErrorAction SilentlyContinue
+        if (-not $oldProcessCheck) {
+            Write-Host "[STOP] Old process tree exited"
             break
         }
         Write-Host "[STOP] Waiting... attempt $($i+2)/$($MaxRetry+1)"
-        Stop-Process -Id $oldPid -Force -ErrorAction SilentlyContinue
+        Stop-Process -Id $oldProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 

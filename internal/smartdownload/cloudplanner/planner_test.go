@@ -126,6 +126,10 @@ func TestBudgetAllowDaily(t *testing.T) {
 	if ok, _ := guard2.Allow(plan, 0, 0, 1); ok {
 		t.Fatal("XL 并发超限应拒绝")
 	}
+	guard3 := BudgetGuard{Enabled: true, MaxSingleJobCost: 5}
+	if ok, _ := guard3.Allow(plan, 0, 0, 0); ok {
+		t.Fatal("单任务成本 8>5 应拒绝")
+	}
 }
 
 // Case 3/4：崩溃恢复与 OOM 恢复依赖 Checkpoint V3（集成层测试），

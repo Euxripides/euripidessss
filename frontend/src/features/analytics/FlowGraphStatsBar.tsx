@@ -33,6 +33,13 @@ export default function FlowGraphStatsBar(props: FlowGraphStatsBarProps) {
 
   useEffect(() => {
     let alive = true;
+    if (props.visibleNodes === 0 && props.visibleEdges === 0) {
+      setStats(null);
+      setLoading(false);
+      return () => {
+        alive = false;
+      };
+    }
     setLoading(true);
     fetchFlowStats(props.chain, props.chainId, props.token)
       .then((next) => {
@@ -47,13 +54,13 @@ export default function FlowGraphStatsBar(props: FlowGraphStatsBarProps) {
     return () => {
       alive = false;
     };
-  }, [props.chain, props.chainId, props.token]);
+  }, [props.chain, props.chainId, props.token, props.visibleEdges, props.visibleNodes]);
 
   const graph = stats?.graph;
   const flow = stats?.flow;
   const entities = stats?.entities;
   const balancePct = props.balanceTotal > 0 ? Math.round((props.balanceQueried / props.balanceTotal) * 100) : 0;
-  const completeness = props.truncated ? "已截断" : (stats?.completeness.complete ? "完整" : "部分");
+  const completeness = props.truncated ? "已截断" : (stats?.completeness?.complete ? "完整" : "部分");
 
   return (
     <div className="analytics-graph-statsbar">

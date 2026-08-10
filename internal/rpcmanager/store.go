@@ -14,8 +14,9 @@ import (
 
 type endpointRecord struct {
 	Endpoint
-	EncryptedURL     []byte
-	EncryptedTestURL []byte
+	EncryptedURL           []byte
+	EncryptedTestURL       []byte
+	CapabilitiesConfigured bool
 }
 
 type store struct {
@@ -68,6 +69,9 @@ func (s *store) init() error {
 			max_rps REAL NOT NULL,
 			max_concurrency INTEGER NOT NULL,
 			request_timeout_ms INTEGER NOT NULL,
+			supported_methods TEXT,
+			archive_capability INTEGER,
+			trace_capability INTEGER,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -142,12 +146,23 @@ func (s *store) init() error {
 		!strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return err
 	}
+	for _, migration := range []string{
+		"ALTER TABLE rpc_endpoints ADD COLUMN supported_methods TEXT",
+		"ALTER TABLE rpc_endpoints ADD COLUMN archive_capability INTEGER",
+		"ALTER TABLE rpc_endpoints ADD COLUMN trace_capability INTEGER",
+	} {
+		if _, err := s.db.Exec(migration); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
 	return nil
 }
 
 func (s *store) endpoints(chainKey string, enabledOnly bool) ([]endpointRecord, error) {
 	query := `SELECT endpoint_id, provider, chain_key, chain_id, display_name, endpoint_host,
-endpoint_encrypted, test_endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_timeout_ms, created_at, updated_at
+endpoint_encrypted, test_endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_timeout_ms,
+supported_methods, archive_capability, trace_capability, created_at, updated_at
 FROM rpc_endpoints WHERE 1=1`
 	args := []any{}
 	if chainKey != "" {
@@ -166,17 +181,28 @@ FROM rpc_endpoints WHERE 1=1`
 	for rows.Next() {
 		var item endpointRecord
 		var enabled int
+		var supportedMethods sql.NullString
+		var archiveCapability, traceCapability sql.NullInt64
 		var createdAt, updatedAt string
 		if err := rows.Scan(
 			&item.ID, &item.Provider, &item.ChainKey, &item.ChainID, &item.DisplayName,
 			&item.EndpointHost, &item.EncryptedURL, &item.EncryptedTestURL, &item.Priority, &enabled, &item.MaxRPS,
-			&item.MaxConcurrency, &item.RequestTimeoutMS, &createdAt, &updatedAt,
+			&item.MaxConcurrency, &item.RequestTimeoutMS, &supportedMethods, &archiveCapability,
+			&traceCapability, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, err
 		}
 		item.Enabled = enabled == 1
 		item.SecretConfigured = len(item.EncryptedURL) > 0
 		item.TestEndpointConfigured = len(item.EncryptedTestURL) > 0
+		item.CapabilitiesConfigured = supportedMethods.Valid || archiveCapability.Valid || traceCapability.Valid
+		if supportedMethods.Valid && strings.TrimSpace(supportedMethods.String) != "" {
+			if err := json.Unmarshal([]byte(supportedMethods.String), &item.SupportedMethods); err != nil {
+				return nil, err
+			}
+		}
+		item.ArchiveCapability = archiveCapability.Valid && archiveCapability.Int64 == 1
+		item.TraceCapability = traceCapability.Valid && traceCapability.Int64 == 1
 		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		item.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 		result = append(result, item)
@@ -210,11 +236,13 @@ func (s *store) endpoint(id string) (endpointRecord, error) {
 func (s *store) insertEndpoint(item endpointRecord) error {
 	_, err := s.db.Exec(`INSERT INTO rpc_endpoints (
 endpoint_id, provider, chain_key, chain_id, display_name, endpoint_host, endpoint_encrypted,
-test_endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_timeout_ms, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+test_endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_timeout_ms,
+supported_methods, archive_capability, trace_capability, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.Provider, item.ChainKey, item.ChainID, item.DisplayName, item.EndpointHost,
 		item.EncryptedURL, item.EncryptedTestURL, item.Priority, boolInt(item.Enabled), item.MaxRPS, item.MaxConcurrency,
-		item.RequestTimeoutMS, item.CreatedAt.Format(time.RFC3339Nano), item.UpdatedAt.Format(time.RFC3339Nano),
+		item.RequestTimeoutMS, capabilityMethodsValue(item), capabilityBoolValue(item, item.ArchiveCapability),
+		capabilityBoolValue(item, item.TraceCapability), item.CreatedAt.Format(time.RFC3339Nano), item.UpdatedAt.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return err
@@ -225,12 +253,32 @@ test_endpoint_encrypted, priority, enabled, max_rps, max_concurrency, request_ti
 func (s *store) updateEndpoint(item endpointRecord) error {
 	_, err := s.db.Exec(`UPDATE rpc_endpoints SET provider=?, chain_key=?, chain_id=?, display_name=?,
 endpoint_host=?, endpoint_encrypted=?, test_endpoint_encrypted=?, priority=?, enabled=?, max_rps=?,
-max_concurrency=?, request_timeout_ms=?, updated_at=? WHERE endpoint_id=?`,
+max_concurrency=?, request_timeout_ms=?, supported_methods=?, archive_capability=?, trace_capability=?,
+updated_at=? WHERE endpoint_id=?`,
 		item.Provider, item.ChainKey, item.ChainID, item.DisplayName, item.EndpointHost, item.EncryptedURL,
 		item.EncryptedTestURL, item.Priority, boolInt(item.Enabled), item.MaxRPS, item.MaxConcurrency, item.RequestTimeoutMS,
-		item.UpdatedAt.Format(time.RFC3339Nano), item.ID,
+		capabilityMethodsValue(item), capabilityBoolValue(item, item.ArchiveCapability),
+		capabilityBoolValue(item, item.TraceCapability), item.UpdatedAt.Format(time.RFC3339Nano), item.ID,
 	)
 	return err
+}
+
+func capabilityMethodsValue(item endpointRecord) any {
+	if !item.CapabilitiesConfigured {
+		return nil
+	}
+	payload, err := json.Marshal(item.SupportedMethods)
+	if err != nil {
+		return "[]"
+	}
+	return string(payload)
+}
+
+func capabilityBoolValue(item endpointRecord, value bool) any {
+	if !item.CapabilitiesConfigured {
+		return nil
+	}
+	return boolInt(value)
 }
 
 func (s *store) deleteEndpoint(id string) error {
@@ -327,6 +375,17 @@ timeout_count=timeout_count+excluded.timeout_count,latency_sum_ms=latency_sum_ms
 		minute, endpointID, chainID, method, boolInt(success), boolInt(!success),
 		boolInt(rateLimited), boolInt(timeout), float64(latency.Microseconds())/1000,
 	)
+}
+
+func (s *store) endpointRequestsToday(endpointID string) int64 {
+	if s == nil || s.db == nil || strings.TrimSpace(endpointID) == "" {
+		return 0
+	}
+	today := time.Now().UTC().Format("2006-01-02") + "%"
+	var count int64
+	_ = s.db.QueryRow(`SELECT COALESCE(SUM(request_count),0)
+FROM rpc_request_metrics WHERE endpoint_id=? AND minute LIKE ?`, endpointID, today).Scan(&count)
+	return count
 }
 
 func (s *store) overview(cacheHits, cacheMisses int64) Overview {

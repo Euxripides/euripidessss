@@ -24,6 +24,7 @@ import { fetchAddressStats, type AddressStats } from "./flowStatsApi";
 import {
   buildWorkspaceGraph,
   layoutWorkspaceGraph,
+  setGraphColorScheme,
   type GraphKind,
   type WorkspaceMode,
 } from "./flowWorkspaceGraph";
@@ -41,20 +42,22 @@ import { useAddressAssets } from "./useAddressAssets";
 import FlowWorkspaceHeader from "./flowWorkspaceHeader";
 import SmartFillPanel from "./SmartFillPanel";
 import TimeReplayBar from "./TimeReplayBar";
-import FlowV3Extras, { type Hypothesis } from "./FlowV3Extras";
-import FlowLeftPanel, {
-  type GraphBookmark,
-  type GraphFilters,
-  type GraphViewMode,
-  type PathQuery,
-  type ResultRow,
-  type TempGroup,
+import InvestigationSidebar from "./InvestigationSidebar";
+import type { Hypothesis } from "./FlowV3Extras";
+import type {
+  GraphBookmark,
+  GraphFilters,
+  GraphViewMode,
+  PathQuery,
+  ResultRow,
+  TempGroup,
 } from "./FlowLeftPanel";
 import { expandGraphCache, queryCoverageIndex, type CoverageQueryResult } from "../smart-download/smartDownloadApi";
 import { resolveEntity, searchEntities, type EntityResolution } from "../entity/entityApi";
 import { analyzeFundFlow, type FlowPath, type FundFlowAnalysis } from "../fundflow/fundFlowApi";
 import "./graph-page.css";
 import "./graph-page-light.css";
+import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
 
 const DEFAULT_DIRECTION: FocusDirection = "all";
 const DEFAULT_DEPTH: FocusDepth = 2;
@@ -78,12 +81,13 @@ export interface GraphPageProps {
 }
 
 export default function GraphPage({ onOpenAddress }: GraphPageProps) {
+  const { state: analysisState } = useAnalysisContext();
   const [nodes, setNodes, onNodesChange] = useNodesStateSafe();
   const [edges, setEdges, onEdgesChange] = useEdgesStateSafe();
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [loading, setLoading] = useState(true);
   const [graph, setGraph] = useState<GraphData | null>(null);
-  const [searchInput, setSearchInput] = useState("");
+  const [searchInput, setSearchInput] = useState(analysisState.rootAddress);
   const [focus, setFocus] = useState<FocusSelection | null>(null);
   const [direction, setDirection] = useState<FocusDirection>(DEFAULT_DIRECTION);
   const [depth, setDepth] = useState<FocusDepth>(DEFAULT_DEPTH);
@@ -142,6 +146,8 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   const inspectorMode: "dock" | "collapsible" | "drawer" = isWide ? "dock" : isMedium ? "collapsible" : "drawer";
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [showGlobal, setShowGlobal] = useState(false);
+  const [coreAddress, setCoreAddress] = useState<string | null>(null);
   // V2.2 智能数据补充面板（Smart Download Orchestrator）
   const [smartFillOpen, setSmartFillOpen] = useState(false);
   useEffect(() => {
@@ -152,11 +158,30 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem("graph-v2-bookmarks");
-      if (raw) setBookmarks(JSON.parse(raw) as GraphBookmark[]);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setBookmarks(
+            parsed.filter(
+              (b: GraphBookmark) => b && typeof b === "object" && typeof b.name === "string" && typeof b.address === "string" && typeof b.mode === "string",
+            ).slice(0, 20),
+          );
+        }
+      }
       const groupsRaw = window.localStorage.getItem("graph-v3-groups");
-      if (groupsRaw) setGroups(JSON.parse(groupsRaw) as TempGroup[]);
+      if (groupsRaw) {
+        const parsed = JSON.parse(groupsRaw);
+        if (Array.isArray(parsed)) {
+          setGroups(parsed.filter((g: TempGroup) => g && typeof g.name === "string" && Array.isArray(g.addresses)));
+        }
+      }
       const hypRaw = window.localStorage.getItem("graph-v3-hypotheses");
-      if (hypRaw) setHypotheses(JSON.parse(hypRaw));
+      if (hypRaw) {
+        const parsed = JSON.parse(hypRaw);
+        if (Array.isArray(parsed)) {
+          setHypotheses(parsed.filter((h) => h && typeof h.name === "string" && Array.isArray(h.addresses) && typeof h.status === "string"));
+        }
+      }
     } catch {
       /* ignore */
     }
@@ -406,6 +431,10 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   };
 
   const restoreBookmark = (b: GraphBookmark) => {
+    if (!b || typeof b.mode !== "string" || typeof b.address !== "string") {
+      void message.warning("书签数据格式异常，已忽略");
+      return;
+    }
     setViewMode(b.mode);
     setFilters({ ...b.filters });
     if (b.lens) setLens(b.lens);
@@ -420,6 +449,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
         }),
       );
     }
+    setCoreAddress(b.address);
     setDirection(b.direction as FocusDirection);
     setDepth(b.depth as FocusDepth);
     setFocus({ address: b.address, direction: b.direction as FocusDirection, depth: b.depth as FocusDepth });
@@ -520,10 +550,17 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   }, []);
 
   const workspaceMode = useMemo<WorkspaceMode>(
-    () => (focus
-      ? { kind: "focus", kindFilter, center: focus.address, direction: focus.direction, depth: focus.depth }
-      : { kind: "global", kindFilter }),
-    [focus, kindFilter],
+    () => {
+      if (focus) {
+        return { kind: "focus", kindFilter, center: focus.address, direction: focus.direction, depth: focus.depth };
+      }
+      if (showGlobal && coreAddress) {
+        // 全局视图 = 以核心地址为中心向外延伸（全部层、上下游），不是整张数据集图
+        return { kind: "focus", kindFilter, center: coreAddress, direction: "both", depth: 0 };
+      }
+      return { kind: "global", kindFilter };
+    },
+    [focus, kindFilter, showGlobal, coreAddress],
   );
 
   const workspaceGraph = useMemo(() => {
@@ -532,15 +569,30 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   }, [graph, workspaceMode]);
 
   const elements = useMemo(
-    () => (workspaceGraph ? layoutWorkspaceGraph(workspaceGraph, workspaceMode) : null),
-    [workspaceGraph, workspaceMode],
+    () => {
+      setGraphColorScheme(lightMode); // 先切配色再布局，避免首帧黑色边
+      return workspaceGraph ? layoutWorkspaceGraph(workspaceGraph, workspaceMode) : null;
+    },
+    [workspaceGraph, workspaceMode, lightMode],
   );
 
+  // 默认不铺开全局大图：未聚焦且未主动选择全局视图时显示空状态（设计 §10.1、§31）
+  const viewReady = focus !== null || showGlobal;
+
+  // 白底/深色切换时同步关系边配色（§6.2）
   useEffect(() => {
-    if (!elements) return;
+    setGraphColorScheme(lightMode);
+  }, [lightMode]);
+
+  useEffect(() => {
+    if (!elements || !viewReady) {
+      setNodes([]);
+      setEdges([]);
+      return;
+    }
     setNodes(elements.nodes);
     setEdges(elements.edges);
-  }, [elements, setEdges, setNodes]);
+  }, [elements, setEdges, setNodes, viewReady]);
 
   // V2：视图模式 / 过滤 / 路径高亮（设计 §8.2、§9、§21）
   const fundFlowSets = useMemo(() => {
@@ -851,6 +903,9 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
     if (multiRoots.includes(addr)) return;
     setMultiRoots((r) => [...r, addr]);
     setMultiRootInput("");
+    if (graph && !graph.nodes.some((n) => n.id.toLowerCase() === addr)) {
+      void message.info(`${addr.slice(0, 10)}… 本地暂无数据，联合分析可能为空；聚焦后可自动补数`);
+    }
   };
 
   const addHypothesis = () => {
@@ -895,6 +950,15 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
     }
   };
 
+  const showGlobalExtension = () => {
+    if (!coreAddress) {
+      void message.info("请先输入或点击一个核心地址，再查看全局延伸关系");
+      return;
+    }
+    setShowGlobal(true);
+    void message.info(`已显示核心地址延伸关系：${coreAddress.slice(0, 10)}…`);
+  };
+
   const saveDiffBaseline = () => {
     setBaseline(multiRootResult ?? fundFlow);
     void message.success("已保存对比基线");
@@ -918,12 +982,12 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   };
 
   useEffect(() => {
-    if (!flowInstance || !elements?.nodes.length) return;
+    if (!flowInstance || !elements?.nodes.length || !viewReady) return;
     const frame = window.requestAnimationFrame(() => {
       void flowInstance.fitView({ padding: 0.16, maxZoom: 1, duration: 260 });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [elements, flowInstance]);
+  }, [elements, flowInstance, viewReady]);
 
   const onInit = useCallback((instance: ReactFlowInstance) => {
     setFlowInstance(instance);
@@ -1022,6 +1086,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       const bookmark = bookmarks.find((b) => b.name.toLowerCase().includes(lower));
       if (node) {
         lastCenterRef.current = node.address;
+        setCoreAddress(node.address);
         setFocus({ address: node.address, direction, depth });
         setSearchInput("");
         void message.success(`已定位实体：${node.entity_name ?? node.address}`);
@@ -1036,6 +1101,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       if (first?.addresses?.length) {
         const addr = first.addresses[0].toLowerCase();
         lastCenterRef.current = addr;
+        setCoreAddress(addr);
         setFocus({ address: addr, direction, depth });
         setSearchInput("");
         void message.success(`已定位实体：${first.name}`);
@@ -1050,25 +1116,24 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
     }
     const addr = normalizeAddress(raw);
     if (graph && !graph.nodes.some((n) => n.id.toLowerCase() === addr)) {
-      // 合并顶部横条全局搜索：数据集外地址可前往地址详情页
-      if (onOpenAddress) {
-        void message.warning({
-          content: "未在当前数据集中找到该地址 — 点击前往地址详情页",
-          duration: 5,
-          onClick: () => onOpenAddress(addr),
-        });
-      } else {
-        void message.error("未在当前数据集中找到该地址");
-      }
+      // 地址不在本地库：仍可聚焦，并自动打开智能补数（下载完成后自动回填图）
+      lastCenterRef.current = addr;
+      setCoreAddress(addr);
+      setFocus({ address: addr, direction, depth });
+      setSearchInput("");
+      void message.warning("本地暂无该地址数据，已自动打开智能补充");
+      setSmartFillOpen(true);
       return;
     }
     lastCenterRef.current = addr;
+    setCoreAddress(addr);
     setFocus({ address: addr, direction, depth });
     setSearchInput("");
   }, [searchInput, graph, direction, depth, onOpenAddress, multiRootResult, fundFlow, bookmarks, restoreBookmark]);
 
   const onClearFocus = useCallback(() => {
     setFocus(null);
+    setShowGlobal(false);
     setSearchInput("");
     setAddressStats(null);
     if (inspectorMode === "drawer") setDrawerOpen(false);
@@ -1082,13 +1147,23 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
         setFocus({ ...focus, direction: next });
         return;
       }
-      if (next !== "all" && lastCenterRef.current) {
+      if (next === "all") {
+        if (coreAddress) {
+          setShowGlobal(true);
+          void message.info(`已显示核心地址延伸关系：${coreAddress.slice(0, 10)}…`);
+        } else {
+          void message.info("请先输入或点击一个核心地址，再查看全局延伸关系");
+        }
+        return;
+      }
+      if (lastCenterRef.current) {
+        setCoreAddress(lastCenterRef.current);
         setFocus({ address: lastCenterRef.current, direction: next, depth });
-      } else if (next !== "all") {
+      } else {
         void message.info("请先搜索或点击画布地址选择中心");
       }
     },
-    [focus, depth],
+    [focus, depth, coreAddress],
   );
 
   // 深度切换：只重算可见子图，不清空中心
@@ -1108,6 +1183,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       // 点击当前聚焦中心：保持视口不变
       if (focus && focus.address === normalized) return;
       lastCenterRef.current = normalized;
+      setCoreAddress(normalized);
       setFocus({ address: normalized, direction, depth });
     },
     [direction, depth, focus],
@@ -1286,79 +1362,85 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       />
 
       <div className="flow-workspace-body">
-        <div className="flow-left-column">
-          <FlowLeftPanel
-            focusAddress={focus?.address ?? null}
-            lightMode={lightMode}
-            viewMode={viewMode}
-            lens={lens}
-            filters={filters}
-            valueCoverage={valueCoverage}
-            entityCollapse={entityCollapse}
-            onEntityCollapse={setEntityCollapse}
-            fundFlow={multiRootResult ?? fundFlow}
-            analyzing={analyzing}
-            bookmarks={bookmarks}
-            highlightPathId={highlightPathId}
-            selectedNodes={selectedNodes}
-            groups={groups}
-            coverage={coverage}
-            resultRows={resultRows}
-            onLightMode={setLightMode}
-            onViewMode={setViewMode}
-            onLens={setLens}
-            onFilters={setFilters}
-            onValueCoverage={setValueCoverage}
-            onAnalyze={() => {
-              if (!focus) return;
-              setAnalyzing(true);
-              void analyzeFundFlow({ chain_key: CHAIN, root_address: focus.address, goal: "cashout", max_depth: 2 })
-                .then(setFundFlow)
-                .finally(() => setAnalyzing(false));
-            }}
-            onHighlightPath={setHighlightPathId}
-            onSaveBookmark={saveBookmark}
-            onRestoreBookmark={restoreBookmark}
-            onSmartFill={onSmartFill}
-            onOpenAddress={() => {
-              if (focus && onOpenAddress) onOpenAddress(focus.address);
-            }}
-            onPathQuery={runPathQuery}
-            queryResults={queryResults}
-            onCreateGroup={createGroup}
-            onRemoveGroup={removeGroup}
-            onTestHypothesis={() => void testHypothesis()}
-            onCommandPalette={() => setPaletteOpen(true)}
-          />
-          <FlowV3Extras
-            multiRoots={multiRoots}
-            multiRootInput={multiRootInput}
-            showCommonOnly={showCommonOnly}
-            hypotheses={hypotheses}
-            copilot={copilot}
-            timeline={timelineEvents}
-            canUndo={historyPast.length > 0}
-            canRedo={historyFuture.length > 0}
-            onMultiRootInput={setMultiRootInput}
-            onAddMultiRoot={addMultiRoot}
-            onRemoveMultiRoot={(addr) => setMultiRoots((r) => r.filter((x) => x !== addr))}
-            onShowCommonOnly={setShowCommonOnly}
-            onAddHypothesis={addHypothesis}
-            onHypothesisStatus={updateHypothesisStatus}
-            onCopilotAction={runCopilotAction}
-            onTimelineClick={onTimelineClick}
-            onSaveBaseline={saveDiffBaseline}
-            onCompareDiff={compareDiff}
-            onUndo={undoHistory}
-            onRedo={redoHistory}
-          />
-        </div>
+        <InvestigationSidebar
+          focusAddress={focus?.address ?? null}
+          lightMode={lightMode}
+          viewMode={viewMode}
+          lens={lens}
+          filters={filters}
+          valueCoverage={valueCoverage}
+          entityCollapse={entityCollapse}
+          onEntityCollapse={setEntityCollapse}
+          fundFlow={multiRootResult ?? fundFlow}
+          analyzing={analyzing}
+          bookmarks={bookmarks}
+          highlightPathId={highlightPathId}
+          selectedNodes={selectedNodes}
+          groups={groups}
+          coverage={coverage}
+          resultRows={resultRows}
+          onLightMode={setLightMode}
+          onViewMode={setViewMode}
+          onLens={setLens}
+          onFilters={setFilters}
+          onValueCoverage={setValueCoverage}
+          onAnalyze={() => {
+            if (!focus) return;
+            setAnalyzing(true);
+            void analyzeFundFlow({ chain_key: CHAIN, root_address: focus.address, goal: "cashout", max_depth: 2 })
+              .then(setFundFlow)
+              .finally(() => setAnalyzing(false));
+          }}
+          onHighlightPath={setHighlightPathId}
+          onSaveBookmark={saveBookmark}
+          onRestoreBookmark={restoreBookmark}
+          onSmartFill={onSmartFill}
+          onOpenAddress={() => {
+            if (focus && onOpenAddress) onOpenAddress(focus.address);
+          }}
+          onPathQuery={runPathQuery}
+          queryResults={queryResults}
+          onCreateGroup={createGroup}
+          onRemoveGroup={removeGroup}
+          onTestHypothesis={() => void testHypothesis()}
+          onCommandPalette={() => setPaletteOpen(true)}
+          canShowGlobal={!!coreAddress}
+          onShowGlobalExtension={showGlobalExtension}
+          multiRoots={multiRoots}
+          multiRootInput={multiRootInput}
+          showCommonOnly={showCommonOnly}
+          hypotheses={hypotheses}
+          copilot={copilot}
+          timeline={timelineEvents}
+          canUndo={historyPast.length > 0}
+          canRedo={historyFuture.length > 0}
+          onMultiRootInput={setMultiRootInput}
+          onAddMultiRoot={addMultiRoot}
+          onRemoveMultiRoot={(addr) => setMultiRoots((r) => r.filter((x) => x !== addr))}
+          onShowCommonOnly={setShowCommonOnly}
+          onAddHypothesis={addHypothesis}
+          onHypothesisStatus={updateHypothesisStatus}
+          onCopilotAction={runCopilotAction}
+          onTimelineClick={onTimelineClick}
+          onSaveBaseline={saveDiffBaseline}
+          onCompareDiff={compareDiff}
+          onUndo={undoHistory}
+          onRedo={redoHistory}
+        />
         <FlowCanvasShell
           loading={loading}
-          graph={graph}
+          graph={viewReady ? graph : null}
           nodes={displayNodes}
           edges={displayEdges}
           focus={focus}
+          pending={!viewReady}
+          emptyDescription="输入 EVM 地址开始分析（或点击顶部「全局视图」查看全部关系）"
+          globalTitle={showGlobal && coreAddress ? "全局延伸视图" : undefined}
+          globalHint={
+            showGlobal && coreAddress
+              ? `以 ${coreAddress.slice(0, 10)}… 为中心向外延伸（全部层）`
+              : undefined
+          }
           truncated={workspaceGraph?.truncated ?? false}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
