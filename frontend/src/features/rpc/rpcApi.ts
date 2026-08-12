@@ -1,5 +1,6 @@
 import type {
   EnrichmentJob,
+  RpcBatchCreateResponse,
   RpcEndpoint,
   RpcEndpointInput,
   RpcHealthResponse,
@@ -26,6 +27,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 export const rpcApi = {
   health: () => request<RpcHealthResponse>(`${RPC}/health`),
   create: (input: RpcEndpointInput) => request<RpcEndpoint>(`${RPC}/endpoints`, json('POST', input)),
+  createBatch: (items: RpcEndpointInput[]) => request<RpcBatchCreateResponse>(`${RPC}/endpoints/batch`, json('POST', { items })),
   update: (id: string, input: Partial<RpcEndpointInput>) =>
     request<RpcEndpoint>(`${RPC}/endpoints/${encodeURIComponent(id)}`, json('PUT', input)),
   remove: (id: string) => request<{ success: boolean }>(`${RPC}/endpoints/${encodeURIComponent(id)}`, { method: 'DELETE' }),

@@ -4,13 +4,15 @@ import {
   CloudServerOutlined,
   DatabaseOutlined,
   ExclamationCircleOutlined,
+  HistoryOutlined,
   PlusOutlined,
   ReloadOutlined,
   SearchOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
-import { Button, Drawer, Empty, Input, Segmented, Space, Spin, Tag, Tooltip, message } from 'antd';
+import { Button, Drawer, Empty, Input, Segmented, Space, Spin, Tooltip, message } from 'antd';
 import { startTransition, useCallback, useEffect, useMemo, useState } from 'react';
+import { RpcBatchDialog } from '../../rpc/RpcBatchDialog';
 import { dataSourceApi } from './api/datasource-api';
 import { MetricsCard } from './components/MetricsCard';
 import { SourceCard } from './components/SourceCard';
@@ -45,6 +47,8 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
   const [testResult, setTestResult] = useState<DataSourceTestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [logSource, setLogSource] = useState<DataSourceItem | null>(null);
+  const [eventDrawerOpen, setEventDrawerOpen] = useState(false);
+  const [rpcBatchOpen, setRpcBatchOpen] = useState(false);
 
   const refresh = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -82,7 +86,7 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
   ), [snapshot.sources]);
 
   const metrics = [
-    { label: '数据源数量', value: snapshot.overview.source_count, suffix: '个', icon: <DatabaseOutlined />, tone: 'blue', help: 'SQD、AWS及各RPC Endpoint总数' },
+    { label: '数据源卡片', value: snapshot.overview.source_count, suffix: '个', icon: <DatabaseOutlined />, tone: 'blue', help: 'RPC 已按 Provider 与链聚合，不再按账号重复占用卡片' },
     { label: '健康数据源', value: snapshot.overview.healthy_count, suffix: '个', icon: <CheckCircleOutlined />, tone: 'green', help: '最近一次健康检查正常的数据源' },
     { label: '异常数据源', value: snapshot.overview.abnormal_count, suffix: '个', icon: <ExclamationCircleOutlined />, tone: 'orange', help: '降级、限流、配置异常或不可用的数据源' },
     { label: '今日请求', value: snapshot.overview.today_requests.toLocaleString(), suffix: '次', icon: <ThunderboltOutlined />, tone: 'indigo', help: '统一管理器记录的当日探测与RPC请求' },
@@ -158,7 +162,8 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>
-          <Button icon={<CloudServerOutlined />} onClick={onOpenRpc}>新增RPC节点</Button>
+          <Button icon={<HistoryOutlined />} onClick={() => { setLogSource(null); setEventDrawerOpen(true); }}>健康事件{snapshot.events.length ? `（${snapshot.events.length}）` : ''}</Button>
+          <Button icon={<CloudServerOutlined />} onClick={() => setRpcBatchOpen(true)}>批量添加 RPC</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditing(null); setConfigOpen(true); }}>添加数据源</Button>
         </Space>
       </header>
@@ -192,22 +197,13 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
                 testing={testingSource?.source_id === source.source_id && testing}
                 onEdit={() => void editSource(source)}
                 onTest={() => void testSource(source)}
-                onLogs={() => setLogSource(source)}
+                onLogs={() => { setLogSource(source); setEventDrawerOpen(true); }}
                 onDelete={() => void removeSource(source)}
               />
             ))}
           </section>
         ) : <Empty className="datasource-empty" description="没有符合条件的数据源" />}
       </Spin>
-
-      <section className="datasource-events">
-        <div className="datasource-section-title">
-          <div><h2>最近健康事件</h2></div>
-          <Tag>{snapshot.events.length} 条</Tag>
-        </div>
-        {snapshot.events.length ? snapshot.events.slice(0, 6).map((event) => <EventRow key={`${event.source_id}-${event.occurred_at}`} event={event} />)
-          : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="健康检查完成后将在这里显示事件" />}
-      </section>
 
       <SourceConfigDialog
         open={configOpen}
@@ -216,6 +212,7 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
         onCancel={() => setConfigOpen(false)}
         onSave={saveSource}
       />
+      <RpcBatchDialog open={rpcBatchOpen} onClose={() => setRpcBatchOpen(false)} onCreated={() => refresh(true)} />
       <TestConnectionModal
         source={testingSource}
         result={testResult}
@@ -223,9 +220,15 @@ export function DataSourcePage({ onOpenRpc }: { onOpenRpc: () => void }) {
         testing={testing}
         onClose={() => setTestingSource(null)}
       />
-      <Drawer rootClassName="datasource-log-drawer" title={`${logSource?.name || ''} · 健康日志`} open={Boolean(logSource)} onClose={() => setLogSource(null)} width="min(520px, 92vw)">
+      <Drawer
+        rootClassName="datasource-log-drawer"
+        title={logSource ? `${logSource.name} · 健康日志` : `健康事件${snapshot.events.length ? ` · ${snapshot.events.length} 条` : ''}`}
+        open={eventDrawerOpen}
+        onClose={() => { setEventDrawerOpen(false); setLogSource(null); }}
+        width="min(560px, 92vw)"
+      >
         {events.length ? events.map((event) => <EventRow key={`${event.source_id}-${event.occurred_at}`} event={event} />)
-          : <Empty description="该数据源暂无健康事件" />}
+          : <Empty description={logSource ? '该数据源暂无健康事件' : '健康检查完成后将在这里显示事件'} />}
       </Drawer>
     </div>
   );

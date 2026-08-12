@@ -51,6 +51,10 @@ func (m *GUIManager) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		settings = normalizeGUIPersistedSettings(settings)
+		if err := validateGUIMailIdentity(settings.CSVEmail, settings.CSVIMAPHost, settings.CSVIMAPUser); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if err := saveGUISettingsToConfigDir(m.configDir, settings); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -89,6 +93,7 @@ func (m *GUIManager) hydrateCSVStartRequest(req GUIStartRequest) (GUIStartReques
 	req.CSVIMAPHost = firstNonEmpty(strings.TrimSpace(req.CSVIMAPHost), settings.CSVIMAPHost)
 	req.CSVIMAPUser = firstNonEmpty(strings.TrimSpace(req.CSVIMAPUser), settings.CSVIMAPUser)
 	req.CSVIMAPPassword = firstNonEmpty(strings.TrimSpace(req.CSVIMAPPassword), settings.CSVIMAPPassword)
+	req.CSVDeliveryMode = normalizeCSVDeliveryMode(firstNonEmpty(strings.TrimSpace(req.CSVDeliveryMode), settings.CSVDeliveryMode))
 	if req.CSVIMAPPort <= 0 {
 		req.CSVIMAPPort = settings.CSVIMAPPort
 	}
@@ -104,6 +109,9 @@ func (m *GUIManager) hydrateCSVStartRequest(req GUIStartRequest) (GUIStartReques
 	req.CSVIMAPPort = cfg.CSVIMAPPort
 	req.CSVIMAPUser = cfg.CSVIMAPUser
 	req.CSVIMAPPassword = cfg.CSVIMAPPassword
+	if err := validateGUIMailIdentity(req.CSVEmail, req.CSVIMAPHost, req.CSVIMAPUser); err != nil {
+		return req, err
+	}
 	switch {
 	case strings.TrimSpace(req.CSVEmail) == "":
 		return req, errors.New("CSV 模式缺少接收邮箱")
@@ -120,4 +128,19 @@ func (m *GUIManager) hydrateCSVStartRequest(req GUIStartRequest) (GUIStartReques
 	default:
 		return req, nil
 	}
+}
+
+func validateGUIMailIdentity(email, host, user string) error {
+	email = strings.ToLower(strings.TrimSpace(email))
+	host = strings.ToLower(strings.TrimSpace(host))
+	user = strings.ToLower(strings.TrimSpace(user))
+	if host == "imap.gmail.com" {
+		if !strings.HasSuffix(email, "@gmail.com") || !strings.HasSuffix(user, "@gmail.com") {
+			return errors.New("Gmail IMAP 的接收邮箱和 IMAP 用户都必须是完整的 @gmail.com 地址")
+		}
+		if email != user {
+			return errors.New("Gmail IMAP 用户必须与接收邮箱一致")
+		}
+	}
+	return nil
 }

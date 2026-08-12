@@ -11,6 +11,7 @@ type GUIJobPersistedRequest struct {
 	CSVIMAPHost      string  `json:"csvImapHost,omitempty"`
 	CSVIMAPPort      int     `json:"csvImapPort,omitempty"`
 	CSVIMAPUser      string  `json:"csvImapUser,omitempty"`
+	CSVDeliveryMode  string  `json:"csvDeliveryMode,omitempty"`
 	CSVStartTime     int64   `json:"csvStartTime,omitempty"`
 	CSVEndTime       int64   `json:"csvEndTime,omitempty"`
 	StartBlock       int64   `json:"startBlock,omitempty"`

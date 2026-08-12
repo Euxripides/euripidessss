@@ -13,7 +13,7 @@ func guiStartRequestFromPersisted(record GUIJobRecord, settings GUIPersistedSett
 	req := GUIStartRequest{
 		Source: r.Source, RPCURL: r.RPCURL, AddressChains: append([]GUIAddressChain(nil), record.Entries...), Chains: r.Chains,
 		NativeSymbol: r.NativeSymbol, CSVEmail: r.CSVEmail, CSVIMAPHost: r.CSVIMAPHost,
-		CSVIMAPPort: r.CSVIMAPPort, CSVIMAPUser: r.CSVIMAPUser, CSVStartTime: r.CSVStartTime,
+		CSVIMAPPort: r.CSVIMAPPort, CSVIMAPUser: r.CSVIMAPUser, CSVDeliveryMode: r.CSVDeliveryMode, CSVStartTime: r.CSVStartTime,
 		CSVEndTime: r.CSVEndTime, StartBlock: r.StartBlock, EndBlock: r.EndBlock,
 		CutoffBlock: r.CutoffBlock, TraceMode: r.TraceMode, BlockBatch: r.BlockBatch,
 		LogBatch: r.LogBatch, Workers: r.Workers, RPS: r.RPS, TimeoutSeconds: r.TimeoutSeconds,

@@ -52,6 +52,10 @@ export interface DataSourceItem {
   last_failure_at?: string;
   last_error?: string;
   checked_at?: string;
+  account_count?: number;
+  enabled_accounts?: number;
+  healthy_accounts?: number;
+  abnormal_accounts?: number;
   config: PublicSourceConfig;
 }
 

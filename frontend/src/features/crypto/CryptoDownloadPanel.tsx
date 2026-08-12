@@ -29,6 +29,7 @@ import {
   type CryptoDownloadAddressChain,
   type CryptoDownloadJob,
   type CryptoDownloadHistoryRecord,
+  type CryptoCSVDeliveryMode,
   type CryptoDownloadSource,
   type CryptoDownloadStartValues,
 } from './cryptoDownloadApi';
@@ -46,6 +47,7 @@ type CryptoDownloadFormValues = {
   readonly csvImapPort?: number;
   readonly csvImapUser?: string;
   readonly csvImapPassword?: string;
+  readonly csvDeliveryMode?: CryptoCSVDeliveryMode;
   readonly csvStartTime?: number;
   readonly csvEndTime?: number;
   readonly csvRequestHar?: string;
@@ -84,6 +86,7 @@ export function CryptoDownloadPanel() {
   const [form] = Form.useForm<CryptoDownloadFormValues>();
   const [notificationApi, notificationHolder] = notification.useNotification({ placement: 'topRight', maxCount: 4 });
   const [loading, setLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [currentJob, setCurrentJob] = useState<CryptoDownloadJob | null>(null);
   const [jobs, setJobs] = useState<readonly CryptoDownloadJob[]>([]);
   const [history, setHistory] = useState<readonly CryptoDownloadHistoryRecord[]>([]);
@@ -292,6 +295,7 @@ export function CryptoDownloadPanel() {
         csvImapPort: values.csvImapPort,
         csvImapUser: values.csvImapUser,
         csvImapPassword: values.csvImapPassword,
+        csvDeliveryMode: values.csvDeliveryMode,
         csvStartTime: values.csvStartTime,
         csvEndTime: values.csvEndTime,
         workers: values.workers,
@@ -313,6 +317,43 @@ export function CryptoDownloadPanel() {
       return false;
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function saveSettingsAndClose() {
+    setSettingsSaving(true);
+    try {
+      if (source === 'csv') {
+        await form.validateFields(['csvEmail', 'csvImapHost', 'csvImapPort', 'csvImapUser']);
+      }
+      const values = form.getFieldsValue();
+      await saveCryptoDownloadSettings({
+        source: values.source,
+        csvEmail: values.csvEmail,
+        csvImapHost: values.csvImapHost,
+        csvImapPort: values.csvImapPort,
+        csvImapUser: values.csvImapUser,
+        csvImapPassword: values.csvImapPassword,
+        csvDeliveryMode: values.csvDeliveryMode,
+        csvStartTime: values.csvStartTime,
+        csvEndTime: values.csvEndTime,
+        workers: values.workers,
+        rps: values.rps,
+        timeoutSeconds: values.timeoutSeconds,
+        rawDir: values.rawDir,
+        outputDir: values.outputDir,
+        outputPrefix: values.outputPrefix,
+        incremental: values.incremental,
+        riskCooldownSecs: values.riskCooldownSecs,
+      });
+      setSettingsModalOpen(false);
+      message.success('下载设置已安全保存');
+    } catch (error) {
+      if (error instanceof Error) {
+        message.error(error.message || '保存下载设置失败');
+      }
+    } finally {
+      setSettingsSaving(false);
     }
   }
 
@@ -521,7 +562,7 @@ export function CryptoDownloadPanel() {
               title="下载设置"
               open={settingsModalOpen}
               width={960}
-              footer={<Button type="primary" onClick={() => setSettingsModalOpen(false)}>完成</Button>}
+              footer={<Button type="primary" loading={settingsSaving} onClick={() => void saveSettingsAndClose()}>保存设置</Button>}
               onCancel={() => setSettingsModalOpen(false)}
               styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
             >
@@ -571,6 +612,13 @@ export function CryptoDownloadPanel() {
                 {source === 'csv' && (
                   <Card size="small" title="OKLink CSV 与接收邮箱">
                     <div className="crypto-download-grid">
+                      <Form.Item name="csvDeliveryMode" label="CSV 获取方式" initialValue="auto">
+                        <Select options={[
+                          { value: 'auto', label: '自动（优先直链，必要时邮箱）' },
+                          { value: 'direct', label: '仅直链 CSV' },
+                          { value: 'email', label: '仅邮箱 CSV' },
+                        ]} />
+                      </Form.Item>
                       <Form.Item name="csvEmail" label="接收邮箱" rules={[{ required: true, type: 'email', message: '请输入有效接收邮箱' }]}>
                         <Input placeholder="name@gmail.com" />
                       </Form.Item>
@@ -587,11 +635,11 @@ export function CryptoDownloadPanel() {
                       <Form.Item name="csvImapPort" label="IMAP 端口" rules={[{ required: true, message: '请输入 IMAP 端口' }]}>
                         <InputNumber min={1} className="full" />
                       </Form.Item>
-                      <Form.Item name="csvImapUser" label="IMAP 用户" rules={[{ required: true, message: '请输入邮箱账号作为 IMAP 用户名' }]}>
-                        <Input placeholder="通常与接收邮箱相同" />
+                      <Form.Item name="csvImapUser" label="IMAP 用户" rules={[{ required: true, type: 'email', message: '请输入完整邮箱地址作为 IMAP 用户名' }]}>
+                        <Input autoComplete="email" placeholder="Gmail 必须与接收邮箱一致" />
                       </Form.Item>
                       <Form.Item name="csvImapPassword" label="IMAP 密码" extra="Gmail 请使用应用专用密码；已保存时可留空">
-                        <Input.Password autoComplete="current-password" />
+                        <Input.Password autoComplete="new-password" />
                       </Form.Item>
                       <Form.Item name="csvRequestHar" label="OKLink HAR"><Input placeholder="可选，复用签名请求" /></Form.Item>
                       <Form.Item name="csvStartTime" label="CSV 开始时间（Unix 秒）"><InputNumber min={0} className="full" /></Form.Item>

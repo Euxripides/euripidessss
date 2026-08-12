@@ -292,6 +292,53 @@ func TestV33CrossBatchJoinCancelAndFanout(t *testing.T) {
 	}
 }
 
+func TestV33SingleWorkHonorsPreferredProviderBeforeGroupAdapter(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(root))
+	t.Cleanup(svc.Shutdown)
+	csv := NewMockNamedProvider("csv")
+	svc.RegisterAdapter(csv)
+	svc.RegisterAdapter(&v33MockGroupAdapter{})
+
+	now := time.Now().UTC()
+	batch := &BatchJob{ID: "single-preferred-batch", ChainKey: "bsc", Mode: DownloadModeAuto,
+		Status: BatchCreated, CreatedAt: now, UpdatedAt: now}
+	address := &AddressJob{ID: "single-preferred-address", BatchID: batch.ID, Address: addrA,
+		ChainKey: "bsc", Status: AddressWaiting, CreatedAt: now, UpdatedAt: now}
+	dataset := &DatasetJob{ID: "single-preferred-dataset", BatchID: batch.ID, AddressJobID: address.ID,
+		Address: address.Address, ChainKey: "bsc", Dataset: DatasetTokenTransfers,
+		PreferredProvider: "csv", Status: DatasetPending, CreatedAt: now, UpdatedAt: now}
+	rangeJob := &RangeJob{ID: "single-preferred-range", SharedWorkID: "single-preferred-work",
+		BatchID: batch.ID, AddressJobID: address.ID, DatasetJobID: dataset.ID,
+		Status: RangeReady, FromBlock: 1, ToBlock: 2, CreatedAt: now, UpdatedAt: now}
+	for _, save := range []func() error{
+		func() error { return store.SaveBatch(batch) }, func() error { return store.SaveAddress(address) },
+		func() error { return store.SaveDataset(dataset) }, func() error { return store.SaveRange(rangeJob) },
+	} {
+		if err := save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc.v33.mu.Lock()
+	svc.v33.works[rangeJob.SharedWorkID] = &SharedWork{ID: rangeJob.SharedWorkID, ChainKey: "bsc",
+		Datasets: []string{DatasetTokenTransfers}, Addresses: []string{address.Address}, FromBlock: 1, ToBlock: 2,
+		Status: sharedWorkReady, RefCount: 1, Refs: []SharedWorkRef{{BatchID: batch.ID, AddressJobID: address.ID,
+			DatasetJobID: dataset.ID, RangeJobID: rangeJob.ID, Address: address.Address, Dataset: dataset.Dataset}}}
+	svc.v33.mu.Unlock()
+
+	claim := svc.claimSharedWork(batch.ID)
+	if claim == nil || claim.adapter == nil {
+		t.Fatal("single shared work was not claimable")
+	}
+	if claim.group != nil || claim.adapter.Name() != "csv" {
+		t.Fatalf("single work ignored preferred provider: adapter=%s group=%T", claim.adapter.Name(), claim.group)
+	}
+}
+
 func TestV33RegistryRecoveryResetsRunningOnly(t *testing.T) {
 	root := t.TempDir()
 	runtime := newV33Runtime(root)

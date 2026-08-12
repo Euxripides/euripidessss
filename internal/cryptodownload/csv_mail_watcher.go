@@ -154,9 +154,25 @@ func (w *csvMailWatcher) connect(ctx context.Context) error {
 	w.client = cli
 	if err := w.command(ctx, func() error { return cli.Login(w.config.Username, w.config.Password) }); err != nil {
 		w.disconnect()
+		if csvIMAPLoginErrorIsTransient(err) {
+			return &csvMailError{Status: csvMailReconnecting, Op: "login", Err: err}
+		}
 		return &csvMailError{Status: csvMailLoginConfigFailure, Op: "login", Err: err}
 	}
 	return nil
+}
+
+func csvIMAPLoginErrorIsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(lower, "connection closed") ||
+		strings.Contains(lower, "broken pipe") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "unexpected eof") ||
+		strings.Contains(lower, "i/o timeout")
 }
 
 func (w *csvMailWatcher) command(ctx context.Context, operation func() error) error {

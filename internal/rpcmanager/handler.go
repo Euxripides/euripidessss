@@ -22,6 +22,21 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	switch {
 	case path == "/rpc/endpoints":
 		h.endpoints(writer, request)
+	case path == "/rpc/endpoints/batch" && request.Method == http.MethodPost:
+		var input BatchCreateInput
+		if !decodeBody(writer, request, &input) {
+			return
+		}
+		result, err := h.manager.CreateBatch(request.Context(), input.Items)
+		if err != nil {
+			writeResult(writer, nil, err)
+			return
+		}
+		status := http.StatusCreated
+		if result.FailureCount > 0 {
+			status = http.StatusMultiStatus
+		}
+		writeJSON(writer, status, result)
 	case path == "/rpc/test" && request.Method == http.MethodPost:
 		var input EndpointInput
 		if !decodeBody(writer, request, &input) {

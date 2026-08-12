@@ -378,6 +378,7 @@ func (c *BrowserScraperClient) CollectAddressBrowser(ctx context.Context, cfg Co
 			if err != nil {
 				addError("browser transactions %s: %v", chain, err)
 			}
+			txRows = dedupeExactBrowserRows(cfg, chain, "transactions", txRows)
 			mu.Lock()
 			data.Transactions = append(data.Transactions, txRows...)
 			data.Funds = append(data.Funds, buildFundRows(txRows)...)
@@ -394,6 +395,7 @@ func (c *BrowserScraperClient) CollectAddressBrowser(ctx context.Context, cfg Co
 			if err != nil {
 				addError("browser internal %s: %v", chain, err)
 			}
+			internalRows = dedupeExactBrowserRows(cfg, chain, "internal", internalRows)
 			mu.Lock()
 			data.Internals = append(data.Internals, internalRows...)
 			data.Funds = append(data.Funds, buildFundRows(internalRows)...)
@@ -410,6 +412,7 @@ func (c *BrowserScraperClient) CollectAddressBrowser(ctx context.Context, cfg Co
 			if err != nil {
 				addError("browser token transfers %s: %v", chain, err)
 			}
+			tokenRows = dedupeExactBrowserRows(cfg, chain, "token_transfers", tokenRows)
 			mu.Lock()
 			data.TokenTransfers = append(data.TokenTransfers, tokenRows...)
 			data.Funds = append(data.Funds, buildFundRows(tokenRows)...)
@@ -427,6 +430,7 @@ func (c *BrowserScraperClient) CollectAddressBrowser(ctx context.Context, cfg Co
 			if err != nil {
 				addError("browser nft transfers %s: %v", chain, err)
 			}
+			nftRows = dedupeExactBrowserRows(cfg, chain, "nft_transfers", nftRows)
 			mu.Lock()
 			data.NFTTransfers = append(data.NFTTransfers, nftRows...)
 			data.Funds = append(data.Funds, buildFundRows(nftRows)...)
@@ -455,6 +459,36 @@ func (c *BrowserScraperClient) CollectAddressBrowser(ctx context.Context, cfg Co
 
 	wg.Wait()
 	return data, nil
+}
+
+// dedupeExactBrowserRows removes only byte-for-byte-equivalent normalized rows.
+// It intentionally keeps rows that share a transaction hash because one
+// transaction may contain multiple token, NFT, or internal-transfer events.
+func dedupeExactBrowserRows(cfg Config, chain, kind string, rows []map[string]any) []map[string]any {
+	if len(rows) < 2 {
+		return rows
+	}
+	seen := make(map[string]struct{}, len(rows))
+	unique := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		encoded, err := json.Marshal(row)
+		if err != nil {
+			// A browser row is JSON-derived and should always marshal. Preserve it
+			// if a future mapper introduces an unsupported value type.
+			unique = append(unique, row)
+			continue
+		}
+		key := string(encoded)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, row)
+	}
+	if dropped := len(rows) - len(unique); dropped > 0 {
+		reportProgress(cfg, "浏览器爬取 %s: %s 原始 %d 行，移除 %d 条完全重复记录，保留 %d 行", strings.ToUpper(chain), kind, len(rows), dropped, len(unique))
+	}
+	return unique
 }
 
 func browserSheetConcurrency(workers int) int {

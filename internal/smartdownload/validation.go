@@ -180,7 +180,7 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 				report.Errors = append(report.Errors, fmt.Sprintf("L2 请求范围外记录 %s: block %d 不在 [%d,%d]",
 					item.name, r.BlockNumber, cp.RequestedFrom, cp.RequestedTo))
 			}
-			if !validRecordFields(r) {
+			if !recordFieldsValidForProvider(r) {
 				report.LevelRecord = false
 				report.Errors = append(report.Errors, fmt.Sprintf("L2 非法字段 %s: %s", item.name, r.TransactionHash))
 			}
@@ -465,6 +465,19 @@ func validRecordFields(r Record) bool {
 		return evmPattern.MatchString(firstNonEmpty(r.Payload, "contract_address", "address"))
 	}
 	return true
+}
+
+// CSV completeness is governed by the OKLink time-window count versus the
+// downloaded row count (absolute tolerance 100). Its human-readable export
+// intentionally does not satisfy the RPC/SQD canonical raw-field contract
+// (for example decimal/scientific token quantities and no log_index), so do
+// not re-apply that provider-specific L2 gate after the adapter has already
+// checked range, address, hash and timestamp.
+func recordFieldsValidForProvider(r Record) bool {
+	if strings.EqualFold(strings.TrimSpace(str(r.Payload["source_provider"])), "csv") {
+		return true
+	}
+	return validRecordFields(r)
 }
 
 func numericPayloadValue(value any) bool {

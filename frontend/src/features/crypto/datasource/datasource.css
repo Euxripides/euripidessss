@@ -30,6 +30,10 @@
 .datasource-source-rpc { color: #6f50d8; background: #f1edff; }
 .datasource-card-endpoint { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 36px; padding-top: 10px; }
 .datasource-card-endpoint code { overflow: hidden; flex: 1; color: #69758a; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.datasource-rpc-account-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 8px 0 2px; }
+.datasource-rpc-account-summary > div { padding: 9px 8px; border: 1px solid #edf0f5; border-radius: 9px; background: #fafbfc; text-align: center; }
+.datasource-rpc-account-summary strong { display: block; color: #18253e; font-size: 18px; line-height: 1.1; }
+.datasource-rpc-account-summary span { display: block; margin-top: 4px; color: #7b8799; font-size: 10px; }
 .datasource-card-stats { display: grid; grid-template-columns: minmax(0, 1.35fr) repeat(2, minmax(0, 1fr)); gap: 12px; margin: 9px 0; }
 .datasource-card-stats > div { min-width: 0; padding-right: 8px; border-right: 1px solid #edf0f5; }
 .datasource-card-stats > div:last-child { border-right: 0; }
@@ -42,10 +46,7 @@
 .datasource-card-time { display: block; overflow: hidden; min-width: 0; color: #788398; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .datasource-card-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 6px; min-width: 0; }
 .datasource-card-actions .ant-btn { width: 100%; min-width: 0; }
-.datasource-events { margin-top: 16px; padding: 18px; border: 1px solid var(--ds-border); border-radius: 10px; background: #fff; box-shadow: 0 5px 20px rgba(26, 48, 88, .04); }
-.datasource-section-title { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
-.datasource-section-title h2 { margin: 0 0 3px; color: #172542; font-size: 15px; }
-.datasource-section-title p { margin: 0; color: #8a94a6; font-size: 11px; }
+.datasource-card-actions > .ant-btn:only-child { grid-column: 1 / -1; }
 .datasource-event-row { display: grid; grid-template-columns: 86px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 3px; border-top: 1px solid #f0f2f6; }
 .datasource-event-row > span { display: flex; flex-direction: column; min-width: 0; }
 .datasource-event-row strong { color: #2b3954; font-size: 12px; }

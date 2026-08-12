@@ -543,7 +543,15 @@ func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
 		if !belongs || work.RefCount == 0 {
 			continue
 		}
-		group, _, groupOK := s.groupAdapterFor(work.Datasets, work.ChainKey, batch.Mode)
+		var group GroupProviderAdapter
+		groupOK := false
+		// A single-address/single-dataset workload must honor PlanDataset's
+		// preferred provider (for example CSV for small AUTO downloads). Group
+		// acceleration is only useful for an actual address or dataset group and
+		// otherwise lets map iteration order silently override that decision.
+		if len(work.Addresses) > 1 || len(work.Datasets) > 1 {
+			group, _, groupOK = s.groupAdapterFor(work.Datasets, work.ChainKey, batch.Mode)
+		}
 		var adapter ProviderAdapter
 		if groupOK {
 			adapter = group

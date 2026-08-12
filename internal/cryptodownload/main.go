@@ -156,6 +156,7 @@ type Config struct {
 	CSVIMAPPort     int
 	CSVIMAPUser     string
 	CSVIMAPPassword string
+	CSVDeliveryMode string
 	CSVStartTime    int64
 	CSVEndTime      int64
 	CSVRequestHAR   string

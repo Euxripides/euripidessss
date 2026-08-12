@@ -67,10 +67,11 @@ type csvSignerResult struct {
 }
 
 type csvSignerFailure struct {
-	Kind    error
-	Version csvSignerVersion
-	Detail  string
-	Cause   error
+	Kind      error
+	Version   csvSignerVersion
+	Detail    string
+	Cause     error
+	Retryable bool
 }
 
 func (e *csvSignerFailure) Error() string {

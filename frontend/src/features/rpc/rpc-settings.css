@@ -61,3 +61,5 @@
   .rpc-metric-icon { width: 34px; height: 34px; }
   .rpc-metric strong { font-size: 18px; }
 }
+.rpc-secret-textarea { -webkit-text-security: disc; }
+.rpc-secret-visibility { color: #6d788b; font-size: 12px; }

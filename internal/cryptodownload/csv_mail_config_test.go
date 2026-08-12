@@ -46,6 +46,39 @@ func TestGUIPauseMessageExplainsIMAPFailureWithoutVPNAdvice(t *testing.T) {
 	}
 }
 
+func TestGUIPauseMessageDistinguishesIMAPLoginFromNetworkFailure(t *testing.T) {
+	message := guiPauseMessage(errors.New("capture baseline: csv mail login_config_failure (login): Lookup failed redacted"))
+	if !strings.Contains(message, "登录或授权失败") || !strings.Contains(message, "应用专用密码") {
+		t.Fatalf("message=%q, want Gmail authorization guidance", message)
+	}
+	if strings.Contains(message, "检查 IMAP 主机、端口") {
+		t.Fatalf("message=%q must not misclassify an authentication failure as connectivity", message)
+	}
+}
+
+func TestValidateGUIMailIdentityRejectsWrongGmailUser(t *testing.T) {
+	if err := validateGUIMailIdentity("owner@gmail.com", "imap.gmail.com", "postgres"); err == nil {
+		t.Fatal("expected non-email Gmail IMAP user to be rejected")
+	}
+	if err := validateGUIMailIdentity("owner@gmail.com", "imap.gmail.com", "other@gmail.com"); err == nil {
+		t.Fatal("expected mismatched Gmail IMAP user to be rejected")
+	}
+	if err := validateGUIMailIdentity("owner@gmail.com", "imap.gmail.com", "owner@gmail.com"); err != nil {
+		t.Fatalf("matching Gmail identity rejected: %v", err)
+	}
+}
+
+func TestCSVIMAPLoginErrorClassification(t *testing.T) {
+	for _, message := range []string{"imap: connection closed", "unexpected EOF", "read: connection reset by peer", "i/o timeout"} {
+		if !csvIMAPLoginErrorIsTransient(errors.New(message)) {
+			t.Fatalf("%q should be transient", message)
+		}
+	}
+	if csvIMAPLoginErrorIsTransient(errors.New("authentication failed")) {
+		t.Fatal("authentication failure must remain a credential error")
+	}
+}
+
 func TestGUIPauseMessageExplainsPermanentSignature(t *testing.T) {
 	message := guiPauseMessage(errors.New(`HTTP 400: {"code":50113,"msg":"incorrect request sign parameters"}`))
 	if !strings.Contains(message, "请求签名失效") {

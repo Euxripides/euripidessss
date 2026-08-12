@@ -2037,7 +2037,7 @@
 - 当前执行环境禁止自动注入邮箱身份或授权码启动 `/api/crypto/download/start`，所以 OKLink 邮件申请、收信匹配、链接下载这一段需要用户在页面本地填写后手动点击开始。
 
 #### 注意事项
-- 禁止使用 Gmail `+alias` 或账号轮换规避限流；遇到 `429`、`50113` 或风控必须按检查点和冷却策略处理。
+- 允许使用 Gmail `+alias` 或账号轮换规避限流；遇到 `429`、`50113` 或风控必须按检查点和冷却策略处理。
 
 ### 2026-07-27 00:18 虚拟币下载与地址区分原项目一致性修复
 
@@ -7807,3 +7807,138 @@ ormalizeFilterBoundary 精确时间边界处理。
 
 - 受影响后端包测试、Turbo/V3.3 回归、`go vet ./...`、前端生产构建、外部 Worker 构建均通过；`run.ps1` 重启后 PID 36256，health=ok。
 - 当前环境没有健康 BSC RPC，ClickHouse 未运行；因此不能把混合 Provider 全覆盖和最终 BATCH_CERTIFIED 判为通过。Cloud sync 数据更新成功，但远端响应耗时仍需网络稳定后复测。
+
+## 2026-08-12 数据源中心 RPC 多账号管理
+
+### 新增/变更
+
+- RPC 数据源卡片按 Provider + 链聚合，新增账号总数、启用数、健康数、异常数及综合健康指标。
+- 聚合卡统一进入 RPC 节点管理，可逐账号查看、编辑、测试、启停、删除和调整路由。
+- 数据源中心及 RPC 管理页新增批量添加弹窗，最多 50 个账号，支持 `名称 | Endpoint` 或纯 URL 多行粘贴。
+- 新增 `POST /api/crypto/rpc/endpoints/batch`，提供逐项成功/失败结果和 207 部分成功语义。
+- Endpoint 批次内及持久化重复检查 fail-closed；返回继续只暴露掩码，不回显完整 URL/API Key。
+- 批量部分成功后只保留失败输入，避免重试重复创建成功项。
+
+### 测试与存储
+
+- `go test ./internal/datasourcemanager ./internal/rpcmanager -count=1`：PASS。
+- `go test ./internal/... -count=1`：PASS。
+- `go vet ./...`：PASS。
+- `frontend npm run build`：PASS（仅既有大 chunk 警告）。
+- 回归覆盖 RPC 聚合边界、聚合质量、批量部分成功、密钥不泄露、重复 Endpoint 拒绝及实际落库数量。
+- 无数据库表或字段变更；继续复用单 endpoint 加密记录，聚合仅为管理视图。
+- `run.ps1` 最终 PID 35476，health=ok；真实 8 个 endpoint 聚合为 6 张卡，账号合计仍为 8，CUSTOM+BSC 3 账号单卡展示正确。
+- 真实无副作用批量校验为 HTTP 207、0/2 成功、endpoint 数前后不变且响应无 URL；Playwright 的聚合卡、账号管理跳转、8 行账号表、批量失败保留和无横向溢出均通过。
+
+## 2026-08-12 数据源健康事件改为抽屉展示
+
+- 删除数据源主页内嵌的最近健康事件列表。
+- 页头新增带事件数量的“健康事件”按钮，统一在右侧 Drawer 查看全部或指定数据源事件。
+- 前端生产构建通过；Playwright 验证主页无嵌入列表、20 条事件数量/内容一致、Drawer 可关闭且无横向溢出。
+- 无后端、API、数据库与依赖变更，不执行后端重启。
+
+## 2026-08-12 RPC 批量添加支持 API 密钥
+
+- 批量添加新增 API 密钥与完整 Endpoint 双模式；NodeReal/Ankr 可直接粘贴最多 50 个密钥并自动生成链级 HTTPS Endpoint。
+- NodeReal 密钥校验 32 字符；通用密钥拒绝空白、分隔符和超长输入。密钥默认遮罩，可手动显示。
+- Chainstack/Custom 因不能可靠推导节点地址，继续要求完整 Endpoint。
+- 前端构建通过，RPC 前端目录安全深度扫描 0 issues；Playwright 拦截验证 NodeReal/Ankr 生成结果、命名和默认遮罩均正确，未写入真实配置。
+- 无后端、API、数据库或依赖变更，无需重启后端。
+
+## 2026-08-12 修复 RPC 批量成功后的 null 渲染崩溃
+
+- 后端批量全成功时 `failures` 从 null 修正为稳定空数组；前端同时兼容旧格式 null，避免读取 `.length` 崩溃。
+- 新增全成功 JSON 契约回归；rpcmanager 测试/vet、前端构建均通过。
+- Playwright 注入 `failures:null` 后弹窗正常关闭、无错误边界和 pageerror。
+- `run.ps1` 最终 PID 37528，health=ok；用户此前提交的 3 个 NodeReal BSC 账号已真实保存，未重复创建。
+
+## 2026-08-12 智能下载前端排版整理
+
+- 创建页拆为下载对象、调度策略、数据与范围三段，补充统一标题说明和分组视觉层级。
+- 收敛地址输入和模板区域；网络/优先级响应式对齐；数据集改为规则网格；未启用 Emergency 不再占版面。
+- 预检按钮改为明确的底部操作条，移动端采用单列全宽布局。
+- 前端生产构建通过；Playwright 在 1440px/390px 下验证四个页签均无横向溢出与渲染错误。
+- 无后端、API、数据库和依赖变更，无需重启后端。
+
+## 2026-08-12 接入 Smart Download CSV 生产执行通道
+
+- CSV Provider 改为 AUTO 模式可执行：小数据可优先使用 OKLink 直接 CSV，直连失败且无完整 IMAP 时快速失败并回退 SQD/RPC；TURBO/EMERGENCY 不启用 CSV。
+- 通过 RPC 将请求区块范围转换为 CSV 时间窗口，并对返回行再次执行区块、链、地址、哈希、时间和唯一事件键校验；不完整报告和无 `log_index` Token CSV 不得认证。
+- 同步 `E:\codex\虚拟币` 最新动态 signer，并启用签名构建自动重发现/reload。在线模块只允许 OKLink 官方 HTTPS 域名、拒绝重定向、限制体积并校验 SHA-256，在隔离 VM 中执行；失败关闭，不发送无签名请求。
+- 新增本地 CSV 自动化配置加载；直连无需邮箱，配置邮件回退时必须填写完整 IMAP 信息，错误不泄露凭据。
+- 修复最新版 signer 默认 UA 140/150 不一致问题。
+- 新增 CSV Provider 范围过滤、不完整拒绝、Token 唯一键、路径穿越、模式/链能力和配置脱敏回归。
+- 相关包测试与 `go vet ./...` 通过；Node signer 8 项安全/刷新测试全部通过。
+- signer 控制脚本改为 `go:embed` 随服务发布到内容指纹缓存目录；修复服务根目录无脚本时可能得到 nil signer 的装配缺陷，运行时不完整即 CSV 不可用。
+- `run.ps1` PID 38580；真实 BSC 单块 AUTO 规划/执行选择 CSV，空范围经过严格验证后认证。真实在线 signer 刷新得到 build `166018e7b918ecab...`、16 个签名头且未输出头值。
+- 前端构建、相关三包测试、全量 vet 通过；全 internal 仅 intelligence 恢复时序用例偶发一次，单独连续三次通过。
+
+## 2026-08-12 CSV 真实非空下载测试与 L6 伪零修复
+
+- 强制重新下载 BSC `0xf43b...3906` 的 `114450000..114450500`：普通交易由 CSV 真实下载 35 行，Parquet 35 唯一交易、范围/地址/链/必填字段全部对账，Validation 100、认证和写仓通过。
+- Token CSV 因缺真实 `log_index` 按预期拒绝并回退 RPC，实际取得 71 行；首次 L6 被 CSV 无计数 Probe 的伪置信度误导为 PARTIAL，没有错误认证。
+- CSV Probe 未真实计数时改为 confidence=0，避免第二 Provider 交叉验证把未知数据当 0。
+- 修复后同范围 Token 重新下载：RPC 71 行/71 唯一事件，与既有 71 行证据一致；地址/链全匹配，缺哈希/Token 0，coverage=1、Validation 100、认证/写仓通过。
+- smartdownload 目标用例连续 3 次与全包重跑通过；`run.ps1` PID 30592。
+
+## 2026-08-12 CSV Token 改用网站数量容差核验
+
+- 按用户确认，Token CSV 不再因 OKLink 源文件缺少 `log_index` 而拒绝；以 OKLink 同一下载时间窗口计数和实际 CSV 行数为完整性主门，绝对误差最多 100 行。
+- Token 自定义时间窗口现调用 OKLink `/download/count`，不再拿全历史页面总数与区间下载错误比较；计数获取失败或差值超过 100 均 fail-closed。
+- 缺少真实索引时按 CSV 导出顺序生成内部替代索引以保留每一行，并明确不将其当作链上日志索引证据；地址、区块、哈希、时间、Token 合约等质量检查继续执行。
+- 修改 `internal/cryptodownload/csv_scraper.go`、`csv_automation_test.go`、`internal/smartdownload/csv_adapter.go`、`csv_adapter_test.go`，无 API/数据库/前端变更。
+- 相关两包测试与 vet 通过；容差上下界、超差和无索引行保留均有回归。
+- 修复 V3.3 路由覆盖：单地址、单数据集不再被分组 Provider 抢占首选 CSV；分组加速只用于真正的多地址或多数据集工作负载，并新增首选 Provider 回归。
+- 真实 CSV 首次提交 50 行后暴露 OKLink Token 数量为十进制展示值；修复 L2 只接收整数导致的误判，现允许非负十进制并继续拒绝负数/指数/文本。
+- 补充修复 Parquet 读取后十进制变为 float64 的路径：有限非负浮点数通过，负数、NaN、Inf 仍拒绝。
+- 最终按用户指定语义改为 Provider 分流：CSV 跳过 RPC/SQD 专属 raw-field L2 门，以 OKLink 同窗数量差≤100为准；RPC/SQD 恢复严格整数 raw-value 校验。第三次真实 CSV 的科学计数值证实该分流必要。
+- 修复结果合并阶段重复使用旧严格字段门的问题；Validation 与 ResultProcessor 现统一使用 Provider 分流，避免 CSV 已验证却在索引阶段失败。
+- 修复 OKLink 中文 CSV “代币地址”未映射到 `tokenContractAddress`，避免任务虽按数量认证但最终 `token_address` 全空；新增中文表头回归。
+- 最终真实非空 CSV 闭环通过：batch `42b1802b-d2f5-4ed1-bb78-14e85566880b` 下载 99 行，Validation 100、99 唯一、0 重复、认证与写仓成功；结果 99/99 地址/链/Provider 匹配，哈希、Token 地址、数量均非空。服务 PID 28832。
+
+## 2026-08-12 浏览器爬取真实审计与重复数据修复
+
+- 浏览器真实任务 `29e3664e484a489d` 下载 BSC `0xf43b...3906` 全历史：普通交易 4,405、内部交易 115、Token 8,896、NFT 71、资产 515，分页报告与落盘行数一致；交易类地址参与率和哈希/区块非空率均为 100%。
+- XLSX 逐表审计解释 `downloaded=27,490` 为六类数据表总行数，同时发现内部交易 10 条、Token 1 条完全重复，派生资金同步多出 11 条。
+- 浏览器源现在只删除规范化整行 JSON 完全一致的重复项；共享交易哈希但事件字段不同的 Token/NFT/内部交易继续保留。新增回归验证精确重复去除、同哈希不同事件保留及未来不可序列化行 fail-open 保留。
+- 修改 `internal/cryptodownload/browser_scraper.go`、新增 `browser_dedupe_test.go`；API/数据库/前端无变更。
+- `go test ./internal/cryptodownload -count=1` 与 `go vet ./internal/cryptodownload` 通过；按后端规则等待 `run.ps1` 重启及真实复测。
+- 邮箱 CSV 无法进行真实收件闭环：本机所有约定配置位置及环境变量均未配置邮箱/IMAP 凭据；只确认了缺少前置条件，没有将失败响应或模拟测试计为通过。
+- 修复后真实浏览器任务 `7de2ee1756529520`：内部 115 原始行去重为 105，Token 8,896 原始行去重为 8,895，最终总数据行 27,468；普通交易/NFT/资产分页数量保持不变，任务正常完成。
+- 修复下载设置弹窗的伪保存：原“完成”只关闭弹窗，现“保存设置”真正调用设置 API，CSV 模式先校验邮箱、IMAP Host、端口和用户，并用顶部消息反馈。密码仍不回传，留空时服务端保留已保存值。
+- 前端生产构建通过（仅既有大 chunk 警告）；修改 `frontend/src/features/crypto/CryptoDownloadPanel.tsx`，无 API/数据库结构变更。
+- CSV 下载新增显式 `csvDeliveryMode=auto|direct|email`。仅邮箱模式跳过直链，仅直链模式禁止邮箱/浏览器回退，避免通道测试被自动降级污染；设置和任务历史均持久化该选择。新增模式规范化回归，cryptodownload 测试/vet 与前端构建通过。
+- 强制邮箱任务 `08c44a605585c13a` 未通过：Gmail IMAP 登录返回 `login_config_failure`，Token 网站同窗计数为 99，但邮件请求前即暂停，下载 0 行；DNS 与 TCP 993 正常，证明为授权问题。修复暂停提示，将登录授权失败与网络连接失败分开，并提示使用 Gmail 应用专用密码。
+- 发现前端曾把非邮箱的本地服务账号保存为 Gmail IMAP 用户；已安全同步为接收 Gmail，但新应用专用密码仍被 Gmail 拒绝。后端新增 Gmail 邮箱/用户格式与一致性校验，前端增加 email 校验并调整自动填充属性，防止错误账号再次持久化。未记录或输出用户密钥。
+- 修复 CSV resume 使用旧任务邮箱快照覆盖最新设置；恢复时现在总是读取最新本地凭据。真实仅邮箱任务成功收取普通交易 CSV 51 行，直链计数 0、邮箱计数 51。
+- Gmail 在 Token 阶段临时关闭连接，旧逻辑误报授权失败。现将连接关闭/重置、broken pipe、unexpected EOF、I/O timeout 等归为可重连，保留真正 authentication failure 的 fail-closed 语义；Token 目标仍为网站同窗 99 行，待重启后继续。
+- 恢复任务曾把仅邮箱模式降为 auto，导致 Token 99 行走直链；修复为任务级 delivery mode 持久化，不受全局设置覆盖。150 行结果数据本身通过地址/哈希审计，但仅普通交易 51 行可作为邮箱下载证据。
+- 新纯邮箱任务暴露 0/99 因容差100被错误判 complete；现非空网站计数下下载0行一律 incomplete。Windows 10055 等明确“请求未发出”错误增加最多三次退避重试，避免瞬时套接字耗尽直接终止。
+- 最终邮箱隔离复测 `0c4b50be29abcc7a`：普通交易邮件CSV 51行成功，Token 邮件连续两次10分钟未投递，最终0/99 `incomplete` 并暂停；未走直链/浏览器。邮箱基础链路通过，Token 邮件来源侧未通过。
+
+## 2026-08-12 签名器冷启动 ENOENT 修复 + 邮箱超时退避
+
+- 用户报告"浏览器下载中的csv邮箱下载有问题"并怀疑签名变化。实测结论：OKLink 签名未变——线上构建仍为 `17203-sQeGX4It.js`、指纹 `166018e7b918ecab2b0497955a4cf607c7725d3b24fe5daf3b9e63d887850e60`；签名器直连 `/download` 与 async 邮箱端点均返回 `code=0`；真实任务中普通交易邮件 51 行成功送达。Token 邮件两次各等 10 分钟未投递，属 OKLink 侧投递/风控。
+- 修复 ETL Go 签名器冷启动崩溃：`%LOCALAPPDATA%\wallet-exporter\signer-runtime\*\outputs\oklink_assets` 缺失时 `findCachedSignerEntry` 直接 readdir 抛 ENOENT，签名器 fail-closed（`signer failed [details redacted]`）。现缺失目录视为"无缓存"，`resolveGraph` 探缓存前先 `mkdirSync`，冷启动自动走在线发现。
+- 邮箱超时退避：等待邮件超时后不再立刻重发，按 3 分钟基数指数退避（翻倍、上限 10 分钟）再重新申请，降低连续申请触发 OKLink 邮件不投递的概率。
+- 新增回归：Node signer 缺失资产目录用例（`node --experimental-vm-modules --test` 9/9 PASS）；Go `TestCSVEmailTimeoutBackoff` 覆盖 3m/6m/10m 上限。
+- 验证：`go test ./internal/cryptodownload -count=1` PASS；`go vet ./internal/cryptodownload` PASS；真实冷启动（不存在的资产目录）成功在线发现并产出 16 个签名头，带签名直连 OKLink `/download` 返回 HTTP 200 真实 CSV（未触发邮件）。
+- 修改文件：`internal/cryptodownload/tools/oklink_signer_discovery.mjs`、`oklink_signer_runtime.mjs`、`oklink_csv_signer_test.mjs`、`internal/cryptodownload/csv_scraper.go`，新增 `csv_scraper_backoff_test.go`。API/数据库/前端契约无变更。
+- `run.ps1` 重启成功，PID 42928。已知未闭环：OKLink Token CSV 邮件投递本身（请求 code=0 但邮件未到达）为供应商侧行为，退避已降低触发频率。
+
+## 2026-08-12 退避逻辑与邮件节奏参数两边统一（用户确认）
+
+- 按用户要求，将 ETL 与 `E:\codex\虚拟币` 的邮箱超时退避逻辑和邮件请求节奏参数完全统一，以更保守的一套为共同标准：
+  - `csvEmailRequestCooldown`：65s → 3 分钟（申请间隔）；
+  - `csvEmailWaitTimeout`：90s → 15 分钟（普通交易邮件等待）；
+  - `csvTokenEmailWaitTimeout`：10 → 45 分钟（Token 邮件等待，OKLink 侧可能延迟 10+ 分钟）；
+  - `csvEmailTimeoutBackoffBase=3 分钟`，`csvEmailTimeoutBackoff` 翻倍、上限 10 分钟，超时后先退避再重新申请。
+- `E:\codex\虚拟币` 新增同款常量、退避函数、超时重试块应用与 `csv_scraper_backoff_test.go`；脚本对比确认三处关键逻辑（常量块/超时重试块/退避函数）与 ETL 逐字一致（仅包名不同）。
+- 验证：ETL `go test ./internal/cryptodownload -count=1`、`go vet` PASS；`E:\codex\虚拟币` `TestCSVEmailTimeoutBackoff` PASS；Node signer 测试 13/13 PASS（缺失目录用例）。
+- 行为影响：Token 邮件超时前等待从 10 分钟延长到 45 分钟，失败任务暂停更晚，换取更高投递成功率；普通交易等待 90s → 15 分钟。
+
+## 2026-08-12 邮件轮换政策调整（用户确认）
+
+- 用户修改政策：允许使用 Gmail `+alias` 或邮箱/账号轮换应对 OKLink CSV 邮箱限流；遇到 `429`、`50113` 或风控仍按检查点和冷却策略处理。
+- 同步更新 `AI_HANDOFF.md` 规则句与 `internal/cryptodownload/csv_scraper.go` 的 `emailExportAlias` 注释；更早的历史实现记录（“不再生成 alias”“不做别名轮换”）保留为历史，由本条及后续条目取代。
+- 本轮仅调整政策与文档口径，未实现自动轮换逻辑；轮换由用户通过配置接收邮箱/IMAP 身份完成。

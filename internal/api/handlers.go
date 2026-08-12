@@ -666,7 +666,12 @@ func setupSmartDownload() {
 			svc.RegisterAdapter(smartdownload.NewSQDAdapter(c))
 		}
 	}
-	svc.RegisterAdapter(smartdownload.NewCSVAdapter())
+	csvConfigDir := filepath.Join(cfg.RootDir, "backend", "data", "crypto_download")
+	csvRawRoot := filepath.Join(root, "provider_raw", "csv")
+	svc.RegisterAdapter(smartdownload.NewProductionCSVAdapter(csvConfigDir, csvRawRoot,
+		func(ctx context.Context, chainKey string, block uint64) (time.Time, error) {
+			return resolveSmartDownloadBlockTime(ctx, rpcManager, chainKey, block)
+		}))
 	if smartCloudRuntime != nil {
 		cloudAdapter := smartdownload.NewSQDCloudAdapter(smartCloudRuntime)
 		cloudAdapter.SetResultReader(svc.ReadProviderParquetRecords)
@@ -762,21 +767,7 @@ func resolveSmartDownloadTimeRange(ctx context.Context, manager *rpcmanager.Mana
 		return 0, 0, fmt.Errorf("eth_blockNumber 返回无效区块号 %q", headHex)
 	}
 	timestampAt := func(block uint64) (time.Time, error) {
-		payload, _, callErr := manager.Call(ctx, chainKey, "eth_getBlockByNumber", []any{fmt.Sprintf("0x%x", block), false})
-		if callErr != nil {
-			return time.Time{}, callErr
-		}
-		var result struct {
-			Timestamp string `json:"timestamp"`
-		}
-		if err := json.Unmarshal(payload, &result); err != nil {
-			return time.Time{}, fmt.Errorf("解析区块 %d 响应: %w", block, err)
-		}
-		seconds, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(result.Timestamp), "0x"), 16, 64)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("区块 %d timestamp 无效 %q", block, result.Timestamp)
-		}
-		return time.Unix(seconds, 0).UTC(), nil
+		return resolveSmartDownloadBlockTime(ctx, manager, chainKey, block)
 	}
 	genesisTime, err := timestampAt(0)
 	if err != nil {
@@ -837,6 +828,27 @@ func resolveSmartDownloadTimeRange(ctx context.Context, manager *rpcmanager.Mana
 		return 0, 0, fmt.Errorf("时间范围内没有区块")
 	}
 	return from, to, nil
+}
+
+func resolveSmartDownloadBlockTime(ctx context.Context, manager *rpcmanager.Manager, chainKey string, block uint64) (time.Time, error) {
+	if manager == nil || !manager.HasConfigured(chainKey) {
+		return time.Time{}, fmt.Errorf("链 %s 未配置 RPC 节点", chainKey)
+	}
+	payload, _, err := manager.Call(ctx, chainKey, "eth_getBlockByNumber", []any{fmt.Sprintf("0x%x", block), false})
+	if err != nil {
+		return time.Time{}, err
+	}
+	var result struct {
+		Timestamp string `json:"timestamp"`
+	}
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return time.Time{}, fmt.Errorf("解析区块 %d 响应: %w", block, err)
+	}
+	seconds, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(result.Timestamp), "0x"), 16, 64)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("区块 %d timestamp 无效 %q", block, result.Timestamp)
+	}
+	return time.Unix(seconds, 0).UTC(), nil
 }
 
 // setupCloudRuntime 装配 SQD Cloud 运行时（设计 §27/§31）：

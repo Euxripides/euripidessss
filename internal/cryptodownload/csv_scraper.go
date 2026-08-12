@@ -24,10 +24,11 @@ import (
 const (
 	csvMaxRowsPerExport             = 20000
 	defaultCSVStartTime       int64 = 1262304000
-	csvEmailWaitTimeout             = 90 * time.Second
-	csvTokenEmailWaitTimeout        = 10 * time.Minute
+	csvEmailWaitTimeout             = 15 * time.Minute
+	csvTokenEmailWaitTimeout        = 45 * time.Minute
 	csvEmailWaitProgressEvery       = 15 * time.Second
-	csvEmailRequestCooldown         = 65 * time.Second
+	csvEmailRequestCooldown         = 3 * time.Minute
+	csvEmailTimeoutBackoffBase      = 3 * time.Minute
 	csvIMAPCommandTimeout           = 20 * time.Second
 	csvMailTimestampTolerance       = 5 * time.Second
 	csvDirectDownloadAttempts       = 1
@@ -125,6 +126,7 @@ func mergeExportData(browserData ExportData, csvData ExportData) ExportData {
 }
 
 func collectAllFromCSV(ctx context.Context, cfg Config) (data ExportData) {
+	cfg.CSVDeliveryMode = normalizeCSVDeliveryMode(cfg.CSVDeliveryMode)
 	client := NewCSVExportClient(cfg)
 	defer func() {
 		if err := client.Close(); err != nil {
@@ -158,7 +160,7 @@ func collectAllFromCSV(ctx context.Context, cfg Config) (data ExportData) {
 			data.RawTokenHeaders = chainData.RawTokenHeaders
 		}
 	}
-	if csvShouldFallbackToBrowser(data) {
+	if cfg.CSVDeliveryMode == "auto" && csvShouldFallbackToBrowser(data) {
 		reportProgress(cfg, "CSV download blocked: OKLink now requires browser session signatures. Falling back to browser API mode.")
 		data.Errors = append(data.Errors, errCSVSignaturesBlocked.Error())
 		browserData := collectAllFromBrowser(ctx, csvBrowserFallbackConfig(cfg))
@@ -396,6 +398,29 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 			return allMapped, allRaw, allHeaders, check, nil
 		}
 	}
+	// Token CSV exports support an OKLink count endpoint with the same time
+	// window as the download request. Prefer that count over the all-time list
+	// total so Smart Download can make a real completeness decision for a block
+	// range (which is converted to this exact time window by its adapter).
+	if kind.Sheet == "token" && !strictTotal {
+		windowTotal, countErr := c.countCSV(ctx, cfg, chain, kind, start, end)
+		if countErr != nil {
+			check = failCSVDownloadCheck(check, len(allRaw), true, fmt.Errorf("OKLink window count: %w", countErr))
+			return allMapped, allRaw, allHeaders, check, countErr
+		}
+		check.ExpectedTotal = int64(windowTotal)
+		check.Status = "pending"
+		check.Note = ""
+		strictTotal = true
+		reportProgress(cfg, "CSV window total %s: %s = %d", strings.ToUpper(chain), kind.Name, windowTotal)
+		if windowTotal == 0 && len(allRaw) == 0 {
+			check = finalizeCSVDownloadCheck(check, 0, true)
+			if err := c.markCSVKindCheckpointComplete(cfg, chain, kind); err != nil {
+				return allMapped, allRaw, allHeaders, check, err
+			}
+			return allMapped, allRaw, allHeaders, check, nil
+		}
+	}
 	for segment := hydrated.NextSegment; end > start; segment++ {
 		if kind.Sheet == "token" && segment > 1 && csvTokenSegmentCooldown > 0 {
 			reportProgress(cfg, "CSV token cooldown %s: %s segment %d wait %s", strings.ToUpper(chain), kind.Name, segment, csvTokenSegmentCooldown)
@@ -416,6 +441,9 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 		var rawNew []map[string]string
 		usedDirect := false
 		directSkipReason := csvDirectSkipReason(check.ExpectedTotal, len(allRaw), directKindDisabledReason)
+		if cfg.CSVDeliveryMode == "email" {
+			directSkipReason = "已强制选择邮箱 CSV"
+		}
 		directDisabled := directSkipReason != ""
 		if !directDisabled {
 			disableDirect := func(reason string) {
@@ -497,15 +525,32 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 			reportProgress(cfg, "CSV direct skipped %s: %s segment %d: %s", strings.ToUpper(chain), kind.Name, segment, directSkipReason)
 		}
 		if !usedDirect {
+			if cfg.CSVDeliveryMode == "direct" {
+				err := fmt.Errorf("CSV 直链模式失败，已禁止回退邮箱或浏览器")
+				check = failCSVDownloadCheck(check, len(allRaw), strictTotal, err)
+				return allMapped, allRaw, allHeaders, check, err
+			}
 			requestEmailCSV := func() (time.Time, error) {
-				requestedAt, err := c.prepareCSVEmailRequest(ctx, &mailWatcher)
-				if err != nil {
-					return time.Time{}, err
+				for attempt := 1; attempt <= 3; attempt++ {
+					requestedAt, err := c.prepareCSVEmailRequest(ctx, &mailWatcher)
+					if err != nil {
+						return time.Time{}, err
+					}
+					if err := c.requestCSV(ctx, cfg, chain, kind, rangeStart, end); err == nil {
+						return requestedAt, nil
+					} else if attempt == 3 || !csvEmailRequestNotSentIsTransient(err) {
+						return time.Time{}, csvMailRequestNotSentError(err)
+					} else {
+						delay := csvRequestRetryDelay(attempt - 1)
+						reportProgress(cfg, "CSV email request retry %s: %s segment %d attempt %d/3 after %s", strings.ToUpper(chain), kind.Name, segment, attempt+1, delay)
+						select {
+						case <-ctx.Done():
+							return time.Time{}, ctx.Err()
+						case <-time.After(delay):
+						}
+					}
 				}
-				if err := c.requestCSV(ctx, cfg, chain, kind, rangeStart, end); err != nil {
-					return time.Time{}, csvMailRequestNotSentError(err)
-				}
-				return requestedAt, nil
+				return time.Time{}, errors.New("CSV email request attempts exhausted")
 			}
 			requestedAt, err := requestEmailCSV()
 			if err != nil {
@@ -528,6 +573,16 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 				})
 				if err != nil {
 					if retry < csvMaxSegmentRetries && isCSVEmailNoLinkTimeout(err) {
+						backoff := csvEmailTimeoutBackoff(retry)
+						if backoff > 0 {
+							reportProgress(cfg, "CSV email timeout backoff %s: %s segment %d wait %s before re-request", strings.ToUpper(chain), kind.Name, segment, backoff.Round(time.Second))
+							select {
+							case <-ctx.Done():
+								check = finalizeCSVDownloadCheck(check, len(allRaw), strictTotal)
+								return allMapped, allRaw, allHeaders, check, ctx.Err()
+							case <-time.After(backoff):
+							}
+						}
 						reportProgress(cfg, "CSV纯下载 %s: %s 第 %d 段等待邮件超时，重新请求CSV", strings.ToUpper(chain), kind.Name, segment)
 						requestedAt, err = requestEmailCSV()
 						if err != nil {
@@ -663,7 +718,7 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 		end = nextEnd
 	}
 	check = finalizeCSVDownloadCheck(check, len(allRaw), strictTotal)
-	if strictTotal && check.ExpectedTotal >= 0 && csvDownloadedShortfall(check.ExpectedTotal, len(allRaw)) > csvCompletenessTolerance {
+	if strictTotal && check.ExpectedTotal >= 0 && csvDownloadedDifference(check.ExpectedTotal, len(allRaw)) > csvCompletenessTolerance {
 		errs = append(errs, fmt.Errorf("%s incomplete: downloaded %d/%d rows", kind.Name, len(allRaw), check.ExpectedTotal))
 		check = finalizeCSVDownloadCheck(check, len(allRaw), strictTotal)
 	}
@@ -697,6 +752,17 @@ func csvDownloadCountText(downloaded int, expected int64) string {
 	return fmt.Sprintf("%d 行", downloaded)
 }
 
+func normalizeCSVDeliveryMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "direct":
+		return "direct"
+	case "email":
+		return "email"
+	default:
+		return "auto"
+	}
+}
+
 func csvDirectSkipReason(expectedTotal int64, downloaded int, disabledReason string) string {
 	if strings.TrimSpace(disabledReason) != "" {
 		return disabledReason
@@ -726,13 +792,16 @@ func finalizeCSVDownloadCheck(check CSVDownloadCheck, downloaded int, strict boo
 		}
 		return check
 	}
-	shortfall := csvDownloadedShortfall(check.ExpectedTotal, downloaded)
-	if shortfall <= csvCompletenessTolerance {
+	if check.ExpectedTotal > 0 && downloaded == 0 {
+		check.Status = "incomplete"
+		check.Note = fmt.Sprintf("downloaded 0/%d rows; non-empty source cannot pass tolerance", check.ExpectedTotal)
+		return check
+	}
+	difference := csvDownloadedDifference(check.ExpectedTotal, downloaded)
+	if difference <= csvCompletenessTolerance {
 		check.Status = "complete"
-		if shortfall > 0 && check.Note == "" {
+		if difference > 0 && check.Note == "" {
 			check.Note = fmt.Sprintf("downloaded %d/%d rows; within tolerance %d", downloaded, check.ExpectedTotal, csvCompletenessTolerance)
-		} else if int64(downloaded) > check.ExpectedTotal && check.Note == "" {
-			check.Note = "downloaded rows exceed count total; count may have changed during export"
 		}
 		return check
 	}
@@ -741,6 +810,18 @@ func finalizeCSVDownloadCheck(check CSVDownloadCheck, downloaded int, strict boo
 		check.Note = fmt.Sprintf("downloaded %d/%d rows", downloaded, check.ExpectedTotal)
 	}
 	return check
+}
+
+func csvEmailRequestNotSentIsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "winerror 10055") ||
+		strings.Contains(lower, "socket buffer") ||
+		strings.Contains(lower, "connection reset") ||
+		strings.Contains(lower, "connection closed") ||
+		strings.Contains(lower, "i/o timeout")
 }
 
 func failCSVDownloadCheck(check CSVDownloadCheck, downloaded int, strict bool, err error) CSVDownloadCheck {
@@ -752,12 +833,12 @@ func failCSVDownloadCheck(check CSVDownloadCheck, downloaded int, strict bool, e
 	return check
 }
 
-func csvDownloadedShortfall(expected int64, downloaded int) int64 {
-	shortfall := expected - int64(downloaded)
-	if shortfall < 0 {
-		return 0
+func csvDownloadedDifference(expected int64, downloaded int) int64 {
+	difference := expected - int64(downloaded)
+	if difference < 0 {
+		return -difference
 	}
-	return shortfall
+	return difference
 }
 
 func csvEmailTimeoutForKind(kind csvExportKind) time.Duration {
@@ -765,6 +846,21 @@ func csvEmailTimeoutForKind(kind csvExportKind) time.Duration {
 		return csvTokenEmailWaitTimeout
 	}
 	return csvEmailWaitTimeout
+}
+
+// csvEmailTimeoutBackoff returns the extra wait applied before re-requesting a
+// CSV export email after consecutive delivery timeouts.  It doubles per
+// consecutive timeout and caps at ten minutes so provider-side mail
+// generation/risk control has time to recover without unbounded stalls.
+func csvEmailTimeoutBackoff(consecutiveTimeouts int) time.Duration {
+	backoff := csvEmailTimeoutBackoffBase
+	for i := 0; i < consecutiveTimeouts && backoff < 10*time.Minute; i++ {
+		backoff *= 2
+	}
+	if backoff > 10*time.Minute {
+		return 10 * time.Minute
+	}
+	return backoff
 }
 
 func isRetryableCSVLinkError(err error) bool {
@@ -1310,9 +1406,11 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 	return lastErr
 }
 
-// emailExportAlias deliberately keeps the configured destination unchanged.
-// Rotating aliases can break mail correlation and must not be used to work
-// around provider request limits.
+// emailExportAlias returns the configured destination as-is.  Project policy
+// (2026-08-12) allows mailbox/alias rotation to handle OKLink CSV email
+// throttling; rotation is applied by the operator through the configured
+// mailbox rather than generated here, so mail correlation stays tied to the
+// destination actually being polled.
 func (c *CSVExportClient) emailExportAlias(chain, kind string) string {
 	return strings.TrimSpace(c.mail.Email)
 }
@@ -1654,7 +1752,7 @@ func csvRecordToExportRow(address, chain string, kind csvExportKind, record map[
 		"txFee":                firstCSVValue(record, "TxFee", "Fee", "手续费"),
 		"state":                firstCSVValue(record, "Status", "State", "交易状态", "状态", "_extra_2"),
 		"tokenId":              firstCSVValue(record, "Token ID", "tokenId"),
-		"tokenContractAddress": firstCSVValue(record, "Token Contract", "Contract", "Token Contract Address", "代币合约"),
+		"tokenContractAddress": firstCSVValue(record, "Token Contract", "Contract", "Token Contract Address", "代币合约", "代币地址"),
 		"inputdate":            "",
 		"logs":                 "",
 		"rawJSON":              jsonCompactAny(record),
