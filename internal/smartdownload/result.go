@@ -523,7 +523,7 @@ func (p *ResultProcessor) verifyMergeInputs(ctx context.Context, ds *DatasetJob,
 				record.BlockNumber < cp.RequestedFrom || record.BlockNumber > cp.RequestedTo {
 				return 0, fmt.Errorf("Part %s 含越界 block %d", part.Name, record.BlockNumber)
 			}
-			if !validRecordFields(record) {
+			if !recordFieldsValidForProvider(record) {
 				return 0, fmt.Errorf("Part %s 含非法记录 %s", part.Name, record.TransactionHash)
 			}
 			key := CanonicalKey(record)

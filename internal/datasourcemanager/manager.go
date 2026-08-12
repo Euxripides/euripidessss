@@ -117,9 +117,7 @@ func (m *Manager) Snapshot() (Snapshot, error) {
 		response, err := m.rpc.HealthResponse()
 		if err == nil {
 			rpcOverview = response.Overview
-			for _, endpoint := range response.Endpoints {
-				sources = append(sources, rpcSource(endpoint))
-			}
+			sources = append(sources, groupRPCSources(response.Endpoints)...)
 		}
 	}
 	sort.SliceStable(sources, func(i, j int) bool {
@@ -528,19 +526,99 @@ func (m *Manager) sourceFromConfigLocked(config storedConfig) Source {
 	}
 }
 
-func rpcSource(endpoint rpcmanager.Endpoint) Source {
-	health := endpoint.Health
-	return Source{
-		ID: "rpc:" + endpoint.ID, Type: TypeRPC, Provider: endpoint.Provider,
-		Name: endpoint.DisplayName, Description: "实时 Metadata、Balance、Receipt 补漏与地址类型",
-		EndpointMasked: endpoint.EndpointMasked, SecretConfigured: endpoint.SecretConfigured,
-		ChainKeys: []string{endpoint.ChainKey}, Enabled: endpoint.Enabled, Status: health.Status,
-		HealthScore: health.HealthScore, LatencyP50MS: health.LatencyP50MS,
-		LatencyP95MS: health.LatencyP95MS, SuccessRate: health.SuccessRate5M,
-		LastSuccessAt: health.LastSuccessAt, LastFailureAt: health.LastFailureAt,
-		LastError: health.LastErrorMessageRedacted, CheckedAt: health.CheckedAt,
-		Config: PublicConfig{TimeoutMS: endpoint.RequestTimeoutMS, MaxConcurrency: endpoint.MaxConcurrency, RetryCount: 2},
+func groupRPCSources(endpoints []rpcmanager.Endpoint) []Source {
+	groups := make(map[string][]rpcmanager.Endpoint)
+	keys := make([]string, 0)
+	for _, endpoint := range endpoints {
+		key := strings.ToUpper(strings.TrimSpace(endpoint.Provider)) + ":" + strings.ToLower(strings.TrimSpace(endpoint.ChainKey))
+		if _, exists := groups[key]; !exists {
+			keys = append(keys, key)
+		}
+		groups[key] = append(groups[key], endpoint)
 	}
+	sort.Strings(keys)
+	result := make([]Source, 0, len(keys))
+	for _, key := range keys {
+		items := groups[key]
+		if len(items) == 0 {
+			continue
+		}
+		provider, chainKey := items[0].Provider, items[0].ChainKey
+		source := Source{
+			ID:   "rpc-group:" + strings.ToLower(provider) + ":" + strings.ToLower(chainKey),
+			Type: TypeRPC, Provider: provider, Name: provider + " · " + strings.ToUpper(chainKey),
+			Description:    "集中管理同一 Provider 与链的多个 API 账号",
+			EndpointMasked: "由 RPC 账号池加密托管", ChainKeys: []string{chainKey},
+			AccountCount: len(items), Config: PublicConfig{RetryCount: 2},
+		}
+		var healthScore, latencyP50, successRate float64
+		var enabledSamples int
+		for _, endpoint := range items {
+			source.SecretConfigured = source.SecretConfigured || endpoint.SecretConfigured
+			source.Enabled = source.Enabled || endpoint.Enabled
+			if endpoint.Enabled {
+				source.EnabledAccounts++
+				enabledSamples++
+				healthScore += endpoint.Health.HealthScore
+				latencyP50 += endpoint.Health.LatencyP50MS
+				successRate += endpoint.Health.SuccessRate5M
+				if endpoint.Health.LatencyP95MS > source.LatencyP95MS {
+					source.LatencyP95MS = endpoint.Health.LatencyP95MS
+				}
+				if endpoint.Health.Status == StatusHealthy {
+					source.HealthyAccounts++
+				} else {
+					source.AbnormalAccounts++
+					if source.LastError == "" {
+						source.LastError = endpoint.Health.LastErrorMessageRedacted
+					}
+				}
+			}
+			source.Config.MaxConcurrency += endpoint.MaxConcurrency
+			if endpoint.RequestTimeoutMS > source.Config.TimeoutMS {
+				source.Config.TimeoutMS = endpoint.RequestTimeoutMS
+			}
+			source.LastSuccessAt = laterTime(source.LastSuccessAt, endpoint.Health.LastSuccessAt)
+			source.LastFailureAt = laterTime(source.LastFailureAt, endpoint.Health.LastFailureAt)
+			source.CheckedAt = laterTime(source.CheckedAt, endpoint.Health.CheckedAt)
+		}
+		if enabledSamples > 0 {
+			source.HealthScore = healthScore / float64(enabledSamples)
+			source.LatencyP50MS = latencyP50 / float64(enabledSamples)
+			source.SuccessRate = successRate / float64(enabledSamples)
+		}
+		switch {
+		case source.EnabledAccounts == 0:
+			source.Status = StatusDisabled
+		case source.HealthyAccounts == source.EnabledAccounts:
+			source.Status = StatusHealthy
+		case source.HealthyAccounts > 0:
+			source.Status = StatusDegraded
+		default:
+			source.Status = aggregateRPCFailureStatus(items)
+		}
+		result = append(result, source)
+	}
+	return result
+}
+
+func aggregateRPCFailureStatus(items []rpcmanager.Endpoint) string {
+	for _, preferred := range []string{StatusRateLimited, rpcmanager.StatusMisconfigured, StatusUnavailable, StatusDegraded} {
+		for _, item := range items {
+			if item.Enabled && item.Health.Status == preferred {
+				return preferred
+			}
+		}
+	}
+	return StatusUnknown
+}
+
+func laterTime(current, candidate *time.Time) *time.Time {
+	if candidate == nil || (current != nil && !candidate.After(*current)) {
+		return current
+	}
+	value := *candidate
+	return &value
 }
 
 func (m *Manager) validateInput(input ConfigInput) (storedConfig, error) {

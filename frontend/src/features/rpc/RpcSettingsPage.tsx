@@ -37,6 +37,7 @@ import {
 } from 'antd';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { rpcApi } from './rpcApi';
+import { RpcBatchDialog } from './RpcBatchDialog';
 import type { EnrichmentJob, RpcEndpoint, RpcEndpointInput, RpcHealthResponse, RpcStatus } from './rpcTypes';
 import './rpc-settings.css';
 
@@ -76,6 +77,7 @@ export function RpcSettingsPage() {
   const [editing, setEditing] = useState<RpcEndpoint | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [jobOpen, setJobOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
   const [form] = Form.useForm<RpcEndpointForm>();
   const [jobForm] = Form.useForm<{ job_type: string; chain_key: string; items: string }>();
   const useTestEndpoint = Form.useWatch('use_test_endpoint', form);
@@ -208,6 +210,7 @@ export function RpcSettingsPage() {
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新健康状态</Button>
+          <Button icon={<PlusOutlined />} onClick={() => setBatchOpen(true)}>批量添加</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增节点</Button>
         </Space>
       </header>
@@ -326,6 +329,8 @@ export function RpcSettingsPage() {
           />
         </Card>
       </Spin>
+
+      <RpcBatchDialog open={batchOpen} onClose={() => setBatchOpen(false)} onCreated={() => refresh(true)} />
 
       <Modal className="rpc-endpoint-modal" title={editing ? '编辑 RPC 节点' : '新增 RPC 节点'} open={dialogOpen} onCancel={() => setDialogOpen(false)} onOk={() => void save()} okText={editing ? '校验并保存' : '测试并保存'} confirmLoading={saving} width={680} destroyOnHidden>
         <Form form={form} layout="vertical">

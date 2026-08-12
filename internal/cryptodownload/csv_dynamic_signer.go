@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ type csvDownloadSigner struct {
 	scriptPath  string
 	deviceID    string
 	deviceIDErr error
+	setupErr    error
 	process     *csvSignerProcess
 }
 
@@ -39,15 +41,28 @@ func newCSVDownloadSigner(baseURL string) *csvDownloadSigner {
 		if !csvSignerEnabledForBaseURL(baseURL) {
 			return nil
 		}
-		scriptPath = defaultCSVSignerScript
+		var err error
+		scriptPath, err = materializeEmbeddedCSVSigner()
+		if err != nil {
+			return &csvDownloadSigner{setupErr: err}
+		}
 	}
 	if !filepath.IsAbs(scriptPath) {
-		if abs, err := filepath.Abs(scriptPath); err == nil {
+		// 优先解析为 exe 所在目录下的脚本：批次脚本可能从任意工作目录启动 exe，
+		// 相对 cwd 的路径会找不到签名器，导致直连请求无签名（OKLink 50113）。
+		if exePath, err := os.Executable(); err == nil {
+			candidate := filepath.Join(filepath.Dir(exePath), scriptPath)
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				scriptPath = candidate
+			} else if abs, absErr := filepath.Abs(scriptPath); absErr == nil {
+				scriptPath = abs
+			}
+		} else if abs, err := filepath.Abs(scriptPath); err == nil {
 			scriptPath = abs
 		}
 	}
 	if _, err := os.Stat(scriptPath); err != nil {
-		return nil
+		return &csvDownloadSigner{scriptPath: scriptPath, setupErr: fmt.Errorf("CSV signer 脚本不可用: %w", err)}
 	}
 	nodePath := strings.TrimSpace(os.Getenv("OKLINK_CSV_SIGNER_NODE"))
 	if nodePath == "" {
@@ -97,10 +112,16 @@ func (s *csvDownloadSigner) ApplyWithVersion(ctx context.Context, req *http.Requ
 	if s == nil {
 		return csvSignerVersion{}, nil
 	}
+	if s.setupErr != nil {
+		return csvSignerVersion{}, s.setupErr
+	}
 	if s.deviceIDErr != nil {
 		return csvSignerVersion{}, s.deviceIDErr
 	}
-	signCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	// Budget one sign request generously: a fresh signer process must discover
+	// the OKLink asset graph, boot its worker sandbox and probe the encrypt
+	// export on the first call (the in-service deadline is 30s).
+	signCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	payload := csvSignerRequest{
 		Method:   req.Method,
@@ -150,6 +171,25 @@ func (s *csvDownloadSigner) Close() error {
 		return nil
 	}
 	return s.process.Close()
+}
+
+// ValidateCSVAutomationRuntime checks the local executable/runtime boundary
+// without issuing a network request or exposing generated signature headers.
+func ValidateCSVAutomationRuntime(baseURL string) error {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = defaultBaseURL
+	}
+	signer := newCSVDownloadSigner(baseURL)
+	if signer == nil {
+		return fmt.Errorf("CSV signer 不支持 Base URL")
+	}
+	if signer.setupErr != nil {
+		return signer.setupErr
+	}
+	if _, err := exec.LookPath(signer.nodePath); err != nil {
+		return fmt.Errorf("CSV signer 缺少 Node.js 运行时: %w", err)
+	}
+	return signer.Close()
 }
 
 func (s *csvDownloadSigner) MarkStale() {

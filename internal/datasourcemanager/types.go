@@ -61,6 +61,10 @@ type Source struct {
 	LastError        string       `json:"last_error,omitempty"`
 	CurrentTasks     int64        `json:"current_tasks"`
 	CheckedAt        *time.Time   `json:"checked_at,omitempty"`
+	AccountCount     int          `json:"account_count"`
+	EnabledAccounts  int          `json:"enabled_accounts"`
+	HealthyAccounts  int          `json:"healthy_accounts"`
+	AbnormalAccounts int          `json:"abnormal_accounts"`
 	Config           PublicConfig `json:"config"`
 }
 

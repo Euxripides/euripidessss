@@ -131,6 +131,37 @@ func TestRejectsUnsafeEndpointAndSystemDrive(t *testing.T) {
 	}
 }
 
+func TestGroupRPCSourcesByProviderAndChain(t *testing.T) {
+	now := time.Now().UTC()
+	items := []rpcmanager.Endpoint{
+		{ID: "one", Provider: "CHAINSTACK", ChainKey: "bsc", Enabled: true, SecretConfigured: true, MaxConcurrency: 2, RequestTimeoutMS: 5000, Health: rpcmanager.Health{Status: rpcmanager.StatusHealthy, HealthScore: 98, SuccessRate5M: 99, LatencyP50MS: 30, LatencyP95MS: 50, LastSuccessAt: &now, CheckedAt: &now}},
+		{ID: "two", Provider: "CHAINSTACK", ChainKey: "bsc", Enabled: true, SecretConfigured: true, MaxConcurrency: 3, RequestTimeoutMS: 8000, Health: rpcmanager.Health{Status: rpcmanager.StatusUnavailable, HealthScore: 20, SuccessRate5M: 50, LatencyP50MS: 100, LatencyP95MS: 180, LastFailureAt: &now, CheckedAt: &now}},
+		{ID: "three", Provider: "CHAINSTACK", ChainKey: "eth", Enabled: false, SecretConfigured: true, MaxConcurrency: 1, RequestTimeoutMS: 3000, Health: rpcmanager.Health{Status: rpcmanager.StatusDisabled}},
+	}
+	groups := groupRPCSources(items)
+	if len(groups) != 2 {
+		t.Fatalf("expected two provider+chain cards, got %+v", groups)
+	}
+	var bsc, eth *Source
+	for index := range groups {
+		switch groups[index].ChainKeys[0] {
+		case "bsc":
+			bsc = &groups[index]
+		case "eth":
+			eth = &groups[index]
+		}
+	}
+	if bsc == nil || bsc.AccountCount != 2 || bsc.EnabledAccounts != 2 || bsc.HealthyAccounts != 1 || bsc.AbnormalAccounts != 1 || bsc.Status != StatusDegraded {
+		t.Fatalf("bsc aggregate mismatch: %+v", bsc)
+	}
+	if bsc.EndpointMasked != "由 RPC 账号池加密托管" || bsc.Config.MaxConcurrency != 5 || bsc.LatencyP95MS != 180 {
+		t.Fatalf("bsc aggregate quality mismatch: %+v", bsc)
+	}
+	if eth == nil || eth.AccountCount != 1 || eth.EnabledAccounts != 0 || eth.Status != StatusDisabled {
+		t.Fatalf("eth aggregate mismatch: %+v", eth)
+	}
+}
+
 func writeInitialState(t *testing.T, root, endpoint string) {
 	t.Helper()
 	state := persistedState{Configs: []storedConfig{

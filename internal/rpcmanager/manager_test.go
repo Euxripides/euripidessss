@@ -3,6 +3,7 @@
 package rpcmanager
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -54,6 +55,79 @@ func TestCreateMasksSecretAndSurvivesRestart(t *testing.T) {
 	result, err := manager.TestEndpoint(context.Background(), item.ID)
 	if err != nil || !result.Success || requests.Load() < 4 {
 		t.Fatalf("restart decrypt test failed: result=%+v requests=%d err=%v", result, requests.Load(), err)
+	}
+}
+
+func TestBatchCreateReportsPerItemAndNeverEchoesSecrets(t *testing.T) {
+	server := rpcServer(t, func(method string) (int, any) {
+		return http.StatusOK, rpcResult(method)
+	})
+	defer server.Close()
+	manager, err := New(testRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	first := endpointInput("账号一", server.URL+"/private-key-one")
+	duplicate := endpointInput("重复账号", server.URL+"/private-key-one")
+	second := endpointInput("账号二", server.URL+"/private-key-two")
+	body, err := json.Marshal(BatchCreateInput{Items: []EndpointInput{first, duplicate, second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/rpc/endpoints/batch", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	NewHandler(manager).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusMultiStatus {
+		t.Fatalf("expected 207, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response BatchCreateResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Total != 3 || response.CreatedCount != 2 || response.FailureCount != 1 || len(response.Created) != 2 || len(response.Failures) != 1 {
+		t.Fatalf("batch response mismatch: %+v", response)
+	}
+	if response.Failures[0].Index != 1 || !strings.Contains(response.Failures[0].Detail, "重复") {
+		t.Fatalf("duplicate failure mismatch: %+v", response.Failures)
+	}
+	responseText := recorder.Body.String()
+	if strings.Contains(responseText, "private-key-one") || strings.Contains(responseText, "private-key-two") {
+		t.Fatalf("batch response leaked endpoint secret: %s", responseText)
+	}
+	items, err := manager.Endpoints()
+	if err != nil || len(items) != 2 {
+		t.Fatalf("persisted batch mismatch: items=%d err=%v", len(items), err)
+	}
+	retry, err := manager.CreateBatch(context.Background(), []EndpointInput{first})
+	if err != nil || retry.CreatedCount != 0 || retry.FailureCount != 1 || !strings.Contains(retry.Failures[0].Detail, "已存在") {
+		t.Fatalf("persisted duplicate must be rejected: %+v err=%v", retry, err)
+	}
+}
+
+func TestBatchCreateAllSuccessSerializesEmptyFailuresArray(t *testing.T) {
+	server := rpcServer(t, func(method string) (int, any) {
+		return http.StatusOK, rpcResult(method)
+	})
+	defer server.Close()
+	manager, err := New(testRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	result, err := manager.CreateBatch(context.Background(), []EndpointInput{
+		endpointInput("账号一", server.URL+"/first"),
+		endpointInput("账号二", server.URL+"/second"),
+	})
+	if err != nil || result.CreatedCount != 2 || result.FailureCount != 0 || result.Failures == nil || len(result.Failures) != 0 {
+		t.Fatalf("all-success batch mismatch: %+v err=%v", result, err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"failures":[]`) {
+		t.Fatalf("failures must serialize as [], got %s", encoded)
 	}
 }
 

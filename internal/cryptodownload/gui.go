@@ -75,6 +75,7 @@ type GUIStartRequest struct {
 	CSVIMAPPort      int               `json:"csvImapPort"`
 	CSVIMAPUser      string            `json:"csvImapUser"`
 	CSVIMAPPassword  string            `json:"csvImapPassword"`
+	CSVDeliveryMode  string            `json:"csvDeliveryMode"`
 	CSVStartTime     int64             `json:"csvStartTime"`
 	CSVEndTime       int64             `json:"csvEndTime"`
 	CSVRequestHAR    string            `json:"csvRequestHar"`
@@ -153,6 +154,7 @@ type GUIPersistedSettings struct {
 	CSVIMAPPort      int     `json:"csvImapPort"`
 	CSVIMAPUser      string  `json:"csvImapUser"`
 	CSVIMAPPassword  string  `json:"csvImapPassword"`
+	CSVDeliveryMode  string  `json:"csvDeliveryMode"`
 	CSVStartTime     int64   `json:"csvStartTime"`
 	CSVEndTime       int64   `json:"csvEndTime"`
 	Workers          int     `json:"workers"`
@@ -290,6 +292,7 @@ func handleGUISettings(w http.ResponseWriter, r *http.Request) {
 func defaultGUIPersistedSettings() GUIPersistedSettings {
 	return GUIPersistedSettings{
 		Source:           "rpc",
+		CSVDeliveryMode:  "auto",
 		CSVIMAPPort:      993,
 		CSVStartTime:     defaultCSVStartTime,
 		Workers:          4,
@@ -312,6 +315,7 @@ func normalizeGUIPersistedSettings(settings GUIPersistedSettings) GUIPersistedSe
 	settings.CSVIMAPHost = strings.TrimSpace(settings.CSVIMAPHost)
 	settings.CSVIMAPUser = strings.TrimSpace(settings.CSVIMAPUser)
 	settings.CSVIMAPPassword = strings.TrimSpace(settings.CSVIMAPPassword)
+	settings.CSVDeliveryMode = normalizeCSVDeliveryMode(settings.CSVDeliveryMode)
 	mail := normalizeCSVMailConfig(Config{
 		CSVEmail:        settings.CSVEmail,
 		CSVIMAPHost:     settings.CSVIMAPHost,
@@ -746,6 +750,7 @@ func (r GUIStartRequest) toConfig() Config {
 		CSVIMAPPort:     r.CSVIMAPPort,
 		CSVIMAPUser:     strings.TrimSpace(r.CSVIMAPUser),
 		CSVIMAPPassword: strings.TrimSpace(r.CSVIMAPPassword),
+		CSVDeliveryMode: normalizeCSVDeliveryMode(r.CSVDeliveryMode),
 		CSVStartTime:    r.CSVStartTime,
 		CSVEndTime:      r.CSVEndTime,
 		CSVRequestHAR:   firstNonEmpty(strings.TrimSpace(r.CSVRequestHAR), os.Getenv("OKLINK_CSV_REQUEST_HAR")),

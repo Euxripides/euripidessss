@@ -34,6 +34,7 @@ type Manager struct {
 	store             *store
 	secure            *secureStore
 	client            *http.Client
+	endpointMu        sync.Mutex
 	runtimesMu        sync.Mutex
 	runtimes          map[string]*endpointRuntime
 	configuredMu      sync.RWMutex
@@ -150,12 +151,17 @@ func (m *Manager) Close() error {
 }
 
 func (m *Manager) Create(ctx context.Context, input EndpointInput) (Endpoint, error) {
+	m.endpointMu.Lock()
+	defer m.endpointMu.Unlock()
 	input, network, endpointURL, err := validateEndpointInput(input)
 	if err != nil {
 		return Endpoint{}, err
 	}
 	testEndpointURL, err := validateOptionalEndpointURL(input.TestEndpointURL)
 	if err != nil {
+		return Endpoint{}, err
+	}
+	if err := m.ensureEndpointURLUnique(endpointURL, ""); err != nil {
 		return Endpoint{}, err
 	}
 	testURL, endpointRole := endpointURLForTest(endpointURL, testEndpointURL)
@@ -201,7 +207,52 @@ func (m *Manager) Create(ctx context.Context, input EndpointInput) (Endpoint, er
 	return m.publicEndpoint(item), nil
 }
 
+func (m *Manager) CreateBatch(ctx context.Context, inputs []EndpointInput) (BatchCreateResponse, error) {
+	if len(inputs) == 0 {
+		return BatchCreateResponse{}, errors.New("批量添加至少需要 1 个 RPC 账号")
+	}
+	if len(inputs) > 50 {
+		return BatchCreateResponse{}, errors.New("单次最多批量添加 50 个 RPC 账号")
+	}
+	response := BatchCreateResponse{
+		Total:    len(inputs),
+		Created:  make([]Endpoint, 0, len(inputs)),
+		Failures: make([]BatchCreateFailure, 0),
+	}
+	seen := make(map[string]struct{}, len(inputs))
+	for index, raw := range inputs {
+		normalized, _, endpointURL, err := validateEndpointInput(raw)
+		if err == nil {
+			_, err = validateOptionalEndpointURL(normalized.TestEndpointURL)
+		}
+		fingerprint := strings.ToLower(strings.TrimSpace(endpointURL))
+		if err == nil {
+			if _, duplicate := seen[fingerprint]; duplicate {
+				err = errors.New("批次内 Endpoint 重复")
+			} else {
+				seen[fingerprint] = struct{}{}
+			}
+		}
+		if err == nil {
+			var item Endpoint
+			item, err = m.Create(ctx, normalized)
+			if err == nil {
+				response.Created = append(response.Created, item)
+				continue
+			}
+		}
+		response.Failures = append(response.Failures, BatchCreateFailure{
+			Index: index, DisplayName: strings.TrimSpace(raw.DisplayName), Detail: redactMessage(err.Error()),
+		})
+	}
+	response.CreatedCount = len(response.Created)
+	response.FailureCount = len(response.Failures)
+	return response, nil
+}
+
 func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (Endpoint, error) {
+	m.endpointMu.Lock()
+	defer m.endpointMu.Unlock()
 	item, err := m.store.endpoint(id)
 	if err != nil {
 		return Endpoint{}, err
@@ -269,6 +320,9 @@ func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (E
 	}
 	testEndpointURL, err := validateOptionalEndpointURL(input.TestEndpointURL)
 	if err != nil {
+		return Endpoint{}, err
+	}
+	if err := m.ensureEndpointURLUnique(endpointURL, id); err != nil {
 		return Endpoint{}, err
 	}
 	if patch.EndpointURL != nil || patch.TestEndpointURL != nil || input.ChainKey != item.ChainKey || (patch.Enabled != nil && *patch.Enabled) {
@@ -343,6 +397,26 @@ func (m *Manager) Endpoints() ([]Endpoint, error) {
 	}
 	m.applyBlockLag(result)
 	return result, nil
+}
+
+func (m *Manager) ensureEndpointURLUnique(endpointURL, excludeID string) error {
+	items, err := m.store.endpoints("", false)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.ID == excludeID {
+			continue
+		}
+		storedURL, decryptErr := m.secure.decrypt(item.EncryptedURL)
+		if decryptErr != nil {
+			return decryptErr
+		}
+		if strings.EqualFold(strings.TrimSpace(storedURL), strings.TrimSpace(endpointURL)) {
+			return errors.New("该 Endpoint 已存在，请直接编辑已有 API 账号")
+		}
+	}
+	return nil
 }
 
 func (m *Manager) HasConfigured(chainKey string) bool {

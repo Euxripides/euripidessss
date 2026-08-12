@@ -88,3 +88,5 @@ backend/data/crypto_parquet/
 .env.local
 .env.*.local
 backend/data/fund-flow-cache/
+exports/
+%SystemDrive%/

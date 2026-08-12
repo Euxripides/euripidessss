@@ -1,7 +1,7 @@
 import { Worker } from "node:worker_threads";
 
-const START_TIMEOUT_MS = 3_000;
-const SIGN_TIMEOUT_MS = 1_000;
+const START_TIMEOUT_MS = 15_000;
+const SIGN_TIMEOUT_MS = 8_000;
 
 export class WorkerEncryptor {
   constructor(graph, targetURL, options = {}) {
@@ -9,6 +9,9 @@ export class WorkerEncryptor {
     this.targetURL = targetURL;
     this.startTimeoutMs = options.startTimeoutMs || START_TIMEOUT_MS;
     this.signTimeoutMs = options.signTimeoutMs || SIGN_TIMEOUT_MS;
+    this.deviceId = options.deviceId || "";
+    this.assetDir = options.assetDir || "";
+    this.api = null;
     this.worker = null;
     this.starting = null;
     this.terminating = null;
@@ -33,8 +36,12 @@ export class WorkerEncryptor {
       }, this.signTimeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, timer });
-      worker.postMessage({ type: "encrypt", id, value, timestamp });
+      worker.postMessage({ type: "encrypt", id, value, timestamp, deviceId: this.deviceId });
     });
+  }
+
+  setDeviceId(deviceId) {
+    this.deviceId = String(deviceId || "");
   }
 
   async close() {
@@ -59,7 +66,7 @@ export class WorkerEncryptor {
   spawn() {
     return new Promise((resolve, reject) => {
       const worker = new Worker(new URL("./oklink_signer_worker.mjs", import.meta.url), {
-        workerData: { graph: this.graph, targetURL: this.targetURL },
+        workerData: { graph: this.graph, targetURL: this.targetURL, deviceId: this.deviceId, assetDir: this.assetDir },
       });
       const timer = setTimeout(() => {
         const error = timeoutError("signer initialization exceeded execution deadline");
@@ -81,6 +88,7 @@ export class WorkerEncryptor {
         if (message?.type === "ready") {
           clearTimeout(timer);
           this.worker = worker;
+          this.api = typeof message.api === "string" ? message.api : "legacy";
           resolve(worker);
           return;
         }

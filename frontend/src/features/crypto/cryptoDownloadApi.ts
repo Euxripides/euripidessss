@@ -1,6 +1,7 @@
 import { getJson, postJson } from '../../api/client';
 
 export type CryptoDownloadSource = 'rpc' | 'csv' | 'browser';
+export type CryptoCSVDeliveryMode = 'auto' | 'direct' | 'email';
 
 export type CryptoDownloadAddressChain = {
   readonly address: string;
@@ -20,6 +21,7 @@ export type CryptoDownloadStartValues = {
   readonly csvImapPort?: number;
   readonly csvImapUser?: string;
   readonly csvImapPassword?: string;
+  readonly csvDeliveryMode?: CryptoCSVDeliveryMode;
   readonly csvStartTime?: number;
   readonly csvEndTime?: number;
   readonly csvRequestHar?: string;
@@ -55,6 +57,7 @@ export type CryptoDownloadSettings = Partial<Pick<
   | 'csvImapPort'
   | 'csvImapUser'
   | 'csvImapPassword'
+  | 'csvDeliveryMode'
   | 'csvStartTime'
   | 'csvEndTime'
   | 'workers'

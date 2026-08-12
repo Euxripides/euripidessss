@@ -25,6 +25,24 @@ func (m *GUIManager) handleResume(w http.ResponseWriter, r *http.Request) {
 	job.mu.Lock()
 	request := job.request
 	job.mu.Unlock()
+	if strings.EqualFold(strings.TrimSpace(request.Source), "csv") {
+		settings, settingsErr := loadGUISettingsFromConfigDir(m.configDir)
+		if settingsErr != nil {
+			http.Error(w, settingsErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Resume always uses the latest saved mail identity and secret. Persisted
+		// job snapshots intentionally contain no password and may retain an old
+		// username after the user repairs settings.
+		request.CSVEmail = settings.CSVEmail
+		request.CSVIMAPHost = settings.CSVIMAPHost
+		request.CSVIMAPPort = settings.CSVIMAPPort
+		request.CSVIMAPUser = settings.CSVIMAPUser
+		request.CSVIMAPPassword = settings.CSVIMAPPassword
+		// Delivery policy belongs to the task: changing global settings must not
+		// silently turn an email-only audit into an automatic/direct run.
+		request.CSVDeliveryMode = normalizeCSVDeliveryMode(request.CSVDeliveryMode)
+	}
 	request, err := m.hydrateCSVStartRequest(request)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -171,6 +189,8 @@ func guiPauseMessage(err error) string {
 	reason := err.Error()
 	lower := strings.ToLower(reason)
 	switch {
+	case strings.Contains(lower, "login_config_failure") || strings.Contains(lower, "(login)"):
+		return fmt.Sprintf("已暂停：IMAP 登录或授权失败。Gmail 请确认账号已启用两步验证，并填写应用专用密码（不是网页登录密码）；修改后点击继续下载。原因：%s", reason)
 	case strings.Contains(lower, "imap") || strings.Contains(lower, "getaddrinfo") || strings.Contains(lower, "lookup"):
 		return fmt.Sprintf("已暂停：IMAP 连接失败，请检查 IMAP 主机、端口、用户名和网络后点击继续下载。原因：%s", reason)
 	case strings.Contains(lower, "50113") || strings.Contains(lower, "signature") || strings.Contains(lower, "request sign"):

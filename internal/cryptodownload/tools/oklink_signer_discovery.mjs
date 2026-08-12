@@ -4,17 +4,36 @@ import path from "node:path";
 
 const ASSET_BASE = "https://static.oklink.com/cdn/assets/okfe/all-block-chain/assets/";
 const MAX_ASSETS = 96;
-const MAX_BYTES = 1_000_000;
+const MAX_BYTES = 2_000_000;
 const ASSET_NAME = /^[A-Za-z0-9_-]+\.js$/;
-const IMPORT_PATTERNS = [/from\s*["']\.\/([^"']+\.js)["']/g, /import\(\s*["']\.\/([^"']+\.js)["']\s*\)/g];
+const IMPORT_PATTERNS = [
+  /from\s*["']\.\/([^"']+\.js)["']/g,
+  /import\(\s*["']\.\/([^"']+\.js)["']\s*\)/g,
+  /import\(\s*`\.\/([^`]+\.js)`\s*\)/g,
+];
 
 export async function findCachedSignerEntry(assetDir, excluded) {
-  const names = (await fs.readdir(assetDir)).filter((name) => name !== excluded && name.startsWith("async-shared-") && ASSET_NAME.test(name)).slice(0, MAX_ASSETS);
+  let names;
+  try {
+    names = await fs.readdir(assetDir);
+  } catch (error) {
+    // A fresh user cache has no asset directory yet.  Treat that as "no
+    // cached entry" and let the caller fall through to online discovery
+    // instead of failing closed on ENOENT.
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
+  names = names.filter((name) => name !== excluded && ASSET_NAME.test(name)).slice(0, MAX_ASSETS);
   for (const name of names) {
     const code = await boundedRead(path.join(assetDir, name));
-    if (code.includes("12441684wraQpF") && /export\{[^}]*\bas D\b/.test(code)) return name;
+    if (isSignerEntryCode(code)) return name;
   }
   return "";
+}
+
+export function isSignerEntryCode(code) {
+  if (/export\{[^}]*\bas generateSecToken\b/.test(code)) return true;
+  return code.includes("12441684wraQpF") && /export\{[^}]*\bas D\b/.test(code);
 }
 
 export async function discoverGraph(options) {
@@ -79,6 +98,14 @@ async function discoverEntry(fetchImpl, pageURL, assetDir) {
 
 function encryptionImport(code) {
   if (!code.includes("generateSecToken")) return "";
+  // Current OKLink build: generateSecToken is dynamically imported from a
+  // dedicated sec-token module (e.g. `import(\`./17203-sQeGX4It.js\`)`).
+  for (const match of code.matchAll(/import\(\s*[`"']\.\/([^`"']+\.js)[`"']\s*\)/g)) {
+    const target = match[1];
+    if (ASSET_NAME.test(target)) return target;
+  }
+  // Legacy build: the module importing generateSecToken re-exports the
+  // encrypt function as `D` from an async-shared chunk.
   for (const match of code.matchAll(/import\{([^}]*)\}from["']\.\/(async-shared-[A-Za-z0-9_-]+\.js)["']/g)) {
     if (/\bD as\b/.test(match[1])) return match[2];
   }
@@ -144,6 +171,7 @@ function importsFrom(code) {
 }
 
 function isPlausibleEntry(name, code) {
+  if (isSignerEntryCode(code)) return true;
   return name.startsWith("async-shared-") && /export\{[^}]*\bas D\b/.test(code) && code.includes("rid");
 }
 

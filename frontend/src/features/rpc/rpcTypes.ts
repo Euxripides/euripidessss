@@ -64,6 +64,20 @@ export interface RpcEndpointInput {
   request_timeout_ms: number;
 }
 
+export interface RpcBatchFailure {
+  index: number;
+  display_name: string;
+  detail: string;
+}
+
+export interface RpcBatchCreateResponse {
+  total: number;
+  created_count: number;
+  failure_count: number;
+  created: RpcEndpoint[] | null;
+  failures: RpcBatchFailure[] | null;
+}
+
 export interface RpcTestResult {
   success: boolean;
   latest_block: number;

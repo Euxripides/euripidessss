@@ -13,7 +13,7 @@ func guiPersistedRequest(req GUIStartRequest) GUIJobPersistedRequest {
 	return GUIJobPersistedRequest{
 		Source: req.Source, RPCURL: req.RPCURL, Chains: req.Chains, NativeSymbol: req.NativeSymbol,
 		CSVEmail: req.CSVEmail, CSVIMAPHost: req.CSVIMAPHost, CSVIMAPPort: req.CSVIMAPPort,
-		CSVIMAPUser: req.CSVIMAPUser, CSVStartTime: req.CSVStartTime, CSVEndTime: req.CSVEndTime,
+		CSVIMAPUser: req.CSVIMAPUser, CSVDeliveryMode: req.CSVDeliveryMode, CSVStartTime: req.CSVStartTime, CSVEndTime: req.CSVEndTime,
 		StartBlock: req.StartBlock, EndBlock: req.EndBlock, CutoffBlock: req.CutoffBlock,
 		TraceMode: req.TraceMode, BlockBatch: req.BlockBatch, LogBatch: req.LogBatch,
 		Workers: req.Workers, RPS: req.RPS, TimeoutSeconds: req.TimeoutSeconds,
@@ -107,7 +107,7 @@ func restoreGUIJob(record GUIJobRecord, store *GUIJobStore, history *GUIDownload
 	req := GUIStartRequest{
 		Source: r.Source, RPCURL: r.RPCURL, AddressChains: append([]GUIAddressChain(nil), record.Entries...), Chains: r.Chains,
 		NativeSymbol: r.NativeSymbol, CSVEmail: r.CSVEmail, CSVIMAPHost: r.CSVIMAPHost,
-		CSVIMAPPort: r.CSVIMAPPort, CSVIMAPUser: r.CSVIMAPUser, CSVStartTime: r.CSVStartTime,
+		CSVIMAPPort: r.CSVIMAPPort, CSVIMAPUser: r.CSVIMAPUser, CSVDeliveryMode: r.CSVDeliveryMode, CSVStartTime: r.CSVStartTime,
 		CSVEndTime: r.CSVEndTime, StartBlock: r.StartBlock, EndBlock: r.EndBlock,
 		CutoffBlock: r.CutoffBlock, TraceMode: r.TraceMode, BlockBatch: r.BlockBatch,
 		LogBatch: r.LogBatch, Workers: r.Workers, RPS: r.RPS, TimeoutSeconds: r.TimeoutSeconds,

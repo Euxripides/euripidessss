@@ -52,7 +52,7 @@ func (p *csvSignerProcess) request(ctx context.Context, op string, payload *csvS
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		response, err := p.requestOnce(ctx, op, payload)
-		if err == nil || ctx.Err() != nil || !errors.Is(err, ErrCSVSignerProcess) && !errors.Is(err, ErrCSVSignerProtocol) {
+		if err == nil || ctx.Err() != nil || !isCSVSignerRetryableFailure(err) {
 			return response, err
 		}
 	}
@@ -60,6 +60,18 @@ func (p *csvSignerProcess) request(ctx context.Context, op string, payload *csvS
 		return p.oneShot(ctx, *payload, false)
 	}
 	return csvSignerResponse{}, &csvSignerFailure{Kind: ErrCSVSignerProcess, Version: p.Version(), Detail: "restart limit reached"}
+}
+
+// isCSVSignerRetryableFailure reports whether a signer response failure can be
+// retried on the same persistent process.  Process/protocol breakage restarts
+// the service; a remote failure is retried only when the signer explicitly
+// marked it retryable (e.g. a cold-start discovery timeout or queue pressure).
+func isCSVSignerRetryableFailure(err error) bool {
+	if errors.Is(err, ErrCSVSignerProcess) || errors.Is(err, ErrCSVSignerProtocol) {
+		return true
+	}
+	var failure *csvSignerFailure
+	return errors.As(err, &failure) && failure.Retryable
 }
 
 func (p *csvSignerProcess) requestOnce(ctx context.Context, op string, payload *csvSignerRequest) (csvSignerResponse, error) {
@@ -201,7 +213,7 @@ func (p *csvSignerProcess) handleLine(generation uint64, line []byte) error {
 	}
 	p.version = versionFromResponse(response)
 	if !response.OK {
-		result <- csvSignerResult{err: &csvSignerFailure{Kind: ErrCSVSignerRemote, Version: p.version, Detail: response.Error.Code}}
+		result <- csvSignerResult{err: &csvSignerFailure{Kind: ErrCSVSignerRemote, Version: p.version, Detail: response.Error.Code, Retryable: response.Error.Retryable}}
 		return nil
 	}
 	result <- csvSignerResult{response: response}

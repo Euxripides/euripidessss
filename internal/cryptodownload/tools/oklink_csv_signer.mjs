@@ -6,7 +6,10 @@ import { SignerRuntime } from "./oklink_signer_runtime.mjs";
 const PROTOCOL_VERSION = "1";
 const MAX_LINE_BYTES = 1_000_000;
 const MAX_ACTIVE = 32;
-const SIGN_OPERATION_TIMEOUT_MS = 6_000;
+// The first signing operation in a fresh process performs asset discovery,
+// sandbox module loading and encrypt probing.  The Go side budgets 45s for
+// one sign request, so the in-service deadline stays below that.
+const SIGN_OPERATION_TIMEOUT_MS = 30_000;
 const serviceInstance = crypto.randomUUID();
 
 function runtimeOptions() {

@@ -47,6 +47,24 @@ type EndpointPatch struct {
 	TraceCapability   *bool     `json:"trace_capability,omitempty"`
 }
 
+type BatchCreateInput struct {
+	Items []EndpointInput `json:"items"`
+}
+
+type BatchCreateFailure struct {
+	Index       int    `json:"index"`
+	DisplayName string `json:"display_name"`
+	Detail      string `json:"detail"`
+}
+
+type BatchCreateResponse struct {
+	Total        int                  `json:"total"`
+	CreatedCount int                  `json:"created_count"`
+	FailureCount int                  `json:"failure_count"`
+	Created      []Endpoint           `json:"created"`
+	Failures     []BatchCreateFailure `json:"failures"`
+}
+
 type Endpoint struct {
 	ID                     string    `json:"endpoint_id"`
 	Provider               string    `json:"provider"`

@@ -788,10 +788,16 @@ export default function SmartDownloadPage({ onOpenAddress, onNavigate }: SmartDo
 
   return (
     <div className="smart-download-page">
-      <Typography.Title level={4}>
-        <ThunderboltOutlined /> 智能下载
-      </Typography.Title>
+      <header className="sd-page-header">
+        <div>
+          <Typography.Title level={3}>
+            <ThunderboltOutlined /> 智能下载
+          </Typography.Title>
+          <Typography.Text>配置一次下载目标，系统自动完成资源选择、调度、校验和结果入库。</Typography.Text>
+        </div>
+      </header>
       <Tabs
+        className="sd-main-tabs"
         activeKey={tab}
         onChange={setTab}
         items={[
@@ -1318,8 +1324,9 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   };
 
   return (
-    <Card>
+    <Card className="sd-create-card">
       <Form
+        className="sd-create-form"
         form={form}
         layout="vertical"
         onFinish={onCreate}
@@ -1376,14 +1383,20 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             </div>
           ) : null}
         </div>
+        <section className="sd-form-section sd-form-section-primary">
+          <div className="sd-form-section-head">
+            <b>1. 下载对象</b>
+            <span>填写地址或上传文件，支持同一批次处理多个地址。</span>
+          </div>
         <Form.Item
+          className="sd-address-field"
           label="地址"
           name="addresses"
           extra="多链支持：每行 0x... 后可跟空格加链名（如 0x… eth），缺省使用上方网络"
         >
           <Input.TextArea rows={5} placeholder={"0x...\n0x..."} />
         </Form.Item>
-        <Space style={{ marginBottom: 8 }}>
+        <Space className="sd-upload-row" style={{ marginBottom: 8 }} wrap>
           <Upload
             accept=".csv,.xlsx,.xlsm,.txt"
             showUploadList={false}
@@ -1419,7 +1432,13 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             </>
           )}
         </Space>
-        <Space size="large" wrap align="start">
+        </section>
+        <section className="sd-form-section">
+          <div className="sd-form-section-head">
+            <b>2. 调度策略</b>
+            <span>选择网络、优先级与目标速度，其余资源由系统自动编排。</span>
+          </div>
+        <Space className="sd-config-row" size="large" wrap align="start">
           <Form.Item label="网络" name="chain_key" rules={[{ required: true }]}>
             <Select options={chainOptions} style={{ width: 240 }} />
           </Form.Item>
@@ -1440,7 +1459,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             />
           </Form.Item>
         </Space>
-        <Form.Item label="资源档位" name="resource_profile" rules={[{ required: true }]} extra="只选择目标速度，系统自动配置 Cloud、RPC 和 Writer 资源。">
+        <Form.Item className="sd-profile-field" label="资源档位" name="resource_profile" rules={[{ required: true }]} extra="只选择目标速度，系统自动配置 Cloud、RPC 和 Writer 资源。">
           <Radio.Group className="sd-mode-selector">
             <Radio.Button value="STANDARD" onClick={() => form.setFieldValue("mode", "AUTO")}>
               <span className="sd-mode-option"><b>标准</b><small>STANDARD · 低资源，适合普通任务</small></span>
@@ -1486,10 +1505,16 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             );
           }}
         </Form.Item>
-        <Form.Item label="数据" name="datasets" rules={[{ required: true, message: "请至少选择一类数据" }]}>
+        </section>
+        <section className="sd-form-section">
+          <div className="sd-form-section-head">
+            <b>3. 数据与范围</b>
+            <span>明确需要的数据集和下载边界，可选相关区间用于优先认证。</span>
+          </div>
+        <Form.Item className="sd-dataset-field" label="数据" name="datasets" rules={[{ required: true, message: "请至少选择一类数据" }]}>
           <Checkbox.Group options={capabilityDatasetOptions} />
         </Form.Item>
-        <Form.Item label="时间范围" name="range_mode">
+        <Form.Item className="sd-range-field" label="下载范围" name="range_mode">
           <Radio.Group>
             <Radio.Button value="FULL">全量</Radio.Button>
             <Radio.Button value="TIME">时间</Radio.Button>
@@ -1586,6 +1611,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         <Form.Item name="force_redownload" valuePropName="checked" style={{ marginBottom: 8 }}>
           <Checkbox>强制忽略本地缓存重新下载（默认自动复用本地已验证数据）</Checkbox>
         </Form.Item>
+        </section>
         {preflight ? (
           <div className={`sd-preflight ${preflight.blocked ? "is-blocked" : "is-ready"}`}>
             <div className="sd-preflight-head">
@@ -1628,6 +1654,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             <PlannerV2Metrics preview={plannerPreview} />
           </div>
         ) : null}
+        <div className="sd-create-actions">
         <Button
           type="primary"
           htmlType="submit"
@@ -1637,6 +1664,8 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         >
           {preflighting ? "正在执行生产预检…" : preflight ? "预检通过，开始智能下载" : "先执行生产预检"}
         </Button>
+        <span>预检不会创建任务；通过后再次确认才开始下载。</span>
+        </div>
       </Form>
     </Card>
   );
