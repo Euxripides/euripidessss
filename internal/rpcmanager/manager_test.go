@@ -213,6 +213,9 @@ func TestTurboUsesDisabledEndpointsWithoutEnablingThem(t *testing.T) {
 	if manager.HasConfigured("bsc") || !manager.HasAnyConfigured("bsc") {
 		t.Fatal("normal routing must remain disabled while Turbo sees configured endpoints")
 	}
+	if !manager.HasTurboAvailable("bsc") {
+		t.Fatal("healthy disabled endpoints must remain available to Turbo")
+	}
 	if _, _, err := manager.Call(context.Background(), "bsc", "eth_getBalance", []any{"0x0000000000000000000000000000000000000000", "latest"}); err == nil {
 		t.Fatal("normal RPC call unexpectedly used a disabled endpoint")
 	}
@@ -233,6 +236,102 @@ func TestTurboUsesDisabledEndpointsWithoutEnablingThem(t *testing.T) {
 			t.Fatalf("Turbo permanently enabled endpoint %s", item.ID)
 		}
 	}
+}
+
+func TestTurboAvailabilityExcludesKnownMisconfiguredEndpoint(t *testing.T) {
+	server := rpcServer(t, func(method string) (int, any) {
+		return http.StatusOK, rpcResult(method)
+	})
+	defer server.Close()
+	manager, err := New(testRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	endpoint, err := manager.Create(context.Background(), endpointInput("Turbo misconfigured", server.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	openUntil := time.Now().UTC().Add(time.Hour)
+	if err = manager.store.saveHealth(Health{
+		EndpointID: endpoint.ID, Status: StatusMisconfigured,
+		CircuitState: CircuitOpen, CircuitOpenUntil: &openUntil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if manager.HasTurboAvailable("bsc") {
+		t.Fatal("known misconfigured endpoint must not reserve a Turbo RPC lane")
+	}
+}
+
+func TestNormalAvailabilityMatchesRoutingEligibility(t *testing.T) {
+	server := rpcServer(t, func(method string) (int, any) {
+		return http.StatusOK, rpcResult(method)
+	})
+	defer server.Close()
+
+	newManager := func(t *testing.T) (*Manager, Endpoint) {
+		t.Helper()
+		manager, err := New(testRoot(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { manager.Close() })
+		endpoint, err := manager.Create(context.Background(), endpointInput("availability", server.URL))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manager, endpoint
+	}
+
+	t.Run("healthy enabled", func(t *testing.T) {
+		manager, _ := newManager(t)
+		if !manager.HasAvailable("bsc") {
+			t.Fatal("healthy enabled endpoint must be routable")
+		}
+	})
+	t.Run("known misconfigured", func(t *testing.T) {
+		manager, endpoint := newManager(t)
+		if err := manager.store.saveHealth(Health{EndpointID: endpoint.ID, Status: StatusMisconfigured, CircuitState: CircuitClosed}); err != nil {
+			t.Fatal(err)
+		}
+		if manager.HasAvailable("bsc") {
+			t.Fatal("misconfigured endpoint must not be advertised")
+		}
+	})
+	t.Run("active open circuit", func(t *testing.T) {
+		manager, endpoint := newManager(t)
+		until := time.Now().UTC().Add(time.Minute)
+		if err := manager.store.saveHealth(Health{EndpointID: endpoint.ID, Status: StatusUnavailable, CircuitState: CircuitOpen, CircuitOpenUntil: &until}); err != nil {
+			t.Fatal(err)
+		}
+		if manager.HasAvailable("bsc") {
+			t.Fatal("active open circuit must not be advertised")
+		}
+	})
+	t.Run("expired open circuit becomes half open", func(t *testing.T) {
+		manager, endpoint := newManager(t)
+		until := time.Now().UTC().Add(-time.Minute)
+		if err := manager.store.saveHealth(Health{EndpointID: endpoint.ID, Status: StatusUnavailable, CircuitState: CircuitOpen, CircuitOpenUntil: &until}); err != nil {
+			t.Fatal(err)
+		}
+		if !manager.HasAvailable("bsc") {
+			t.Fatal("expired circuit must be eligible for half-open recovery")
+		}
+		if got := manager.store.health(endpoint.ID).CircuitState; got != CircuitHalfOpen {
+			t.Fatalf("circuit state=%s, want %s", got, CircuitHalfOpen)
+		}
+	})
+	t.Run("disabled remains excluded from normal routing", func(t *testing.T) {
+		manager, endpoint := newManager(t)
+		disabled := false
+		if _, err := manager.Update(context.Background(), endpoint.ID, EndpointPatch{Enabled: &disabled}); err != nil {
+			t.Fatal(err)
+		}
+		if manager.HasAvailable("bsc") {
+			t.Fatal("disabled endpoint must not be advertised to normal routing")
+		}
+	})
 }
 
 func TestFailoverAfterRateLimit(t *testing.T) {

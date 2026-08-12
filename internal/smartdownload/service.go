@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
@@ -44,6 +46,23 @@ type Options struct {
 	DiskReserveBytes   uint64        // estimated growth must leave this reserve
 }
 
+// HeadBlockFunc 返回链当前高度（FULL/TIME 模式未显式给 to_block 时的终点；
+// 未装配时回退 Options.DefaultEndBlock）。
+type HeadBlockFunc func(ctx context.Context, chainKey string) (uint64, error)
+
+// TimeRangeResolver resolves an inclusive UTC time window to an inclusive
+// block window. Implementations must return the first block at/after start and
+// the last block at/before end; Smart Download never approximates TIME as FULL.
+type TimeRangeResolver func(ctx context.Context, chainKey string, start, end time.Time) (uint64, uint64, error)
+
+type headBlockCacheEntry struct {
+	block uint64
+	at    time.Time
+}
+
+// headBlockTTL 链高度缓存有效期（BSC 约 3 秒出一个块，60s 缓存足够准）。
+const headBlockTTL = 60 * time.Second
+
 // DefaultOptions 返回 Phase 1 默认值。
 func DefaultOptions() Options {
 	return Options{
@@ -63,33 +82,39 @@ func DefaultOptions() Options {
 
 // Service SmartDownloadService（实施方案 §1：任务层是系统中心）。
 type Service struct {
-	mu            sync.Mutex
-	store         *Store
-	cp            *CheckpointStore
-	opts          Options
-	writer        PartWriter
-	adapters      map[string]ProviderAdapter
-	scheduler     *SmartScheduler
-	validator     *Validator
-	events        *EventBus
-	eta           map[string]*etaState
-	etaEngines    map[string]*pg.ETAEngine
-	duckdbEngine  *duckdb.Engine
-	rangeCoverage RangeCoverageSource
-	results       *ResultProcessor
-	onIndexed     func(*IndexedResult)
-	indexedWriter IndexedWriter
-	cloudPlanner  *cloudplanner.Planner
-	history       *feedback.History
-	coverageIndex *reg.Store
-	ctx           context.Context
-	cancel        context.CancelFunc
-	workers       map[string]bool
-	cpCache       map[string]*CheckpointV3
-	v31           *v31Runtime
-	v32           *v32Runtime
-	v33           *v33Runtime
-	wg            sync.WaitGroup
+	mu                sync.Mutex
+	store             *Store
+	cp                *CheckpointStore
+	opts              Options
+	writer            PartWriter
+	adapters          map[string]ProviderAdapter
+	adapterSnapshot   atomic.Value // []ProviderAdapter; lock-free capability reads
+	scheduler         *SmartScheduler
+	validator         *Validator
+	events            *EventBus
+	eta               map[string]*etaState
+	etaEngines        map[string]*pg.ETAEngine
+	duckdbEngine      *duckdb.Engine
+	rangeCoverage     RangeCoverageSource
+	results           *ResultProcessor
+	onIndexed         func(*IndexedResult)
+	indexedWriter     IndexedWriter
+	cloudPlanner      *cloudplanner.Planner
+	history           *feedback.History
+	coverageIndex     *reg.Store
+	headBlock         HeadBlockFunc
+	timeRange         TimeRangeResolver
+	headCache         map[string]headBlockCacheEntry
+	warehouseRequired bool
+	ctx               context.Context
+	cancel            context.CancelFunc
+	workers           map[string]bool
+	rangeCancels      map[string]context.CancelFunc
+	cpCache           map[string]*CheckpointV3
+	v31               *v31Runtime
+	v32               *v32Runtime
+	v33               *v33Runtime
+	wg                sync.WaitGroup
 }
 
 // NewService 创建服务。
@@ -129,23 +154,27 @@ func NewService(store *Store, opts Options, writer PartWriter) *Service {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
-		store:      store,
-		cp:         NewCheckpointStore(store.Root()),
-		opts:       opts,
-		writer:     writer,
-		adapters:   map[string]ProviderAdapter{},
-		scheduler:  NewSmartScheduler(),
-		events:     NewEventBus(300 * time.Millisecond),
-		eta:        map[string]*etaState{},
-		etaEngines: map[string]*pg.ETAEngine{},
-		ctx:        ctx,
-		cancel:     cancel,
-		workers:    map[string]bool{},
-		cpCache:    map[string]*CheckpointV3{},
-		v31:        newV31Runtime(opts),
-		v32:        newV32Runtime(opts),
-		v33:        newV33Runtime(store.Root()),
+		store:             store,
+		cp:                NewCheckpointStore(store.Root()),
+		opts:              opts,
+		writer:            writer,
+		adapters:          map[string]ProviderAdapter{},
+		scheduler:         NewSmartScheduler(),
+		events:            NewEventBus(300 * time.Millisecond),
+		eta:               map[string]*etaState{},
+		etaEngines:        map[string]*pg.ETAEngine{},
+		headCache:         map[string]headBlockCacheEntry{},
+		ctx:               ctx,
+		cancel:            cancel,
+		workers:           map[string]bool{},
+		rangeCancels:      map[string]context.CancelFunc{},
+		cpCache:           map[string]*CheckpointV3{},
+		warehouseRequired: false,
+		v31:               newV31Runtime(opts),
+		v32:               newV32Runtime(opts),
+		v33:               newV33Runtime(store.Root()),
 	}
+	svc.adapterSnapshot.Store([]ProviderAdapter{})
 	svc.validator = NewValidator(svc)
 	svc.results = NewResultProcessor(svc)
 	svc.cloudPlanner = cloudplanner.NewPlanner(cloudplanner.BudgetGuard{})
@@ -183,6 +212,16 @@ func (s *Service) SetIndexedWriter(writer IndexedWriter) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.indexedWriter = writer
+}
+
+// SetWarehouseRequired controls whether a warehouse write is part of the
+// dataset certification gate. Canonical Parquet is authoritative by default;
+// runtime setup can opt into fail-closed warehouse publication through
+// CLICKHOUSE_REQUIRED.
+func (s *Service) SetWarehouseRequired(required bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.warehouseRequired = required
 }
 
 // Results 返回结果处理器（API 查询用）。
@@ -227,6 +266,14 @@ func (s *Service) RegisterAdapter(a ProviderAdapter) {
 	defer s.mu.Unlock()
 	s.adapters[a.Name()] = a
 	s.scheduler.Register(a)
+	snapshot := make([]ProviderAdapter, 0, len(s.adapters))
+	for _, adapter := range s.adapters {
+		snapshot = append(snapshot, adapter)
+	}
+	sort.Slice(snapshot, func(i, j int) bool {
+		return capabilityAdapterPriority(snapshot[i].Name()) < capabilityAdapterPriority(snapshot[j].Name())
+	})
+	s.adapterSnapshot.Store(snapshot)
 }
 
 // AdapterFor 返回支持该 Dataset 的第一个可用 Adapter。
@@ -253,14 +300,76 @@ func (s *Service) adapterForLocked(dataset string) (ProviderAdapter, bool) {
 
 // AdapterNames 返回已注册 Adapter 名（API 展示）。
 func (s *Service) AdapterNames() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]string, 0, len(s.adapters))
-	for name := range s.adapters {
-		out = append(out, name)
+	adapters := s.capabilityAdapters()
+	out := make([]string, 0, len(adapters))
+	for _, adapter := range adapters {
+		out = append(out, adapter.Name())
 	}
 	sort.Strings(out)
 	return out
+}
+
+// AvailableDatasets returns the datasets that have an executable automatic
+// provider for the selected chain/mode. Manual-only CSV is intentionally not
+// advertised as an automatic Smart Download capability.
+func (s *Service) AvailableDatasets(chainKey string, mode DownloadMode) []string {
+	if mode == "" {
+		mode = DownloadModeAuto
+	}
+	out := make([]string, 0, len(validDatasets))
+	for dataset := range validDatasets {
+		if s.hasExecutableProviderLocked(chainKey, dataset, mode) {
+			out = append(out, dataset)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Service) hasExecutableProvider(chainKey, dataset string, mode DownloadMode) bool {
+	return s.hasExecutableProviderLocked(chainKey, dataset, mode)
+}
+
+func (s *Service) hasExecutableProviderLocked(chainKey, dataset string, mode DownloadMode) bool {
+	adapters := s.capabilityAdapters()
+	if isTurboMode(mode) {
+		for _, adapter := range adapters {
+			if adapter.Name() != "sqd_cloud" && adapter.Name() != "rpc" {
+				continue
+			}
+			if adapter.Supports(dataset) && adapterAvailableForMode(adapter, chainKey, mode) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, adapter := range adapters {
+		if adapter.Supports(dataset) && adapterAvailableForMode(adapter, chainKey, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) capabilityAdapters() []ProviderAdapter {
+	value := s.adapterSnapshot.Load()
+	if value == nil {
+		return nil
+	}
+	return value.([]ProviderAdapter)
+}
+
+func capabilityAdapterPriority(name string) int {
+	switch name {
+	case "sqd":
+		return 0
+	case "rpc":
+		return 1
+	case "sqd_cloud":
+		return 2
+	default:
+		return 3
+	}
 }
 
 // Shutdown 取消全部 Worker（测试“kill”用；生产服务退出时调用）。
@@ -279,9 +388,103 @@ func (s *Service) Shutdown() {
 
 // ── 创建 ──
 
+func (s *Service) resolveRequestTimeRanges(ctx context.Context, req CreateBatchRequest) (CreateBatchRequest, error) {
+	resolve := func(chainKey, field string, spec RangeSpec) (RangeSpec, error) {
+		if spec.Mode != RangeModeTime {
+			return spec, nil
+		}
+		// Persisted templates may already carry an exact resolved block window.
+		if spec.ToBlock >= spec.FromBlock && (spec.FromBlock != 0 || spec.ToBlock != 0) {
+			return spec, nil
+		}
+		start, err := time.Parse(time.RFC3339, strings.TrimSpace(spec.StartTime))
+		if err != nil {
+			return spec, fmt.Errorf("%s start_time 无效: %w", field, err)
+		}
+		end, err := time.Parse(time.RFC3339, strings.TrimSpace(spec.EndTime))
+		if err != nil {
+			return spec, fmt.Errorf("%s end_time 无效: %w", field, err)
+		}
+		if start.After(end) {
+			return spec, fmt.Errorf("%s start_time 不能晚于 end_time", field)
+		}
+		s.mu.Lock()
+		resolver := s.timeRange
+		s.mu.Unlock()
+		if resolver == nil {
+			return spec, fmt.Errorf("%s TIME 模式缺少时间到区块解析器，拒绝退化为 FULL", field)
+		}
+		from, to, err := resolver(ctx, chainKey, start.UTC(), end.UTC())
+		if err != nil {
+			return spec, fmt.Errorf("%s TIME 范围解析失败: %w", field, err)
+		}
+		if to < from {
+			return spec, fmt.Errorf("%s TIME 范围内没有可下载区块", field)
+		}
+		spec.FromBlock, spec.ToBlock = from, to
+		return spec, nil
+	}
+
+	chainKey := req.ChainKey
+	if req.DefaultRange != nil {
+		resolved, err := resolve(chainKey, "default_range", *req.DefaultRange)
+		if err != nil {
+			return req, err
+		}
+		req.DefaultRange = &resolved
+	}
+	for address, spec := range req.AddressOverrides {
+		addressChain := chainKey
+		if override := strings.TrimSpace(req.AddressChainOverrides[address]); override != "" {
+			addressChain = override
+		}
+		resolved, err := resolve(addressChain, "address_overrides["+address+"]", spec)
+		if err != nil {
+			return req, err
+		}
+		req.AddressOverrides[address] = resolved
+	}
+	for i, spec := range req.RelevantRanges {
+		resolved, err := resolve(chainKey, fmt.Sprintf("relevant_ranges[%d]", i), spec)
+		if err != nil {
+			return req, err
+		}
+		req.RelevantRanges[i] = resolved
+	}
+	if req.RelevantRange != nil {
+		resolved, err := resolve(chainKey, "relevant_range", *req.RelevantRange)
+		if err != nil {
+			return req, err
+		}
+		req.RelevantRange = &resolved
+	}
+	for address, specs := range req.RelevantByAddress {
+		addressChain := chainKey
+		if override := strings.TrimSpace(req.AddressChainOverrides[address]); override != "" {
+			addressChain = override
+		}
+		for i, spec := range specs {
+			resolved, err := resolve(addressChain, fmt.Sprintf("relevant_ranges_by_address[%s][%d]", address, i), spec)
+			if err != nil {
+				return req, err
+			}
+			specs[i] = resolved
+		}
+		req.RelevantByAddress[address] = specs
+	}
+	return req, nil
+}
+
 // CreateBatch 创建批量任务（Batch → Address → Dataset → Range 全树落盘）。
 func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*CreateBatchResponse, error) {
-	preflight, err := s.Preflight(ctx, req)
+	var err error
+	req, err = s.resolveRequestTimeRanges(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	// 创建任务内部只做无网络预检：复用 API 预检写入的 Discovery 缓存与本地覆盖，
+	// 避免对批量内部调用方（价格回填/预取等）引入额外探测流量。
+	preflight, err := s.preflight(ctx, req, false)
 	if err != nil {
 		return nil, err
 	}
@@ -296,8 +499,10 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 		return nil, fmt.Errorf("至少选择一个数据集")
 	}
 	datasets := make([]string, 0, len(req.Datasets))
+	datasetSeen := map[string]bool{}
 	for _, d := range req.Datasets {
-		if ValidDataset(d) {
+		if ValidDataset(d) && !datasetSeen[d] {
+			datasetSeen[d] = true
 			datasets = append(datasets, d)
 		}
 	}
@@ -441,7 +646,7 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 		}
 		for _, ds := range datasets {
 			dsID := uuid.NewString()
-			requested := s.requestedBlocks(addrSpec, ds)
+			requested := s.requestedBlocks(ctx, addrNetwork.Key, addrSpec, ds)
 			dsJob := &DatasetJob{
 				ID:             dsID,
 				BatchID:        batchID,
@@ -463,27 +668,28 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 					// 无覆盖：正常下载
 					localMisses++
 				} else if len(missing) == 0 {
-					if err := s.store.SaveDataset(dsJob); err != nil {
-						return nil, err
+					// Coverage metadata alone is not downloadable evidence. Only reuse
+					// when one immutable local result contains the complete request;
+					// otherwise download the range again instead of certifying a zero-row
+					// placeholder.
+					if source := s.results.AuthoritativeForRange(addrNetwork.Key, addr, ds, requested.From, requested.To); source != nil {
+						if err := s.store.SaveDataset(dsJob); err != nil {
+							return nil, err
+						}
+						if err := s.markDatasetReused(dsID, requested, reused, source.RowCount); err != nil {
+							return nil, err
+						}
+						localFullHits++
+						reusedRanges += len(reused)
+						rangeJobs += len(reused)
+						continue
 					}
-					if err := s.markDatasetReused(dsID, requested, reused, 0); err != nil {
-						return nil, err
-					}
-					localFullHits++
-					reusedRanges += len(reused)
-					rangeJobs += len(reused)
-					continue
+					localMisses++
 				} else {
-					if err := s.store.SaveDataset(dsJob); err != nil {
-						return nil, err
-					}
-					if err := s.createReuseDataset(dsID, dsJob, addrID, batchID, addr, ds, requested, reused, missing, now); err != nil {
-						return nil, err
-					}
-					localPartialHits++
-					reusedRanges += len(reused)
-					rangeJobs += len(missing)
-					continue
+					// A partial coverage interval cannot be merged safely without a
+					// range-sliced authoritative artifact. Redownload the full requested
+					// window until that materialization path exists.
+					localMisses++
 				}
 			}
 			pendingRanges := SplitBlockRange(requested.From, requested.To, s.opts.RangeChunkSize)
@@ -606,21 +812,69 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 	}, nil
 }
 
-func (s *Service) requestedBlocks(spec RangeSpec, dataset string) BlockRange {
+// SetHeadBlockFunc 注入链高度来源（API 层接 RPC eth_blockNumber；
+// nil 或失败时 FULL/TIME 模式回退 Options.DefaultEndBlock）。
+func (s *Service) SetHeadBlockFunc(fn HeadBlockFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.headBlock = fn
+	s.headCache = map[string]headBlockCacheEntry{}
+}
+
+// SetTimeRangeResolver injects the chain-specific time-to-block resolver used
+// by TIME requests. Without it, TIME fails before any task state is persisted.
+func (s *Service) SetTimeRangeResolver(fn TimeRangeResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.timeRange = fn
+}
+
+// resolveHeadBlock 返回链当前高度（60s 缓存；无来源/查询失败返回 0，由调用方兜底）。
+func (s *Service) resolveHeadBlock(ctx context.Context, chainKey string) (uint64, error) {
+	s.mu.Lock()
+	fn := s.headBlock
+	if e, ok := s.headCache[chainKey]; ok && time.Since(e.at) < headBlockTTL {
+		block := e.block
+		s.mu.Unlock()
+		return block, nil
+	}
+	s.mu.Unlock()
+	if fn == nil {
+		return 0, errors.New("head block source unavailable")
+	}
+	block, err := fn(ctx, chainKey)
+	if err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	s.headCache[chainKey] = headBlockCacheEntry{block: block, at: time.Now()}
+	s.mu.Unlock()
+	return block, nil
+}
+
+func (s *Service) requestedBlocks(ctx context.Context, chainKey string, spec RangeSpec, dataset string) BlockRange {
 	if dataset == DatasetBalances {
 		return BlockRange{From: 0, To: 0}
 	}
 	switch spec.Mode {
 	case RangeModeBlock:
-		if spec.ToBlock > spec.FromBlock {
+		// Inclusive bounds make from==to a valid one-block request. Falling
+		// through here used to reinterpret it as FULL and expand it to chain head.
+		if spec.ToBlock >= spec.FromBlock {
 			return BlockRange{From: spec.FromBlock, To: spec.ToBlock}
 		}
 	case RangeModeTime:
-		if spec.ToBlock > spec.FromBlock {
+		if spec.ToBlock >= spec.FromBlock {
 			return BlockRange{From: spec.FromBlock, To: spec.ToBlock}
 		}
 	}
-	return BlockRange{From: 0, To: s.opts.DefaultEndBlock}
+	// FULL/TIME 未显式给 to_block：以链当前高度为终点（RPC 可用时），
+	// 避免写死默认值导致“只估算/只下载到旧高度”的数据错误。
+	end := s.opts.DefaultEndBlock
+	if head, err := s.resolveHeadBlock(ctx, chainKey); err == nil && head > end {
+		end = head
+	}
+	return BlockRange{From: 0, To: end}
 }
 
 // ── 生命周期控制 ──
@@ -735,25 +989,35 @@ func (s *Service) discoverDataset(ctx context.Context, ds *DatasetJob, from, to 
 	if ds == nil {
 		return nil, fmt.Errorf("dataset 为空")
 	}
-	engine := discovery.NewEngine(s.store.Root(), discoveryMetadata{svc: s},
-		func(ctx context.Context, wFrom, wTo uint64) (uint64, error) {
-			return s.sampleWindow(ctx, ds, wFrom, wTo)
-		})
+	return s.discover(ctx, s.chainIDOfDataset(ds), ds.ChainKey, ds.Address, ds.Dataset, from, to, int64(ds.EstimatedRows), true)
+}
+
+// discover 运行 Discovery 引擎（L0 Metadata → L1/L2 自适应采样 → 分段 → 缓存）。
+// probe=false 时仅使用本地 Registry 与 Discovery 缓存，不发起网络采样（创建任务内部预检用）。
+func (s *Service) discover(ctx context.Context, chainID int64, chainKey, address, dataset string,
+	from, to uint64, activity int64, probe bool) (*discovery.DiscoveryResult, error) {
+	var sample discovery.SampleFunc
+	if probe {
+		sample = func(ctx context.Context, wFrom, wTo uint64) (uint64, error) {
+			return s.sampleWindow(ctx, chainKey, chainID, address, dataset, wFrom, wTo)
+		}
+	}
+	engine := discovery.NewEngine(s.store.Root(), discoveryMetadata{svc: s}, sample)
 	return engine.Discover(ctx, discovery.Input{
-		ChainID:     s.chainIDOfDataset(ds),
-		ChainKey:    ds.ChainKey,
-		Address:     ds.Address,
-		Dataset:     ds.Dataset,
+		ChainID:     chainID,
+		ChainKey:    chainKey,
+		Address:     address,
+		Dataset:     dataset,
 		FromBlock:   from,
 		ToBlock:     to,
 		BytesPerRow: 160,
-		Activity:    int64(ds.EstimatedRows),
+		Activity:    activity,
 	})
 }
 
 // sampleWindow 用当前最佳 Adapter 对窗口计数（ProbeWith 窗口估算 ≈ 窗口行数）。
-func (s *Service) sampleWindow(ctx context.Context, ds *DatasetJob, from, to uint64) (uint64, error) {
-	cands := s.scheduler.Candidates(ds.Dataset)
+func (s *Service) sampleWindow(ctx context.Context, chainKey string, chainID int64, address, dataset string, from, to uint64) (uint64, error) {
+	cands := s.scheduler.Candidates(dataset)
 	s.mu.Lock()
 	var adapters []ProviderAdapter
 	for _, c := range cands {
@@ -768,10 +1032,11 @@ func (s *Service) sampleWindow(ctx context.Context, ds *DatasetJob, from, to uin
 	var lastErr error
 	for _, a := range adapters {
 		res, err := ProbeWith(ctx, a, ProbeRequest{
-			Address: ds.Address, Dataset: ds.Dataset, ChainKey: ds.ChainKey,
-			ChainID: s.chainIDOfDataset(ds), FromBlock: from, ToBlock: to,
+			Address: address, Dataset: dataset, ChainKey: chainKey,
+			ChainID: chainID, FromBlock: from, ToBlock: to,
 		})
-		if err == nil && res.Confidence > 0 && res.EstimatedRows > 0 {
+		// 0 行但置信度 >0 也是有效证据（地址在该窗口无活动），不应回退默认密度。
+		if err == nil && res.Confidence > 0 {
 			return res.EstimatedRows, nil
 		}
 		if err != nil {
@@ -936,6 +1201,12 @@ func (s *Service) PauseAddress(addressID string) (*AddressJob, error) {
 			})
 		}
 	}
+	// WAITING/idle addresses have no worker-owned range that can observe the
+	// request later. Settle them synchronously so the UI can reliably enable
+	// Resume and the persisted tree remains symmetric.
+	if !s.addressHasRunningRange(addressID) {
+		s.transitionAddressPausedLocked(addressID)
+	}
 	s.mu.Unlock()
 	return s.store.GetAddress(addressID), nil
 }
@@ -992,6 +1263,7 @@ func (s *Service) CancelAddress(addressID string) (*AddressJob, error) {
 	}
 	s.mu.Lock()
 	a = s.store.GetAddress(addressID)
+	batchID := a.BatchID
 	a.CancelRequested = true
 	a.UpdatedAt = time.Now().UTC()
 	_ = s.store.SaveAddress(a)
@@ -1005,13 +1277,73 @@ func (s *Service) CancelAddress(addressID string) (*AddressJob, error) {
 			})
 		}
 	}
+	s.cancelRangeExecutionsLocked(func(r *RangeJob) bool { return r.AddressJobID == addressID })
+	s.cancelAddressLocked(addressID)
 	s.mu.Unlock()
 	s.releaseSharedRefs(func(ref SharedWorkRef) bool { return ref.AddressJobID == addressID })
+	s.trySettle(batchID)
 	return s.store.GetAddress(addressID), nil
 }
 
 func (s *Service) PauseDataset(datasetJobID string) (*DatasetJob, error) {
 	return s.flagDataset(datasetJobID, true, false)
+}
+
+func (s *Service) ResumeDataset(datasetJobID string) (*DatasetJob, error) {
+	ds := s.store.GetDataset(datasetJobID)
+	if ds == nil {
+		return nil, fmt.Errorf("数据集任务不存在: %s", datasetJobID)
+	}
+	if ds.Status.Terminal() {
+		return nil, fmt.Errorf("数据集任务已处于终态 %s", ds.Status)
+	}
+	s.mu.Lock()
+	ds = s.store.GetDataset(datasetJobID)
+	batch := s.store.GetBatch(ds.BatchID)
+	address := s.store.GetAddress(ds.AddressJobID)
+	if batch == nil || address == nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("数据集父任务缺失")
+	}
+	if batch.Status == BatchPaused || batch.Status == BatchPausedByPriority || batch.PauseRequested {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("所属批次处于 %s，请先恢复批次", batch.Status)
+	}
+	if address.Status == AddressPaused || address.PauseRequested {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("所属地址任务已暂停，请先恢复地址任务")
+	}
+	now := time.Now().UTC()
+	ds.PauseRequested = false
+	ds.Status = DatasetRunning
+	ds.UpdatedAt = now
+	if ds.StartedAt == nil {
+		ds.StartedAt = &now
+	}
+	_ = s.store.SaveDataset(ds)
+	if address.Status == AddressWaiting {
+		address.Status = AddressDownloading
+		address.UpdatedAt = now
+		if address.StartedAt == nil {
+			address.StartedAt = &now
+		}
+		_ = s.store.SaveAddress(address)
+	}
+	if batch.Status == BatchCreated {
+		batch.Status = BatchRunning
+		batch.UpdatedAt = now
+		if batch.StartedAt == nil {
+			batch.StartedAt = &now
+		}
+		_ = s.store.SaveBatch(batch)
+	}
+	_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
+		Event: LedgerResumed, DatasetJobID: ds.ID, Provider: ds.CurrentProvider,
+	})
+	batchID := ds.BatchID
+	s.mu.Unlock()
+	_ = s.Start(batchID)
+	return s.store.GetDataset(datasetJobID), nil
 }
 
 func (s *Service) CancelDataset(datasetJobID string) (*DatasetJob, error) {
@@ -1043,7 +1375,24 @@ func (s *Service) flagDataset(datasetJobID string, pause, cancel bool) (*Dataset
 	_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
 		Event: event, DatasetJobID: ds.ID, Provider: ds.CurrentProvider,
 	})
+	batchID := ds.BatchID
+	if cancel {
+		s.cancelRangeExecutionsLocked(func(r *RangeJob) bool { return r.DatasetJobID == datasetJobID })
+		s.cancelDatasetLocked(datasetJobID)
+		s.finalizeAddressIfDoneLocked(ds.AddressJobID)
+	} else if pause && !s.datasetHasRunningRange(datasetJobID) {
+		ds = s.store.GetDataset(datasetJobID)
+		if ds != nil && !ds.Status.Terminal() {
+			ds.PauseRequested = false
+			ds.Status = DatasetPaused
+			ds.UpdatedAt = time.Now().UTC()
+			_ = s.store.SaveDataset(ds)
+		}
+	}
 	s.mu.Unlock()
+	if cancel {
+		s.trySettle(batchID)
+	}
 	return s.store.GetDataset(datasetJobID), nil
 }
 
@@ -1084,6 +1433,12 @@ func (s *Service) flagBatch(batchID string, pause, cancel bool) (*BatchJob, erro
 				})
 			}
 		}
+	}
+	if cancel {
+		s.cancelRangeExecutionsLocked(func(r *RangeJob) bool { return r.BatchID == batchID })
+		s.cancelBatchLocked(batchID)
+	} else if pause && !s.batchHasRunningRange(batchID) {
+		s.transitionBatchPausedLocked(batchID)
 	}
 	s.mu.Unlock()
 	return s.store.GetBatch(batchID), nil
@@ -1314,8 +1669,11 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 }
 
 func (s *Service) executeRange(claim *claimedRange) {
-	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Minute)
-	defer cancel()
+	ctx, finish, ok := s.beginRangeExecution(claim)
+	if !ok {
+		return
+	}
+	defer finish()
 	adapter := claim.adapter
 	if adapter == nil || claim.provider == "" {
 		s.failRange(claim, fmt.Errorf("无可用 Provider（常规 Provider 均失败或未装配；Cloud 兜底不可用）"))
@@ -1323,7 +1681,15 @@ func (s *Service) executeRange(claim *claimedRange) {
 	}
 	result, err := adapter.ExecuteRange(ctx, claim.req)
 	if err != nil {
+		if s.rangeExecutionCanceled(claim) || (errors.Is(err, context.Canceled) && s.ctx.Err() != nil) {
+			return
+		}
 		s.failRange(claim, err)
+		return
+	}
+	// A provider may ignore cancellation briefly and still return data. Never
+	// commit that late result after the owning tree reached CANCELED.
+	if s.rangeExecutionCanceled(claim) {
 		return
 	}
 	s.mu.Lock()
@@ -1353,7 +1719,7 @@ func (s *Service) executeRange(claim *claimedRange) {
 		now := time.Now().UTC()
 		rj.FinishedAt = &now
 		rj.UpdatedAt = now
-		s.certifyRangeLocked(rj)
+		s.certifyRangeOnlyLocked(rj)
 		_ = s.store.SaveRange(rj)
 		s.updateProgressLocked(ds.ID)
 		s.finalizeDatasetIfDoneLocked(ds.ID)
@@ -1377,7 +1743,14 @@ func (s *Service) executeRange(claim *claimedRange) {
 		ToBlock:      claim.req.ToBlock,
 	}, result.Records)
 	if werr != nil {
+		if s.rangeExecutionCanceled(claim) || (errors.Is(werr, context.Canceled) && s.ctx.Err() != nil) {
+			return
+		}
 		s.failRange(claim, fmt.Errorf("Part 写入失败: %w", werr))
+		return
+	}
+	if s.rangeExecutionCanceled(claim) {
+		_ = os.Remove(written.Path)
 		return
 	}
 	s.mu.Lock()
@@ -1412,7 +1785,7 @@ func (s *Service) executeRange(claim *claimedRange) {
 	now := time.Now().UTC()
 	rj.FinishedAt = &now
 	rj.UpdatedAt = now
-	s.certifyRangeLocked(rj)
+	s.certifyRangeOnlyLocked(rj)
 	_ = s.store.SaveRange(rj)
 	runtime := time.Duration(0)
 	if rj.StartedAt != nil {
@@ -1433,12 +1806,98 @@ func (s *Service) executeRange(claim *claimedRange) {
 	})
 }
 
+// certifyRangeOnlyLocked records immutable range evidence without promoting
+// the whole dataset. Dataset certification is emitted only after validation,
+// canonical merge and optional warehouse reconciliation all succeed.
+func (s *Service) certifyRangeOnlyLocked(r *RangeJob) {
+	if r == nil || r.Certified {
+		return
+	}
+	now := time.Now().UTC()
+	r.Certified = true
+	r.CertifiedAt = &now
+	if r.HedgeOf != "" || hasHedge(s.store.ListRangesByDataset(r.DatasetJobID), r.ID) {
+		r.HedgeWinner = true
+	}
+	_ = s.store.SaveRange(r)
+	event := LedgerRangeCertified
+	if r.HedgeWinner {
+		event = LedgerHedgeWon
+	}
+	_ = NewLedger(s.store.Root(), r.DatasetJobID).Append(LedgerEntry{
+		Event: event, DatasetJobID: r.DatasetJobID,
+		RangeID:   BlockRange{From: r.FromBlock, To: r.ToBlock}.Key(),
+		FromBlock: r.FromBlock, ToBlock: r.ToBlock, Provider: r.Provider,
+	})
+}
+
+// beginRangeExecution registers the per-range cancellation handle atomically
+// with the final lifecycle check. CancelBatch/Address/Dataset can therefore
+// interrupt adapters (and CommandContext based child processes) immediately.
+func (s *Service) beginRangeExecution(claim *claimedRange) (context.Context, func(), bool) {
+	s.mu.Lock()
+	if s.rangeExecutionCanceledLocked(claim) {
+		s.mu.Unlock()
+		return nil, func() {}, false
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Minute)
+	s.rangeCancels[claim.rangeID] = cancel
+	s.mu.Unlock()
+	finish := func() {
+		cancel()
+		s.mu.Lock()
+		delete(s.rangeCancels, claim.rangeID)
+		s.mu.Unlock()
+	}
+	return ctx, finish, true
+}
+
+func (s *Service) rangeExecutionCanceled(claim *claimedRange) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rangeExecutionCanceledLocked(claim)
+}
+
+func (s *Service) rangeExecutionCanceledLocked(claim *claimedRange) bool {
+	if claim == nil {
+		return true
+	}
+	rj := s.store.GetRange(claim.rangeID)
+	if rj == nil || rj.Status == RangeCanceled {
+		return true
+	}
+	batch := s.store.GetBatch(claim.batchID)
+	if batch == nil || batch.CancelRequested || batch.Status == BatchCanceled {
+		return true
+	}
+	a := s.store.GetAddress(claim.addressJobID)
+	if a == nil || a.CancelRequested || a.Status == AddressCanceled {
+		return true
+	}
+	ds := s.store.GetDataset(claim.datasetJobID)
+	return ds == nil || ds.CancelRequested || ds.Status == DatasetCanceled
+}
+
+// cancelRangeExecutionsLocked interrupts all matching in-flight provider calls.
+// The caller holds s.mu; context cancellation itself is non-blocking.
+func (s *Service) cancelRangeExecutionsLocked(match func(*RangeJob) bool) {
+	for rangeID, cancel := range s.rangeCancels {
+		rj := s.store.GetRange(rangeID)
+		if rj != nil && match(rj) {
+			cancel()
+		}
+	}
+}
+
 // failRange 记录 Range 失败并决定重试/终态。
 func (s *Service) failRange(claim *claimedRange, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rj := s.store.GetRange(claim.rangeID)
 	ds := s.store.GetDataset(claim.datasetJobID)
+	if rj == nil || ds == nil || s.rangeExecutionCanceledLocked(claim) {
+		return
+	}
 	runtime := time.Duration(0)
 	if rj.StartedAt != nil {
 		runtime = time.Since(*rj.StartedAt)
@@ -1523,6 +1982,10 @@ func progressPercent(ds *DatasetJob) float64 {
 // selectProviderLocked 为 Range 选择 Provider（跳过已失败/冷却 Provider；Cloud 最后兜底）。
 // 调用方必须持 service.mu。
 func (s *Service) selectProviderLocked(ds *DatasetJob, rj *RangeJob) (ProviderAdapter, string, bool) {
+	mode := DownloadModeAuto
+	if batch := s.store.GetBatch(rj.BatchID); batch != nil && batch.Mode.Valid() {
+		mode = batch.Mode
+	}
 	if batch := s.store.GetBatch(rj.BatchID); batch != nil && isTurboMode(batch.Mode) {
 		provider := ownerProvider(rj.Owner)
 		adapter := s.adapters[provider]
@@ -1541,13 +2004,22 @@ func (s *Service) selectProviderLocked(ds *DatasetJob, rj *RangeJob) (ProviderAd
 		}
 		return nil, "", false
 	}
-	name, ok := s.scheduler.SelectProvider(ds.Dataset, rj.FailedProviders)
+	// PlanDataset's preferred provider is an execution decision, not display-only
+	// metadata. Honor it while it remains executable for this chain/mode; after a
+	// real failure the scoped scheduler selects the next candidate.
+	if preferred := strings.TrimSpace(ds.PreferredProvider); preferred != "" &&
+		!containsString(rj.FailedProviders, preferred) {
+		if adapter := s.adapters[preferred]; adapterAvailableForMode(adapter, ds.ChainKey, mode) && adapter.Supports(ds.Dataset) {
+			return adapter, preferred, true
+		}
+	}
+	name, ok := s.scheduler.SelectProviderFor(ds.Dataset, ds.ChainKey, mode, rj.FailedProviders)
 	if !ok {
 		// 全部候选已失败：允许同 Provider 重试（瞬态抖动），由 Attempts 预算兜底
-		for _, c := range s.scheduler.Candidates(ds.Dataset) {
+		for _, c := range s.scheduler.CandidatesFor(ds.Dataset, ds.ChainKey, mode) {
 			if !c.ManualOnly && c.Available {
 				a := s.adapters[c.Name]
-				if a != nil {
+				if adapterAvailableForMode(a, ds.ChainKey, mode) && a.Supports(ds.Dataset) {
 					return a, c.Name, true
 				}
 			}
@@ -1555,7 +2027,7 @@ func (s *Service) selectProviderLocked(ds *DatasetJob, rj *RangeJob) (ProviderAd
 		return nil, "", false
 	}
 	a := s.adapters[name]
-	if a == nil || !a.Available() {
+	if !adapterAvailableForMode(a, ds.ChainKey, mode) || !a.Supports(ds.Dataset) {
 		return nil, "", false
 	}
 	return a, name, true
@@ -1620,6 +2092,7 @@ func (s *Service) validateDatasetAndFinalize(dsID string) {
 		s.mu.Unlock()
 		return
 	}
+	s.applyValidationQualityLocked(ds, report)
 	now := time.Now().UTC()
 	switch {
 	case err != nil || report.Status == "FAILED":
@@ -1671,6 +2144,29 @@ func (s *Service) validateDatasetAndFinalize(dsID string) {
 	}
 }
 
+// applyValidationQualityLocked makes validated unique rows the authoritative
+// dataset count and removes optimistic range-level certification whenever the
+// end-to-end quality gate is not satisfied. The caller holds s.mu.
+func (s *Service) applyValidationQualityLocked(ds *DatasetJob, report *ValidationReport) {
+	if ds == nil || report == nil {
+		return
+	}
+	if report.UniqueKeyCount >= 0 {
+		rows := uint64(report.UniqueKeyCount)
+		ds.DownloadedRows = rows
+		ds.ValidatedRows = rows
+		ds.Progress.RowsCurrent = rows
+		if ds.Progress.RowsTotal < rows {
+			ds.Progress.RowsTotal = rows
+		}
+	}
+	// A passing validation is necessary but not sufficient. Keep the dataset
+	// pending until MergeDataset and the optional indexed writer reconcile.
+	ds.Certification = CertificationPending
+	ds.RelevantCertified = false
+	ds.RelevantCertifiedAt = nil
+}
+
 // recordFinalHistory 记录最终结果（Download + Validation 成功率，设计 §43/§44）。
 func (s *Service) recordFinalHistory(ds *DatasetJob, validated bool) {
 	if ds == nil {
@@ -1695,10 +2191,24 @@ func (s *Service) indexDataset(dsID string) {
 	}
 	s.mu.Lock()
 	writer := s.indexedWriter
+	warehouseRequired := s.warehouseRequired
 	ds := s.store.GetDataset(dsID)
 	s.mu.Unlock()
 	shouldWrite := entry.RowCount > 0 || entry.MergedParquet != "" || (ds != nil && ds.DownloadedRows > 0)
-	if writer != nil && entry.Certification == "CERTIFIED" && shouldWrite && isWarehouseDataset(entry.Dataset) {
+	warehouseStatus, warehouseError := "NOT_APPLICABLE", ""
+	warehouseDataset := shouldWrite && isWarehouseDataset(entry.Dataset)
+	if warehouseDataset && writer == nil {
+		warehouseStatus = "SKIPPED_OPTIONAL"
+		warehouseError = "warehouse writer unavailable"
+		if warehouseRequired {
+			_ = s.results.MarkWriteFailure(dsID, IndexedWriteResult{InputRows: entry.RowCount}, warehouseError)
+			s.markCertificateDBWriteFailed(dsID)
+			s.setWarehouseState(dsID, "FAILED_REQUIRED", warehouseError)
+			s.failIndexing(dsID, DatasetDBWriteFailed, "DB_WRITE_FAILED: "+warehouseError, true)
+			return
+		}
+	}
+	if writer != nil && entry.Certification == "CERTIFIED" && warehouseDataset {
 		writeResult, writeErr := writer.WriteIndexed(ctx, IndexedWriteRequest{
 			DatasetJobID: entry.DatasetJobID, ChainKey: entry.ChainKey, ChainID: entry.ChainID,
 			Dataset: entry.Dataset, Address: entry.Address, FromBlock: entry.FromBlock,
@@ -1707,22 +2217,37 @@ func (s *Service) indexDataset(dsID string) {
 			NormalizerVersion: "canonical-writer-v2", SchemaVersion: 2,
 		})
 		if writeErr != nil {
-			_ = s.results.MarkWriteFailure(dsID, writeResult, writeErr.Error())
-			s.markCertificateDBWriteFailed(dsID)
-			s.failIndexing(dsID, DatasetDBWriteFailed, "DB_WRITE_FAILED: "+writeErr.Error(), true)
-			return
+			warehouseStatus, warehouseError = "FAILED_OPTIONAL", writeErr.Error()
+			if warehouseRequired {
+				_ = s.results.MarkWriteFailure(dsID, writeResult, writeErr.Error())
+				s.markCertificateDBWriteFailed(dsID)
+				s.setWarehouseState(dsID, "FAILED_REQUIRED", writeErr.Error())
+				s.failIndexing(dsID, DatasetDBWriteFailed, "DB_WRITE_FAILED: "+writeErr.Error(), true)
+				return
+			}
 		}
-		if writeResult.InputRows != writeResult.InsertedRows+writeResult.RejectedRows {
+		if writeErr == nil && writeResult.InputRows != writeResult.InsertedRows+writeResult.RejectedRows {
 			err := fmt.Errorf("writer reconciliation failed: input=%d success=%d reject=%d",
 				writeResult.InputRows, writeResult.InsertedRows, writeResult.RejectedRows)
-			_ = s.results.MarkWriteFailure(dsID, writeResult, err.Error())
-			s.markCertificateDBWriteFailed(dsID)
-			s.failIndexing(dsID, DatasetDBWriteFailed, "DB_WRITE_FAILED: "+err.Error(), true)
-			return
+			warehouseStatus, warehouseError = "FAILED_OPTIONAL", err.Error()
+			if warehouseRequired {
+				_ = s.results.MarkWriteFailure(dsID, writeResult, err.Error())
+				s.markCertificateDBWriteFailed(dsID)
+				s.setWarehouseState(dsID, "FAILED_REQUIRED", err.Error())
+				s.failIndexing(dsID, DatasetDBWriteFailed, "DB_WRITE_FAILED: "+err.Error(), true)
+				return
+			}
 		}
-		entry.Writer = &writeResult
-		_ = s.results.MarkWriteSuccess(dsID, writeResult)
-		s.markCertificateWriteSuccess(dsID)
+		if writeErr == nil && warehouseError == "" {
+			warehouseStatus = "WRITTEN"
+			entry.Writer = &writeResult
+			_ = s.results.MarkWriteSuccess(dsID, writeResult)
+			s.markCertificateWriteSuccess(dsID)
+		}
+	}
+	if entry.Certification != "CERTIFIED" || ds == nil || !validationReadyForCertification(ds.Validation) {
+		s.failIndexing(dsID, DatasetFailed, "INDEX_FAILED: canonical result did not satisfy certification gate", false)
+		return
 	}
 	s.mu.Lock()
 	ds = s.store.GetDataset(dsID)
@@ -1732,12 +2257,24 @@ func (s *Service) indexDataset(dsID string) {
 	}
 	now := time.Now().UTC()
 	ds.Status = DatasetCompleted
+	ds.Certification = CertificationDataset
+	ds.WarehouseStatus = warehouseStatus
+	ds.WarehouseError = warehouseError
+	if s.allRelevantRangesCertifiedLocked(ds.ID) {
+		ds.RelevantCertified = true
+		ds.RelevantCertifiedAt = &now
+	}
 	ds.Error = ""
 	ds.FinishedAt = &now
 	ds.UpdatedAt = now
 	_ = s.store.SaveDataset(ds)
+	_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
+		Event: LedgerDatasetCertified, DatasetJobID: ds.ID,
+		Error: fmt.Sprintf("validation=%s rows=%d", ds.Validation.Status, entry.RowCount),
+	})
 	s.finalizeAddressIfDoneLocked(ds.AddressJobID)
 	s.recordFinalHistory(ds, true)
+	s.autoDowngradeIfRelevantCertifiedLocked(ds.BatchID)
 	s.mu.Unlock()
 	// Coverage Index V2：只有 CERTIFIED 才写认证覆盖；余额类写快照（TTL 300s）
 	if s.coverageIndex != nil && entry.Certification == "CERTIFIED" {
@@ -1754,7 +2291,7 @@ func (s *Service) indexDataset(dsID string) {
 	s.mu.Lock()
 	fn := s.onIndexed
 	s.mu.Unlock()
-	if fn != nil {
+	if fn != nil && (!warehouseDataset || warehouseStatus == "WRITTEN") {
 		fn(entry)
 	}
 }
@@ -1800,6 +2337,9 @@ func (s *Service) failIndexing(dsID string, status DatasetStatus, message string
 	}
 	now := time.Now().UTC()
 	ds.Status = status
+	ds.Certification = CertificationPending
+	ds.RelevantCertified = false
+	ds.RelevantCertifiedAt = nil
 	ds.Error = message
 	ds.UpdatedAt = now
 	if retryable {
@@ -1812,6 +2352,19 @@ func (s *Service) failIndexing(dsID string, status DatasetStatus, message string
 		s.finalizeAddressIfDoneLocked(ds.AddressJobID)
 	}
 	s.events.Publish(Event{Type: EventError, DatasetJobID: dsID, Status: string(status), Message: message})
+}
+
+func (s *Service) setWarehouseState(dsID, status, message string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ds := s.store.GetDataset(dsID)
+	if ds == nil {
+		return
+	}
+	ds.WarehouseStatus = status
+	ds.WarehouseError = message
+	ds.UpdatedAt = time.Now().UTC()
+	_ = s.store.SaveDataset(ds)
 }
 
 // RetryIndexedDataset 仅重试已合并 Parquet 的数仓写入，不重新下载 Range。
@@ -1842,6 +2395,15 @@ func (s *Service) RetryIndexedDataset(dsID string) error {
 func (s *Service) repairDatasetGapsLocked(dsID string, report *ValidationReport) bool {
 	ds := s.store.GetDataset(dsID)
 	if ds == nil || ds.RepairRounds >= 2 || len(report.MissingRanges) == 0 {
+		return false
+	}
+	cp := s.checkpointLocked(dsID)
+	if cp == nil || cp.RequestedTo < cp.RequestedFrom {
+		return false
+	}
+	requested := BlockRange{From: cp.RequestedFrom, To: cp.RequestedTo}
+	repairRanges := intersectBlockRanges(report.MissingRanges, requested)
+	if len(repairRanges) == 0 {
 		return false
 	}
 	gapStore := v3.NewGapStore(s.store.Root(), dsID)
@@ -1894,12 +2456,11 @@ func (s *Service) repairDatasetGapsLocked(dsID string, report *ValidationReport)
 	ds.Error = ""
 	ds.UpdatedAt = time.Now().UTC()
 	_ = s.store.SaveDataset(ds)
-	if cp := s.checkpointLocked(dsID); cp != nil {
-		cp.PendingRanges = append([]BlockRange(nil), report.MissingRanges...)
-		_ = s.cp.Save(cp)
-	}
+	cp.PendingRanges = append([]BlockRange(nil), repairRanges...)
+	_ = s.cp.Save(cp)
 	now := time.Now().UTC()
-	for _, r := range report.MissingRanges {
+	created := 0
+	for _, r := range repairRanges {
 		gapID := fmt.Sprintf("%d_%d", r.From, r.To)
 		attempts, _ := gapStore.RepairCount(gapID)
 		if attempts >= v3.MaxRepairAttempts {
@@ -1922,6 +2483,7 @@ func (s *Service) repairDatasetGapsLocked(dsID string, report *ValidationReport)
 			CreatedAt: now, UpdatedAt: now,
 		}
 		_ = s.store.SaveRange(rj)
+		created++
 		_ = NewLedger(s.store.Root(), dsID).Append(LedgerEntry{
 			Event: LedgerRangeCreated, DatasetJobID: dsID,
 			RangeID: r.Key(), FromBlock: r.From, ToBlock: r.To,
@@ -1938,9 +2500,29 @@ func (s *Service) repairDatasetGapsLocked(dsID string, report *ValidationReport)
 	}
 	_ = gapStore.SaveState(v3.StateRepairing, "repair")
 	s.recordGapRepairHistory(ds, true, false)
-	logger.Log.Info().Str("dataset_job", dsID).Int("repair_ranges", len(report.MissingRanges)).
+	logger.Log.Info().Str("dataset_job", dsID).Int("repair_ranges", created).
 		Int("round", ds.RepairRounds).Msg("smartdownload_gap_repair_created")
 	return true
+}
+
+func intersectBlockRanges(ranges []BlockRange, requested BlockRange) []BlockRange {
+	if requested.To < requested.From {
+		return nil
+	}
+	out := make([]BlockRange, 0, len(ranges))
+	for _, r := range ranges {
+		if r.To < r.From || r.To < requested.From || r.From > requested.To {
+			continue
+		}
+		if r.From < requested.From {
+			r.From = requested.From
+		}
+		if r.To > requested.To {
+			r.To = requested.To
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // finishValidationPipeline 校验收尾：状态机 + Gap Ledger + Validation Certificate + 事件（Validation V3）。
@@ -2072,11 +2654,15 @@ func (s *Service) finalizeAddressIfDoneLocked(addressID string) {
 		return
 	}
 	datasets := s.store.ListDatasetsByAddress(addressID)
+	if len(datasets) == 0 {
+		return
+	}
 	logger.Log.Warn().Str("address", addressID).Int("datasets", len(datasets)).
 		Msg("DEBUG_finalize_address")
 	done := 0
 	partial := false
 	failed := false
+	canceled := 0
 	for _, ds := range datasets {
 		if ds.Status.Terminal() {
 			done++
@@ -2086,6 +2672,9 @@ func (s *Service) finalizeAddressIfDoneLocked(addressID string) {
 		}
 		if ds.Status == DatasetFailed || ds.Status == DatasetDBWriteFailed {
 			failed = true
+		}
+		if ds.Status == DatasetCanceled {
+			canceled++
 		}
 	}
 	if done != len(datasets) {
@@ -2097,12 +2686,33 @@ func (s *Service) finalizeAddressIfDoneLocked(addressID string) {
 		a.Status = AddressCanceled
 	case a.PauseRequested:
 		a.Status = AddressPaused
+	case canceled == len(datasets):
+		a.Status = AddressCanceled
+	case canceled > 0:
+		a.Status = AddressPartial
 	case failed:
 		a.Status = AddressFailed
 	case partial:
 		a.Status = AddressPartial
 	default:
 		a.Status = AddressCompleted
+	}
+	var rowsCurrent, rowsTotal, blocksCurrent, blocksTotal, bytesCurrent, bytesTotal uint64
+	_, percent := weightedFromDatasets(datasets)
+	for _, ds := range datasets {
+		rowsCurrent += ds.Progress.RowsCurrent
+		rowsTotal += ds.Progress.RowsTotal
+		blocksCurrent += ds.Progress.BlocksCurrent
+		blocksTotal += ds.Progress.BlocksTotal
+		bytesCurrent += ds.Progress.BytesCurrent
+		bytesTotal += ds.Progress.BytesTotal
+	}
+	if a.Status == AddressCompleted {
+		percent = 1
+	}
+	a.Progress = ProgressSnapshot{Percent: percent, RowsCurrent: rowsCurrent, RowsTotal: rowsTotal,
+		BlocksCurrent: blocksCurrent, BlocksTotal: blocksTotal, BytesCurrent: bytesCurrent, BytesTotal: bytesTotal}
+	if a.Status.Terminal() {
 		a.FinishedAt = &now
 	}
 	a.UpdatedAt = now
@@ -2176,6 +2786,12 @@ func (s *Service) trySettle(batchID string) bool {
 	if done+failed+canceled+partial == len(addresses) {
 		now := time.Now().UTC()
 		switch {
+		case canceled > 0 && canceled == len(addresses):
+			batch.Status = BatchCanceled
+			batch.Error = "批次全部地址已取消"
+		case canceled > 0:
+			batch.Status = BatchPartial
+			batch.Error = fmt.Sprintf("%d 个地址取消，%d 个成功，%d 个失败/部分", canceled, done, failed+partial)
 		case (failed > 0 || partial > 0) && done > 0:
 			batch.Status = BatchPartial
 			batch.Error = fmt.Sprintf("%d 个地址失败/部分，%d 个成功", failed+partial, done)
@@ -2185,8 +2801,6 @@ func (s *Service) trySettle(batchID string) bool {
 		case partial > 0:
 			batch.Status = BatchPartial
 			batch.Error = fmt.Sprintf("%d 个地址数据不完整", partial)
-		case canceled > 0 && canceled == len(addresses):
-			batch.Status = BatchCanceled
 		default:
 			batch.Status = BatchCompleted
 		}
@@ -2256,12 +2870,14 @@ func (s *Service) transitionAddressPausedLocked(addressID string) {
 
 func (s *Service) cancelAddressLocked(addressID string) {
 	a := s.store.GetAddress(addressID)
-	if a == nil || a.Status.Terminal() {
+	if a == nil || (a.Status.Terminal() && a.Status != AddressCanceled) {
 		return
 	}
 	for _, ds := range s.store.ListDatasetsByAddress(addressID) {
 		s.cancelDatasetLocked(ds.ID)
 	}
+	a.CancelRequested = false
+	a.PauseRequested = false
 	a.Status = AddressCanceled
 	now := time.Now().UTC()
 	a.FinishedAt = &now
@@ -2271,11 +2887,11 @@ func (s *Service) cancelAddressLocked(addressID string) {
 
 func (s *Service) cancelDatasetLocked(datasetJobID string) {
 	ds := s.store.GetDataset(datasetJobID)
-	if ds == nil || ds.Status.Terminal() {
+	if ds == nil || (ds.Status.Terminal() && ds.Status != DatasetCanceled) {
 		return
 	}
 	for _, r := range s.store.ListRangesByDataset(datasetJobID) {
-		if r.Status == RangePending || r.Status == RangeReady || r.Status == RangeFailed {
+		if !r.Status.Terminal() {
 			r.Status = RangeCanceled
 			now := time.Now().UTC()
 			r.FinishedAt = &now
@@ -2283,6 +2899,8 @@ func (s *Service) cancelDatasetLocked(datasetJobID string) {
 			_ = s.store.SaveRange(r)
 		}
 	}
+	ds.CancelRequested = false
+	ds.PauseRequested = false
 	ds.Status = DatasetCanceled
 	now := time.Now().UTC()
 	ds.FinishedAt = &now
@@ -2295,7 +2913,11 @@ func (s *Service) cancelBatchLocked(batchID string) {
 		s.cancelAddressLocked(a.ID)
 	}
 	batch := s.store.GetBatch(batchID)
+	if batch == nil {
+		return
+	}
 	batch.CancelRequested = false
+	batch.PauseRequested = false
 	batch.Status = BatchCanceled
 	now := time.Now().UTC()
 	batch.FinishedAt = &now
@@ -2316,23 +2938,26 @@ func (s *Service) updateProgressLocked(datasetJobID string) {
 		_ = s.store.SaveDataset(ds)
 		return
 	}
-	var rows, blocks uint64
-	weighted := make([]pg.RangeProgress, 0, len(ranges))
+	var rows uint64
 	for _, r := range ranges {
-		pct := 0.0
 		if r.Status == RangeCompleted || r.Status == RangeEmpty {
-			pct = 1
 			rows += r.RowsCommitted
-			blocks += r.ToBlock - r.FromBlock + 1
 		}
-		weighted = append(weighted, pg.RangeProgress{Weight: s.rangeWeight(ds, r), Percent: pct})
+	}
+	blocksTotal := totalBlocks(ranges)
+	blocksCurrent := logicalBlockCount(ranges, func(r *RangeJob) bool {
+		return r.Status == RangeCompleted || r.Status == RangeEmpty
+	})
+	percent := 0.0
+	if blocksTotal > 0 {
+		percent = float64(blocksCurrent) / float64(blocksTotal)
 	}
 	ds.Progress = ProgressSnapshot{
-		Percent:       pg.WeightedProgress(weighted),
+		Percent:       percent,
 		RowsCurrent:   rows,
 		RowsTotal:     ds.EstimatedRows,
-		BlocksCurrent: blocks,
-		BlocksTotal:   totalBlocks(ranges),
+		BlocksCurrent: blocksCurrent,
+		BlocksTotal:   blocksTotal,
 		BytesCurrent:  rows * 128,
 		BytesTotal:    ds.EstimatedBytes,
 	}
@@ -2683,11 +3308,43 @@ func (s *Service) monitorCloudTierLocked(ds *DatasetJob) {
 }
 
 func totalBlocks(ranges []*RangeJob) uint64 {
-	var total uint64
+	return logicalBlockCount(ranges, nil)
+}
+
+// logicalBlockCount measures the union of block intervals. Reshard children,
+// repair attempts and hedges describe the same logical request and therefore
+// must never increase the user-visible progress denominator.
+func logicalBlockCount(ranges []*RangeJob, include func(*RangeJob) bool) uint64 {
+	intervals := make([]BlockRange, 0, len(ranges))
 	for _, r := range ranges {
-		total += r.ToBlock - r.FromBlock + 1
+		if r == nil || r.ToBlock < r.FromBlock || (include != nil && !include(r)) {
+			continue
+		}
+		intervals = append(intervals, BlockRange{From: r.FromBlock, To: r.ToBlock})
 	}
-	return total
+	if len(intervals) == 0 {
+		return 0
+	}
+	sort.Slice(intervals, func(i, j int) bool {
+		if intervals[i].From == intervals[j].From {
+			return intervals[i].To < intervals[j].To
+		}
+		return intervals[i].From < intervals[j].From
+	})
+	start, end := intervals[0].From, intervals[0].To
+	var total uint64
+	for _, interval := range intervals[1:] {
+		adjacent := end == ^uint64(0) || interval.From <= end+1
+		if adjacent {
+			if interval.To > end {
+				end = interval.To
+			}
+			continue
+		}
+		total += end - start + 1
+		start, end = interval.From, interval.To
+	}
+	return total + end - start + 1
 }
 
 func (s *Service) batchHasRunningRange(batchID string) bool {

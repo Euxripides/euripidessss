@@ -1,6 +1,47 @@
 // 智能下载统一入口前端 API 封装（Phase 4）。
 import { getJson, postJson, postForm } from "../../api/client";
 
+type ApiErrorPayload = {
+  detail?: unknown;
+  message?: unknown;
+  error?: unknown;
+};
+
+function stringifyApiDetail(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (value instanceof Error) return value.message;
+  if (Array.isArray(value)) {
+    const parts = value.map(stringifyApiDetail).filter((part): part is string => Boolean(part));
+    return parts.length > 0 ? parts.join("；") : undefined;
+  }
+  if (value && typeof value === "object") {
+    const payload = value as ApiErrorPayload;
+    return stringifyApiDetail(payload.detail)
+      ?? stringifyApiDetail(payload.message)
+      ?? stringifyApiDetail(payload.error);
+  }
+  return value == null ? undefined : String(value);
+}
+
+export class SmartDownloadApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status = 0) {
+    super(message);
+    this.name = "SmartDownloadApiError";
+    this.status = status;
+  }
+}
+
+export function smartDownloadErrorMessage(error: unknown, fallback: string): string {
+  return stringifyApiDetail(error) ?? fallback;
+}
+
+function apiFailure(response: Response, payload: unknown, fallback: string): SmartDownloadApiError {
+  const detail = stringifyApiDetail(payload);
+  return new SmartDownloadApiError(detail ? `${fallback}：${detail}` : fallback, response.status);
+}
+
 export type Dataset =
   | "transactions"
   | "internal_transactions"
@@ -14,6 +55,10 @@ export type DownloadMode = "AUTO" | "TURBO" | "EMERGENCY";
 export type DownloadPriority = "URGENT" | "HIGH" | "NORMAL" | "BACKGROUND";
 export type BurstLevel = "L1" | "L2" | "L3";
 export type ResourceProfile = "STANDARD" | "PERFORMANCE" | "EXTREME";
+
+export interface SmartDownloadCapabilities {
+  available_datasets: string[];
+}
 
 export interface RangeSpec {
   mode: "FULL" | "TIME" | "BLOCK";
@@ -524,7 +569,8 @@ export async function importAddressFile(file: File): Promise<ImportResult | null
     form,
     "地址导入失败",
   );
-  return response.ok ? payload : null;
+  if (!response.ok) throw apiFailure(response, payload, "地址导入失败");
+  return payload;
 }
 
 export async function createBatch(body: CreateBatchRequest): Promise<{
@@ -1257,6 +1303,25 @@ export async function addressAction(addressId: string, action: string): Promise<
   return response.ok ? payload : null;
 }
 
+export async function getSmartDownloadCapabilities(
+  chainKey: string,
+  mode: DownloadMode,
+): Promise<SmartDownloadCapabilities | null> {
+  try {
+    const params = new URLSearchParams({ chain_key: chainKey, mode, capabilities_only: "true" });
+    const { response, payload } = await getJson<unknown>(
+      `/api/smart-download/status?${params.toString()}`,
+      "查询智能下载能力失败",
+    );
+    if (!response.ok) return null;
+    const raw = asRecord(payload);
+    if (!Array.isArray(raw.available_datasets)) return null;
+    return { available_datasets: asStrings(raw.available_datasets) };
+  } catch {
+    return null;
+  }
+}
+
 export async function listBatches(): Promise<BatchJob[]> {
   try {
     const { response, payload } = await getJson<unknown>(
@@ -1441,12 +1506,16 @@ export async function queryResults(
       `/api/smart-download/results/${datasetJobId}?${query.toString()}`,
       "查询结果失败",
     );
-    if (!response.ok) return null;
+    // 过滤字段不适用于当前数据集，或没有可查询的匹配分片时，后端目前会返回 404。
+    // 对用户而言这是一个合法的空结果，不应升级为全局错误。
+    if (!response.ok && response.status === 404 && Boolean(filter)) return { rows: [], total: 0 };
+    if (!response.ok) throw apiFailure(response, payload, "查询结果失败");
     const envelope = asRecord(payload);
     const rows = asArray(envelope.rows) as Array<Record<string, unknown>>;
     return { rows, total: asNumber(envelope.total, rows.length) };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof SmartDownloadApiError) throw error;
+    throw new SmartDownloadApiError(smartDownloadErrorMessage(error, "查询结果失败"));
   }
 }
 
@@ -1738,7 +1807,7 @@ export async function compareBatchRuns(batchA: string, batchB: string): Promise<
       { batch_a: batchA, batch_b: batchB },
       "任务对比失败",
     );
-    if (!response.ok) return null;
+    if (!response.ok) throw apiFailure(response, payload, "任务对比失败");
     const envelope = asRecord(payload);
     const rawRuns = asArray(envelope.runs ?? envelope.comparison ?? [envelope.run_a, envelope.run_b]);
     const runs = rawRuns
@@ -1757,8 +1826,9 @@ export async function compareBatchRuns(batchA: string, batchB: string): Promise<
         };
       });
     return { runs, deltas: asRecord(envelope.deltas ?? envelope.delta) as Record<string, number> };
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof SmartDownloadApiError) throw error;
+    throw new SmartDownloadApiError(smartDownloadErrorMessage(error, "任务对比失败"));
   }
 }
 

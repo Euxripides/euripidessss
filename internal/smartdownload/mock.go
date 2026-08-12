@@ -94,6 +94,19 @@ func (p *MockProvider) ExecuteRange(_ context.Context, req RangeRequest) (*Provi
 		n := (block + uint64(len(req.Address))) % 3
 		for j := uint64(0); j < n; j++ {
 			txHash := mockTxHash(req.Dataset, req.Address, block, j)
+			payload := map[string]any{
+				"from_address": req.Address,
+				"to_address":   "0x" + txHash[len(txHash)-40:],
+				"value_raw":    strconv.FormatUint(block*1000+j, 10),
+			}
+			switch req.Dataset {
+			case DatasetTokenTransfers:
+				payload["token_address"] = "0x" + txHash[2:42]
+			case DatasetLogs:
+				payload["contract_address"] = "0x" + txHash[2:42]
+			case DatasetBalances:
+				payload["balance"] = strconv.FormatUint(block*1000+j, 10)
+			}
 			records = append(records, Record{
 				ChainID:         req.ChainID,
 				BlockNumber:     block,
@@ -101,11 +114,7 @@ func (p *MockProvider) ExecuteRange(_ context.Context, req RangeRequest) (*Provi
 				LogIndex:        j,
 				Dataset:         req.Dataset,
 				Address:         req.Address,
-				Payload: map[string]any{
-					"from_address": req.Address,
-					"to_address":   "0x" + txHash[len(txHash)-40:],
-					"value_raw":    strconv.FormatUint(block*1000+j, 10),
-				},
+				Payload:         payload,
 			})
 		}
 	}

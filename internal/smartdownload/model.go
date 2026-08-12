@@ -197,6 +197,7 @@ const (
 	CertificationPending        CertificationLevel = "PENDING"
 	CertificationRange          CertificationLevel = "RANGE_CERTIFIED"
 	CertificationDatasetPartial CertificationLevel = "DATASET_PARTIAL_CERTIFIED"
+	CertificationDataset        CertificationLevel = "DATASET_CERTIFIED"
 	CertificationBatch          CertificationLevel = "BATCH_CERTIFIED"
 )
 
@@ -325,6 +326,8 @@ type DatasetJob struct {
 	SuggestedRangeSpan           uint64                      `json:"suggested_range_span,omitempty"`
 	ActivitySegments             []discovery.ActivitySegment `json:"activity_segments,omitempty"`
 	Certification                CertificationLevel          `json:"certification,omitempty"`
+	WarehouseStatus              string                      `json:"warehouse_status,omitempty"`
+	WarehouseError               string                      `json:"warehouse_error,omitempty"`
 	RelevantCertified            bool                        `json:"relevant_certified,omitempty"`
 	RelevantCertifiedAt          *time.Time                  `json:"relevant_certified_at,omitempty"`
 	Error                        string                      `json:"error,omitempty"`

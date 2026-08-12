@@ -25,6 +25,44 @@ func newTurboService(t *testing.T) (*Store, *Service) {
 	return store, svc
 }
 
+type modeScopedMockProvider struct {
+	*MockProvider
+	allowed map[DownloadMode]bool
+}
+
+func (p *modeScopedMockProvider) AvailableForMode(chainKey string, mode DownloadMode) bool {
+	return chainKey == "bsc" && p.allowed[mode]
+}
+
+func TestTurboPlannerDoesNotAssignGloballyAvailableButScopedUnavailableCloud(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := DefaultOptions()
+	opts.DefaultEndBlock, opts.RangeChunkSize, opts.TurboTailBlocks = 999, 200, 200
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	t.Cleanup(svc.Shutdown)
+	svc.RegisterAdapter(&modeScopedMockProvider{MockProvider: NewMockNamedProvider("sqd_cloud"), allowed: map[DownloadMode]bool{DownloadModeTurbo: false}})
+	svc.RegisterAdapter(&modeScopedMockProvider{MockProvider: NewMockNamedProvider("rpc"), allowed: map[DownloadMode]bool{DownloadModeTurbo: true}})
+	created, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey: "bsc", Mode: DownloadModeTurbo,
+		Addresses: []string{addrA}, Datasets: []string{DatasetTokenTransfers},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.RangeJobs == 0 {
+		t.Fatal("expected planned ranges")
+	}
+	for _, planned := range store.ListRanges() {
+		if planned.Owner != RangeOwnerRPC || planned.Lane != "fast" {
+			t.Fatalf("scoped-unavailable Cloud received range: %+v", planned)
+		}
+	}
+}
+
 func TestTurboPlannerAssignsNonOverlappingCloudAndRPCLanes(t *testing.T) {
 	store, svc := newTurboService(t)
 	t.Cleanup(svc.Shutdown)
@@ -162,6 +200,7 @@ func TestFailedDatasetPropagatesToAddressAndBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(t.TempDir()))
+	svc.RegisterAdapter(NewMockProvider())
 	created, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
 		ChainKey: "bsc", Addresses: []string{addrA}, Datasets: []string{DatasetTokenTransfers},
 	})

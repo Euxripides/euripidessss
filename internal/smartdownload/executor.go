@@ -104,6 +104,7 @@ func (w *JSONLPartWriter) PartsDir() string { return w.partsDir }
 func (w *JSONLPartWriter) Extension() string { return ".jsonl" }
 
 func (w *JSONLPartWriter) WritePart(_ context.Context, meta PartMeta, records []Record) (PartWriteResult, error) {
+	records = uniqueRecords(records)
 	datasetJobID, partName := meta.DatasetJobID, meta.PartName
 	dir := filepath.Join(w.partsDir, datasetJobID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -174,6 +175,10 @@ func (w *ParquetPartWriter) WritePart(ctx context.Context, meta PartMeta, record
 	if w.engine == nil || !w.engine.Available() {
 		return PartWriteResult{}, fmt.Errorf("DuckDB 不可用，无法写 Parquet Part")
 	}
+	records = uniqueRecords(records)
+	if len(records) == 0 {
+		return PartWriteResult{}, fmt.Errorf("空记录不写 Part")
+	}
 	dir := filepath.Join(w.partsDir, meta.DatasetJobID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return PartWriteResult{}, err
@@ -215,6 +220,25 @@ func (w *ParquetPartWriter) WritePart(ctx context.Context, meta PartMeta, record
 		return PartWriteResult{}, err
 	}
 	return PartWriteResult{Path: parquetPath, SHA256: sha, Rows: rows, Bytes: info.Size()}, nil
+}
+
+// uniqueRecords removes duplicate canonical events before a Part is committed.
+// The first occurrence is retained so provider provenance remains deterministic.
+func uniqueRecords(records []Record) []Record {
+	if len(records) < 2 {
+		return records
+	}
+	seen := make(map[string]struct{}, len(records))
+	out := make([]Record, 0, len(records))
+	for _, record := range records {
+		key := CanonicalKey(record)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, record)
+	}
+	return out
 }
 
 func (w *ParquetPartWriter) partRows(ctx context.Context, path string) (int64, error) {

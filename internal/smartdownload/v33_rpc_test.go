@@ -58,12 +58,17 @@ func TestV33RPCGroupOneCallFor100AddressesAndDatasetFanout(t *testing.T) {
 	last := fmt.Sprintf("0x%040x", 100)
 	fake := &v33RPCFake{logHandler: func(filter map[string]any) (json.RawMessage, error) {
 		if _, filtered := filter["topics"]; filtered {
-			return nil, fmt.Errorf("group scan unexpectedly filtered topics")
+			if _, hasAddress := filter["address"]; hasAddress {
+				return nil, fmt.Errorf("wallet transfer scan unexpectedly filtered token contract address")
+			}
+			return json.RawMessage(fmt.Sprintf(`[
+				{"address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","topics":[%q,%q,%q],"data":"0x01","blockNumber":"0x64","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logIndex":"0x1"}
+			]`, transferTopic, "0x000000000000000000000000"+strings.TrimPrefix(first, "0x"), "0x000000000000000000000000"+strings.TrimPrefix(last, "0x"))), nil
 		}
 		return json.RawMessage(fmt.Sprintf(`[
-			{"address":%q,"topics":[%q,"0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"data":"0x01","blockNumber":"0x64","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logIndex":"0x1"},
-			{"address":%q,"topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x02","blockNumber":"0x64","transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","logIndex":"0x2"}
-		]`, first, transferTopic, last)), nil
+			{"address":%q,"topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x02","blockNumber":"0x64","transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","logIndex":"0x2"},
+			{"address":%q,"topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x03","blockNumber":"0x64","transactionHash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","logIndex":"0x3"}
+		]`, first, last)), nil
 	}}
 
 	adapter := NewRPCTransferAdapter(fake)
@@ -75,13 +80,22 @@ func TestV33RPCGroupOneCallFor100AddressesAndDatasetFanout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fake.logCalls != 1 {
-		t.Fatalf("eth_getLogs provider calls=%d want=1", fake.logCalls)
+	if fake.logCalls != 3 {
+		t.Fatalf("eth_getLogs provider calls=%d want=3", fake.logCalls)
 	}
-	if fake.normalCalls != 0 || fake.turboCalls != 2 {
+	if fake.normalCalls != 0 || fake.turboCalls != 4 {
 		t.Fatalf("Turbo context lost: normal=%d turbo=%d", fake.normalCalls, fake.turboCalls)
 	}
-	gotAddresses := fake.filters[0]["address"].([]string)
+	var gotAddresses []string
+	for _, filter := range fake.filters {
+		if values, ok := filter["address"].([]string); ok {
+			gotAddresses = values
+			break
+		}
+	}
+	if len(gotAddresses) == 0 {
+		t.Fatal("contract log group filter not observed")
+	}
 	if len(gotAddresses) != 100 || gotAddresses[0] != first || gotAddresses[99] != last {
 		t.Fatalf("address filter was not lower-case, sorted, and deduplicated: count=%d first=%q last=%q", len(gotAddresses), gotAddresses[0], gotAddresses[len(gotAddresses)-1])
 	}
@@ -93,8 +107,8 @@ func TestV33RPCGroupOneCallFor100AddressesAndDatasetFanout(t *testing.T) {
 	if len(results[first][DatasetTokenTransfers].Records) != 1 || len(results[first][DatasetLogs].Records) != 1 {
 		t.Fatalf("transfer/log fanout mismatch for first address: %#v", results[first])
 	}
-	if len(results[last][DatasetTokenTransfers].Records) != 0 || len(results[last][DatasetLogs].Records) != 1 {
-		t.Fatalf("log-only fanout mismatch for last address: %#v", results[last])
+	if len(results[last][DatasetTokenTransfers].Records) != 1 || len(results[last][DatasetLogs].Records) != 1 {
+		t.Fatalf("transfer/log fanout mismatch for last address: %#v", results[last])
 	}
 	if len(results) != 100 {
 		t.Fatalf("address result count=%d want=100", len(results))
@@ -193,10 +207,10 @@ func TestV33RPCGroupCapabilityContractAndSingleAddressCompatibility(t *testing.T
 
 	address := "0x1111111111111111111111111111111111111111"
 	fake := &v33RPCFake{logHandler: func(filter map[string]any) (json.RawMessage, error) {
-		if len(filter["address"].([]string)) != 1 || filter["address"].([]string)[0] != address {
-			return nil, fmt.Errorf("single-address filter changed: %#v", filter)
+		if _, hasAddress := filter["address"]; hasAddress {
+			return nil, fmt.Errorf("wallet transfer query must not filter token contract: %#v", filter)
 		}
-		if topics, ok := filter["topics"].([]string); !ok || len(topics) != 1 || topics[0] != transferTopic {
+		if topics, ok := filter["topics"].([]any); !ok || len(topics) < 2 || topics[0] != transferTopic {
 			return nil, fmt.Errorf("single-address transfer topic filter changed: %#v", filter)
 		}
 		return json.RawMessage(`[]`), nil
@@ -207,7 +221,7 @@ func TestV33RPCGroupCapabilityContractAndSingleAddressCompatibility(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CompletedTo != 100 || fake.logCalls != 1 {
+	if result.CompletedTo != 100 || fake.logCalls != 2 {
 		t.Fatalf("single-address ExecuteRange compatibility failed: result=%#v calls=%d", result, fake.logCalls)
 	}
 }

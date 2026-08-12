@@ -11,6 +11,7 @@ type v33MockGroupAdapter struct {
 	mu       sync.Mutex
 	calls    int
 	failures int
+	modeOK   *bool
 }
 
 func (a *v33MockGroupAdapter) Name() string { return "v33_group_mock" }
@@ -18,6 +19,9 @@ func (a *v33MockGroupAdapter) Supports(dataset string) bool {
 	return dataset == DatasetTokenTransfers || dataset == DatasetLogs
 }
 func (a *v33MockGroupAdapter) Available() bool { return true }
+func (a *v33MockGroupAdapter) AvailableForMode(string, DownloadMode) bool {
+	return a.modeOK == nil || *a.modeOK
+}
 func (a *v33MockGroupAdapter) Probe(context.Context, ProbeRequest) (ProbeResult, error) {
 	return ProbeResult{}, nil
 }
@@ -88,6 +92,86 @@ func TestV33PlannerPreviewHasNoSideEffectsAndBundles(t *testing.T) {
 	}
 }
 
+func TestV33PlannerDoesNotUseGroupProviderUnavailableForChainMode(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(root))
+	defer svc.Shutdown()
+	modeOK := false
+	svc.RegisterAdapter(&v33MockGroupAdapter{modeOK: &modeOK})
+	plan, err := svc.PlannerV2(context.Background(), v33Request(
+		"0x0000000000000000000000000000000000000001",
+		"0x0000000000000000000000000000000000000002",
+	))
+	if err == nil || plan != nil {
+		t.Fatalf("unavailable dataset must fail closed, plan=%+v err=%v", plan, err)
+	}
+}
+
+func TestV33PlannerRejectsInvalidModeRelevantRangeAndUnavailableDataset(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(root))
+	t.Cleanup(svc.Shutdown)
+	svc.RegisterAdapter(&v33MockGroupAdapter{})
+
+	invalidMode := v33Request(addrA)
+	invalidMode.Mode = DownloadMode("FAST")
+	if plan, err := svc.PlannerV2(context.Background(), invalidMode); err == nil || plan != nil {
+		t.Fatalf("invalid mode silently downgraded: plan=%+v err=%v", plan, err)
+	}
+
+	invalidRelevant := v33Request(addrA)
+	invalidRelevant.RelevantRange = &RangeSpec{Mode: RangeModeBlock, FromBlock: 121, ToBlock: 120}
+	if plan, err := svc.PlannerV2(context.Background(), invalidRelevant); err == nil || plan != nil {
+		t.Fatalf("reversed relevant range was ignored: plan=%+v err=%v", plan, err)
+	}
+
+	unavailable := CreateBatchRequest{ChainKey: "bsc", Mode: DownloadModeTurbo,
+		Addresses: []string{addrA}, Datasets: []string{DatasetTransactions},
+		DefaultRange: &RangeSpec{Mode: RangeModeBlock, FromBlock: 100, ToBlock: 100}}
+	if plan, err := svc.PlannerV2(context.Background(), unavailable); err == nil || plan != nil {
+		t.Fatalf("Turbo unavailable dataset was advertised: plan=%+v err=%v", plan, err)
+	}
+}
+
+func TestV33PlannerKeepsAddressOverrideRangesSeparate(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(root))
+	t.Cleanup(svc.Shutdown)
+	svc.RegisterAdapter(&v33MockGroupAdapter{})
+	second := "0x0000000000000000000000000000000000000002"
+	req := v33Request(addrA, second)
+	req.AddressOverrides = map[string]RangeSpec{second: {Mode: RangeModeBlock, FromBlock: 200, ToBlock: 220}}
+	plan, err := svc.PlannerV2(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.SharedWorkloads) != 2 {
+		t.Fatalf("different address ranges were incorrectly coalesced: %+v", plan.SharedWorkloads)
+	}
+	got := map[string]bool{}
+	for _, work := range plan.SharedWorkloads {
+		got[BlockRange{From: work.FromBlock, To: work.ToBlock}.Key()] = true
+		if len(work.Addresses) != 1 {
+			t.Fatalf("range-specific workload mixed addresses: %+v", work)
+		}
+	}
+	if !got["100-120"] || !got["200-220"] {
+		t.Fatalf("planner ranges=%v", got)
+	}
+}
+
 func TestV33FingerprintIsCanonical(t *testing.T) {
 	a := canonicalSharedFingerprint("BSC", []string{"logs", "token_transfers"}, []string{
 		"0x0000000000000000000000000000000000000002",
@@ -99,6 +183,41 @@ func TestV33FingerprintIsCanonical(t *testing.T) {
 	}, 1, 10)
 	if a != b {
 		t.Fatalf("canonical fingerprint drift: %s != %s", a, b)
+	}
+}
+
+func TestV33AcceleratorDoesNotStealCloudOwnedRanges(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(root))
+	t.Cleanup(svc.Shutdown)
+	now := time.Now().UTC()
+	batch := &BatchJob{ID: "cloud-lane-batch", ChainKey: "bsc", Status: BatchCreated, CreatedAt: now, UpdatedAt: now}
+	address := &AddressJob{ID: "cloud-lane-address", BatchID: batch.ID, Address: "0x0000000000000000000000000000000000000001", ChainKey: "bsc", Status: AddressWaiting, CreatedAt: now, UpdatedAt: now}
+	dataset := &DatasetJob{ID: "cloud-lane-dataset", BatchID: batch.ID, AddressJobID: address.ID, Address: address.Address, ChainKey: "bsc", Dataset: DatasetTokenTransfers, Status: DatasetPending, CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveBatch(batch); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SaveAddress(address); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SaveDataset(dataset); err != nil {
+		t.Fatal(err)
+	}
+	cloudRange := &RangeJob{ID: "cloud-range", BatchID: batch.ID, AddressJobID: address.ID, DatasetJobID: dataset.ID, Owner: RangeOwnerCloud, Status: RangePending, FromBlock: 1, ToBlock: 10, CreatedAt: now, UpdatedAt: now}
+	rpcRange := &RangeJob{ID: "rpc-range", BatchID: batch.ID, AddressJobID: address.ID, DatasetJobID: dataset.ID, Owner: RangeOwnerRPC, Status: RangePending, FromBlock: 11, ToBlock: 20, CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveRange(cloudRange); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SaveRange(rpcRange); err != nil {
+		t.Fatal(err)
+	}
+	refs := svc.batchRangeRefs(batch.ID)
+	if len(refs) != 1 || refs[0].Range.ID != rpcRange.ID {
+		t.Fatalf("V3.3 accelerator stole Cloud ownership: %+v", refs)
 	}
 }
 

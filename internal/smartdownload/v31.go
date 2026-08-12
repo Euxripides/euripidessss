@@ -696,16 +696,36 @@ func (s *Service) certifyRangeLocked(r *RangeJob) {
 	if ds == nil {
 		return
 	}
+	// A certified range is transport-level evidence, not an end-to-end dataset
+	// certificate. Final DATASET_CERTIFIED is emitted only after validation,
+	// canonical merge, and any configured indexed write have all succeeded.
 	ds.Certification = CertificationDatasetPartial
-	if r.Relevant && s.allRelevantRangesCertifiedLocked(ds.ID) {
-		ds.RelevantCertified = true
-		ds.RelevantCertifiedAt = &now
-	}
 	ds.UpdatedAt = now
 	_ = s.store.SaveDataset(ds)
 	_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{Event: LedgerDatasetPartialCertified,
 		DatasetJobID: ds.ID, Error: "range=" + BlockRange{From: r.FromBlock, To: r.ToBlock}.Key()})
-	s.autoDowngradeIfRelevantCertifiedLocked(r.BatchID)
+}
+
+func (s *Service) allDatasetRangesCertifiedLocked(datasetID string) bool {
+	ds := s.store.GetDataset(datasetID)
+	if ds == nil {
+		return false
+	}
+	requested := BlockRange{From: ds.RequestedRange.FromBlock, To: ds.RequestedRange.ToBlock}
+	if cp, err := s.cp.Load(datasetID); err == nil {
+		requested = BlockRange{From: cp.RequestedFrom, To: cp.RequestedTo}
+	}
+	certified := make([]BlockRange, 0)
+	for _, r := range s.store.ListRangesByDataset(datasetID) {
+		if r.Certified {
+			certified = append(certified, BlockRange{From: r.FromBlock, To: r.ToBlock})
+		}
+	}
+	if len(certified) == 0 || requested.To < requested.From {
+		return false
+	}
+	_, missing := planReuse(requested, certified)
+	return len(missing) == 0
 }
 
 func (s *Service) allRelevantRangesCertifiedLocked(datasetID string) bool {

@@ -288,6 +288,30 @@ func normalizePreflightRequest(req CreateBatchRequest) (CreateBatchRequest, []st
 	if _, err := chain.Resolve(req.ChainKey); err != nil {
 		return req, nil, nil, err
 	}
+	mode := req.Mode
+	if mode == "" {
+		mode = DownloadModeAuto
+	} else if !mode.Valid() {
+		return req, nil, nil, fmt.Errorf("非法下载模式 %q（仅支持 AUTO/TURBO/EMERGENCY）", mode)
+	}
+	burstLevel := strings.ToUpper(strings.TrimSpace(req.BurstLevel))
+	switch burstLevel {
+	case "", "L1", "L2", "L3", string(CloudBurstL1), string(CloudBurstL2), string(CloudBurstL3):
+	default:
+		return req, nil, nil, fmt.Errorf("非法 Cloud Burst 档位 %q（仅支持 L1/L2/L3）", req.BurstLevel)
+	}
+	if req.EmergencyBurst || burstLevel == "L3" || burstLevel == string(CloudBurstL3) {
+		mode = DownloadModeEmergency
+	} else if (burstLevel == "L2" || burstLevel == string(CloudBurstL2)) && mode == DownloadModeAuto {
+		mode = DownloadModeTurbo
+	}
+	if !mode.Valid() {
+		return req, nil, nil, fmt.Errorf("非法下载模式 %q（仅支持 AUTO/TURBO/EMERGENCY）", mode)
+	}
+	req.Mode = mode
+	if req.Priority != "" && !req.Priority.Valid() {
+		return req, nil, nil, fmt.Errorf("非法任务优先级 %q", req.Priority)
+	}
 	if req.DefaultRange != nil {
 		if err := validatePreflightRange(*req.DefaultRange, "default_range"); err != nil {
 			return req, nil, nil, err
@@ -358,14 +382,61 @@ func validatePreflightRange(spec RangeSpec, field string) error {
 		if strings.TrimSpace(spec.StartTime) == "" || strings.TrimSpace(spec.EndTime) == "" {
 			return fmt.Errorf("%s 的 TIME 模式必须提供 start_time 和 end_time", field)
 		}
+		start, err := time.Parse(time.RFC3339, strings.TrimSpace(spec.StartTime))
+		if err != nil {
+			return fmt.Errorf("%s 的 start_time 必须是 RFC3339 时间: %w", field, err)
+		}
+		end, err := time.Parse(time.RFC3339, strings.TrimSpace(spec.EndTime))
+		if err != nil {
+			return fmt.Errorf("%s 的 end_time 必须是 RFC3339 时间: %w", field, err)
+		}
+		if start.After(end) {
+			return fmt.Errorf("%s 的 start_time 不能晚于 end_time", field)
+		}
 		return nil
 	default:
 		return fmt.Errorf("%s 使用非法范围模式 %q（仅支持 FULL/TIME/BLOCK）", field, spec.Mode)
 	}
 }
 
+// 预检探测预算：并发上限、最大探测对数和总时长（API 侧超时 30s，内部留余量）。
+const (
+	preflightProbeWorkers  = 8
+	preflightProbeMaxPairs = 48
+	preflightProbeBudget   = 20 * time.Second
+)
+
+// preflightUnit 一个需要估算下载工作量的 地址×数据集×缺口区间 单元。
+type preflightUnit struct {
+	chainKey string
+	chainID  int64
+	address  string
+	dataset  string
+	from     uint64
+	to       uint64
+	defRows  uint64 // 未采样/采样失败时按默认密度估算的行数
+}
+
+type preflightUnitResult struct {
+	rows uint64
+	conf float64
+	ok   bool
+}
+
 func (s *Service) Preflight(ctx context.Context, req CreateBatchRequest) (*PreflightResult, error) {
-	_, addresses, datasets, err := normalizePreflightRequest(req)
+	return s.preflight(ctx, req, true)
+}
+
+// preflight 生产预检：probe=true 时对每个 地址×数据集×缺口 执行 Discovery
+// （L0 本地 Registry → L1/L2 采样），让不同地址得到不同估算；probe=false 由创建
+// 任务内部调用，仅使用本地 Registry/Discovery 缓存，不发起网络探测。
+func (s *Service) preflight(ctx context.Context, req CreateBatchRequest, probe bool) (*PreflightResult, error) {
+	var err error
+	req, err = s.resolveRequestTimeRanges(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	req, addresses, datasets, err := normalizePreflightRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -375,7 +446,17 @@ func (s *Service) Preflight(ctx context.Context, req CreateBatchRequest) (*Prefl
 	}
 	history, _ := s.loadPerformanceHistory()
 	rowsPerBlock := historicalRowsPerBlock(history)
-	var blocks, rows uint64
+	network, err := chain.Resolve(req.ChainKey)
+	if err != nil {
+		return nil, err
+	}
+	skipCovered := req.SkipCovered == nil || *req.SkipCovered
+	mode := req.Mode
+	if mode == "" {
+		mode = DownloadModeAuto
+	}
+	units := make([]preflightUnit, 0, len(addresses)*len(datasets))
+	var blocks, reusedN uint64
 	for _, address := range addresses {
 		spec := RangeSpec{Mode: RangeModeFull}
 		if req.DefaultRange != nil {
@@ -384,31 +465,64 @@ func (s *Service) Preflight(ctx context.Context, req CreateBatchRequest) (*Prefl
 		if override, ok := req.AddressOverrides[address]; ok {
 			spec = override
 		}
+		addrNetwork := network
+		if ov, ok := req.AddressChainOverrides[address]; ok && strings.TrimSpace(ov) != "" {
+			addrNetwork, err = chain.Resolve(strings.TrimSpace(ov))
+			if err != nil {
+				return nil, fmt.Errorf("地址 %s 指定了未知链 %q", address, strings.TrimSpace(ov))
+			}
+		}
 		for _, dataset := range datasets {
-			r := s.requestedBlocks(spec, dataset)
+			r := s.requestedBlocks(ctx, addrNetwork.Key, spec, dataset)
 			span := uint64(1)
 			if r.To >= r.From {
 				span = r.To - r.From + 1
 			}
-			blocks += span
-			density := rowsPerBlock[dataset]
-			if density <= 0 {
-				density = defaultRowsPerBlock(dataset)
+			defRows := defaultEstimateRows(r, span, dataset, rowsPerBlock)
+			intervals := []BlockRange{{From: r.From, To: r.To}}
+			if skipCovered && dataset != DatasetBalances {
+				covered := s.coveredRangesFor(ctx, addrNetwork.Key, address, dataset, r.From, r.To)
+				_, missing := planReuse(r, covered)
+				if len(missing) == 0 {
+					reusedN++ // 本地已验证覆盖全覆盖：无下载工作量
+					continue
+				}
+				intervals = missing
 			}
-			estimated := uint64(math.Ceil(float64(span) * density))
-			if dataset == DatasetBalances || dataset == DatasetTokenMetadata {
-				estimated = 1
+			if len(intervals) > 0 && !s.hasExecutableProvider(addrNetwork.Key, dataset, mode) {
+				return nil, fmt.Errorf("数据集 %s 在链 %s / 模式 %s 没有可执行 Provider", dataset, addrNetwork.Key, mode)
 			}
-			rows += estimated
+			var unitSpan uint64
+			for _, iv := range intervals {
+				if iv.To >= iv.From {
+					unitSpan += iv.To - iv.From + 1
+				}
+			}
+			blocks += unitSpan
+			for _, iv := range intervals {
+				units = append(units, preflightUnit{
+					chainKey: addrNetwork.Key, chainID: addrNetwork.ID,
+					address: address, dataset: dataset, from: iv.From, to: iv.To, defRows: defRows,
+				})
+			}
+		}
+	}
+	var rows uint64
+	var confSum float64
+	confN, fallbackN := 0, 0
+	for i, res := range s.preflightDiscover(ctx, units, probe) {
+		if res.ok {
+			rows += res.rows
+			confSum += res.conf
+			confN++
+		} else if units[i].defRows > 0 {
+			rows += units[i].defRows
+			fallbackN++
 		}
 	}
 	bytes := rows * 144
 	diskGrowth := uint64(float64(bytes) * 1.35)
-	shards := (blocks + s.opts.RangeChunkSize - 1) / s.opts.RangeChunkSize
-	if shards == 0 {
-		shards = 1
-	}
-	cloudJobs, rpcCalls := estimateProviderWork(req.Mode, profile, shards, blocks, cfg)
+	cloudJobs, rpcCalls := s.estimateProviderWorkForUnits(mode, units, cfg)
 	metrics, metricsErr := s.resourceMetrics(ctx, req.ChainKey)
 	eta := estimateETAV2(rows, blocks, profile, metrics, history)
 	est := PreflightEstimate{Blocks: blocks, Addresses: len(addresses), Datasets: len(addresses) * len(datasets),
@@ -416,7 +530,19 @@ func (s *Service) Preflight(ctx context.Context, req CreateBatchRequest) (*Prefl
 		ETA: eta, ResourceProfile: profile, Profile: cfg}
 	guards := s.evaluateGuards(est, metrics, metricsErr)
 	confidence := eta.Confidence
-	basis := []string{"requested block ranges", "dataset density defaults"}
+	if confN > 0 {
+		confidence = confidenceLabel(confSum / float64(confN))
+	}
+	basis := []string{"requested block ranges", "per-address discovery"}
+	if probe && confN > 0 {
+		basis = append(basis, "L0/L1/L2 sampling")
+	}
+	if reusedN > 0 {
+		basis = append(basis, fmt.Sprintf("%d 个地址×数据集复用本地已验证覆盖", reusedN))
+	}
+	if fallbackN > 0 {
+		basis = append(basis, fmt.Sprintf("%d 个地址×数据集未采样，按默认密度估算", fallbackN))
+	}
 	if len(history) > 0 {
 		basis = append(basis, "persisted performance history")
 	}
@@ -424,6 +550,125 @@ func (s *Service) Preflight(ctx context.Context, req CreateBatchRequest) (*Prefl
 		basis = append(basis, "live resource guard metrics")
 	}
 	return &PreflightResult{Estimate: est, Guards: guards, Confidence: confidence, Basis: basis}, nil
+}
+
+// estimateProviderWorkForUnits derives Cloud/RPC work from the provider that
+// can actually execute each chain+dataset unit. Resource profile controls lane
+// concurrency only; it must not invent Cloud jobs for unsupported datasets.
+func (s *Service) estimateProviderWorkForUnits(mode DownloadMode, units []preflightUnit, cfg ResourceProfileConfig) (uint64, uint64) {
+	var cloudJobs, rpcCalls uint64
+	chunkSize := s.opts.RangeChunkSize
+	if chunkSize == 0 {
+		chunkSize = 1
+	}
+	for _, unit := range units {
+		blocks := uint64(0)
+		if unit.to >= unit.from {
+			blocks = unit.to - unit.from + 1
+		}
+		if blocks == 0 {
+			continue
+		}
+		shards := (blocks + chunkSize - 1) / chunkSize
+		cloud := s.adapters["sqd_cloud"]
+		rpc := s.adapters["rpc"]
+		cloudOK := adapterAvailableForMode(cloud, unit.chainKey, mode) && cloud.Supports(unit.dataset)
+		rpcOK := adapterAvailableForMode(rpc, unit.chainKey, mode) && rpc.Supports(unit.dataset)
+
+		if !isTurboMode(mode) {
+			provider, ok := s.scheduler.SelectProviderFor(unit.dataset, unit.chainKey, mode, nil)
+			if !ok {
+				continue
+			}
+			switch provider {
+			case "sqd_cloud":
+				cloudJobs += shards
+			case "rpc":
+				rpcCalls += (blocks + 1_999) / 2_000
+			}
+			continue
+		}
+
+		switch {
+		case cloudOK && rpcOK:
+			cloudShare := .65
+			if mode == DownloadModeEmergency {
+				cloudShare = .8
+			}
+			unitCloudJobs := uint64(math.Ceil(float64(shards) * cloudShare))
+			cloudJobs += unitCloudJobs
+			rpcBlocks := uint64(float64(blocks) * (1 - cloudShare))
+			rpcCalls += (rpcBlocks + 1_999) / 2_000
+		case cloudOK:
+			cloudJobs += shards
+		case rpcOK:
+			rpcCalls += (blocks + 1_999) / 2_000
+		}
+	}
+	if cfg.CloudJobs > 0 && cloudJobs > uint64(cfg.CloudJobs) {
+		cloudJobs = uint64(cfg.CloudJobs)
+	}
+	return cloudJobs, rpcCalls
+}
+
+// preflightDiscover 并发执行 Discovery，受并发数、最大探测对数和总时长预算约束；
+// 超出预算的单元不采样（由调用方回退默认密度）。
+func (s *Service) preflightDiscover(ctx context.Context, units []preflightUnit, probe bool) []preflightUnitResult {
+	results := make([]preflightUnitResult, len(units))
+	if len(units) == 0 {
+		return results
+	}
+	limit := len(units)
+	if limit > preflightProbeMaxPairs {
+		limit = preflightProbeMaxPairs
+	}
+	probeCtx := ctx
+	var cancel context.CancelFunc
+	if probe {
+		probeCtx, cancel = context.WithTimeout(ctx, preflightProbeBudget)
+		defer cancel()
+	}
+	sem := make(chan struct{}, preflightProbeWorkers)
+	var wg sync.WaitGroup
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			u := units[i]
+			dr, err := s.discover(probeCtx, u.chainID, u.chainKey, u.address, u.dataset, u.from, u.to, int64(u.defRows), probe)
+			if err == nil && dr.Confidence > 0 {
+				results[i] = preflightUnitResult{rows: dr.EstimatedRows, conf: dr.Confidence, ok: true}
+			}
+		}(i)
+	}
+	wg.Wait()
+	return results
+}
+
+// defaultEstimateRows 未采样/采样失败时的默认密度估算。
+func defaultEstimateRows(r BlockRange, span uint64, dataset string, rowsPerBlock map[string]float64) uint64 {
+	density := rowsPerBlock[dataset]
+	if density <= 0 {
+		density = defaultRowsPerBlock(dataset)
+	}
+	estimated := uint64(math.Ceil(float64(span) * density))
+	if dataset == DatasetBalances || dataset == DatasetTokenMetadata {
+		estimated = 1
+	}
+	return estimated
+}
+
+func confidenceLabel(avg float64) string {
+	switch {
+	case avg >= 0.9:
+		return "HIGH"
+	case avg >= 0.7:
+		return "MEDIUM"
+	default:
+		return "LOW"
+	}
 }
 
 func (s *Service) v32Source() V32ResourceMetricsSource {
@@ -936,7 +1181,7 @@ func (s *Service) ReconcileAll(ctx context.Context) error {
 				} else {
 					next = DatasetPartial
 				}
-			} else if ds.Validation != nil && strings.EqualFold(ds.Validation.Status, "PASS") {
+			} else if validationReadyForCertification(ds.Validation) {
 				next = DatasetCompleted
 			} else if !ds.Status.Terminal() {
 				next = DatasetValidating
@@ -962,18 +1207,21 @@ func (s *Service) ReconcileAll(ctx context.Context) error {
 
 func (s *Service) reconcileAddressLocked(id string) {
 	a := s.store.GetAddress(id)
-	if a == nil || a.CancelRequested {
+	// CANCELED is an immutable user decision. The persisted terminal status is
+	// the authoritative guard even after the request flag has been consumed.
+	if a == nil || a.CancelRequested || a.Status == AddressCanceled {
 		return
 	}
 	ds := s.store.ListDatasetsByAddress(id)
 	if len(ds) == 0 {
 		return
 	}
-	all, failed, partial := true, false, false
+	all, failed, partial, canceled := true, false, false, false
 	for _, d := range ds {
 		all = all && d.Status.Terminal()
-		failed = failed || d.Status == DatasetFailed
+		failed = failed || d.Status == DatasetFailed || d.Status == DatasetDBWriteFailed
 		partial = partial || d.Status == DatasetPartial
+		canceled = canceled || d.Status == DatasetCanceled
 	}
 	previousStatus := a.Status
 	previousFinishedNil := a.FinishedAt == nil
@@ -982,6 +1230,8 @@ func (s *Service) reconcileAddressLocked(id string) {
 			a.Status = AddressDownloading
 			a.FinishedAt = nil
 		}
+	} else if canceled {
+		a.Status = AddressCanceled
 	} else if failed {
 		a.Status = AddressFailed
 	} else if partial {
@@ -1003,18 +1253,21 @@ func (s *Service) reconcileAddressLocked(id string) {
 
 func (s *Service) reconcileBatchLocked(id string) {
 	b := s.store.GetBatch(id)
-	if b == nil || b.CancelRequested {
+	// Never reinterpret a user-canceled batch as COMPLETED merely because every
+	// canceled child is terminal.
+	if b == nil || b.CancelRequested || b.Status == BatchCanceled {
 		return
 	}
 	addresses := s.store.ListAddressesByBatch(id)
 	if len(addresses) == 0 {
 		return
 	}
-	all, failed, partial := true, false, false
+	all, failed, partial, canceled := true, false, false, false
 	for _, a := range addresses {
 		all = all && a.Status.Terminal()
 		failed = failed || a.Status == AddressFailed
 		partial = partial || a.Status == AddressPartial
+		canceled = canceled || a.Status == AddressCanceled
 	}
 	previousStatus := b.Status
 	previousFinishedNil := b.FinishedAt == nil
@@ -1023,7 +1276,7 @@ func (s *Service) reconcileBatchLocked(id string) {
 			b.Status = BatchRunning
 			b.FinishedAt = nil
 		}
-	} else if failed || partial {
+	} else if failed || partial || canceled {
 		b.Status = BatchPartial
 	} else {
 		b.Status = BatchCompleted
@@ -1050,8 +1303,12 @@ func (s *Service) SaveTemplate(input SaveTemplateRequest) (*TaskTemplate, error)
 	if name == "" || len(name) > 120 {
 		return nil, fmt.Errorf("模板名称不能为空且最多 120 字符")
 	}
-	if _, _, _, err := normalizePreflightRequest(input.Request); err != nil {
+	normalized, _, _, err := normalizePreflightRequest(input.Request)
+	if err != nil {
 		return nil, err
+	}
+	if normalized.ResourceProfile != "" && !normalized.ResourceProfile.Valid() {
+		return nil, fmt.Errorf("非法资源档位 %q", normalized.ResourceProfile)
 	}
 	id := input.ID
 	now := time.Now().UTC()
@@ -1063,7 +1320,7 @@ func (s *Service) SaveTemplate(input SaveTemplateRequest) (*TaskTemplate, error)
 	} else if old, _ := s.GetTemplate(id); old != nil {
 		created = old.CreatedAt
 	}
-	t := &TaskTemplate{ID: id, Name: name, Description: strings.TrimSpace(input.Description), Request: input.Request, CreatedAt: created, UpdatedAt: now}
+	t := &TaskTemplate{ID: id, Name: name, Description: strings.TrimSpace(input.Description), Request: normalized, CreatedAt: created, UpdatedAt: now}
 	if err := atomicWriteJSON(filepath.Join(s.v32Root(), "templates", id+".json"), t); err != nil {
 		return nil, err
 	}
@@ -1115,12 +1372,76 @@ func (s *Service) DeleteTemplate(id string) error {
 	return err
 }
 
+type TemplateInstantiateOverrides struct {
+	ChainKey              *string               `json:"chain_key,omitempty"`
+	Mode                  *DownloadMode         `json:"mode,omitempty"`
+	Priority              *JobPriority          `json:"priority,omitempty"`
+	ResourceProfile       *ResourceProfile      `json:"resource_profile,omitempty"`
+	Addresses             *[]string             `json:"addresses,omitempty"`
+	Datasets              *[]string             `json:"datasets,omitempty"`
+	DefaultRange          *RangeSpec            `json:"default_range,omitempty"`
+	AddressOverrides      *map[string]RangeSpec `json:"address_overrides,omitempty"`
+	AddressChainOverrides *map[string]string    `json:"address_chain_overrides,omitempty"`
+	SkipCovered           *bool                 `json:"skip_covered,omitempty"`
+	EmergencyBurst        *bool                 `json:"emergency_burst,omitempty"`
+	BurstLevel            *string               `json:"burst_level,omitempty"`
+}
+
+func applyTemplateOverrides(req CreateBatchRequest, overrides *TemplateInstantiateOverrides) CreateBatchRequest {
+	if overrides == nil {
+		return req
+	}
+	if overrides.ChainKey != nil {
+		req.ChainKey = *overrides.ChainKey
+	}
+	if overrides.Mode != nil {
+		req.Mode = *overrides.Mode
+	}
+	if overrides.Priority != nil {
+		req.Priority = *overrides.Priority
+	}
+	if overrides.ResourceProfile != nil {
+		req.ResourceProfile = *overrides.ResourceProfile
+	}
+	if overrides.Addresses != nil {
+		req.Addresses = append([]string(nil), (*overrides.Addresses)...)
+	}
+	if overrides.Datasets != nil {
+		req.Datasets = append([]string(nil), (*overrides.Datasets)...)
+	}
+	if overrides.DefaultRange != nil {
+		value := *overrides.DefaultRange
+		req.DefaultRange = &value
+	}
+	if overrides.AddressOverrides != nil {
+		req.AddressOverrides = *overrides.AddressOverrides
+	}
+	if overrides.AddressChainOverrides != nil {
+		req.AddressChainOverrides = *overrides.AddressChainOverrides
+	}
+	if overrides.SkipCovered != nil {
+		value := *overrides.SkipCovered
+		req.SkipCovered = &value
+	}
+	if overrides.EmergencyBurst != nil {
+		req.EmergencyBurst = *overrides.EmergencyBurst
+	}
+	if overrides.BurstLevel != nil {
+		req.BurstLevel = *overrides.BurstLevel
+	}
+	return req
+}
+
 func (s *Service) InstantiateTemplate(ctx context.Context, id string) (*CreateBatchResponse, error) {
+	return s.InstantiateTemplateWithOverrides(ctx, id, nil)
+}
+
+func (s *Service) InstantiateTemplateWithOverrides(ctx context.Context, id string, overrides *TemplateInstantiateOverrides) (*CreateBatchResponse, error) {
 	t, err := s.GetTemplate(id)
 	if err != nil {
 		return nil, err
 	}
-	return s.CreateBatch(ctx, t.Request)
+	return s.CreateBatch(ctx, applyTemplateOverrides(t.Request, overrides))
 }
 
 func (s *Service) ensureJobReportLocked(batchID string) (*JobReport, error) {
@@ -1128,20 +1449,23 @@ func (s *Service) ensureJobReportLocked(batchID string) (*JobReport, error) {
 	if b == nil {
 		return nil, fmt.Errorf("批次不存在: %s", batchID)
 	}
-	if existing, err := s.readJobReport(batchID); err == nil && existing.Status == b.Status && b.Status.Terminal() {
-		return existing, nil
-	}
-	r := &JobReport{BatchID: batchID, Mode: b.Mode, ResourceProfile: b.ResourceProfile, Status: b.Status, GeneratedAt: time.Now().UTC(), Certification: string(CertificationBatch)}
+	r := &JobReport{BatchID: batchID, Mode: b.Mode, ResourceProfile: b.ResourceProfile, Status: b.Status, GeneratedAt: time.Now().UTC()}
 	providers := map[string]bool{}
 	var first *time.Time
 	var duration float64
 	var blocks, covered uint64
+	allDatasetsCertified := true
+	datasetCount := 0
 	if b.StartedAt != nil && b.FinishedAt != nil {
 		duration = b.FinishedAt.Sub(*b.StartedAt).Seconds()
 		r.TotalTimeSeconds = duration
 	}
 	for _, a := range s.store.ListAddressesByBatch(batchID) {
 		for _, ds := range s.store.ListDatasetsByAddress(a.ID) {
+			datasetCount++
+			if ds.Certification != CertificationDataset || ds.Validation == nil || ds.Validation.Status != "VALIDATED" || ds.Validation.Coverage < 1 || ds.Validation.BlockCoverage < 1 {
+				allDatasetsCertified = false
+			}
 			r.Rows += ds.DownloadedRows
 			r.GapRepairCount += ds.RepairRounds
 			if ds.Validation != nil && ds.Validation.DuplicateCount > 0 {
@@ -1184,8 +1508,13 @@ func (s *Service) ensureJobReportLocked(batchID string) (*JobReport, error) {
 		r.Providers = append(r.Providers, p)
 	}
 	sort.Strings(r.Providers)
-	if r.Coverage < 100 || b.Status != BatchCompleted {
-		r.Certification = string(CertificationDatasetPartial)
+	switch {
+	case b.Status == BatchCompleted && r.Coverage >= 100 && datasetCount > 0 && allDatasetsCertified:
+		r.Certification = string(CertificationBatch)
+	default:
+		// PARTIAL/FAILED/CANCELED and completed-but-unvalidated outcomes are never
+		// certification levels. Keep them explicitly pending for downstream audit.
+		r.Certification = string(CertificationPending)
 	}
 	if err := atomicWriteJSON(filepath.Join(s.v32Root(), "reports", batchID+".json"), r); err != nil {
 		return nil, err
@@ -1204,9 +1533,6 @@ func (s *Service) GetJobReport(batchID string) (*JobReport, error) {
 	}
 	if !b.Status.Terminal() {
 		return nil, fmt.Errorf("批次尚未完成，报告将在终态自动生成")
-	}
-	if r, err := s.readJobReport(batchID); err == nil && r.Status == b.Status {
-		return r, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

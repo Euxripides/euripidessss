@@ -135,10 +135,24 @@ func TestE2EKillRestartResumeNoRedownload(t *testing.T) {
 	if _, err := svc2.ResumeAddress(bID); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 60*time.Second, "批次 COMPLETED", func() bool {
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
 		b := svc2.GetBatch(batchID)
-		return b != nil && b.Status == BatchCompleted
-	})
+		if b != nil && b.Status == BatchCompleted {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if b := svc2.GetBatch(batchID); b == nil || b.Status != BatchCompleted {
+		var states []string
+		for _, a := range store.ListAddressesByBatch(batchID) {
+			for _, ds := range store.ListDatasetsByAddress(a.ID) {
+				states = append(states, fmt.Sprintf("address=%s dataset=%s status=%s validation=%s error=%q",
+					a.Status, ds.Dataset, ds.Status, reportStatus(ds.Validation), ds.Error))
+			}
+		}
+		t.Fatalf("等待批次 COMPLETED 超时: batch=%+v states=%v", b, states)
+	}
 	// 断言：每个 Range 恰好 1 次 STARTED / 1 次 COMPLETED（或 EMPTY），完成区间不重跑
 	for _, ds := range store.ListDatasets() {
 		entries, err := NewLedger(store.Root(), ds.ID).Replay()

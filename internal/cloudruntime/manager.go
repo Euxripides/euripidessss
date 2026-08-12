@@ -1,6 +1,7 @@
 package cloudruntime
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -136,8 +139,21 @@ func (m *Manager) Status() Status {
 
 func (m *Manager) statusLocked() Status {
 	pending, leased := m.queueCountsLocked()
+	state := m.state
+	// Cloud 模式的持久状态只表示 Worker 是否已经部署；真正的 READY/BUSY/IDLE
+	// 必须由远端队列事实派生，不能在有 lease 时仍向前端报告 IDLE。
+	if m.cfg.Mode == ModeCloud && (state == WorkerReady || state == WorkerBusy || state == WorkerIdle) {
+		switch {
+		case leased > 0 || m.runningJob != "":
+			state = WorkerBusy
+		case pending > 0:
+			state = WorkerReady
+		default:
+			state = WorkerIdle
+		}
+	}
 	st := Status{
-		State:                   m.state,
+		State:                   state,
 		Mode:                    m.cfg.Mode,
 		Reason:                  m.reason,
 		WorkerID:                m.workerID,
@@ -161,12 +177,17 @@ func (m *Manager) statusLocked() Status {
 		v := m.cooldownEnd
 		st.FailureCooldownUntil = &v
 	}
-	switch m.state {
-	case WorkerReady, WorkerBusy, WorkerIdle, WorkerDeploying, WorkerStarting, WorkerAbsent:
+	switch st.State {
+	case WorkerReady, WorkerBusy, WorkerIdle:
 		st.Available = true
 	}
 	if !st.Available && m.state != WorkerNotConfigured && time.Now().Before(m.cooldownEnd) {
-		st.Reason = fmt.Sprintf("运行时失败冷却中（至 %s）", m.cooldownEnd.Format(time.RFC3339))
+		cooldownReason := fmt.Sprintf("运行时失败冷却中（至 %s）", m.cooldownEnd.Format(time.RFC3339))
+		if st.Reason == "" {
+			st.Reason = cooldownReason
+		} else {
+			st.Reason += "；" + cooldownReason
+		}
 	}
 	return st
 }
@@ -313,8 +334,20 @@ func (m *Manager) loadPersistedJob(jobID, chunkID string) *Job {
 
 // CancelJob 写入 Cancel Marker（Phase 5.2 §6）：bsc/jobs/cancel/<job_id>.json。
 func (m *Manager) CancelJob(ctx context.Context, id string) error {
-	if strings.TrimSpace(id) == "" {
-		return errors.New("job id 不能为空")
+	id = strings.TrimSpace(id)
+	if err := validateQueueID("job id", id); err != nil {
+		return err
+	}
+	if m.store == nil {
+		return errors.New("Cloud Job Queue 未配置，无法取消任务")
+	}
+	job, err := m.JobStatus(id)
+	if err != nil {
+		return fmt.Errorf("拒绝取消未知 Cloud Job %q: %w", id, err)
+	}
+	switch job.State {
+	case "done", "failed", "cancelled":
+		return fmt.Errorf("Cloud Job %q 已是终态 %s，不能取消", id, job.State)
 	}
 	payload, _ := json.MarshalIndent(map[string]any{
 		"job_id": id, "requested_at": time.Now().Format(time.RFC3339),
@@ -349,6 +382,11 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 	}
 	switch m.state {
 	case WorkerReady, WorkerBusy, WorkerIdle, WorkerStarting:
+		// Cloud 状态可能来自旧进程的持久化快照。真实 Submit 前必须用
+		// sqd list 再次确认 Worker 存在；local/mock 则无需远端对账。
+		if m.cfg.Mode == ModeCloud {
+			break
+		}
 		m.mu.Unlock()
 		return nil
 	case WorkerDeploying:
@@ -372,7 +410,12 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 
 	// Phase 5 §8：cloud 模式先查 sqd list，已存在托管 Worker 直接复用，禁止重复 Deploy。
 	if m.cfg.Mode == ModeCloud {
-		if exists, listErr := m.cloudWorkerListed(ctx); listErr == nil && exists {
+		exists, listErr := m.cloudWorkerListed(ctx)
+		if listErr != nil {
+			m.markDegraded("sqd list 无法验证 Cloud Worker: " + listErr.Error())
+			return fmt.Errorf("检查 SQD Cloud Worker 失败，未执行部署: %w", listErr)
+		}
+		if exists {
 			m.mu.Lock()
 			m.state = WorkerIdle
 			m.reason = "Reconcile：复用已部署托管 Worker（" + m.cfg.WorkerName + "/" + m.cfg.WorkerSlot + "）"
@@ -389,6 +432,23 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 		return err
 	}
 	defer m.releaseDeployLock()
+	// 获得进程间锁后二次对账，避免另一进程已完成部署时重复付费部署。
+	if m.cfg.Mode == ModeCloud {
+		exists, listErr := m.cloudWorkerListed(ctx)
+		if listErr != nil {
+			m.markDegraded("获得部署锁后 sqd list 对账失败: " + listErr.Error())
+			return fmt.Errorf("获得部署锁后检查 SQD Cloud Worker 失败: %w", listErr)
+		}
+		if exists {
+			m.mu.Lock()
+			m.state = WorkerIdle
+			m.reason = "复用其他进程已部署的托管 Worker（" + m.cfg.WorkerName + "/" + m.cfg.WorkerSlot + "）"
+			m.lastActive = time.Now()
+			m.mu.Unlock()
+			m.saveState()
+			return nil
+		}
+	}
 
 	m.mu.Lock()
 	m.state = WorkerDeploying
@@ -401,6 +461,9 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 	switch m.cfg.Mode {
 	case ModeCloud:
 		deployErr = m.deployCloudWorker(ctx)
+		if deployErr == nil {
+			deployErr = m.waitForCloudWorker(ctx)
+		}
 	case ModeLocal, ModeMock:
 		deployErr = nil // 本机/模拟模式无需常驻部署，任务按 Job 启动
 	}
@@ -411,6 +474,7 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 		m.cooldownEnd = time.Now().Add(m.cfg.RuntimeFailureCooldown)
 	} else {
 		m.state = WorkerReady
+		m.reason = "SQD Cloud Worker 已部署并通过 sqd list 对账"
 		m.lastActive = time.Now()
 	}
 	m.mu.Unlock()
@@ -421,6 +485,26 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 // SubmitJob 提交一个 Cloud 应急任务（Phase 4：写入 pending 队列）。
 // cloud 模式：EnsureWorker → enqueue（Worker 轮询 R2）；local/mock：enqueue 后本地循环执行。
 func (m *Manager) SubmitJob(ctx context.Context, job Job) (string, error) {
+	// 先完成路径相关字段校验，再触发任何外部部署，避免无效输入
+	// 创建付费 Worker 或构造对象存储路径穿越。
+	if job.ID == "" {
+		job.ID = uuid.NewString()
+	}
+	// TS Worker 的 job_id 与队列路径 ID 必须一致，否则会把状态写到另一个任务目录。
+	job.JobID = job.ID
+	if job.ChunkID == "" {
+		job.ChunkID = "chunk-1"
+	}
+	if err := validateQueueID("job id", job.ID); err != nil {
+		return "", err
+	}
+	if err := validateQueueID("chunk id", job.ChunkID); err != nil {
+		return "", err
+	}
+	if job.ToBlock < job.FromBlock {
+		return "", fmt.Errorf("无效区块范围: from_block=%d to_block=%d", job.FromBlock, job.ToBlock)
+	}
+
 	m.mu.Lock()
 	if m.cfg.Mode == ModeNone || m.state == WorkerNotConfigured {
 		err := errors.New(m.reason)
@@ -439,15 +523,6 @@ func (m *Manager) SubmitJob(ctx context.Context, job Job) (string, error) {
 			return "", err
 		}
 	}
-	if job.ID == "" {
-		job.ID = uuid.NewString()
-	}
-	if job.JobID == "" {
-		job.JobID = job.ID
-	}
-	if job.ChunkID == "" {
-		job.ChunkID = "chunk-1"
-	}
 	if job.ChainKey == "" {
 		job.ChainKey = "bsc"
 	}
@@ -457,14 +532,14 @@ func (m *Manager) SubmitJob(ctx context.Context, job Job) (string, error) {
 	if job.Dataset == "" {
 		job.Dataset = "token_transfer"
 	}
-	if job.TokenContract == "" {
+	if job.TokenContract == "" && len(job.Addresses) == 0 {
 		job.TokenContract = "0x55d398326f99059ff775485246999027b3197955" // BSC USDT（V1）
 	}
 	job.Mode = m.cfg.Mode
 	job.State = "queued"
 	job.CreatedAt = time.Now()
 	if err := m.enqueuePending(ctx, &job); err != nil {
-		return "", err
+		return "", fmt.Errorf("Cloud Job 入队失败（worker=%s）: %w", m.cfg.WorkerName, err)
 	}
 	m.persistJob(&job) // Lease 过期恢复/审计依赖本地 Job 证据（Phase 5.2 §5/§7）
 	m.mu.Lock()
@@ -482,8 +557,36 @@ func (m *Manager) SubmitJob(ctx context.Context, job Job) (string, error) {
 
 // JobStatus 返回任务状态。cloud 模式从远端队列读取；local/mock 从内存读取（循环更新）。
 func (m *Manager) JobStatus(id string) (Job, error) {
+	id = strings.TrimSpace(id)
+	if err := validateQueueID("job id", id); err != nil {
+		return Job{}, err
+	}
 	if m.cfg.Mode == ModeCloud {
-		return m.remoteJobStatus(context.Background(), id)
+		remote, err := m.remoteJobStatus(context.Background(), id)
+		if err != nil {
+			return Job{}, err
+		}
+		m.mu.Lock()
+		if existing, ok := m.jobs[id]; ok {
+			existing.State = remote.State
+			existing.Rows = remote.Rows
+			existing.Error = remote.Error
+			if remote.ChunkID != "" {
+				existing.ChunkID = remote.ChunkID
+			}
+			if remote.StartedAt != nil {
+				existing.StartedAt = remote.StartedAt
+			}
+			if remote.FinishedAt != nil {
+				existing.FinishedAt = remote.FinishedAt
+			}
+			remote = *existing
+		} else {
+			copyJob := remote
+			m.jobs[id] = &copyJob
+		}
+		m.mu.Unlock()
+		return remote, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -497,6 +600,10 @@ func (m *Manager) JobStatus(id string) (Job, error) {
 // local job directory. Paths and SHA256 values come only from the completed
 // manifest; traversal and checksum mismatches fail closed.
 func (m *Manager) MaterializeJobResult(ctx context.Context, id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if err := validateQueueID("job id", id); err != nil {
+		return "", err
+	}
 	job, err := m.remoteJobStatus(ctx, id)
 	if err != nil {
 		return "", err
@@ -509,35 +616,39 @@ func (m *Manager) MaterializeJobResult(ctx context.Context, id string) (string, 
 	if err != nil {
 		return "", err
 	}
-	var manifest struct {
-		JobID   string     `json:"job_id"`
-		ChunkID string     `json:"chunk_id"`
-		Files   []FileInfo `json:"files"`
-	}
+	var manifest publishedManifest
 	if err := json.Unmarshal(payload, &manifest); err != nil {
 		return "", err
 	}
-	if manifest.JobID != id || manifest.ChunkID != job.ChunkID {
-		return "", fmt.Errorf("Cloud manifest 身份不匹配")
-	}
-	destRoot := filepath.Join(m.jobsDir, id, job.ChunkID, "remote-result")
-	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+	if err := m.validatePublishedManifest(ctx, manifest, id, job.ChunkID); err != nil {
 		return "", err
 	}
+	destRoot := filepath.Join(m.jobsDir, id, job.ChunkID, "remote-result")
+	stageRoot := destRoot + ".partial-" + uuid.NewString()
+	if err := os.MkdirAll(stageRoot, 0o755); err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(stageRoot)
 	for _, file := range manifest.Files {
-		rel := filepath.Clean(filepath.FromSlash(file.Path))
-		if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return "", fmt.Errorf("Cloud manifest 含非法路径")
+		rel, err := validateArtifactPath(file.Path)
+		if err != nil {
+			return "", err
 		}
+		// The immutable completed manifest/_SUCCESS are the publication gate;
+		// large parquet parts stay under the leased artifact prefix so completion
+		// is an O(1) metadata commit instead of an object-store copy operation.
 		body, err := m.store.Get(ctx, leasedChunkDir(id, job.ChunkID)+"/"+filepath.ToSlash(rel))
 		if err != nil {
 			return "", err
 		}
 		sum := sha256.Sum256(body)
-		if file.SHA256 != "" && !strings.EqualFold(file.SHA256, hex.EncodeToString(sum[:])) {
+		if int64(len(body)) != file.Bytes {
+			return "", fmt.Errorf("Cloud artifact 字节数不匹配: %s（manifest=%d actual=%d）", file.Path, file.Bytes, len(body))
+		}
+		if !strings.EqualFold(file.SHA256, hex.EncodeToString(sum[:])) {
 			return "", fmt.Errorf("Cloud artifact SHA256 不匹配: %s", file.Path)
 		}
-		dest := filepath.Join(destRoot, rel)
+		dest := filepath.Join(stageRoot, rel)
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return "", err
 		}
@@ -548,6 +659,14 @@ func (m *Manager) MaterializeJobResult(ctx context.Context, id string) (string, 
 		if err := os.Rename(tmp, dest); err != nil {
 			return "", err
 		}
+	}
+	// 只有全部文件通过路径、大小和哈希校验后才发布；失败时不会留下一个
+	// 看起来完整的 remote-result 目录。
+	if err := os.RemoveAll(destRoot); err != nil {
+		return "", err
+	}
+	if err := os.Rename(stageRoot, destRoot); err != nil {
+		return "", err
 	}
 	return destRoot, nil
 }
@@ -587,7 +706,14 @@ func (m *Manager) RemoveWorker(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 	if m.cfg.Mode == ModeCloud {
-		m.removeCloudWorker(ctx)
+		if err := m.removeCloudWorker(ctx); err != nil {
+			m.mu.Lock()
+			m.state = WorkerDegraded
+			m.reason = "Cloud Worker 移除失败: " + err.Error()
+			m.mu.Unlock()
+			m.saveState()
+			return err
+		}
 	}
 	m.mu.Lock()
 	m.state = WorkerAbsent
@@ -670,6 +796,8 @@ func (m *Manager) workerLoop() {
 		if runErr != nil {
 			job.State = "failed"
 			job.Error = runErr.Error()
+			m.state = WorkerFailed
+			m.reason = "Cloud Job 执行失败: " + runErr.Error()
 			m.cooldownEnd = time.Now().Add(m.cfg.RuntimeFailureCooldown)
 			_ = m.writeFailedLocked(ctx, job, runErr)
 			// 清理 leased 标记（证据保留在 failed/error.json + 本地日志）
@@ -678,6 +806,8 @@ func (m *Manager) workerLoop() {
 			_ = m.store.Delete(ctx, leased+"/lease.json")
 		} else {
 			job.State = "done"
+			m.state = WorkerIdle
+			m.reason = "Cloud Job 已完成，Worker 空闲"
 			m.lastActive = finished
 			leased := leasedChunkDir(job.ID, job.ChunkID)
 			_ = m.store.Delete(ctx, leased+"/status.json")
@@ -799,8 +929,160 @@ func (m *Manager) acquirePendingJob(ctx context.Context) (*Job, error) {
 	return nil, nil
 }
 
+type publishedManifest struct {
+	SchemaVersion int        `json:"schema_version"`
+	JobID         string     `json:"job_id"`
+	ChunkID       string     `json:"chunk_id"`
+	ChainID       int        `json:"chain_id"`
+	Dataset       string     `json:"dataset"`
+	FromBlock     uint64     `json:"from_block"`
+	ToBlock       uint64     `json:"to_block"`
+	Addresses     []string   `json:"addresses"`
+	RowCount      int64      `json:"row_count"`
+	Files         []FileInfo `json:"files"`
+	Completed     bool       `json:"completed"`
+}
+
+type completionMarker struct {
+	JobID     string `json:"job_id"`
+	ChunkID   string `json:"chunk_id"`
+	Rows      int64  `json:"rows"`
+	Completed bool   `json:"completed"`
+}
+
+// validatePublishedManifest 只验证发布协议和请求身份，不下载大文件。
+// 文件内容的 bytes/SHA256 在 MaterializeJobResult 再做强校验。
+func (m *Manager) validatePublishedManifest(ctx context.Context, manifest publishedManifest, id, chunkID string) error {
+	if manifest.JobID != id || manifest.ChunkID != chunkID {
+		return fmt.Errorf("Cloud manifest 身份不匹配")
+	}
+	if err := validateQueueID("manifest job id", manifest.JobID); err != nil {
+		return err
+	}
+	if err := validateQueueID("manifest chunk id", manifest.ChunkID); err != nil {
+		return err
+	}
+	if !manifest.Completed {
+		return errors.New("Cloud manifest 未声明 completed=true")
+	}
+	if manifest.RowCount < 0 {
+		return fmt.Errorf("Cloud manifest row_count 非法: %d", manifest.RowCount)
+	}
+	if manifest.ToBlock < manifest.FromBlock {
+		return fmt.Errorf("Cloud manifest 区块范围非法: %d-%d", manifest.FromBlock, manifest.ToBlock)
+	}
+	if manifest.RowCount > 0 && len(manifest.Files) == 0 {
+		return errors.New("Cloud manifest 有数据行但没有 Parquet 文件")
+	}
+	seen := make(map[string]struct{}, len(manifest.Files))
+	for _, file := range manifest.Files {
+		rel, err := validateArtifactPath(file.Path)
+		if err != nil {
+			return err
+		}
+		key := strings.ToLower(filepath.ToSlash(rel))
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("Cloud manifest 含重复文件路径: %s", file.Path)
+		}
+		seen[key] = struct{}{}
+		if file.Bytes <= 0 {
+			return fmt.Errorf("Cloud manifest 文件大小非法: %s", file.Path)
+		}
+		decoded, err := hex.DecodeString(file.SHA256)
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("Cloud manifest SHA256 非法: %s", file.Path)
+		}
+		if ok, err := m.store.Exists(ctx, leasedChunkDir(id, chunkID)+"/"+filepath.ToSlash(rel)); err != nil {
+			return fmt.Errorf("检查 Cloud artifact %s: %w", file.Path, err)
+		} else if !ok {
+			return fmt.Errorf("Cloud manifest 引用的 artifact 不存在: %s", file.Path)
+		}
+	}
+
+	successPayload, err := m.store.Get(ctx, completedChunkDir(id, chunkID)+"/_SUCCESS")
+	if err != nil {
+		return fmt.Errorf("读取 Cloud _SUCCESS: %w", err)
+	}
+	var success completionMarker
+	if err := json.Unmarshal(successPayload, &success); err != nil {
+		return fmt.Errorf("解析 Cloud _SUCCESS: %w", err)
+	}
+	if !success.Completed || success.JobID != id || success.ChunkID != chunkID || success.Rows != manifest.RowCount {
+		return fmt.Errorf("Cloud _SUCCESS 与 manifest 不一致")
+	}
+
+	m.mu.Lock()
+	expected, hasExpected := m.jobs[id]
+	var expectedCopy Job
+	if hasExpected {
+		expectedCopy = *expected
+	}
+	m.mu.Unlock()
+	if hasExpected {
+		if expectedCopy.ChunkID != "" && expectedCopy.ChunkID != manifest.ChunkID {
+			return fmt.Errorf("Cloud manifest chunk 与请求不一致")
+		}
+		if expectedCopy.FromBlock != manifest.FromBlock || expectedCopy.ToBlock != manifest.ToBlock {
+			return fmt.Errorf("Cloud manifest 区块范围与请求不一致: request=%d-%d manifest=%d-%d",
+				expectedCopy.FromBlock, expectedCopy.ToBlock, manifest.FromBlock, manifest.ToBlock)
+		}
+		if expectedCopy.ChainID != 0 && manifest.ChainID != expectedCopy.ChainID {
+			return fmt.Errorf("Cloud manifest chain_id 与请求不一致: request=%d manifest=%d", expectedCopy.ChainID, manifest.ChainID)
+		}
+		if expectedCopy.Dataset != "" && normalizeCloudDataset(manifest.Dataset) != normalizeCloudDataset(expectedCopy.Dataset) {
+			return fmt.Errorf("Cloud manifest dataset 与请求不一致: request=%s manifest=%s", expectedCopy.Dataset, manifest.Dataset)
+		}
+		if !sameCloudAddresses(expectedCopy.Addresses, manifest.Addresses) {
+			return errors.New("Cloud manifest addresses 与请求不一致")
+		}
+	}
+	return nil
+}
+
+func validateArtifactPath(value string) (string, error) {
+	if value == "" || strings.Contains(value, "\\") {
+		return "", fmt.Errorf("Cloud manifest 含非法路径: %q", value)
+	}
+	cleanSlash := filepath.ToSlash(filepath.Clean(filepath.FromSlash(value)))
+	if cleanSlash == "." || strings.HasPrefix(cleanSlash, "/") || cleanSlash == ".." || strings.HasPrefix(cleanSlash, "../") {
+		return "", fmt.Errorf("Cloud manifest 含非法路径: %q", value)
+	}
+	if !strings.EqualFold(filepath.Ext(cleanSlash), ".parquet") {
+		return "", fmt.Errorf("Cloud manifest 含非 Parquet 产物: %q", value)
+	}
+	return filepath.FromSlash(cleanSlash), nil
+}
+
+func normalizeCloudDataset(value string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), "s")
+}
+
+func sameCloudAddresses(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	normalize := func(values []string) []string {
+		out := make([]string, len(values))
+		for i, value := range values {
+			out[i] = strings.ToLower(strings.TrimSpace(value))
+		}
+		sort.Strings(out)
+		return out
+	}
+	aa, bb := normalize(a), normalize(b)
+	for i := range aa {
+		if aa[i] != bb[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // remoteJobStatus 从远端队列读取 Job 状态（cloud 模式）。
 func (m *Manager) remoteJobStatus(ctx context.Context, id string) (Job, error) {
+	if err := validateQueueID("job id", id); err != nil {
+		return Job{}, err
+	}
 	// 按 job_id 查找：completed/cancelled/failed/leased/pending
 	if objs, err := m.store.List(ctx, queuePrefix+"completed/"+id+"/"); err == nil {
 		for _, o := range objs {
@@ -809,12 +1091,14 @@ func (m *Manager) remoteJobStatus(ctx context.Context, id string) (Job, error) {
 				if err != nil {
 					continue
 				}
-				var manifest struct {
-					JobID    string `json:"job_id"`
-					ChunkID  string `json:"chunk_id"`
-					RowCount int64  `json:"row_count"`
-				}
+				var manifest publishedManifest
 				if json.Unmarshal(payload, &manifest) == nil && manifest.JobID == id {
+					if ok, _ := m.store.Exists(ctx, completedChunkDir(id, manifest.ChunkID)+"/_SUCCESS"); !ok {
+						continue
+					}
+					if err := m.validatePublishedManifest(ctx, manifest, id, manifest.ChunkID); err != nil {
+						return Job{ID: id, ChunkID: manifest.ChunkID, State: "failed", Error: "Cloud 完成产物质量校验失败: " + err.Error()}, nil
+					}
 					job := Job{ID: id, ChunkID: manifest.ChunkID, State: "done", Rows: manifest.RowCount}
 					finished := time.Now()
 					job.FinishedAt = &finished
@@ -896,10 +1180,11 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	}
 	text, err := m.listCloudWorkers(ctx)
 	if err != nil {
+		m.markDegraded("Reconcile：sqd list 对账失败: " + err.Error())
 		logger.Log.Warn().Err(err).Msg("cloud_reconcile_list_failed")
 		return
 	}
-	if strings.Contains(text, m.cfg.WorkerName) || strings.Contains(text, m.cfg.WorkerSlot) {
+	if cloudWorkerMatches(text, m.cfg.WorkerName, m.cfg.WorkerSlot) {
 		m.mu.Lock()
 		if m.state != WorkerReady && m.state != WorkerBusy {
 			m.state = WorkerIdle
@@ -918,13 +1203,102 @@ func (m *Manager) Reconcile(ctx context.Context) {
 	}
 }
 
+func (m *Manager) markDegraded(reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == WorkerNotConfigured {
+		return
+	}
+	m.state = WorkerDegraded
+	m.reason = reason
+	m.saveStateLocked()
+}
+
 // cloudWorkerListed 查询 sqd list 是否已存在托管 Worker（供 EnsureWorker 复用）。
 func (m *Manager) cloudWorkerListed(ctx context.Context) (bool, error) {
 	text, err := m.listCloudWorkers(ctx)
 	if err != nil {
 		return false, err
 	}
-	return strings.Contains(text, m.cfg.WorkerName) || strings.Contains(text, m.cfg.WorkerSlot), nil
+	return cloudWorkerMatches(text, m.cfg.WorkerName, m.cfg.WorkerSlot), nil
+}
+
+// waitForCloudWorker 验证 deploy 不只是命令退出码为 0，而是托管 Worker
+// 确实出现在 sqd list 中。这是入队前的质量门，避免产生永久无法消费的 pending Job。
+func (m *Manager) waitForCloudWorker(ctx context.Context) error {
+	deadline := time.Now().Add(m.cfg.DeployTimeout)
+	var lastErr error
+	for {
+		exists, err := m.cloudWorkerListed(ctx)
+		if err == nil && exists {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("sqd deploy 已返回成功，但 sqd list 对账持续失败: %w", lastErr)
+			}
+			return fmt.Errorf("sqd deploy 已返回成功，但 %s/%s 未在 sqd list 中出现", m.cfg.WorkerName, m.cfg.WorkerSlot)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("等待 SQD Cloud Worker 对账: %w", ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func cloudWorkerMatches(output, workerName, workerSlot string) bool {
+	output = strings.ToLower(output)
+	workerName = strings.ToLower(strings.TrimSpace(workerName))
+	if workerName == "" || !strings.Contains(output, workerName) {
+		return false
+	}
+	workerSlot = strings.ToLower(strings.TrimSpace(workerSlot))
+	if workerSlot == "" {
+		return true
+	}
+	// sqd CLI 历史版本常见输出：name@slot、name/slot、name slot v2。
+	// 必须同时命中 Worker 名和目标 slot，不能把旧版本 v1 当作 v2 复用。
+	patterns := []string{
+		workerName + "@" + workerSlot,
+		workerName + "/" + workerSlot,
+		workerName + " " + workerSlot,
+		workerName + " slot " + workerSlot,
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(output, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateQueueID(label, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s 不能为空", label)
+	}
+	if len(value) > 128 {
+		return fmt.Errorf("%s 过长（最大 128 字符）", label)
+	}
+	if value == "." || value == ".." || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return fmt.Errorf("%s 不能以点开头或结尾", label)
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			continue
+		}
+		return fmt.Errorf("%s 含非法字符 %q（仅允许字母、数字、-_.）", label, r)
+	}
+	base := strings.ToUpper(strings.SplitN(value, ".", 2)[0])
+	if base == "CON" || base == "PRN" || base == "AUX" || base == "NUL" ||
+		(len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9') {
+		return fmt.Errorf("%s 使用了 Windows 保留名称", label)
+	}
+	return nil
 }
 
 // listCloudWorkers 执行 sqd list --org {org}（CommandRunner 可注入测试）。
@@ -1016,13 +1390,18 @@ func (m *Manager) queueCountsErr() (pending, leased int, err error) {
 		return 0, 0, err
 	}
 	if objs, err := m.store.List(ctx, queuePrefix+"leased/"); err == nil {
+		leasedChunks := map[string]struct{}{}
 		for _, o := range objs {
 			// 远端 Worker 领取时先写 lease.json，运行中才写 status.json；
-			// 两者都算 leased，否则 Idle Reaper 会误删仍在处理 Job 的 Worker。
+			// 两者都证明 leased，但同一 Chunk 只能计数一次。
 			if strings.HasSuffix(o.Key, "/status.json") || strings.HasSuffix(o.Key, "/lease.json") {
-				leased++
+				jobID, chunkID := parseChunkKey(o.Key, "leased/")
+				if jobID != "" && chunkID != "" {
+					leasedChunks[jobID+"/"+chunkID] = struct{}{}
+				}
 			}
 		}
+		leased = len(leasedChunks)
 	} else {
 		return 0, 0, err
 	}
@@ -1102,48 +1481,97 @@ func (m *Manager) deployCloudWorker(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("未找到 sqd CLI: %w", err)
 		}
-		cmd := exec.CommandContext(deployCtx, sqdBin, "deploy", ".", "-o", m.cfg.Organization, "--no-interactive")
+		cmd := exec.CommandContext(deployCtx, sqdBin, "deploy", ".", "-o", m.cfg.Organization, "--no-interactive", "--allow-update")
 		cmd.Dir = m.cfg.WorkerProjectDir
 		cmd.Env = append(os.Environ(),
+			"SQD_DEPLOY_KEY="+m.cfg.DeployKey,
 			"SQUID_DEPLOY_KEY="+m.cfg.DeployKey,
 			"SQUID_ORG="+m.cfg.Organization,
 			"SQUID_WORKER="+m.cfg.WorkerName,
 			"SQUID_SLOT="+m.cfg.WorkerSlot,
 		)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			firstLine := strings.SplitN(string(out), "\n", 2)[0]
-			if len(firstLine) > 200 {
-				firstLine = firstLine[:200]
-			}
-			logger.Log.Error().Err(err).Str("sqd", firstLine).Msg("cloud_worker_deploy_failed")
-			return fmt.Errorf("sqd deploy 失败（详见服务日志）")
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("启动 sqd deploy 失败: %w", err)
 		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case err := <-done:
+				// Some CLI versions can return a non-zero wrapper status after the
+				// remote deploy has already succeeded. The remote list is the
+				// authoritative result, not the wrapper exit code alone.
+				if exists, _ := m.cloudWorkerListed(deployCtx); exists {
+					err = nil
+				}
+				if err != nil {
+					firstLine := sanitizeCloudCLIOutput(out.String(), m.cfg.DeployKey)
+					logger.Log.Error().Err(err).Str("sqd", firstLine).Msg("cloud_worker_deploy_failed")
+					return fmt.Errorf("sqd deploy 失败: %s", firstLine)
+				}
+				goto deployed
+			case <-ticker.C:
+				exists, listErr := m.cloudWorkerListed(deployCtx)
+				if listErr == nil && exists {
+					// On Windows the SQD CLI can keep streaming after the Worker is
+					// already DEPLOYED. Stop only this exact deploy process tree so
+					// SubmitJob can continue to the queue quality gate.
+					stopCommandProcessTree(cmd)
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+					}
+					goto deployed
+				}
+			case <-deployCtx.Done():
+				stopCommandProcessTree(cmd)
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+				}
+				return fmt.Errorf("sqd deploy 超时或取消: %w", deployCtx.Err())
+			}
+		}
+	deployed:
 		logger.Log.Info().Str("project", m.cfg.WorkerProjectDir).Str("org", m.cfg.Organization).
 			Str("worker", m.cfg.WorkerName).Msg("cloud_worker_deployed")
 		return nil
 	}
-	out, err := run(deployCtx, "sqd", "deploy", ".", "-o", m.cfg.Organization, "--no-interactive")
+	out, err := run(deployCtx, "sqd", "deploy", ".", "-o", m.cfg.Organization, "--no-interactive", "--allow-update")
 	if err != nil {
-		firstLine := strings.SplitN(string(out), "\n", 2)[0]
-		if len(firstLine) > 200 {
-			firstLine = firstLine[:200]
-		}
+		firstLine := sanitizeCloudCLIOutput(string(out), m.cfg.DeployKey)
 		logger.Log.Error().Err(err).Str("sqd", firstLine).Msg("cloud_worker_deploy_failed")
-		return fmt.Errorf("sqd deploy 失败（详见服务日志）")
+		return fmt.Errorf("sqd deploy 失败: %s", firstLine)
 	}
 	logger.Log.Info().Str("project", m.cfg.WorkerProjectDir).Str("org", m.cfg.Organization).
 		Str("worker", m.cfg.WorkerName).Msg("cloud_worker_deployed")
 	return nil
 }
 
+func stopCommandProcessTree(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		// PID comes from os.Process and is passed as a separate argument; no
+		// shell or path expansion is involved.
+		_ = exec.Command("taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F").Run()
+		return
+	}
+	_ = cmd.Process.Kill()
+}
+
 // removeCloudWorker 调用 sqd remove 移除 Cloud 资源（Phase 4 §63：仅移除托管 Worker，禁止模糊删除 org）。
-func (m *Manager) removeCloudWorker(ctx context.Context) {
+func (m *Manager) removeCloudWorker(ctx context.Context) error {
 	run := m.cfg.CommandRunner
 	if run == nil {
 		run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, name, args...)
-			cmd.Env = append(os.Environ(), "SQUID_DEPLOY_KEY="+m.cfg.DeployKey)
+			cmd.Env = append(os.Environ(), "SQD_DEPLOY_KEY="+m.cfg.DeployKey, "SQUID_DEPLOY_KEY="+m.cfg.DeployKey)
 			return cmd.CombinedOutput()
 		}
 	}
@@ -1151,10 +1579,12 @@ func (m *Manager) removeCloudWorker(ctx context.Context) {
 	defer cancel()
 	out, err := run(removeCtx, "sqd", "remove", "-o", m.cfg.Organization, "-n", m.cfg.WorkerName, "-s", m.cfg.WorkerSlot, "--no-interactive", "-f")
 	if err != nil {
-		logger.Log.Warn().Err(err).Str("out", truncate(string(out), 200)).Msg("cloud_worker_remove_failed")
-		return
+		safeOut := sanitizeCloudCLIOutput(string(out), m.cfg.DeployKey)
+		logger.Log.Warn().Err(err).Str("out", safeOut).Msg("cloud_worker_remove_failed")
+		return fmt.Errorf("sqd remove 失败: %s", safeOut)
 	}
 	logger.Log.Info().Str("org", m.cfg.Organization).Str("worker", m.cfg.WorkerName).Msg("cloud_worker_removed")
+	return nil
 }
 
 func truncate(s string, n int) string {
@@ -1162,6 +1592,17 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+func sanitizeCloudCLIOutput(output, deployKey string) string {
+	firstLine := strings.TrimSpace(strings.SplitN(output, "\n", 2)[0])
+	if deployKey != "" {
+		firstLine = strings.ReplaceAll(firstLine, deployKey, "[REDACTED]")
+	}
+	if firstLine == "" {
+		firstLine = "CLI 未返回详细错误"
+	}
+	return truncate(firstLine, 200)
 }
 
 // ── 持久化与锁 ──

@@ -32,6 +32,7 @@ const (
 	LedgerRangeResharded          = "RANGE_RESHARDED"
 	LedgerRangeCertified          = "RANGE_CERTIFIED"
 	LedgerDatasetPartialCertified = "DATASET_PARTIAL_CERTIFIED"
+	LedgerDatasetCertified        = "DATASET_CERTIFIED"
 	LedgerHedgeStarted            = "HEDGE_STARTED"
 	LedgerHedgeWon                = "HEDGE_WON"
 	LedgerPausedByPriority        = "PAUSED_BY_PRIORITY"

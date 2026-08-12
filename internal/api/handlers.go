@@ -615,8 +615,32 @@ func setupSmartDownload() {
 		log.Warn().Str("error", smartDuckDB.Status().Error).Msg("smart_download_duckdb_unavailable")
 	}
 	svc := smartdownload.NewService(store, opts, partWriter)
+	svc.SetWarehouseRequired(cfg.ClickHouse.Required)
 	smartDownloadService = svc
 	svc.SetV32ResourceMetricsSource(&smartDownloadResourceMetrics{root: root, rpcManager: rpcManager})
+	// FULL/TIME 模式终点：以链当前高度为准（RPC eth_blockNumber），
+	// 避免写死 DefaultEndBlock（50M）导致预检与实际下载只覆盖旧高度。
+	svc.SetHeadBlockFunc(func(ctx context.Context, chainKey string) (uint64, error) {
+		if rpcManager == nil || !rpcManager.HasConfigured(chainKey) {
+			return 0, fmt.Errorf("链 %s 未配置 RPC 节点", chainKey)
+		}
+		raw, _, err := rpcManager.Call(ctx, chainKey, "eth_blockNumber", []any{})
+		if err != nil {
+			return 0, err
+		}
+		var hexNumber string
+		if err := json.Unmarshal(raw, &hexNumber); err != nil {
+			return 0, fmt.Errorf("解析 eth_blockNumber 响应: %w", err)
+		}
+		number, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(hexNumber), "0x"), 16, 64)
+		if err != nil {
+			return 0, fmt.Errorf("eth_blockNumber 返回无效区块号 %q", hexNumber)
+		}
+		return number, nil
+	})
+	svc.SetTimeRangeResolver(func(ctx context.Context, chainKey string, start, end time.Time) (uint64, uint64, error) {
+		return resolveSmartDownloadTimeRange(ctx, rpcManager, chainKey, start, end)
+	})
 	dailyCloudBudget := envFloat64("SMART_DOWNLOAD_CLOUD_DAILY_BUDGET")
 	monthlyCloudBudget := envFloat64("SMART_DOWNLOAD_CLOUD_MONTHLY_BUDGET")
 	maxSingleCloudCost := envFloat64("SMART_DOWNLOAD_CLOUD_MAX_SINGLE_JOB_COST")
@@ -718,6 +742,103 @@ func setupSmartDownload() {
 	log.Info().Str("root", root).Int("workers", opts.Workers).Msg("smart_download_ready")
 }
 
+func resolveSmartDownloadTimeRange(ctx context.Context, manager *rpcmanager.Manager, chainKey string, start, end time.Time) (uint64, uint64, error) {
+	if manager == nil || !manager.HasConfigured(chainKey) {
+		return 0, 0, fmt.Errorf("链 %s 未配置 RPC 节点", chainKey)
+	}
+	if start.After(end) {
+		return 0, 0, fmt.Errorf("开始时间不能晚于结束时间")
+	}
+	raw, _, err := manager.Call(ctx, chainKey, "eth_blockNumber", []any{})
+	if err != nil {
+		return 0, 0, err
+	}
+	var headHex string
+	if err := json.Unmarshal(raw, &headHex); err != nil {
+		return 0, 0, fmt.Errorf("解析 eth_blockNumber 响应: %w", err)
+	}
+	head, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(headHex), "0x"), 16, 64)
+	if err != nil {
+		return 0, 0, fmt.Errorf("eth_blockNumber 返回无效区块号 %q", headHex)
+	}
+	timestampAt := func(block uint64) (time.Time, error) {
+		payload, _, callErr := manager.Call(ctx, chainKey, "eth_getBlockByNumber", []any{fmt.Sprintf("0x%x", block), false})
+		if callErr != nil {
+			return time.Time{}, callErr
+		}
+		var result struct {
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.Unmarshal(payload, &result); err != nil {
+			return time.Time{}, fmt.Errorf("解析区块 %d 响应: %w", block, err)
+		}
+		seconds, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimSpace(result.Timestamp), "0x"), 16, 64)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("区块 %d timestamp 无效 %q", block, result.Timestamp)
+		}
+		return time.Unix(seconds, 0).UTC(), nil
+	}
+	genesisTime, err := timestampAt(0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("读取创世区块时间: %w", err)
+	}
+	headTime, err := timestampAt(head)
+	if err != nil {
+		return 0, 0, fmt.Errorf("读取链头区块时间: %w", err)
+	}
+	if end.Before(genesisTime) || start.After(headTime) {
+		return 0, 0, fmt.Errorf("时间范围与链上区块范围无交集（%s - %s）", genesisTime.Format(time.RFC3339), headTime.Format(time.RFC3339))
+	}
+	if start.Before(genesisTime) {
+		start = genesisTime
+	}
+	if end.After(headTime) {
+		end = headTime
+	}
+	lowerBound := func(target time.Time, strict bool) (uint64, error) {
+		lo, hi := uint64(0), head
+		for lo < hi {
+			mid := lo + (hi-lo)/2
+			stamp, err := timestampAt(mid)
+			if err != nil {
+				return 0, err
+			}
+			matched := stamp.After(target) || (!strict && stamp.Equal(target))
+			if matched {
+				hi = mid
+			} else {
+				lo = mid + 1
+			}
+		}
+		return lo, nil
+	}
+	from, err := lowerBound(start, false)
+	if err != nil {
+		return 0, 0, fmt.Errorf("解析起始区块: %w", err)
+	}
+	firstAfterEnd, err := lowerBound(end, true)
+	if err != nil {
+		return 0, 0, fmt.Errorf("解析结束区块: %w", err)
+	}
+	to := head
+	if firstAfterEnd <= head {
+		stamp, err := timestampAt(firstAfterEnd)
+		if err != nil {
+			return 0, 0, err
+		}
+		if stamp.After(end) {
+			if firstAfterEnd == 0 {
+				return 0, 0, fmt.Errorf("时间范围内没有区块")
+			}
+			to = firstAfterEnd - 1
+		}
+	}
+	if to < from {
+		return 0, 0, fmt.Errorf("时间范围内没有区块")
+	}
+	return from, to, nil
+}
+
 // setupCloudRuntime 装配 SQD Cloud 运行时（设计 §27/§31）：
 //   - SQD_CLOUD_MODE=auto（默认）：有 SQD_DEPLOY_KEY → cloud；Worker 项目可用 → local；否则禁用
 //   - SQD_CLOUD_WORKER_DIR：Cloud Worker 项目目录（默认 E:\Code\Processor-only）
@@ -781,6 +902,34 @@ func (c *compositeCoverageSource) AddressTxCount(ctx context.Context, address st
 		}
 	}
 	return total, nil
+}
+
+func (c *compositeCoverageSource) AddressRangeCovered(_ context.Context, chainKey, address string,
+	dataset downloadscheduler.Dataset, fromBlock, toBlock uint64) (bool, int64, error) {
+	if c == nil || c.registry == nil || toBlock < fromBlock {
+		return false, 0, nil
+	}
+	coverage, ok := c.registry.AddressCoverage(chainKey, address, string(dataset))
+	if !ok {
+		return false, 0, nil
+	}
+	cur := fromBlock
+	for _, r := range coverage.Ranges {
+		if r.To < cur {
+			continue
+		}
+		if r.From > cur {
+			return false, coverage.RowCount, nil
+		}
+		if r.To >= toBlock {
+			return true, coverage.RowCount, nil
+		}
+		if r.To == ^uint64(0) {
+			return true, coverage.RowCount, nil
+		}
+		cur = r.To + 1
+	}
+	return false, coverage.RowCount, nil
 }
 
 // smartRangeCoverage Smart Download 区间覆盖源：本服务 Result Registry + Cloud Dataset Registry。

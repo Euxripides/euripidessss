@@ -433,11 +433,17 @@ func handleSemanticQuality(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "Data quality is unavailable"})
 		return
 	}
+	key := strconv.FormatUint(uint64(id), 10)
+	if cached, ok := dataQualityCache.Get(key); ok {
+		c.JSON(http.StatusOK, cached)
+		return
+	}
 	report, err := semanticQualityV2.Report(c.Request.Context(), id)
 	if err != nil {
 		writeCanonicalError(c, err)
 		return
 	}
+	dataQualityCache.Set(key, report)
 	c.JSON(http.StatusOK, report)
 }
 

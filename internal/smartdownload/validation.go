@@ -25,34 +25,37 @@ type CrossCheckReport struct {
 }
 
 type ValidationReport struct {
-	DatasetJobID      string           `json:"dataset_job_id"`
-	Status            string           `json:"status"` // VALIDATED / PARTIAL / FAILED
-	Score             float64          `json:"score"`
-	Coverage          float64          `json:"coverage"`
-	BlockCoverage     float64          `json:"block_coverage"`
-	Rows              int64            `json:"rows"`
-	UniqueKeyCount    int64            `json:"unique_key_count"`
-	DuplicateCount    int64            `json:"duplicate_count"`
-	RawRows           int64            `json:"raw_rows"`
-	PartsDuplicateSHA int              `json:"parts_duplicate_sha"`
-	ExpectedCount     int64            `json:"expected_count"`
-	ActualCount       int64            `json:"actual_count"`
-	UnknownRanges     []BlockRange     `json:"unknown_ranges,omitempty"`
-	MissingRanges     []BlockRange     `json:"missing_ranges,omitempty"`
-	LevelFile         bool             `json:"level_file"`
-	LevelRecord       bool             `json:"level_record"`
-	LevelCoverage     bool             `json:"level_coverage"`
-	LevelProviderCnt  bool             `json:"level_provider_count"`
-	LevelCrossCheck   bool             `json:"level_cross_check"`
-	CrossCheck        CrossCheckReport `json:"cross_check"`
-	Gaps              []v3.GapRecord   `json:"gaps,omitempty"`
-	Errors            []string         `json:"errors,omitempty"`
-	ValidatedAt       time.Time        `json:"validated_at"`
+	DatasetJobID           string           `json:"dataset_job_id"`
+	Status                 string           `json:"status"` // VALIDATED / PARTIAL / FAILED
+	Score                  float64          `json:"score"`
+	Coverage               float64          `json:"coverage"`
+	BlockCoverage          float64          `json:"block_coverage"`
+	Rows                   int64            `json:"rows"`
+	UniqueKeyCount         int64            `json:"unique_key_count"`
+	DuplicateCount         int64            `json:"duplicate_count"`
+	UnexpectedAddressCount int64            `json:"unexpected_address_count"`
+	ChainMismatchCount     int64            `json:"chain_mismatch_count"`
+	RawRows                int64            `json:"raw_rows"`
+	PartsDuplicateSHA      int              `json:"parts_duplicate_sha"`
+	ExpectedCount          int64            `json:"expected_count"`
+	ActualCount            int64            `json:"actual_count"`
+	UnknownRanges          []BlockRange     `json:"unknown_ranges,omitempty"`
+	MissingRanges          []BlockRange     `json:"missing_ranges,omitempty"`
+	LevelFile              bool             `json:"level_file"`
+	LevelRecord            bool             `json:"level_record"`
+	LevelCoverage          bool             `json:"level_coverage"`
+	LevelProviderCnt       bool             `json:"level_provider_count"`
+	LevelCrossCheck        bool             `json:"level_cross_check"`
+	CrossCheck             CrossCheckReport `json:"cross_check"`
+	Gaps                   []v3.GapRecord   `json:"gaps,omitempty"`
+	Errors                 []string         `json:"errors,omitempty"`
+	ValidatedAt            time.Time        `json:"validated_at"`
 }
 
 var (
 	evmPattern  = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 	hashPattern = regexp.MustCompile(`^0x[0-9a-fA-F]{64}$`)
+	uintPattern = regexp.MustCompile(`^[0-9]+$`)
 )
 
 // Validator 校验器（L1-L6）。
@@ -78,7 +81,10 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 	if err != nil {
 		return nil, err
 	}
-	ledgerEntries, _ := NewLedger(v.svc.store.Root(), dsID).Replay()
+	ledgerEntries, ledgerErr := NewLedger(v.svc.store.Root(), dsID).Replay()
+	if ledgerErr != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("L4 Ledger 不可读: %v", ledgerErr))
+	}
 	partsDir := filepath.Join(v.svc.PartsDir(), dsID)
 
 	// ── L1 文件级 ──
@@ -90,10 +96,29 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 		records []Record
 	}
 	for _, part := range cp.Parts {
+		if strings.TrimSpace(part.Name) == "" || strings.TrimSpace(part.SHA256) == "" || part.Rows <= 0 ||
+			part.Bytes <= 0 || part.RangeTo < part.RangeFrom {
+			report.LevelFile = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L1 Part 元数据无效: name=%q rows=%d bytes=%d range=%d-%d",
+				part.Name, part.Rows, part.Bytes, part.RangeFrom, part.RangeTo))
+			continue
+		}
 		path := filepath.Join(partsDir, part.Name)
-		if _, err := os.Stat(path); err != nil {
+		info, err := os.Stat(path)
+		if err != nil {
 			report.LevelFile = false
 			report.Errors = append(report.Errors, fmt.Sprintf("L1 文件缺失: %s", part.Name))
+			continue
+		}
+		if !info.Mode().IsRegular() || info.Size() <= 0 {
+			report.LevelFile = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L1 文件无效: %s", part.Name))
+			continue
+		}
+		if part.Bytes > 0 && info.Size() != part.Bytes {
+			report.LevelFile = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L1 文件大小不匹配 %s: checkpoint=%d actual=%d",
+				part.Name, part.Bytes, info.Size()))
 			continue
 		}
 		sha, err := fileSHA256(path)
@@ -107,6 +132,11 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 			report.LevelFile = false
 			report.Errors = append(report.Errors, fmt.Sprintf("L1 读取失败 %s: %v", part.Name, err))
 			continue
+		}
+		if int64(len(records)) != part.Rows {
+			report.LevelFile = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L1 Part 行数不匹配 %s: checkpoint=%d actual=%d",
+				part.Name, part.Rows, len(records)))
 		}
 		recordsByPart = append(recordsByPart, struct {
 			name    string
@@ -125,17 +155,40 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 	seen := map[string]bool{}
 	var all []Record
 	perPartUnique := map[string]int64{}
+	expectedChainID := v.svc.results.chainIDOf(ds)
 	for _, item := range recordsByPart {
 		var uniq int64
+		if item.from < cp.RequestedFrom || item.to > cp.RequestedTo || item.to < item.from {
+			report.LevelRecord = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L2 Part 区间越界 %s: [%d,%d] 不在请求 [%d,%d]",
+				item.name, item.from, item.to, cp.RequestedFrom, cp.RequestedTo))
+		}
 		for _, r := range item.records {
+			if expectedChainID > 0 && r.ChainID != expectedChainID {
+				report.LevelRecord = false
+				report.ChainMismatchCount++
+				report.Errors = append(report.Errors, fmt.Sprintf("L2 链不匹配 %s: chain_id=%d expected=%d",
+					item.name, r.ChainID, expectedChainID))
+			}
 			if r.BlockNumber < item.from || r.BlockNumber > item.to {
 				report.LevelRecord = false
 				report.Errors = append(report.Errors, fmt.Sprintf("L2 越界记录 %s: block %d 不在 [%d,%d]",
 					item.name, r.BlockNumber, item.from, item.to))
 			}
+			if r.BlockNumber < cp.RequestedFrom || r.BlockNumber > cp.RequestedTo {
+				report.LevelRecord = false
+				report.Errors = append(report.Errors, fmt.Sprintf("L2 请求范围外记录 %s: block %d 不在 [%d,%d]",
+					item.name, r.BlockNumber, cp.RequestedFrom, cp.RequestedTo))
+			}
 			if !validRecordFields(r) {
 				report.LevelRecord = false
 				report.Errors = append(report.Errors, fmt.Sprintf("L2 非法字段 %s: %s", item.name, r.TransactionHash))
+			}
+			if !recordMatchesRequestedAddress(r, ds.Address) {
+				report.LevelRecord = false
+				report.UnexpectedAddressCount++
+				report.Errors = append(report.Errors, fmt.Sprintf("L2 记录不属于请求地址 %s: %s",
+					item.name, r.TransactionHash))
 			}
 			key := CanonicalKey(r)
 			if !seen[key] {
@@ -153,35 +206,72 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 		report.LevelRecord = false
 		report.Errors = append(report.Errors, fmt.Sprintf("L2 重复唯一键 %d 条", report.DuplicateCount))
 	}
-
-	// ── L3 覆盖：requested == completed + confirmed_empty，不允许未知洞 ──
-	requested := rangesFromJobs(v.svc.store.ListRangesByDataset(dsID))
-	if len(requested) == 0 {
-		requested = SplitBlockRange(cp.RequestedFrom, cp.RequestedTo, v.svc.opts.RangeChunkSize)
+	cp.RowsCommitted = uint64(report.UniqueKeyCount)
+	if err := v.svc.cp.Save(cp); err != nil {
+		report.LevelFile = false
+		report.Errors = append(report.Errors, fmt.Sprintf("L1 checkpoint 行数回写失败: %v", err))
 	}
-	done := RangeKeySet{}
+
+	// ── L3 覆盖：按区间并集核验，不依赖重分片前后的 Range ID 一致性 ──
 	var completedIntervals, emptyIntervals []v3.BlockInterval
+	boundaryOK := true
+	partRangeCount := map[string]int{}
+	for _, item := range recordsByPart {
+		partRangeCount[(BlockRange{From: item.from, To: item.to}).Key()]++
+	}
+	emptyEvidence := map[string]int{}
+	for _, entry := range ledgerEntries {
+		if entry.Event == LedgerRangeEmpty && entry.Rows == 0 && strings.TrimSpace(entry.Provider) != "" &&
+			(entry.DatasetJobID == "" || entry.DatasetJobID == dsID) {
+			emptyEvidence[(BlockRange{From: entry.FromBlock, To: entry.ToBlock}).Key()]++
+		}
+	}
 	for _, r := range cp.CompletedRanges {
-		done.Add(r)
+		if r.From < cp.RequestedFrom || r.To > cp.RequestedTo || r.To < r.From {
+			boundaryOK = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L3 完成区间越界: [%d,%d] 不在请求 [%d,%d]",
+				r.From, r.To, cp.RequestedFrom, cp.RequestedTo))
+		}
+		if partRangeCount[r.Key()] == 0 {
+			boundaryOK = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L3 完成区间缺少对应 Part: [%d,%d]", r.From, r.To))
+		}
 		completedIntervals = append(completedIntervals, v3.BlockInterval{From: r.From, To: r.To})
 	}
 	for _, r := range cp.ConfirmedEmptyRanges {
-		done.Add(r)
+		if r.From < cp.RequestedFrom || r.To > cp.RequestedTo || r.To < r.From {
+			boundaryOK = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L3 空区间越界: [%d,%d] 不在请求 [%d,%d]",
+				r.From, r.To, cp.RequestedFrom, cp.RequestedTo))
+		}
+		if emptyEvidence[r.Key()] != 1 {
+			boundaryOK = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L3 空区间缺少唯一 Provider Ledger 证据: [%d,%d] evidence=%d",
+				r.From, r.To, emptyEvidence[r.Key()]))
+			continue
+		}
 		emptyIntervals = append(emptyIntervals, v3.BlockInterval{From: r.From, To: r.To})
 	}
-	for _, r := range requested {
-		if !done.Has(r) {
-			report.UnknownRanges = append(report.UnknownRanges, r)
+	for rangeKey, count := range partRangeCount {
+		if count != 1 {
+			boundaryOK = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L3 Part 区间重复: %s count=%d", rangeKey, count))
+		}
+		r, ok := KeyFromString(rangeKey)
+		if ok && !rangeListContains(cp.CompletedRanges, r) {
+			boundaryOK = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L3 Part 区间未登记完成: %s", rangeKey))
 		}
 	}
-	report.LevelCoverage = len(report.UnknownRanges) == 0
+	rangeGaps := v3.RangeGaps(v3.BlockInterval{From: cp.RequestedFrom, To: cp.RequestedTo},
+		completedIntervals, emptyIntervals)
+	for _, gap := range rangeGaps {
+		report.UnknownRanges = append(report.UnknownRanges, BlockRange{From: gap.FromBlock, To: gap.ToBlock})
+	}
+	report.LevelCoverage = boundaryOK && len(report.UnknownRanges) == 0
 	report.BlockCoverage = v3.FromIntervals(append(append([]v3.BlockInterval(nil), completedIntervals...), emptyIntervals...)).
 		CoverageRatio(cp.RequestedFrom, cp.RequestedTo)
-	if len(requested) > 0 {
-		report.Coverage = 1 - float64(len(report.UnknownRanges))/float64(len(requested))
-	} else {
-		report.Coverage = 1
-	}
+	report.Coverage = report.BlockCoverage
 	if !report.LevelCoverage {
 		report.MissingRanges = append([]BlockRange(nil), report.UnknownRanges...)
 		report.Errors = append(report.Errors, fmt.Sprintf("L3 覆盖缺口 %d 个区间", len(report.UnknownRanges)))
@@ -197,14 +287,16 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 			report.PartsDuplicateSHA++
 		}
 	}
+	if report.PartsDuplicateSHA > 0 {
+		report.LevelRecord = false
+		report.Errors = append(report.Errors, fmt.Sprintf("L2 重复 Part SHA256 %d 组", report.PartsDuplicateSHA))
+	}
 	rowsByRange := map[string]int64{}
 	for _, e := range ledgerEntries {
 		if e.Event == LedgerPartCommitted || e.Event == LedgerRangeEmpty {
 			rowsByRange[fmt.Sprintf("%d_%d", e.FromBlock, e.ToBlock)] = e.Rows
 		}
 	}
-	rangeGaps := v3.RangeGaps(v3.BlockInterval{From: cp.RequestedFrom, To: cp.RequestedTo},
-		completedIntervals, emptyIntervals)
 	var allRanges []v3.BlockInterval
 	for _, r := range v.svc.store.ListRangesByDataset(dsID) {
 		allRanges = append(allRanges, v3.BlockInterval{From: r.FromBlock, To: r.ToBlock})
@@ -216,6 +308,56 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 	for _, g := range suspicious {
 		report.Gaps = append(report.Gaps, g)
 	}
+	// ── L4 Provider Count 对账：provider rows（Ledger）== 每 Part 唯一键数 ──
+	report.LevelProviderCnt = ledgerErr == nil
+	providerCommits := map[string][]LedgerEntry{}
+	for _, e := range ledgerEntries {
+		if e.Event == LedgerPartCommitted && e.Part != "" {
+			providerCommits[e.Part] = append(providerCommits[e.Part], e)
+		}
+	}
+	var expectedTotal int64
+	checkpointParts := map[string]PartInfo{}
+	for _, part := range cp.Parts {
+		checkpointParts[part.Name] = part
+	}
+	for _, item := range recordsByPart {
+		events := providerCommits[item.name]
+		if len(events) != 1 {
+			report.LevelProviderCnt = false
+			report.Errors = append(report.Errors, fmt.Sprintf(
+				"L4 Part Ledger 证据数量错误 %s: count=%d", item.name, len(events)))
+			continue
+		}
+		event := events[0]
+		part := checkpointParts[item.name]
+		expectedTotal += event.Rows
+		if event.Rows != perPartUnique[item.name] || event.Rows != part.Rows ||
+			!strings.EqualFold(strings.TrimSpace(event.SHA256), strings.TrimSpace(part.SHA256)) ||
+			event.FromBlock != part.RangeFrom || event.ToBlock != part.RangeTo ||
+			strings.TrimSpace(event.Provider) == "" {
+			report.LevelProviderCnt = false
+			report.Errors = append(report.Errors, fmt.Sprintf(
+				"L4 Provider 对账失败 %s: ledger_rows=%d checkpoint_rows=%d unique=%d sha/range/provider_match=%t",
+				item.name, event.Rows, part.Rows, perPartUnique[item.name],
+				strings.EqualFold(strings.TrimSpace(event.SHA256), strings.TrimSpace(part.SHA256)) &&
+					event.FromBlock == part.RangeFrom && event.ToBlock == part.RangeTo && strings.TrimSpace(event.Provider) != ""))
+		}
+	}
+	for partName := range providerCommits {
+		if _, ok := checkpointParts[partName]; !ok {
+			report.LevelProviderCnt = false
+			report.Errors = append(report.Errors, fmt.Sprintf("L4 Ledger 存在未提交 Part: %s", partName))
+		}
+	}
+	report.ExpectedCount = expectedTotal
+	report.ActualCount = report.UniqueKeyCount
+	report.RawRows = expectedTotal
+	if expectedTotal != report.ActualCount {
+		report.LevelProviderCnt = false
+		report.Errors = append(report.Errors, fmt.Sprintf(
+			"L4 总数不一致: provider=%d actual_unique=%d", expectedTotal, report.ActualCount))
+	}
 	if report.ExpectedCount != report.ActualCount {
 		report.Gaps = append(report.Gaps, v3.GapRecord{
 			GapID: "count_gap", Type: v3.GapCountGap,
@@ -225,7 +367,7 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 			CreatedAt: time.Now().UTC(),
 		})
 	}
-	// 缺口区间并入 MissingRanges（去重）
+	// 缺口区间并入 MissingRanges（去重）。Count gap 也必须阻断认证。
 	missingSet := map[string]bool{}
 	for _, r := range report.MissingRanges {
 		missingSet[r.Key()] = true
@@ -238,32 +380,6 @@ func (v *Validator) ValidateDataset(ctx context.Context, dsID string) (*Validati
 			report.UnknownRanges = append(report.UnknownRanges, r)
 			report.LevelCoverage = false
 		}
-	}
-
-	// ── L4 Provider Count 对账：provider rows（Ledger）== 每 Part 唯一键数 ──
-	report.LevelProviderCnt = true
-	providerRows := map[string]int64{}
-	for _, e := range ledgerEntries {
-		if e.Event == LedgerPartCommitted && e.Part != "" {
-			providerRows[e.Part] += e.Rows
-		}
-	}
-	var expectedTotal int64
-	for _, item := range recordsByPart {
-		expectedTotal += providerRows[item.name]
-		if providerRows[item.name] != perPartUnique[item.name] {
-			report.LevelProviderCnt = false
-			report.Errors = append(report.Errors, fmt.Sprintf(
-				"L4 Provider 对账失败 %s: provider=%d unique=%d", item.name, providerRows[item.name], perPartUnique[item.name]))
-		}
-	}
-	report.ExpectedCount = expectedTotal
-	report.ActualCount = report.UniqueKeyCount
-	report.RawRows = expectedTotal
-	if expectedTotal != report.ActualCount {
-		report.LevelProviderCnt = false
-		report.Errors = append(report.Errors, fmt.Sprintf(
-			"L4 总数不一致: provider=%d actual_unique=%d", expectedTotal, report.ActualCount))
 	}
 
 	// ── L6 抽样交叉验证（大任务：≥3 Range 或估算 ≥500 行，随机取 ≤2 个窗口）──
@@ -326,10 +442,13 @@ func rangesFromJobs(jobs []*RangeJob) []BlockRange {
 }
 
 func validRecordFields(r Record) bool {
-	if r.Dataset == DatasetBalances {
-		return evmPattern.MatchString(r.Address)
+	if r.ChainID <= 0 || strings.TrimSpace(r.Dataset) == "" {
+		return false
 	}
-	if r.TransactionHash != "" && !hashPattern.MatchString(r.TransactionHash) {
+	if r.Dataset == DatasetBalances {
+		return evmPattern.MatchString(r.Address) && numericPayloadValue(r.Payload["balance"])
+	}
+	if !hashPattern.MatchString(r.TransactionHash) {
 		return false
 	}
 	for _, key := range []string{"from_address", "to_address", "token_address", "contract_address"} {
@@ -337,7 +456,57 @@ func validRecordFields(r Record) bool {
 			return false
 		}
 	}
+	if r.Dataset == DatasetTokenTransfers {
+		return evmPattern.MatchString(firstNonEmpty(r.Payload, "token_address", "contract_address")) &&
+			evmPattern.MatchString(firstNonEmpty(r.Payload, "from_address")) &&
+			evmPattern.MatchString(firstNonEmpty(r.Payload, "to_address")) && numericPayloadValue(r.Payload["value_raw"])
+	}
+	if r.Dataset == DatasetLogs {
+		return evmPattern.MatchString(firstNonEmpty(r.Payload, "contract_address", "address"))
+	}
 	return true
+}
+
+func numericPayloadValue(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return uintPattern.MatchString(strings.TrimSpace(typed))
+	case float64:
+		return typed >= 0 && typed == math.Trunc(typed)
+	case float32:
+		return typed >= 0 && typed == float32(math.Trunc(float64(typed)))
+	case int, int8, int16, int32, int64:
+		return fmt.Sprintf("%v", typed)[0] != '-'
+	case uint, uint8, uint16, uint32, uint64:
+		return true
+	default:
+		return false
+	}
+}
+
+func recordMatchesRequestedAddress(record Record, requested string) bool {
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	if requested == "" {
+		return false
+	}
+	switch record.Dataset {
+	case DatasetBalances:
+		return strings.EqualFold(record.Address, requested)
+	case DatasetLogs:
+		return strings.EqualFold(firstNonEmpty(record.Payload, "contract_address", "address"), requested)
+	default:
+		return strings.EqualFold(firstNonEmpty(record.Payload, "from_address"), requested) ||
+			strings.EqualFold(firstNonEmpty(record.Payload, "to_address"), requested)
+	}
+}
+
+func rangeListContains(ranges []BlockRange, target BlockRange) bool {
+	for _, current := range ranges {
+		if current.From == target.From && current.To == target.To {
+			return true
+		}
+	}
+	return false
 }
 
 // readPartRecords 读取 Part（Parquet 用 DuckDB 转 Record；JSONL 直接解析）。

@@ -80,39 +80,61 @@ func Analyze(events []Event, snapshot Snapshot) (Report, error) {
 	sort.Strings(keys)
 	report := Report{Results: make([]TokenResult, 0, len(keys))}
 	for _, key := range keys {
-		result, err := analyzeGroup(groups[key], snapshot)
+		result, skipped, err := analyzeGroup(groups[key], snapshot)
 		if err != nil {
 			return Report{}, err
 		}
+		report.SkippedZeroAmountEvents += skipped
 		report.Results = append(report.Results, result)
 	}
 	return report, nil
 }
 
-func analyzeGroup(events []Event, snapshot Snapshot) (TokenResult, error) {
+func analyzeGroup(events []Event, snapshot Snapshot) (TokenResult, int, error) {
 	parsed := make([]parsedEvent, 0, len(events))
+	skipped := 0
 	for i, event := range events {
+		if event.Time.IsZero() || (event.Direction != DirectionIn && event.Direction != DirectionOut) {
+			return TokenResult{}, 0, fmt.Errorf("%w at event %d", ErrInvalidEvent, i)
+		}
 		amount, err := positiveDecimal(event.Amount)
-		if err != nil || event.Time.IsZero() || (event.Direction != DirectionIn && event.Direction != DirectionOut) {
-			return TokenResult{}, fmt.Errorf("%w at event %d", ErrInvalidEvent, i)
+		if err != nil {
+			// 零金额/负金额事件不构成资金流动：跳过并计数，避免整组分析失败。
+			if rat, parseErr := decimal(event.Amount); parseErr == nil && rat.Sign() <= 0 {
+				skipped++
+				continue
+			}
+			return TokenResult{}, 0, fmt.Errorf("%w: invalid amount at event %d", ErrInvalidEvent, i)
 		}
 		if event.Kind == "" {
 			event.Kind = EventTransfer
 		}
 		if event.Kind != EventTransfer && event.Kind != EventGasFee {
-			return TokenResult{}, fmt.Errorf("%w: unsupported event kind", ErrInvalidEvent)
+			return TokenResult{}, 0, fmt.Errorf("%w: unsupported event kind", ErrInvalidEvent)
 		}
 		if event.Kind == EventGasFee && (event.Token != NativeAssetID || event.Direction != DirectionOut) {
-			return TokenResult{}, fmt.Errorf("%w: gas fee must be an outgoing native-asset event", ErrInvalidEvent)
+			return TokenResult{}, 0, fmt.Errorf("%w: gas fee must be an outgoing native-asset event", ErrInvalidEvent)
 		}
 		var usd *big.Rat
 		if strings.TrimSpace(event.USDValue) != "" {
 			usd, err = decimal(event.USDValue)
 			if err != nil || usd.Sign() < 0 {
-				return TokenResult{}, fmt.Errorf("%w: invalid USD value", ErrInvalidEvent)
+				return TokenResult{}, 0, fmt.Errorf("%w: invalid USD value", ErrInvalidEvent)
 			}
 		}
 		parsed = append(parsed, parsedEvent{event: event, amount: amount, usd: usd, order: i})
+	}
+	if len(parsed) == 0 {
+		return TokenResult{
+			Address:                     strings.ToLower(strings.TrimSpace(events[0].Address)),
+			Token:                       strings.ToLower(strings.TrimSpace(events[0].Token)),
+			NativeAsset:                 strings.ToLower(strings.TrimSpace(events[0].Token)) == NativeAssetID,
+			RetentionAlgorithmVersion:   RetentionAlgorithmVersion,
+			PassThroughAlgorithmVersion: PassThroughAlgorithmVersion,
+			Snapshot:                    snapshot,
+			Interpretation:              "behavioral timing metrics only; they do not establish crime, ownership, collection, or laundering",
+			InputDigestSHA256:           digest(parsed, snapshot),
+		}, skipped, nil
 	}
 	sort.SliceStable(parsed, func(i, j int) bool {
 		a, b := parsed[i], parsed[j]
@@ -223,7 +245,7 @@ func analyzeGroup(events []Event, snapshot Snapshot) (TokenResult, error) {
 		}
 	}
 	result.InputDigestSHA256 = digest(parsed, snapshot)
-	return result, nil
+	return result, skipped, nil
 }
 
 func calculateWindow(lots []*lot, asOf time.Time, name string, duration time.Duration) WindowMetric {

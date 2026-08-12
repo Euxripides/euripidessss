@@ -12,6 +12,12 @@ type CoverageSource interface {
 	AddressTxCount(ctx context.Context, address string) (int64, error)
 }
 
+// RangeCoverageSource 提供请求级精确覆盖。Cloud 准入不得用“地址历史上
+// 曾有数据”替代“本次链/数据集/区间已完整覆盖”。
+type RangeCoverageSource interface {
+	AddressRangeCovered(ctx context.Context, chainKey, address string, dataset Dataset, fromBlock, toBlock uint64) (covered bool, rows int64, err error)
+}
+
 // CoverageResolver 覆盖检查器（设计文档 §10）：判断已有数据/缺什么，避免重复下载。
 type CoverageResolver struct {
 	source CoverageSource // 可为 nil（本地无数据集时所有检查返回"无数据"）
@@ -89,5 +95,45 @@ func (r *CoverageResolver) Check(ctx context.Context, chainKey string, addresses
 		}
 		result.Items = append(result.Items, item)
 	}
+	return result, nil
+}
+
+// CheckRequirement 对单个调度需求执行范围精确的覆盖检查。若底层尚未实现
+// 范围接口，则保守地视为未完整覆盖；Cloud fail-closed 准入不能因地址在
+// 其他区间存在历史记录而拒绝本次缺口任务。
+func (r *CoverageResolver) CheckRequirement(ctx context.Context, req Requirement) (*CoverageResult, error) {
+	clean := make([]string, 0, len(req.Addresses))
+	for _, address := range req.Addresses {
+		address = strings.ToLower(strings.TrimSpace(address))
+		if !evmAddressRE.MatchString(address) {
+			return nil, fmt.Errorf("非法 EVM 地址")
+		}
+		clean = append(clean, address)
+	}
+	result := &CoverageResult{ChainKey: strings.ToLower(strings.TrimSpace(req.ChainKey)), Addresses: clean}
+	item := Coverage{Dataset: req.Dataset, Note: "缺少请求区间级覆盖证据，需要下载"}
+	source, ok := r.source.(RangeCoverageSource)
+	if !ok || req.ToBlock < req.FromBlock {
+		result.Items = append(result.Items, item)
+		return result, nil
+	}
+	allCovered := len(clean) > 0
+	for _, address := range clean {
+		covered, rows, err := source.AddressRangeCovered(ctx, result.ChainKey, address, req.Dataset, req.FromBlock, req.ToBlock)
+		if err != nil {
+			item.Note = fmt.Sprintf("范围覆盖查询失败: %v", err)
+			allCovered = false
+			break
+		}
+		item.TxCount += rows
+		if !covered {
+			allCovered = false
+		}
+	}
+	item.Have = allCovered
+	if allCovered {
+		item.Note = fmt.Sprintf("请求区间已完整覆盖（%d 笔）", item.TxCount)
+	}
+	result.Items = append(result.Items, item)
 	return result, nil
 }

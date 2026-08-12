@@ -29,23 +29,23 @@ const (
 
 // Candidate 是预取候选（设计 §12）。
 type Candidate struct {
-	ChainID          int64    `json:"chain_id"`
-	ChainKey         string   `json:"chain_key"`
-	Address          string   `json:"address"`
-	ParentAddress    string   `json:"parent_address,omitempty"`
-	Reason           []string `json:"reason,omitempty"`
-	Score            float64  `json:"score"`
-	EstimatedRows    uint64   `json:"estimated_rows,omitempty"`
-	EstimatedBytes   uint64   `json:"estimated_bytes,omitempty"`
-	RequiredDatasets []string `json:"required_datasets,omitempty"`
-	Priority         Priority `json:"priority"`
-	TokenFilter      string   `json:"token_filter,omitempty"`
-	FromBlock        uint64   `json:"from_block"`
-	ToBlock          uint64   `json:"to_block"`
-	InvestigationID  string   `json:"investigation_id"`
-	Pinned           bool       `json:"pinned,omitempty"`
-	ProgressiveStage int        `json:"progressive_stage,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ChainID          int64     `json:"chain_id"`
+	ChainKey         string    `json:"chain_key"`
+	Address          string    `json:"address"`
+	ParentAddress    string    `json:"parent_address,omitempty"`
+	Reason           []string  `json:"reason,omitempty"`
+	Score            float64   `json:"score"`
+	EstimatedRows    uint64    `json:"estimated_rows,omitempty"`
+	EstimatedBytes   uint64    `json:"estimated_bytes,omitempty"`
+	RequiredDatasets []string  `json:"required_datasets,omitempty"`
+	Priority         Priority  `json:"priority"`
+	TokenFilter      string    `json:"token_filter,omitempty"`
+	FromBlock        uint64    `json:"from_block"`
+	ToBlock          uint64    `json:"to_block"`
+	InvestigationID  string    `json:"investigation_id"`
+	Pinned           bool      `json:"pinned,omitempty"`
+	ProgressiveStage int       `json:"progressive_stage,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // Job 是队列中的预取任务（含 Smart Download Batch 关联）。
@@ -65,11 +65,11 @@ type Job struct {
 
 // Budget 是预取预算配置（设计 §33）。
 type Budget struct {
-	MaxDiskPerDayGB      float64 `json:"max_disk_per_day_gb"`
-	MaxNetworkPerDayGB   float64 `json:"max_network_per_day_gb"`
-	MaxCloudCostPerDay   float64 `json:"max_cloud_cost_per_day"`
-	MaxPrefetchAddresses int     `json:"max_prefetch_addresses"`
-	MaxActivePrefetchJobs int    `json:"max_active_prefetch_jobs"`
+	MaxDiskPerDayGB       float64 `json:"max_disk_per_day_gb"`
+	MaxNetworkPerDayGB    float64 `json:"max_network_per_day_gb"`
+	MaxCloudCostPerDay    float64 `json:"max_cloud_cost_per_day"`
+	MaxPrefetchAddresses  int     `json:"max_prefetch_addresses"`
+	MaxActivePrefetchJobs int     `json:"max_active_prefetch_jobs"`
 }
 
 // DefaultBudget 返回设计默认值（预取资源占比 < 15%）。
@@ -95,24 +95,27 @@ type Counters struct {
 
 // FeedbackRecord 是预取反馈记录（设计 §35）。
 type FeedbackRecord struct {
-	InvestigationID string    `json:"investigation_id"`
-	Address         string    `json:"address"`
-	BatchID         string    `json:"batch_id,omitempty"`
-	Used            bool      `json:"used"`
-	TimeToUseSeconds float64  `json:"time_to_use_seconds,omitempty"`
-	SavedWaitSeconds float64  `json:"saved_wait_seconds,omitempty"`
-	DownloadCostBytes uint64  `json:"download_cost_bytes,omitempty"`
-	RecordedAt      time.Time `json:"recorded_at"`
+	InvestigationID   string     `json:"investigation_id"`
+	Address           string     `json:"address"`
+	BatchID           string     `json:"batch_id,omitempty"`
+	Used              bool       `json:"used"`
+	TimeToUseSeconds  float64    `json:"time_to_use_seconds,omitempty"`
+	SavedWaitSeconds  float64    `json:"saved_wait_seconds,omitempty"`
+	DownloadCostBytes uint64     `json:"download_cost_bytes,omitempty"`
+	RecordedAt        time.Time  `json:"recorded_at"`
+	Invalidated       bool       `json:"invalidated,omitempty"`
+	InvalidatedAt     *time.Time `json:"invalidated_at,omitempty"`
+	InvalidReason     string     `json:"invalid_reason,omitempty"`
 }
 
 // FeedbackStats 是预取成效指标（设计 §36-§37、§77）。
 type FeedbackStats struct {
-	Total            int     `json:"total"`
-	Used             int     `json:"used"`
-	Unused           int     `json:"unused"`
-	HitRate          float64 `json:"hit_rate"`
-	SavedLatencyAvg  float64 `json:"saved_latency_avg"`
-	WastedBytes      uint64  `json:"wasted_bytes"`
+	Total           int     `json:"total"`
+	Used            int     `json:"used"`
+	Unused          int     `json:"unused"`
+	HitRate         float64 `json:"hit_rate"`
+	SavedLatencyAvg float64 `json:"saved_latency_avg"`
+	WastedBytes     uint64  `json:"wasted_bytes"`
 }
 
 // DiskPolicy 是磁盘阈值策略（设计 §58）。
@@ -131,22 +134,22 @@ func DefaultDiskPolicy() DiskPolicy {
 type DiskAction string
 
 const (
-	DiskNone     DiskAction = "NONE"
+	DiskNone      DiskAction = "NONE"
 	DiskPauseWarm DiskAction = "PAUSE_WARM"
-	DiskPauseAll DiskAction = "PAUSE_ALL"
-	DiskBlockNew DiskAction = "BLOCK_NEW"
+	DiskPauseAll  DiskAction = "PAUSE_ALL"
+	DiskBlockNew  DiskAction = "BLOCK_NEW"
 )
 
 // Stats 是预取管理器汇总。
 type Stats struct {
-	TotalJobs         int            `json:"total_jobs"`
-	ActiveJobs        int            `json:"active_jobs"`
-	ReadyJobs         int            `json:"ready_jobs"`
-	InteractiveUpgrades int          `json:"interactive_upgrades"`
-	Budget            Budget         `json:"budget"`
-	Counters          Counters       `json:"counters"`
-	Feedback          FeedbackStats  `json:"feedback"`
-	DiskUsedPct       float64        `json:"disk_used_pct"`
-	DiskAction        DiskAction     `json:"disk_action"`
-	LastRun           *time.Time     `json:"last_run,omitempty"`
+	TotalJobs           int           `json:"total_jobs"`
+	ActiveJobs          int           `json:"active_jobs"`
+	ReadyJobs           int           `json:"ready_jobs"`
+	InteractiveUpgrades int           `json:"interactive_upgrades"`
+	Budget              Budget        `json:"budget"`
+	Counters            Counters      `json:"counters"`
+	Feedback            FeedbackStats `json:"feedback"`
+	DiskUsedPct         float64       `json:"disk_used_pct"`
+	DiskAction          DiskAction    `json:"disk_action"`
+	LastRun             *time.Time    `json:"last_run,omitempty"`
 }

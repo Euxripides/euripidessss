@@ -59,6 +59,9 @@ func (f *Feedback) Stats() FeedbackStats {
 	st := FeedbackStats{}
 	totalSaved := 0.0
 	for _, r := range f.records {
+		if r.Invalidated {
+			continue
+		}
 		st.Total++
 		if r.Used {
 			st.Used++
@@ -83,7 +86,7 @@ func (f *Feedback) ReuseProbability(address string) float64 {
 	defer f.mu.Unlock()
 	total, used := 0, 0
 	for _, r := range f.records {
-		if r.Address != address {
+		if r.Invalidated || r.Address != address {
 			continue
 		}
 		total++
@@ -108,7 +111,7 @@ func (f *Feedback) UnusedSince(cutoff time.Time) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, r := range f.records {
-		if r.Used || !r.RecordedAt.Before(cutoff) {
+		if r.Invalidated || r.Used || !r.RecordedAt.Before(cutoff) {
 			continue
 		}
 		if !seen[r.Address] {
@@ -117,6 +120,29 @@ func (f *Feedback) UnusedSince(cutoff time.Time) []string {
 		}
 	}
 	return out
+}
+
+// InvalidateUse keeps the historical record for audit while excluding a
+// legacy false-positive upgrade from hit-rate and reuse-probability metrics.
+func (f *Feedback) InvalidateUse(invID, address, batchID, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	now := time.Now().UTC()
+	changed := false
+	for i := range f.records {
+		r := &f.records[i]
+		if r.Invalidated || !r.Used || r.InvestigationID != invID || r.Address != address || r.BatchID != batchID {
+			continue
+		}
+		r.Invalidated = true
+		r.InvalidatedAt = &now
+		r.InvalidReason = reason
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return f.saveLocked()
 }
 
 func (f *Feedback) load() error {
@@ -148,4 +174,3 @@ func (f *Feedback) saveLocked() error {
 func (f *Feedback) path() string {
 	return filepath.Join(f.root, "feedback.json")
 }
-

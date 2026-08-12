@@ -180,6 +180,10 @@ func HandleEntityLeads(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "实体解析器未装配"})
 		return
 	}
+	if !investigationExists(c.Param("id")) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "调查不存在: " + c.Param("id")})
+		return
+	}
 	leads := entityResolver.Leads(c.Param("id"))
 	c.JSON(http.StatusOK, gin.H{"investigation_id": c.Param("id"), "total": len(leads), "leads": leads})
 }

@@ -1,4 +1,24 @@
 /* 智能下载任务中心 UI（Phase 4 视觉修正） */
+.smart-download-page {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 24px;
+  overflow-x: hidden;
+}
+
+.smart-download-page .ant-tabs,
+.smart-download-page .ant-tabs-content-holder,
+.smart-download-page .ant-tabs-content,
+.smart-download-page .ant-tabs-tabpane,
+.smart-download-page .ant-card,
+.smart-download-page .ant-card-body,
+.smart-download-page .ant-table-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .sd-task-center .ant-card {
   border-radius: 14px;
   border-color: #e6edf5;
@@ -296,6 +316,22 @@
   gap: 6px;
 }
 
+.sd-template-item {
+  align-items: center;
+}
+
+.sd-template-item .ant-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  margin-inline-end: 0;
+  border-radius: 6px 0 0 6px;
+}
+
+.sd-template-item .ant-btn {
+  border-radius: 0 6px 6px 0;
+}
+
 .sd-preflight {
   margin: 16px 0;
   padding: 16px;
@@ -556,8 +592,30 @@
   color: #c73737;
 }
 
-.sd-hardening-alert {
+.sd-hardening-note {
   margin-top: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff8e6;
+  color: #92600a;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sd-hardening-note.sd-hardening-error {
+  background: #fff1f0;
+  color: #c73737;
+}
+
+.sd-validation-note {
+  margin-top: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f7fafc;
+  color: #475569;
+  font-size: 12px;
 }
 
 .sd-hardening-guards {
@@ -671,6 +729,16 @@
   margin-top: 16px;
 }
 
+.sd-compare-hint {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.sd-inline-feedback {
+  margin-top: 12px;
+}
+
 .sd-accelerator-groups {
   background: #f8fafc;
 }
@@ -705,6 +773,27 @@
 }
 
 @media (max-width: 720px) {
+  .smart-download-page {
+    padding: 12px;
+  }
+
+  .smart-download-page .ant-card-head-wrapper {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .smart-download-page .ant-card-extra {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .smart-download-page .ant-card-extra .ant-space,
+  .smart-download-page .ant-card-extra .ant-input-search {
+    width: 100% !important;
+    max-width: 100%;
+  }
+
   .sd-mode-selector {
     grid-template-columns: 1fr;
   }

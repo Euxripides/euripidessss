@@ -127,6 +127,59 @@ func TestAdmissionRuntimeUnavailable(t *testing.T) {
 	}
 }
 
+func TestAdmissionDoesNotTrustAvailableFlagForFailedState(t *testing.T) {
+	gate := testGate(t, NewCloudUsageStore(""), DefaultCloudBudget())
+	candidates := []ProviderScore{{Provider: ProviderSQD, Tier: TierNormal}}
+	rt := CloudRuntimeStatus{State: "FAILED", Available: true, Reason: "stale available flag"}
+	d := gate.CanUseSQDCloud(testRequirement(DatasetTokenTransfer), nil, candidates, testStates(ProviderCircuitOpen), rt)
+	if d.Allowed || d.RuntimeAvailable {
+		t.Fatalf("failed runtime must be rejected even if available flag is stale: %+v", d)
+	}
+}
+
+func TestCloudUsageRejectsNegativeMinutes(t *testing.T) {
+	usage := NewCloudUsageStore(filepath.Join(t.TempDir(), "cloud_usage.json"))
+	if err := usage.Record(CloudUsageRecord{JobID: "bad", DurationMinutes: -10}); err == nil {
+		t.Fatal("negative usage must be rejected")
+	}
+	if got := usage.TodayUsedMinutes(); got != 0 {
+		t.Fatalf("used minutes=%d, want 0", got)
+	}
+}
+
+func TestAdmissionAbsentRuntimeIsDeployableButNotAvailable(t *testing.T) {
+	gate := testGate(t, NewCloudUsageStore(""), DefaultCloudBudget())
+	candidates := []ProviderScore{{Provider: ProviderSQD, Tier: TierNormal}}
+	rt := CloudRuntimeStatus{
+		State: "ABSENT", Mode: "cloud", Available: false,
+		DeploymentKeyConfigured: true, R2Configured: true,
+		Reason: "Reconcile：未检测到托管 Worker",
+	}
+	d := gate.CanUseSQDCloud(testRequirement(DatasetTokenTransfer), nil, candidates, testStates(ProviderCircuitOpen), rt)
+	if !d.Allowed || d.RuntimeAvailable || !d.RuntimeDeployable {
+		t.Fatalf("absent deployable decision = %+v", d)
+	}
+	rt.State = "DEPLOYING"
+	d = gate.CanUseSQDCloud(testRequirement(DatasetTokenTransfer), nil, candidates, testStates(ProviderCircuitOpen), rt)
+	if !d.Allowed || d.RuntimeAvailable || !d.RuntimeDeployable {
+		t.Fatalf("deploying runtime must be waitable without being available: %+v", d)
+	}
+}
+
+func TestAdmissionAbsentRuntimeMissingR2Rejected(t *testing.T) {
+	gate := testGate(t, NewCloudUsageStore(""), DefaultCloudBudget())
+	candidates := []ProviderScore{{Provider: ProviderSQD, Tier: TierNormal}}
+	rt := CloudRuntimeStatus{
+		State: "ABSENT", Mode: "cloud", Available: false,
+		DeploymentKeyConfigured: true, R2Configured: false,
+		Reason: "R2/S3 Job Queue 未配置",
+	}
+	d := gate.CanUseSQDCloud(testRequirement(DatasetTokenTransfer), nil, candidates, testStates(ProviderCircuitOpen), rt)
+	if d.Allowed || d.RuntimeDeployable {
+		t.Fatalf("absent runtime without R2 must reject: %+v", d)
+	}
+}
+
 func TestAdmissionCredentialsNotConfigured(t *testing.T) {
 	gate := testGate(t, NewCloudUsageStore(""), DefaultCloudBudget())
 	candidates := []ProviderScore{{Provider: ProviderSQD, Tier: TierNormal}}

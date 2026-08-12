@@ -1,3 +1,77 @@
+## 2026-08-11 — 智能下载生产预检修复：按地址差异化估算（完成）
+
+### 2026-08-11 追加：预检终点取链头 + 任务中心分页 + 移除蓝色 Alert
+
+#### 修复
+
+1. FULL/TIME 模式终点此前写死 `DefaultEndBlock=50M`，BSC 链头已 115M+，导致预检“预计区块/行数”只有一半，且 FULL 任务实际只下载到 50M 高度。现改为：
+   - `Service` 新增 `HeadBlockFunc` + 60s 链头缓存；API 层接 `rpcManager.Call(eth_blockNumber)`；
+   - `requestedBlocks(ctx, chainKey, spec, dataset)` 在 FULL/TIME 未给 `to_block` 时以链头为终点，预检与 `CreateBatch` 共用同一逻辑；无 RPC 配置时回退原默认值。
+2. 任务中心“最近任务”批次表无分页，29+ 任务一次性堆在一页；新增分页（每页 10，可切换大小，显示总数）。
+3. 智能下载页（创建/任务中心/地址详情）全部嵌入式 `<Alert>` 移除：
+   - 地址导入结果、生产预检结果、分析中进度 → 顶部居中 `message` 通知（分析中用 `message.loading` 并展示预计行数/命中/复用摘要）；
+   - 地址详情、校验结果、最慢层/失败摘要 → 改为无边框纯文本（不再有蓝色嵌入框）。
+
+#### 修改文件
+
+- `internal/smartdownload/service.go`（HeadBlockFunc/resolveHeadBlock/requestedBlocks 签名与链头逻辑）
+- `internal/smartdownload/v32.go`、`v33.go`（requestedBlocks 调用适配）
+- `internal/api/handlers.go`（RPC eth_blockNumber 接入链头）
+- `internal/smartdownload/v32_test.go`（TestV32FullModeUsesHeadBlock）
+- `frontend/src/features/smart-download/SmartDownloadPage.tsx`、`smart-download.css`
+
+#### 已验证
+
+- `go vet ./internal/smartdownload ./internal/api`、`go test ./internal/smartdownload/... ./internal/api -count=1` 全绿；`npm run build`（TS strict）通过。
+- 新增回归测试：FULL 模式预检 blocks=链头+1；CreateBatch 创建的任务 Range 覆盖到链头。
+- 生产冒烟：FULL 模式预检 blocks=115,284,422（RPC 链头，此前写死 50M），rows=297M（按地址采样），耗时约 10.5s。
+
+#### 未完成/注意事项
+
+- TIME 模式的“起止时间 → 区块”映射仍未实现，当前 TIME 视同 0..链头（预检与实际一致，但日期语义未生效），后续需要时单独做时间-区块映射。
+- 本次提示框替换范围是智能下载页；系统设置/价格引擎/加密面板等其他页面仍有个别嵌入 Alert，可按同一规则后续统一清理。
+
+### 背景
+
+- 预检此前只按“数据集默认密度 × 区块跨度”做纯算术估算，不读地址本地覆盖、不做 Discovery 采样，导致不同地址显示相同预检结果且秒返回。
+
+### 新增功能
+
+- `Preflight`（`POST /api/smart-download/preflight`）改为按 地址×数据集×缺口区间 逐项执行 Discovery：
+  - L0：本地覆盖索引 / Result Registry 全覆盖 → 直接复用（下载量 0，置信度 0.95，即时）；
+  - L1/L2：未覆盖地址做有界采样探测（首/中/尾 200 块窗口，方差高再加密），估算该地址真实行数/数据量/ETA；
+  - 结果写入 Discovery 缓存，创建任务内部复用，不重复探测。
+- 预检同步考虑 `skip_covered`（默认开启）：本地已认证覆盖区间从估算中扣除，只估算实际缺口；全覆盖地址预检显示 0 行 0 块。
+- 修复低活跃地址虚高：0 行采样（置信度有效）视为有效证据，无交易地址预检估算为 0 行，不再回退默认密度（此前 0 行探测被丢弃，所有地址都显示默认行数）。
+- 探测成本守卫：并发 8、单次预检最多探测 48 个 地址×数据集 单元、总预算 20s（API 超时 30s）；超出预算的单元回退默认密度并在 basis 注明“未采样”。
+- 前端：预检进行中按钮文案改为“正在执行生产预检…”，避免“秒回”观感。
+
+### 修改文件
+
+- `internal/smartdownload/v32.go`：Preflight 重写 + `preflight/preflightDiscover/defaultEstimateRows/confidenceLabel`。
+- `internal/smartdownload/service.go`：`discover/discoverDataset/sampleWindow` 重构支持无探测模式；0 行采样视为有效证据；`CreateBatch` 改用无网络预检（缓存/L0）。
+- `internal/smartdownload/v32_test.go`：新增 `TestV32PreflightDifferentiatesAddresses` 与 `TestV32PreflightZeroActivityAddressEstimatesZero`。
+- `frontend/src/features/smart-download/SmartDownloadPage.tsx`：预检按钮状态文案。
+
+### 接口
+
+- 无 API 路径变更；`preflight` 返回结构不变，但 `estimate.rows/blocks/bytes/eta` 现在按地址差异化，basis 增加“per-address discovery / L0/L1/L2 sampling / 复用本地已验证覆盖 / 未采样按默认密度估算”等依据。
+- `CreateBatch` 内部改走无网络预检（Discovery 缓存/L0），对外行为不变，价格回填/预取等内部调用方不受影响。
+
+### 已验证
+
+- `go vet ./internal/smartdownload` 通过。
+- `go test ./internal/smartdownload/... ./internal/api -count=1` 全绿。
+- `go test ./internal/... -short -count=1` 全绿。
+- 新增回归测试：已覆盖地址预检 0 行 0 块、未覆盖地址采样 >0 行、无交易地址采样 0 行、basis 含 L0/L1/L2 sampling、预检不创建任务状态。
+- `cd frontend && npm run build`（TS strict）通过。
+- 生产冒烟：活跃合约地址预检 893 行（约 4.5s，confidence=HIGH，basis 含 L0/L1/L2 sampling）；无交易地址预检 0 行（0x0000…0001，2.2s）；两地址结果显著不同。
+
+### 未完成/注意事项
+
+- 大批量全新地址仍只采样前 48 个 地址×数据集 单元（受 20s 预算约束），其余按默认密度估算并在 basis 注明；需要全量精确估算时应先创建任务，由 PlanBatch 的完整 Discovery 补足。
+- 预检探测依赖已配置的 Provider Adapter（SQD/RPC）；无可用 Adapter 时自动回退默认密度（不阻塞预检）。
+
 ## 2026-08-08 智能下载统一入口 Phase 4+5：新前端 + 地址列识别 + Registry 复用 + 联动（完成）
 
 > 实施方案：`D:\下载文件\智能下载系统_从V2.2到完整实现_实施方案_V1.1.md`（Phase 4/5）
@@ -9684,3 +9758,365 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 
 - `npm run build` PASS；Playwright 计算样式确认白色半透明底、blur/saturate、深色文字与霓虹色条均正确；截图存于 visualizations。
 - 临时验收代码已移除并重建；最终页面无弹窗残留、console errors=0。
+
+## 2026-08-10 — 前端动画全面升级 + 淡色风格
+
+### 完成内容
+
+1. 淡色风格：
+   - 侧栏由深蓝改为浅色冰蓝（`#f7faff`，hover `#eaf1fc`，选中 `#dbeafe` + 主色文字 + 2px 选中指示条），菜单文字/图标同步换深色；
+   - 布局背景改为柔和渐变 `#fbfdff → #f2f6fd`，边框/阴影微调为淡蓝灰（`#e3eaf5`/`#cdd9ea`）；
+   - antd 主题令牌同步：`colorBgLayout #f4f7fc`、`colorBorder #e3eaf5`。
+2. 全局动画层（新增 `frontend/src/design-system/animations.css`）：
+   - 页面级入场：内容根节点 460ms 淡入上移 + 轻微 blur；`ds-page` 子元素 520ms 错峰上浮（60-300ms 延迟）；
+   - 微交互：按钮 hover 上浮 1px/按下缩放、主色/危险按钮 hover 彩色光晕；卡片 hover 上浮；表格行 hover 淡蓝高亮；菜单/输入框/选择器/日期/标签/下拉选项平滑过渡；标签 hover 上浮；
+   - 淡色细滚动条（10px 圆角、浅蓝灰滑块）；
+   - `prefers-reduced-motion` 全局降级。
+
+### 修改文件
+
+- `frontend/src/design-system/tokens.css`（淡色令牌 + 动效曲线）
+- `frontend/src/design-system/animations.css`（新增）
+- `frontend/src/styles/layout.css`（浅色侧栏 + 渐变背景）
+- `frontend/src/main.tsx`（引入动画层）
+- `frontend/src/App.tsx`（antd 主题令牌）
+
+### 验证
+
+- `npm run build` PASS（仅既有大 chunk 警告）。
+- Playwright 实测：侧栏 `rgb(247,250,255)`、布局渐变生效、页面动画 `ds-page-in 0.46s`、路由切换后动画重放、按钮 hover `translateY(-1px)`、console errors=0；桌面截图存于 visualizations。
+
+## 2026-08-10 — 前端动画增量丰富（环境光斑/错峰入场/流光/脉冲）
+
+### 完成内容
+
+1. 环境氛围动画：`.app-shell` 增加两枚固定漂浮的淡色光斑（蓝/琥珀，blur 70px，26s/32s 缓慢漂移），不拦截交互。
+2. 入场动画增强：
+   - 页面入场升级为 480ms 淡入上移 + 缩放 + blur(6px)；
+   - 卡片、指标卡（`ds-pop-in` 弹性入场 + 错峰延迟）、表格行（透明度错峰 24-190ms）、标签（弹入）、告警（上浮）、Tab 内容（上浮）均增加入场动画；
+   - 修正入场动画填充模式为 `backwards`，入场结束后 hover 位移/缩放可正常生效。
+3. 微交互丰富：
+   - 主色按钮 hover 流光扫过（shimmer sweep）；
+   - 指标卡图标 hover 放大 + 轻旋转；
+   - 进度条流光（`xi-progress-shimmer` 1.6s 循环）；
+   - 健康状态点脉冲（`xi-pulse` 2.4s）；
+   - 侧栏渐变背景缓慢流动（`xi-side-drift` 14s），选中菜单项左侧指示条生长动画（`ds-bar-grow`），菜单项 hover 微右移。
+4. `prefers-reduced-motion` 覆盖全部新增动画。
+
+### 修改文件
+
+- `frontend/src/design-system/animations.css`（主要）
+- `frontend/src/styles/layout.css`（侧栏渐变 + 菜单项定位）
+
+### 验证
+
+- `npm run build` PASS。
+- Playwright 实测：页面 `ds-page-in`、环境光斑 `xi-blob-a`、侧栏 `xi-side-drift`、选中指示条 `ds-bar-grow`、指标卡 `ds-pop-in` 且 hover `translateY(-2px)` 正常、健康点 `xi-pulse`、真实地址交易表行动画 `ds-row-in` 全部生效；截图存于 visualizations。
+- 验收中发现分析总览页有既有 `/api/analytics/graph` 503（后端数据接口，与本次 CSS 改动无关）。
+
+## 2026-08-10 — 前端 API 全量测试报告（待统一修复清单）
+
+### 完成内容
+
+1. 自动扫描 frontend/src 全部 .ts/.tsx，提取前端实际调用的 API 端点清单：**219 个唯一端点模板**（GET 128 / POST 83 / DELETE 7 / PATCH 1）。
+2. 批量测试 **637 个用例**（正常/非法链/非法地址/非法哈希/非法区块/未知 ID/垃圾 ID/查询边界/空体/坏 JSON/错误方法），并对 61 个核心读接口用真实数据做有效参数回归。
+3. 产出完整测试文档 `docs/test/frontend-api-test-report-2026-08-10.md`（2397 行）：环境、统计、端点清单、逐端点用例结果、有效回归明细、Bug 清单、环境限制、结论。
+4. 发现 **13 项问题**（P1×3、P2×7、P3×3），按用户要求只记录不修复，等待统一处理。
+
+### 主要发现（详见报告第 8 节）
+
+- P1：Explorer 首页/数据质量/金融质量等重查询并发下 >25s 超时（单飞 3.8~9.5s）；
+- P1：fifo-retention / fifo-pass-through 对真实地址返回 503（invalid financial flow event at event 33）；
+- P1：pnl 接口未传 token 恒 400，前端 PnL 入口未传 token → 功能不可用；
+- P2：first-seen 非法链 500、results/:id/export 不存在 500、cloud/sync 空体触发同步且超时后 500、RPC 端点删除不存在仍 200、调查/数据集 ID 不存在返回 200 空数据、financial-counterparties 非法 window/limit 未拒绝；
+- P3：warehouse 类接口 503（环境依赖）、错误方法不返回 405 与尾斜杠重定向、后台 datasetsync manifest 告警（附带发现）。
+
+### 验证
+
+- 测试期间 `/api/health` 200；结果 JSON 原始证据存于 visualizations（api-inventory.json / api-results.json / api-valid-results.json）。
+- 未修改任何业务代码；仅新增测试文档。
+
+## 2026-08-10 — API 测试问题统一修复轮
+
+### 修复内容（详见测试报告第 11 节）
+
+1. **FIFO（BUG-02）**：financialflow 对零/负金额事件跳过并计数（`skipped_zero_amount_events`），fifo-retention / fifo-pass-through 恢复 200（锚点地址跳过 1119 条零金额事件）。
+2. **PnL（BUG-03）**：token 缺省默认 `native:<chain_id>`，`/pnl` 不带 token 返回 200。
+3. **first-seen（BUG-04）**：转发前用 `chain.Resolve` 校验链，非法链 400。
+4. **导出/账本（BUG-05/08 部分）**：`results/:id/export`、`datasets/:id/ledger` 不存在返回 404。
+5. **cloud/sync（BUG-06）**：防重入（进行中 409），客户端取消不再记 500。
+6. **RPC 删除（BUG-07）**：不存在端点 DELETE 返回 404。
+7. **调查接口（BUG-08）**：entity-leads / prefetch / reports / reports/diff 增加存在性校验，不存在返回 404。
+8. **性能（BUG-01/10）**：新增 `internal/api/api_cache.go`（TTL 缓存 + 单飞），Explorer 首页 30s 缓存（3.88s→0.0009s），data-quality / financial-quality 60s 缓存（5.38s→0.001s / 3.34s→0.0009s）。
+9. **datasetsync（BUG-13 部分）**：未知行数且无 parquet 文件不再报错；越界/重复 sha 仍为数据质量问题。
+10. **误报澄清（BUG-09）**：window/limit 单参数非法值本就会 400，此前 200 系测试脚本重复参数所致，无需修复。
+
+### 暂缓项
+
+- BUG-11：warehouse 类接口 503 为环境依赖（DuckDB 未就绪），待数据就绪环境复测。
+- BUG-12：GET/POST 同路径与尾斜杠重定向为设计行为，保持现状。
+
+### 验证
+
+- `go test` 六个相关包全 PASS、`go build` PASS、`run.ps1` 重启 PID 30076；所有修复项均通过真实 HTTP 复测，日志无新增 500。
+
+## 2026-08-11 — 前端 E2E 模拟用户操作测试（含测试数据清理）
+
+### 完成内容
+
+1. 使用 Playwright 模拟真实用户操作，覆盖 **26 个功能步骤**：Explorer 搜索/地址工作区/交易与代币转账 Tab/详情抽屉/非法输入校验/Token 搜索、资金追踪、调查工作台、更多分析（分析总览/地址画像/风险分析/分析报告/导入资金路径/地址区分）、数据资产 CSV 上传清洗、下载中心（下载任务/Parquet/浏览器下载/Dune）、数据源、数据质量（语义/金融）、历史价格 Token 查询、案件、系统设置。
+2. 产出报告 `docs/test/frontend-e2e-test-report-2026-08-11.md`：26/26 通过，附逐步耗时、控制台/网络错误、截图与说明。
+3. 测试数据清理：
+   - RPC 端点创建→验证→删除（删除后确认不存在）；
+   - CSV 上传真实执行 `POST /api/process`（200），测试后删除会话/输出/uploads/current 并恢复原状；
+   - 浏览器状态随实例关闭销毁。
+
+### 发现
+
+- 未发现本轮新增功能 Bug；
+- 资金追踪/分析总览存在既有 `/api/analytics/graph` 503（warehouse 未就绪，API 报告 BUG-11）；
+- 案件页 `default` 调查 404 回归（上一轮 404 校验误伤）已修复并经 E2E 验证；
+- Explorer 交易 Tab 默认 30D 空态为正确行为（切 ALL 后正常）。
+
+### 验证
+
+- E2E 26/26 PASS；结果 JSON 与 27 张截图存于 visualizations；`e2e_suite.cjs` 保留用于回归重跑。
+
+## 2026-08-11 — 前端 E2E 升级为数据级断言（不只看状态码）
+
+### 完成内容
+
+1. 按用户要求，E2E 判定不再依赖“状态码/页面渲染”，改为对实际返回数据断言，共 **95 项**：
+   - 首页：交易数>0、最近交易哈希 0x64、区块号/时间、大额金额数值；
+   - 地址搜索：header 身份地址一致、链 ID、覆盖状态、金融可用性、标签数组；
+   - 交易/代币转账：行数、哈希格式、地址归属、方向、金额数值、Token 地址；
+   - Token 搜索：命中 USDT、合约地址与链 ID 正确；
+   - 地址区分：2 行结果、EOA+CONTRACT、summary 全 valid、原因非空；
+   - 上传清洗：rows≥2、预览含 100.00/50.00、summary.total_rows≥2；
+   - 语义/金融质量：覆盖率 available/数字、token 数量、成本基础 UNAVAILABLE+原因；
+   - 历史价格：价格有值或显式缺失、来源/时间戳字段；
+   - 下载任务/Parquet/Dune/数据源/系统设置：结构字段级校验；
+   - RPC 测试数据：创建 201、字段正确、删除后不存在。
+2. 产出 `docs/test/frontend-e2e-data-test-report-2026-08-11.md`（26/26 通过，95 项断言明细）。
+
+### 数据观察项（非阻断）
+
+- 地址画像 v1 summary 404（该地址 v1 摘要无数据，risk/path 正常）；
+- 案件报告列表返回 `reports: null` 而非 `[]`（前端已兜底，建议后端统一）；
+- Dune accounts null 为合理空态；
+- 资金追踪/分析总览 graph 503（既有环境限制）；
+- 非法地址 0x123 按文本搜索返回空结果，无地址误判。
+
+### 验证
+
+- `e2e_data_suite.cjs` 26/26 PASS、95 项断言全绿；测试数据（RPC 端点、CSV 上传产物）已清理并确认无残留。
+
+## 2026-08-11 智能下载前端全功能与数据质量验收
+
+### 本次工作
+
+- 新增 `docs/test/smart-download-frontend-quality-test-report-2026-08-11.md`，按“界面行为 + API 语义 + Parquet/XLSX 落盘 + 真实 BSC RPC”完成智能下载四个页签的全功能测试。
+- 覆盖创建下载、CSV/TXT/XLSX 导入、预检、模板、任务生命周期、筛选/分页/比较、智能预取、结果过滤/复制/导出/跳转、桌面与移动端布局。
+- 本次为测试与审计任务，未修改业务代码、接口或数据库结构，也未重启后端。
+
+### 结论
+
+- **智能下载当前不通过上线验收。** 单元测试和构建通过，但真实前端与数据质量存在 P0 问题：取消任务反转为完成、1135 行有效缓存被命中为 0 行并认证、相同业务版本重复累计为 2270 行、查看动作落到旧空版本、7 个可选数据集多数失败或缺少 Provider。
+- 其他问题包括毫秒时间显示为公元 58287 年、批次状态筛选失效、预取失败仍统计为交互成功、过滤请求存在陈旧响应风险、移动端横向溢出、XLSX 默认列宽不适合人工审计。
+- 有效 token_transfer Parquet/XLSX 共 1135 行，事件键唯一、关键字段完整，并以 BSC RPC 交易回执完成逐字段交叉核验。
+- 补充按钮覆盖：任务 `307e9f73-ab20-4222-8526-64eb74168472` 的 AUTO → TURBO 一键升档已由前端触发并确认后端持久化，单地址展开与详情抽屉通过。
+- 地址级取消按钮通过（`d8c80f8f-b24c-4a56-ae7a-0ecb65188fd2`）；地址级暂停按钮在 WAITING 状态可点击但约 8 秒后仍为 WAITING（`9b2f84c1-2905-4dbd-9574-29b0cf75de02`），因此继续按钮无法完成有效闭环。
+- 终态 COMPLETED 任务的摘要卡仍将“暂停全部 / 继续全部 / 取消任务”全部保持可用，与任务表格行内终态保护不一致。
+
+### 证据与残留
+
+- 生命周期证据任务：`d2853681-6b94-446d-a839-2ab9f227d7e2`；七数据集任务：`d99393bf-372b-46c5-9ea3-d5e0ed3ed19e`；预取候选：`be1928af-0c24-45fa-8440-c927d106f340`。
+- 测试模板已删除；任务、结果与候选没有安全删除 API，保留为审计证据，未直接删除运行目录文件。
+
+### 已验证命令
+
+- `go test -timeout 240s ./internal/smartdownload/... ./internal/api -count=1`
+- `go vet ./internal/smartdownload/... ./internal/api`
+- `cd frontend && npm run build`
+
+### 后续优先级
+
+- 先修复父子任务终态与认证聚合，再修复 local-hit 完整性、权威版本选择/去重和 Provider 可用性；完成后按测试报告全部场景回归，不能以 HTTP 200 或编译通过替代数据质量验收。
+
+## 2026-08-11 智能下载全功能缺陷修复与严格回归
+
+### 完成内容
+
+1. 修复任务生命周期：取消终态不可反转；混合完成/取消聚合为 PARTIAL；WAITING 地址暂停同步生效；终态前端控制统一禁用。
+2. 修复缓存与结果质量：local-hit 校验认证覆盖、真实文件、大小、SHA256 与行数；零行仅允许经认证的真实空范围；DB_WRITE_FAILED、部分验证和无证据旧结果均不可复用。
+3. 修复结果版本：质量优先选择权威版本，前端不再跨版本累加行数，“查看”与摘要使用同一版本。
+4. 修复 Provider 能力与性能：预检对无可执行 Provider fail closed；状态接口新增按链/模式返回 `available_datasets` 和 `capabilities_only`；Provider 能力快照改为无生命周期锁读取。
+5. 修复认证语义：新增 `DATASET_CERTIFIED`；认证区间并集覆盖完整范围即可认定数据集完成，重复失败下载通道不再污染已完整结果。
+6. 修复数据仓库写入语义：规范数据写入和核对成功后，派生 Explorer 分析刷新失败仅记录独立指标，不再把有效原始数据误标为 DB_WRITE_FAILED。
+7. 修复智能预取：只有 COMPLETED 批次且所有必需数据集 Full、Ratio>=1、CERTIFIED 才能升级；旧误命中保留审计记录并标记失效，不进入指标。
+8. 修复前端时间单位、批次筛选、请求竞态、必填中文提示、TIME 校验、可用数据集禁用、移动端溢出和 XLSX 可读列宽。
+
+### 接口与数据结构
+
+- `GET /api/smart-download/status` 新增可选 `chain_key`、`mode`、`capabilities_only=true`，能力响应新增 `available_datasets`；原路径与既有字段兼容。
+- 预取反馈 JSON 增加可选 `invalidated`、`invalidated_at`、`invalid_reason` 字段，用于保留并隔离历史错误指标；无数据库结构变更。
+- 认证事件新增 `DATASET_CERTIFIED`，原有接口路径未修改。
+
+### 关键验证
+
+- 真实 BSC logs 任务 `309448ba-2207-40f5-9ed0-06257eefe622`：155 行、VALIDATED、coverage=1、DATASET_CERTIFIED、无错误。
+- 真实空范围任务和 local-hit 复用分别为 `560d65b7-d85b-4ed0-b863-08a916ee8982`、`c5b467ab-22fc-4717-a106-76a850e95831`，均保持完整覆盖语义。
+- Playwright 四页签回归 PASS：权威结果 1135 行、CANCELED 筛选正确、终态按钮禁用、TIME 校验生效、390px 无页面级溢出、无模块控制台错误。
+- `go test ./internal/investigation/prefetch -count=1`：PASS。
+- `go test ./internal/datawarehouse ./internal/smartdownload ./internal/rpcmanager ./internal/api -count=1`：PASS。
+- `go vet ./...`：PASS；`frontend npm run build`：PASS（仅既有大 chunk 警告）。
+- `run.ps1` 已重启服务，PID 2424；健康检查通过；历史预取误命中指标恢复为 0。
+
+### 修改文件
+
+- 后端：`internal/smartdownload/{api.go,coverage.go,ledger.go,model.go,recovery.go,result.go,service.go,v31.go,v32.go}` 及相关回归测试；`internal/datawarehouse/writer.go`；`internal/rpcmanager/manager.go`；`internal/investigation/prefetch/{feedback.go,manager.go,types.go,prefetch_test.go}`。
+- 前端：`frontend/src/features/smart-download/{SmartDownloadPage.tsx,smartDownloadApi.ts,smart-download.css}`。
+- 文档：本文件、`docs/CHANGELOG_AI.md`、`docs/test/smart-download-frontend-quality-test-report-2026-08-11.md`。
+
+### 注意事项
+
+- 历史错误结果未物理删除，已在复用、覆盖和权威版本选择中隔离，以保留审计链。
+- 全量 `go test ./internal/...` 的真实外部网络压力用例 `internal/downloadengine/TestBatchCollect500KAddresses` 曾因 SQD HTTP/2 流无进展达到 10 分钟超时；本次受影响包全部独立通过。
+- 进入模块前的 Explorer 首页 503 为既有 warehouse 环境问题，与智能下载修复无关。
+
+## 2026-08-11 SQD / SQD Cloud 再次严格复测
+
+### 本次工作
+
+- 在加载最新预取与前端修复的新进程上，再次覆盖智能下载四页签、SQD、本地 Parquet、SQD Cloud runtime/jobs/sync/registry、任务取消和移动端布局。
+- 本次以范围、覆盖、事件唯一性、文件大小、SHA256、Parquet 实际行数和 Cloud Worker/Job 是否真实存在作为通过条件，不把 HTTP 200、health 或 Provider `HEALTHY` 单独视为成功。
+- 追加更新 `docs/test/smart-download-frontend-quality-test-report-2026-08-11.md` 第 10 节，纠正此前“模块整体通过”在 SQD / Cloud 链路上的过宽结论。
+
+### 结论
+
+- **智能下载仍不通过，SQD Cloud 为当前最高优先级阻断项。** Cloud runtime 为 ABSENT 且无 Worker/Job，但 Provider health 仍显示 HEALTHY/available；真实 100 万区块任务 0 行失败并膨胀为 500 万进度区块。
+- SQD AUTO 真实任务物理 6 行仅 3 个唯一事件，覆盖校验为 PARTIAL/0，却仍标记 DATASET_CERTIFIED；认证与去重 fail-open。
+- Cloud Registry 累计 2,396,039 行，合并仓库事件键唯一行数 1,122,140；存在重复业务版本、缺失文件和越界条目，Registry 总行数不能直接使用。
+- 前端通过主要表单、能力禁用、预取 fail-closed、权威结果、导出和移动端回归；任务比较 400、无匹配结果过滤 404、TXT 无效计数偏大仍失败。
+- 截图复核发现请求失败后桌面和移动端顶部均保留红色 `前端错误：[object Object]`，需要改为明确错误信息并在恢复后清除。
+- 1 区块任务被数据集计划扩张为全链 463 个范围；取消后最长约 4 分钟仍 RUNNING，重启后才收敛为 CANCELED。
+
+### 证据标识
+
+- SQD 重复/错误认证：批次 `ffc14613-e0f5-4d0e-804b-c1d71dcb217f`，数据集 `1328e67a-f92f-40d1-9cfa-0ed2fdbafc7f`。
+- SQD Cloud 真实失败：批次 `7aa98f25-9e98-4e91-932c-d8773a89aa40`。
+- 前端范围扩张/取消延迟：`21c762fb...`、`84f43e5c...`、`41150b8c...`、`e1615c7f...`；均已取消，最后一项通过最终重启清理。
+- 预取负向回归：底层批次 `65ba0be0-52d7-4c12-825e-e21c7f6accfb` 保持 PARTIAL，升级 409，指标保持 0。
+
+### 接口、结构与文件
+
+- 本次复测未新增或修改 API、数据库结构、业务代码；仅追加测试与交接文档。
+- 最终执行 `run.ps1`，服务 PID 35304，`/api/health` 返回 `status=ok`。
+- 前端 Playwright 证据保存在 `C:\Users\Euripides\.codex\visualizations\2026\08\11\019ff016-048a-77a1-84fb-ed3858fdefc8`。
+- 全量 `go test ./internal/... -count=1` 的 downloadengine 大规模网络用例本次通过（355.204s）；`internal/intelligence/TestResumeExecutesRecoveredTasks` 首次因恢复竞态失败，单独重跑通过（0.08s），需后续稳定该测试。
+
+### 后续事项
+
+- 先修复 Cloud 假健康/不部署、范围与进度膨胀、PARTIAL 认证、SQD 重叠文件去重和取消不中断，再进行同一批次与产物级回归。
+- 修复后必须重新创建受控 Cloud 任务并确认：Worker 实际存在、Cloud Job 实际提交、文件落盘、事件键唯一、覆盖 100%、Registry/合并仓库行数可对账。
+
+## 2026-08-11 SQD 产物唯一性与认证 fail-closed 修复
+
+### 完成内容
+
+- JSONL/Parquet Part 写入前按 Canonical Key 去重；token transfer/log 使用 `chain_id + transaction_hash + log_index`，同一 Range 重复提交改为幂等。
+- Validation L1 新增文件类型、非空、大小、SHA256、声明行数校验；L2 新增 Part/记录请求范围校验和重复 Part SHA 阻断。
+- 覆盖率改为 completed/confirmed-empty 区间并集计算，不再因动态重分片 Range ID 不一致产生伪缺口；checkpoint `rows_committed` 回写为唯一事件数。
+- 合并发布前独立复核 Part 文件、哈希、大小、行数、范围、字段和跨 Part 唯一键；缺文件、越界、重复、无证据零行均拒绝合并，不能进入 CERTIFIED。
+- 认证同时要求 Validation=VALIDATED、Coverage=1、BlockCoverage（存在时）=1，且无 duplicate、missing、unknown 或 errors；修复此前取两种覆盖率最大值的 fail-open。
+- 结果查询合法筛选无匹配时稳定返回 `rows=[] / total=0 / nil error`；Part 回退查询也按 Canonical Key 去重。
+- TXT 导入跳过 BOM 表头、空行与尾随换行；CSV/XLSX 分析跳过空数据行，rows/valid/duplicates/invalid 均按真实数据行统计。
+
+### 修改文件与接口
+
+- 修改 `internal/smartdownload/{executor.go,checkpoint.go,validation.go,result.go,import.go}` 及对应测试。
+- 未修改 API 路径、数据库结构或前端组件；合法空查询仅修正响应语义，不改变字段。
+
+### 验证
+
+- `go test ./internal/smartdownload/... -count=1`：PASS。
+- `go vet ./internal/smartdownload/...`：PASS。
+- 新增回归覆盖：Part 内去重、跨 Part 重复拒绝、区间并集覆盖、checkpoint 唯一行数、PARTIAL/覆盖不足/重复/缺文件/越界/无证据零行拒绝认证、空筛选 0 行成功、TXT/表格精确计数。
+
+### 注意事项
+
+- Validation 已能把 checkpoint 行数校准为唯一事件数；运行中 `DatasetJob.DownloadedRows/Progress.RowsCurrent` 的即时校准由 `service.go` 生命周期收尾逻辑负责，需与本次报告的 `UniqueKeyCount` 对齐。
+
+## 2026-08-12 智能下载 / SQD Cloud 缺陷修复与实链验收
+
+### 完成内容
+
+- 修复 Cloud runtime 假健康、自动部署对账、Windows deploy CLI 不退出、未知取消、ID/路径校验、远端 Job 状态与 `_SUCCESS` 完成门。
+- 修复 Smart Cloud 钱包参数与 Worker Transfer 双向地址过滤；RPC 也按钱包 from/to topic 查询并去重。
+- 修复单区块范围、派生范围进度并集、取消传播、SQD Part 去重、Validation/Merge/认证 fail-closed、TXT 尾换行、空结果语义。
+- V3.3 不再接管 Cloud Range；分组 Adapter 新增链/模式能力门；Turbo RPC 不再把已知 MISCONFIGURED 或活动熔断节点视为可执行。
+- Dataset Registry 改为完整、已索引、文件可验证的单一权威版本，并以 UniqueKeyCount 统计；API `entries` 使用 `Authoritative()`。
+- Prefetch Upgrade 仅接受 COMPLETED 且每个必需数据集均完整认证的批次。
+- 前端完成比较、错误详情、空态、导入统计、请求竞态、时间/状态、终态按钮、能力禁用、权威版本、移动端和启动错误修复。
+- 外部 SQD Worker 同步修改：`E:\Code\Processor-only\src\main.ts`，支持钱包 Transfer topic1/topic2 过滤并输出 log contract 为 token_address；其生产构建通过且 Worker 已重新部署。
+
+### 真实验证
+
+- 批次 `36a32223-cb7b-4e5d-8c50-d80fabee3c17` 创建两个真实 SQD Cloud Job，分别返回 584/564 行；两个 Parquet 共 1,148 行、唯一事件 1,148、重复 0，SHA256 与 Ledger 匹配，目标钱包参与率 100%，链/地址/区块/必填字段全部通过。
+- 大范围剩余 RPC 缺口使该批次正确为 PARTIAL/PENDING，没有 Dataset 级错误认证。
+- 批次 `7ab758cc-e3ef-4326-847a-b68db87bb581` 两个 Range 均经 Cloud 完成，Validation=VALIDATED、score=100、coverage=1、block_coverage=1、unique=1,148；ClickHouse 8123 未运行使最终状态严格为 DB_WRITE_FAILED/PENDING。取消后 2 秒内 batch/address/dataset 全部 CANCELED。
+- Cloud Registry 权威统计从初始 8 ranges / 495,591 rows / 28 files / 17,698,395 bytes 更新为 9 / 496,709 / 32 / 17,738,936。
+- 真实 Cloud sync 数据已原子更新，但客户端等待约 5 分钟仍未收到完成响应后被停止；需在远端网络稳定时复测响应时延。
+
+### 修改范围
+
+- 后端：`internal/cloudruntime`、`internal/downloadscheduler`、`internal/datasetsync`、`internal/smartdownload`、`internal/rpcmanager`、`internal/investigation/prefetch`、API Registry 统计及关联测试。
+- 前端：`SmartDownloadPage.tsx`、`smartDownloadApi.ts`、`smart-download.css`、`main.tsx` 及本轮已有全局布局/错误处理修复。
+- 文档：`docs/test/smart-download-frontend-quality-test-report-2026-08-11.md`、本文件、`docs/CHANGELOG_AI.md`。
+- 无数据库结构变更，无 API 路径变更；仅修正状态、统计、错误与能力语义。
+
+### 验证命令
+
+- `go test ./internal/cloudruntime ./internal/smartdownload ./internal/datasetsync ./internal/downloadscheduler ./internal/investigation/prefetch -count=1`：PASS。
+- `go test ./internal/rpcmanager ./internal/smartdownload -run "TestTurbo|TestV33" -count=1`：PASS。
+- `go vet ./...`：PASS。
+- `frontend npm run build`：PASS，仅既有大 chunk 警告。
+- `E:\Code\Processor-only npm run build`：PASS。
+- `run.ps1`：PASS，最终 PID 36256，health=ok。
+
+### 未完成/环境注意
+
+- 2026-08-12：已按 `deploy/clickhouse/start-clickhouse.ps1` 启动本机 ClickHouse；`http://127.0.0.1:8123/ping` 返回 `Ok.`，`SELECT version(), 1` 返回 `26.7.3.19` 与 `1`。服务由 WSL `clickhouse-bsc` 的 keeper 进程保持。
+- 当前 BSC RPC 配置没有可执行节点，混合 Cloud/RPC 大范围任务不能全覆盖。
+- 本机 ClickHouse `127.0.0.1:8123` 未运行，完整 Cloud 数据无法跨过最终数仓写入认证门；这是当前唯一阻止 BATCH_CERTIFIED 正向闭环的本机依赖。
+- Cloud sync 远端枚举响应时延需要网络恢复后再做完整返回耗时验收。
+
+## 2026-08-12 智能下载全模式最终质量验收
+
+### 完成内容
+
+- 修复 Cloud sync 重复 Registry 刷新、重复 SHA/全量合并、FAILED hook 阻塞和 0 行结果永久重试；真实响应从约 180 秒超时降至 5.29–5.77 秒。
+- Cloud 准入从“地址任意历史数据”改为链/地址/数据集/区间精确覆盖并集，解决未覆盖范围被错误 `LOCAL_COVERAGE_FULL` 拦截。
+- local-hit Validation 补齐 rows/raw_rows/unique/expected/actual/score/cross-check/validated_at。
+- 新增范围覆盖与同步冷却回归；网络型 500K 收集测试改为显式环境变量 opt-in，避免普通测试修改压力数据。
+- 新增完整报告：`docs/test/smart-download-full-mode-quality-report-2026-08-12.md`。
+
+### 真实验收
+
+- AUTO/TURBO/EMERGENCY 三个真实 local-hit 批次均 COMPLETED，1135 行全字段对账一致、coverage=1、DATASET_CERTIFIED。
+- RPC 真实范围 114450000–114450500 返回 71 唯一行，完整认证并写入 Warehouse。
+- 故障注入下 SQD Cloud 自动从 ABSENT 部署到 READY/BUSY/IDLE，计划 `bde94638...` 经 sqd_cloud 完成；0 行空区间进入 INDEXED，二次同步 SKIPPED。
+- 两份非空 Cloud Job 5 个 Parquet 共 1148 行/唯一 1148，SHA、字节、链、地址、区块和必填字段全部通过。
+- Playwright 桌面/390px 四页签通过，无模块控制台错误、无页面级横向溢出。
+
+### 接口与结构
+
+- 无 API 路径或数据库结构变更。
+- `downloadscheduler.RangeCoverageSource` 新增请求范围精确覆盖能力；`CoverageResolver.CheckRequirement` 用于 Cloud 准入。
+- `datasetsync.Registry` 新增批处理 `Refresh` / `GetCached`；合法 0 行条目进入 INDEXED。
+
+### 验证与当前状态
+
+- 智能下载及相关包测试、`go vet ./...`、前端生产构建通过。
+- 最后一轮全量仅 `internal/intelligence/TestResumeExecutesRecoveredTasks` 一次异步竞态失败，单独重复 5 次通过；此前全量已完整通过。
+- 最终 `run.ps1` 正常模式 PID 19912，fault injection=false，health=ok；Cloud Worker IDLE/available=true。

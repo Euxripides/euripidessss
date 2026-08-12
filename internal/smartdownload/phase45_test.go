@@ -46,7 +46,7 @@ func TestAddressImportColumnDetection(t *testing.T) {
 	if res.SelectedColumn != "wallet_address" {
 		t.Fatalf("选中列 %s，期望 wallet_address（列候选: %+v）", res.SelectedColumn, res.DetectedColumns)
 	}
-	if res.Rows != 5 || res.Valid != 3 || res.Duplicates != 1 || res.Invalid != 1 {
+	if res.Rows != 5 || res.Valid != 4 || res.Duplicates != 1 || res.Invalid != 1 {
 		t.Fatalf("统计不符: rows=%d valid=%d dup=%d invalid=%d", res.Rows, res.Valid, res.Duplicates, res.Invalid)
 	}
 	if len(res.FinalAddresses) != 3 {
@@ -71,6 +71,7 @@ func TestPackCreation10K(t *testing.T) {
 	opts.DefaultEndBlock = 999
 	opts.RangeChunkSize = 1000 // 每数据集 1 个 Range
 	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
 	addrs := make([]string, 10_000)
 	for i := range addrs {
 		addrs[i] = fmt.Sprintf("0x%040x", i+1)
@@ -119,12 +120,17 @@ func TestPackCreation10K(t *testing.T) {
 	}
 }
 
-// TestLocalHitReuse 验收（§61）：本地已覆盖地址直接复用，不触发下载。
-func TestLocalHitReuse(t *testing.T) {
+// TestCoverageMetadataWithoutArtifactRedownloads 验收：只有覆盖元数据、没有
+// 权威本地产物时不得制造 LOCAL HIT。
+func TestCoverageMetadataWithoutArtifactRedownloads(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewStore(dir)
-	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(dir))
-	svc.SetRangeCoverageSource(mockRangeCoverage{intervals: []BlockRange{{From: 0, To: 50_000_000}}})
+	opts := DefaultOptions()
+	opts.DefaultEndBlock = 399
+	opts.RangeChunkSize = 200
+	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
+	svc.SetRangeCoverageSource(mockRangeCoverage{intervals: []BlockRange{{From: 0, To: 399}}})
 	skip := true
 	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
 		ChainKey:    "bsc",
@@ -141,12 +147,12 @@ func TestLocalHitReuse(t *testing.T) {
 	t.Cleanup(svc.Shutdown)
 	waitCompleted(t, svc, resp.Batch.ID)
 	ds := store.ListDatasets()[0]
-	if ds.Status != DatasetCompleted || ds.CurrentProvider != "local_hit" {
-		t.Fatalf("复用数据集状态 %s provider=%s", ds.Status, ds.CurrentProvider)
+	if ds.Status != DatasetCompleted || ds.CurrentProvider == "local_hit" {
+		t.Fatalf("覆盖元数据被错误复用: status=%s provider=%s", ds.Status, ds.CurrentProvider)
 	}
 	for _, r := range store.ListRangesByDataset(ds.ID) {
-		if r.Provider != "local_hit" || r.Status != RangeCompleted {
-			t.Fatalf("复用 Range %d-%d provider=%s status=%s", r.FromBlock, r.ToBlock, r.Provider, r.Status)
+		if r.Provider == "local_hit" || r.Status != RangeCompleted {
+			t.Fatalf("Range 未真实下载 %d-%d provider=%s status=%s", r.FromBlock, r.ToBlock, r.Provider, r.Status)
 		}
 	}
 	entries, _ := NewLedger(store.Root(), ds.ID).Replay()
@@ -156,8 +162,8 @@ func TestLocalHitReuse(t *testing.T) {
 			reused = true
 		}
 	}
-	if !reused {
-		t.Fatal("缺少 RANGE_REUSED 账本记录")
+	if reused {
+		t.Fatal("无产物覆盖元数据产生了 RANGE_REUSED 记录")
 	}
 }
 
@@ -182,8 +188,9 @@ func (m mockRangeCoverage) CoveredRanges(_ context.Context, _, _, _ string, from
 	return out, nil
 }
 
-// TestRangeDiffPartialReuse 验收：部分覆盖只补下载缺失区间，已覆盖区间不重下。
-func TestRangeDiffPartialReuse(t *testing.T) {
+// TestRangeDiffPartialCoverageRedownloadsFailClosed 验收：只有覆盖元数据、没有
+// 可切片权威产物时不得制造 local_hit；为保证完整性应重下整个请求范围。
+func TestRangeDiffPartialCoverageRedownloadsFailClosed(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewStore(dir)
 	opts := DefaultOptions()
@@ -205,8 +212,8 @@ func TestRangeDiffPartialReuse(t *testing.T) {
 	}
 	ds := store.ListDatasets()[0]
 	ranges := store.ListRangesByDataset(ds.ID)
-	if len(ranges) != 3 {
-		t.Fatalf("部分复用后应 1 个复用 + 2 个缺失 Range，实际 %d", len(ranges))
+	if len(ranges) != 4 {
+		t.Fatalf("无可物化产物时应重下 4 个 Range，实际 %d", len(ranges))
 	}
 	pending, reused := 0, 0
 	for _, r := range ranges {
@@ -217,11 +224,11 @@ func TestRangeDiffPartialReuse(t *testing.T) {
 			reused++
 		}
 	}
-	if pending != 2 || reused != 1 {
+	if pending != 4 || reused != 0 {
 		t.Fatalf("缺失/复用分布不符: pending=%d reused=%d", pending, reused)
 	}
 	cp, _ := svc.Checkpoint(ds.ID)
-	if len(cp.CompletedRanges) != 1 || len(cp.PendingRanges) != 2 {
+	if len(cp.CompletedRanges) != 0 || len(cp.PendingRanges) != 4 {
 		t.Fatalf("checkpoint 复用不符: completed=%d pending=%d", len(cp.CompletedRanges), len(cp.PendingRanges))
 	}
 	entries, _ := NewLedger(store.Root(), ds.ID).Replay()
@@ -234,7 +241,7 @@ func TestRangeDiffPartialReuse(t *testing.T) {
 			created++
 		}
 	}
-	if reused != 1 || created != 2 {
+	if reused != 0 || created != 4 {
 		t.Fatalf("账本不符: reused=%d created=%d", reused, created)
 	}
 	t.Cleanup(svc.Shutdown)
@@ -258,8 +265,8 @@ func TestRangeDiffPartialReuse(t *testing.T) {
 		}
 		return nil
 	})
-	if parts != 2 {
-		t.Fatalf("差量下载应只产生 2 个 Part，实际 %d", parts)
+	if parts != 4 {
+		t.Fatalf("完整重下应产生 4 个 Part，实际 %d", parts)
 	}
 	done, downloaded := 0, 0
 	for _, r := range store.ListRangesByDataset(ds.ID) {
@@ -270,8 +277,8 @@ func TestRangeDiffPartialReuse(t *testing.T) {
 			}
 		}
 	}
-	if done != 3 || downloaded != 2 {
-		t.Fatalf("完成后 Range: 总计=%d 实下载=%d，期望 3/2", done, downloaded)
+	if done != 4 || downloaded != 4 {
+		t.Fatalf("完成后 Range: 总计=%d 实下载=%d，期望 4/4", done, downloaded)
 	}
 }
 
@@ -280,6 +287,7 @@ func TestMultiChainAddressOverride(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewStore(dir)
 	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
 	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
 		ChainKey:  "bsc",
 		Addresses: []string{addrA, addrB, addrC},
@@ -541,6 +549,7 @@ func TestCloudTierAssignAndUpgrade(t *testing.T) {
 
 type fakeCloudRuntime struct {
 	submitted *cloudruntime.Job
+	status    cloudruntime.Status
 }
 
 func (f *fakeCloudRuntime) SubmitJob(_ context.Context, job cloudruntime.Job) (string, error) {
@@ -556,6 +565,9 @@ func (f *fakeCloudRuntime) JobStatus(id string) (cloudruntime.Job, error) {
 func (f *fakeCloudRuntime) CancelJob(_ context.Context, _ string) error { return nil }
 
 func (f *fakeCloudRuntime) Status() cloudruntime.Status {
+	if f.status.State != "" {
+		return f.status
+	}
 	return cloudruntime.Status{State: cloudruntime.WorkerReady, Available: true}
 }
 
@@ -578,8 +590,28 @@ func TestCloudAdapterCarriesTier(t *testing.T) {
 	if rt.submitted.Priority != turboBulkPriority {
 		t.Fatalf("Cloud Job priority=%d，期望 %d", rt.submitted.Priority, turboBulkPriority)
 	}
-	if rt.submitted.FromBlock != 1 || rt.submitted.ToBlock != 10 || len(rt.submitted.Addresses) != 0 || rt.submitted.TokenContract != addrA {
+	if rt.submitted.FromBlock != 1 || rt.submitted.ToBlock != 10 || len(rt.submitted.Addresses) != 1 || rt.submitted.Addresses[0] != addrA || rt.submitted.TokenContract != "" {
 		t.Fatalf("Cloud Job 参数不符: %+v", rt.submitted)
+	}
+}
+
+func TestCloudAdapterAllowsConfiguredFirstDeploy(t *testing.T) {
+	rt := &fakeCloudRuntime{status: cloudruntime.Status{
+		State: cloudruntime.WorkerAbsent, Mode: cloudruntime.ModeCloud,
+		DeploymentKeyConfigured: true, R2Configured: true,
+	}}
+	a := NewSQDCloudAdapter(rt)
+	if !a.Available() {
+		t.Fatal("已配置 Cloud runtime 的首次部署提交路径不应被 Adapter 阻断")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = a.ExecuteRange(ctx, RangeRequest{
+		DatasetJobID: "deploy-first", Address: addrA, Dataset: DatasetTokenTransfers,
+		ChainKey: "bsc", ChainID: 56, FromBlock: 1, ToBlock: 1,
+	})
+	if rt.submitted == nil {
+		t.Fatal("ABSENT 但凭据完整时应提交并由 runtime 触发部署")
 	}
 }
 
@@ -588,6 +620,7 @@ func TestBatchSnapshotWeighted(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := NewStore(dir)
 	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
 	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
 		ChainKey:  "bsc",
 		Addresses: []string{addrA},
@@ -638,6 +671,7 @@ func TestSnapshot10KPerformance(t *testing.T) {
 	opts.DefaultEndBlock = 999
 	opts.RangeChunkSize = 1000
 	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
 	addrs := make([]string, 10_000)
 	for i := range addrs {
 		addrs[i] = fmt.Sprintf("0x%040x", i+1)
@@ -752,7 +786,7 @@ func TestCoverageIndexFullHitAndQuery(t *testing.T) {
 			t.Fatalf("二次任务应全部 LOCAL_REUSE，实际 %s", r.Provider)
 		}
 	}
-	// 部分命中：请求更大范围 → 仅补缺口
+	// 部分命中但没有可切片权威产物：完整重下，避免伪造已覆盖 Part。
 	resp3, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
 		ChainKey:     "bsc",
 		Addresses:    []string{addrA},
@@ -763,8 +797,8 @@ func TestCoverageIndexFullHitAndQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp3.LocalPartialHits < 1 || resp3.ReusedRanges < 1 {
-		t.Fatalf("部分命中统计不符: %+v", resp3)
+	if resp3.LocalPartialHits != 0 || resp3.ReusedRanges != 0 || resp3.LocalMisses != 1 {
+		t.Fatalf("部分覆盖应 fail closed 为完整重下: %+v", resp3)
 	}
 }
 

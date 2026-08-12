@@ -2,6 +2,7 @@ package downloadscheduler
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,9 @@ func (s *CloudUsageStore) Record(rec CloudUsageRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u := s.load()
+	if rec.DurationMinutes < 0 {
+		return errors.New("Cloud 用量时长不能为负数")
+	}
 	today := time.Now().Format("2006-01-02")
 	if u.Date != today {
 		u = CloudUsage{Date: today}
@@ -166,6 +170,7 @@ type CloudAdmissionDecision struct {
 	CloudEligible            bool              `json:"cloud_eligible"`
 	BudgetAllowed            bool              `json:"budget_allowed"`
 	RuntimeAvailable         bool              `json:"runtime_available"`
+	RuntimeDeployable        bool              `json:"runtime_deployable"`
 	RuntimeState             string            `json:"runtime_state,omitempty"`
 	ProviderStates           map[string]string `json:"provider_states,omitempty"`
 }
@@ -251,10 +256,15 @@ func (g *CloudAdmissionGate) CanUseSQDCloud(
 		return d
 	}
 
-	// 条件 F：运行时可用且不在失败冷却
+	// 条件 F：运行时已就绪，或处于凭据齐全的 ABSENT 可部署状态。
+	// ABSENT 不能冒充 runtime_available/ProviderHealthy；但 Gate 可允许一次受控
+	// Submit，由 SubmitJob 在入队前强制 EnsureWorker + sqd list 对账。
 	d.RuntimeState = rt.State
-	d.RuntimeAvailable = rt.Available && rt.FailureCooldownUntil == ""
-	if !d.RuntimeAvailable {
+	runtimeHealthyState := rt.State == "READY" || rt.State == "BUSY" || rt.State == "IDLE"
+	d.RuntimeAvailable = rt.Available && runtimeHealthyState && rt.FailureCooldownUntil == ""
+	d.RuntimeDeployable = (rt.State == "ABSENT" || rt.State == "DEPLOYING" || rt.State == "STARTING") && rt.Mode == "cloud" &&
+		rt.DeploymentKeyConfigured && rt.R2Configured && rt.FailureCooldownUntil == ""
+	if !d.RuntimeAvailable && !d.RuntimeDeployable {
 		if strings.Contains(rt.Reason, "SQD_DEPLOY_KEY") || strings.Contains(rt.Reason, "R2/S3") {
 			d.Reason = "CREDENTIALS_NOT_CONFIGURED：" + rt.Reason
 		} else {
