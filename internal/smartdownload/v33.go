@@ -249,7 +249,12 @@ func (s *Service) batchRangeRefs(batchID string) []acceleratorRangeRef {
 	for _, address := range s.store.ListAddressesByBatch(batchID) {
 		for _, dataset := range s.store.ListDatasetsByAddress(address.ID) {
 			for _, rangeJob := range s.store.ListRangesByDataset(dataset.ID) {
-				if rangeJob.Status == RangePending || rangeJob.Status == RangeReady {
+				// V3.3 grouped execution is currently implemented by the RPC
+				// adapter. Cloud-owned ranges must remain on the single-range
+				// scheduler so SubmitJob can deploy/queue the SQD Worker; attaching
+				// them to SharedWork would silently replace the selected Cloud lane
+				// with RPC.
+				if (rangeJob.Status == RangePending || rangeJob.Status == RangeReady) && rangeJob.Owner != RangeOwnerCloud {
 					refs = append(refs, acceleratorRangeRef{Range: rangeJob, Dataset: dataset, Address: address})
 				}
 			}
@@ -271,10 +276,10 @@ func datasetsMatchBundle(datasets []string, bundle []string) bool {
 	return true
 }
 
-func (s *Service) groupAdapterFor(datasets []string) (GroupProviderAdapter, int, bool) {
+func (s *Service) groupAdapterFor(datasets []string, chainKey string, mode DownloadMode) (GroupProviderAdapter, int, bool) {
 	for _, adapter := range s.adapters {
 		group, ok := adapter.(GroupProviderAdapter)
-		if !ok || !group.Available() {
+		if !ok || !adapterAvailableForMode(group, chainKey, mode) {
 			continue
 		}
 		bundleOK := len(datasets) == 1 && group.Supports(datasets[0])
@@ -304,7 +309,7 @@ func (s *Service) groupAdapterFor(datasets []string) (GroupProviderAdapter, int,
 	return nil, 1, false
 }
 
-func (s *Service) acceleratorBundles(datasets []string) [][]string {
+func (s *Service) acceleratorBundles(datasets []string, chainKey string, mode DownloadMode) [][]string {
 	remaining := make(map[string]bool)
 	for _, dataset := range sortedUniqueLower(datasets) {
 		remaining[dataset] = true
@@ -312,7 +317,7 @@ func (s *Service) acceleratorBundles(datasets []string) [][]string {
 	var bundles [][]string
 	for _, adapter := range s.adapters {
 		group, ok := adapter.(GroupProviderAdapter)
-		if !ok || !group.Available() {
+		if !ok || !adapterAvailableForMode(group, chainKey, mode) {
 			continue
 		}
 		for _, candidate := range group.SupportedDatasetBundles() {
@@ -347,12 +352,16 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 	if s.v33 == nil {
 		return nil
 	}
+	batch := s.store.GetBatch(batchID)
+	if batch == nil {
+		return nil
+	}
 	// Providers must opt in to true multi-address execution. Keeping the legacy
 	// Range path untouched for ordinary adapters preserves failover semantics and
 	// avoids an O(addresses*jobs) registry walk for large non-group batches.
 	hasGroupProvider := false
 	for _, adapter := range s.adapters {
-		if group, ok := adapter.(GroupProviderAdapter); ok && group.Available() {
+		if group, ok := adapter.(GroupProviderAdapter); ok && adapterAvailableForMode(group, batch.ChainKey, batch.Mode) {
 			hasGroupProvider = true
 			break
 		}
@@ -384,8 +393,9 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 		for dataset := range datasetSet {
 			datasets = append(datasets, dataset)
 		}
-		for _, bundle := range s.acceleratorBundles(datasets) {
-			_, maxGroup, grouped := s.groupAdapterFor(bundle)
+		first := rangeRefs[0]
+		for _, bundle := range s.acceleratorBundles(datasets, first.Address.ChainKey, batch.Mode) {
+			_, maxGroup, grouped := s.groupAdapterFor(bundle, first.Address.ChainKey, batch.Mode)
 			if !grouped {
 				// No provider capability means no SharedWork ownership. These refs
 				// remain on the proven single-address scheduler (group_size=1).
@@ -533,7 +543,7 @@ func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
 		if !belongs || work.RefCount == 0 {
 			continue
 		}
-		group, _, groupOK := s.groupAdapterFor(work.Datasets)
+		group, _, groupOK := s.groupAdapterFor(work.Datasets, work.ChainKey, batch.Mode)
 		var adapter ProviderAdapter
 		if groupOK {
 			adapter = group
@@ -768,54 +778,102 @@ func (s *Service) PlannerV2(ctx context.Context, req CreateBatchRequest) (*Accel
 		return nil, ctx.Err()
 	default:
 	}
+	var err error
+	req, err = s.resolveRequestTimeRanges(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	network, err := chain.Resolve(req.ChainKey)
 	if err != nil {
 		return nil, err
 	}
-	addresses := make([]string, 0, len(req.Addresses))
-	for _, address := range sortedUniqueLower(req.Addresses) {
-		if evmAddressRE.MatchString(address) {
-			addresses = append(addresses, address)
-		}
+	req, addresses, datasets, err := normalizePreflightRequest(req)
+	if err != nil {
+		return nil, err
 	}
-	if len(addresses) == 0 {
-		return nil, fmt.Errorf("没有有效地址")
-	}
-	datasets := make([]string, 0, len(req.Datasets))
-	for _, dataset := range sortedUniqueLower(req.Datasets) {
-		if ValidDataset(dataset) {
-			datasets = append(datasets, dataset)
-		}
-	}
-	if len(datasets) == 0 {
-		return nil, fmt.Errorf("没有合法的数据集")
+	if req.ResourceProfile != "" && !req.ResourceProfile.Valid() {
+		return nil, fmt.Errorf("非法资源档位 %q", req.ResourceProfile)
 	}
 	spec := RangeSpec{Mode: RangeModeFull}
 	if req.DefaultRange != nil {
 		spec = *req.DefaultRange
 	}
+	mode := req.Mode
+
+	type plannerAddress struct {
+		address string
+		network chain.EVM
+		spec    RangeSpec
+	}
+	byChain := make(map[string][]plannerAddress)
+	for _, address := range addresses {
+		addressNetwork := network
+		if override := strings.TrimSpace(req.AddressChainOverrides[address]); override != "" {
+			addressNetwork, err = chain.Resolve(override)
+			if err != nil {
+				return nil, fmt.Errorf("地址 %s 指定了未知链 %q", address, override)
+			}
+		}
+		addressSpec := spec
+		if override, ok := req.AddressOverrides[address]; ok && override.Mode != "" {
+			addressSpec = override
+		}
+		for _, dataset := range datasets {
+			if !s.hasExecutableProvider(addressNetwork.Key, dataset, mode) {
+				return nil, fmt.Errorf("数据集 %s 在链 %s / 模式 %s 没有可执行 Provider", dataset, addressNetwork.Key, mode)
+			}
+		}
+		byChain[addressNetwork.Key] = append(byChain[addressNetwork.Key], plannerAddress{address: address, network: addressNetwork, spec: addressSpec})
+	}
+
 	plan := &AcceleratorPlan{Status: "PREVIEW", UpdatedAt: time.Now().UTC()}
-	for _, bundle := range s.acceleratorBundles(datasets) {
-		adapter, maxGroup, grouped := s.groupAdapterFor(bundle)
-		provider := ""
-		if adapter != nil {
-			provider = adapter.Name()
-		}
-		plan.DatasetBundles = append(plan.DatasetBundles, DatasetBundle{Datasets: bundle, Provider: provider, Bundled: len(bundle) > 1})
-		if !grouped {
-			maxGroup = 1
-		}
-		for start := 0; start < len(addresses); start += maxGroup {
-			end := min(start+maxGroup, len(addresses))
-			groupAddresses := append([]string(nil), addresses[start:end]...)
-			requested := s.requestedBlocks(spec, bundle[0])
-			fingerprint := canonicalSharedFingerprint(network.Key, bundle, groupAddresses, requested.From, requested.To)
-			work := &SharedWork{ID: "preview-" + fingerprint[:12], Fingerprint: fingerprint, ChainKey: network.Key,
-				ChainID: network.ID, Datasets: bundle, Addresses: groupAddresses, FromBlock: requested.From,
-				ToBlock: requested.To, Status: sharedWorkPending, RefCount: len(groupAddresses) * len(bundle)}
-			plan.SharedWorkloads = append(plan.SharedWorkloads, work)
-			plan.Groups = append(plan.Groups, AddressGroup{GroupID: work.ID, ChainKey: network.Key, ChainID: network.ID,
-				Datasets: bundle, Addresses: groupAddresses, FilterHash: fingerprint, WorkloadIDs: []string{work.ID}})
+	chainKeys := make([]string, 0, len(byChain))
+	for chainKey := range byChain {
+		chainKeys = append(chainKeys, chainKey)
+	}
+	sort.Strings(chainKeys)
+	for _, chainKey := range chainKeys {
+		units := byChain[chainKey]
+		for _, bundle := range s.acceleratorBundles(datasets, chainKey, mode) {
+			adapter, maxGroup, grouped := s.groupAdapterFor(bundle, chainKey, mode)
+			provider := ""
+			if adapter != nil {
+				provider = adapter.Name()
+			}
+			plan.DatasetBundles = append(plan.DatasetBundles, DatasetBundle{Datasets: bundle, Provider: provider, Bundled: len(bundle) > 1})
+			if !grouped {
+				maxGroup = 1
+			}
+			byRange := make(map[string][]plannerAddress)
+			for _, unit := range units {
+				requested := s.requestedBlocks(ctx, chainKey, unit.spec, bundle[0])
+				key := fmt.Sprintf("%020d-%020d", requested.From, requested.To)
+				byRange[key] = append(byRange[key], unit)
+			}
+			rangeKeys := make([]string, 0, len(byRange))
+			for key := range byRange {
+				rangeKeys = append(rangeKeys, key)
+			}
+			sort.Strings(rangeKeys)
+			for _, rangeKey := range rangeKeys {
+				rangeUnits := byRange[rangeKey]
+				sort.Slice(rangeUnits, func(i, j int) bool { return rangeUnits[i].address < rangeUnits[j].address })
+				for start := 0; start < len(rangeUnits); start += maxGroup {
+					end := min(start+maxGroup, len(rangeUnits))
+					groupAddresses := make([]string, 0, end-start)
+					for _, unit := range rangeUnits[start:end] {
+						groupAddresses = append(groupAddresses, unit.address)
+					}
+					requested := s.requestedBlocks(ctx, chainKey, rangeUnits[start].spec, bundle[0])
+					fingerprint := canonicalSharedFingerprint(chainKey, bundle, groupAddresses, requested.From, requested.To)
+					work := &SharedWork{ID: "preview-" + fingerprint[:12], Fingerprint: fingerprint, ChainKey: chainKey,
+						ChainID: rangeUnits[start].network.ID, Datasets: bundle, Addresses: groupAddresses, FromBlock: requested.From,
+						ToBlock: requested.To, Status: sharedWorkPending, RefCount: len(groupAddresses) * len(bundle)}
+					plan.SharedWorkloads = append(plan.SharedWorkloads, work)
+					plan.Groups = append(plan.Groups, AddressGroup{GroupID: work.ID, ChainKey: chainKey, ChainID: rangeUnits[start].network.ID,
+						Datasets: bundle, Addresses: groupAddresses, FilterHash: fingerprint, WorkloadIDs: []string{work.ID}})
+				}
+			}
 		}
 	}
 	plan.Metrics.InputJobs = len(addresses) * len(datasets)

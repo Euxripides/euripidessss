@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/etl/backend/internal/analyticsapi"
@@ -16,6 +18,8 @@ import (
 	"github.com/etl/backend/internal/parquetdownload"
 	"github.com/gin-gonic/gin"
 )
+
+var cloudSyncActive atomic.Bool
 
 // HandleSchedulerAPI 是 /api/scheduler/* 的 Gin 转发入口。
 func HandleSchedulerAPI(c *gin.Context) {
@@ -94,13 +98,13 @@ func (h *SchedulerHandler) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"requirements_total":     len(h.scheduler.Plans()),
-		"coverage_hit_ratio":     0, // 需 Coverage Resolver 统计接口，暂缺
-		"provider_success_rate":  0,
-		"provider_p95_ms":        0,
-		"cloud_fallback_ratio":   h.scheduler.CloudFallbackRatio(),
-		"event_total":            len(events),
-		"event_lag_ms":           0,
+		"requirements_total":      len(h.scheduler.Plans()),
+		"coverage_hit_ratio":      0, // 需 Coverage Resolver 统计接口，暂缺
+		"provider_success_rate":   0,
+		"provider_p95_ms":         0,
+		"cloud_fallback_ratio":    h.scheduler.CloudFallbackRatio(),
+		"event_total":             len(events),
+		"event_lag_ms":            0,
 		"investigation_resume_ms": 0,
 		"graph_increment_ms":      0,
 		"registry_rows":           registryRows,
@@ -186,18 +190,18 @@ func (h *SchedulerHandler) plan(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB 请求体上限
 	var body struct {
 		Requirements []struct {
-			Dataset       string   `json:"dataset"`
-			ChainKey      string   `json:"chain_key"`
-			Addresses     []string `json:"addresses"`
-			StartDate     string   `json:"start_date,omitempty"`
-			EndDate       string   `json:"end_date,omitempty"`
-			FromBlock     uint64   `json:"from_block,omitempty"`
-			ToBlock       uint64   `json:"to_block,omitempty"`
-			Direction     string   `json:"direction,omitempty"`
-			Depth         int      `json:"depth,omitempty"`
-			CloudEligible *bool    `json:"cloud_eligible,omitempty"`
-			ObjectiveType string   `json:"objective_type,omitempty"`
-			ObjectiveDescription string `json:"objective_description,omitempty"`
+			Dataset              string                       `json:"dataset"`
+			ChainKey             string                       `json:"chain_key"`
+			Addresses            []string                     `json:"addresses"`
+			StartDate            string                       `json:"start_date,omitempty"`
+			EndDate              string                       `json:"end_date,omitempty"`
+			FromBlock            uint64                       `json:"from_block,omitempty"`
+			ToBlock              uint64                       `json:"to_block,omitempty"`
+			Direction            string                       `json:"direction,omitempty"`
+			Depth                int                          `json:"depth,omitempty"`
+			CloudEligible        *bool                        `json:"cloud_eligible,omitempty"`
+			ObjectiveType        string                       `json:"objective_type,omitempty"`
+			ObjectiveDescription string                       `json:"objective_description,omitempty"`
 			ObjectiveConstraints objectiveplanner.Constraints `json:"objective_constraints,omitempty"`
 		} `json:"requirements"`
 	}
@@ -216,17 +220,17 @@ func (h *SchedulerHandler) plan(w http.ResponseWriter, r *http.Request) {
 	reqs := make([]downloadscheduler.Requirement, 0, len(body.Requirements))
 	for _, q := range body.Requirements {
 		reqs = append(reqs, downloadscheduler.Requirement{
-			Dataset:       downloadscheduler.Dataset(q.Dataset),
-			ChainKey:      q.ChainKey,
-			Addresses:     q.Addresses,
-			StartDate:     q.StartDate,
-			EndDate:       q.EndDate,
-			FromBlock:     q.FromBlock,
-			ToBlock:       q.ToBlock,
-			Direction:     q.Direction,
-			Depth:         q.Depth,
-			CloudEligible: q.CloudEligible,
-			ObjectiveType: q.ObjectiveType,
+			Dataset:              downloadscheduler.Dataset(q.Dataset),
+			ChainKey:             q.ChainKey,
+			Addresses:            q.Addresses,
+			StartDate:            q.StartDate,
+			EndDate:              q.EndDate,
+			FromBlock:            q.FromBlock,
+			ToBlock:              q.ToBlock,
+			Direction:            q.Direction,
+			Depth:                q.Depth,
+			CloudEligible:        q.CloudEligible,
+			ObjectiveType:        q.ObjectiveType,
 			ObjectiveDescription: q.ObjectiveDescription,
 			ObjectiveConstraints: q.ObjectiveConstraints,
 		})
@@ -396,10 +400,18 @@ func (h *SchedulerHandler) providerHealth(w http.ResponseWriter, r *http.Request
 			Reasons: reasons,
 		}
 		if info, ok := health[p.Kind()]; ok {
-			v.State = info.State
-			v.Reasons = info.Reasons
+			// Runtime failure history may degrade a healthy intrinsic provider,
+			// but a default HEALTHY tracker entry must never mask intrinsic
+			// UNAVAILABLE/NOT_CONFIGURED state.
+			if v.State == downloadscheduler.ProviderHealthy || info.State != downloadscheduler.ProviderHealthy {
+				if v.State == downloadscheduler.ProviderHealthy || !v.State.Exhausted() {
+					v.State = info.State
+					v.Reasons = info.Reasons
+				}
+			}
 			v.ConsecutiveFailures = info.ConsecutiveFailures
 		}
+		v.Available = v.Available && !v.State.Exhausted()
 		views = append(views, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -423,7 +435,7 @@ func (h *SchedulerHandler) cloudJobs(w http.ResponseWriter, r *http.Request) {
 	stats := map[string]any{"entries": 0, "rows": 0, "files": 0, "bytes": 0}
 	if reg != nil {
 		rows, files, bytes := reg.Stats()
-		stats = map[string]any{"entries": len(reg.Completed()), "rows": rows, "files": files, "bytes": bytes}
+		stats = map[string]any{"entries": len(reg.Authoritative()), "rows": rows, "files": files, "bytes": bytes}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"jobs":     h.scheduler.CloudJobs(),
@@ -433,10 +445,20 @@ func (h *SchedulerHandler) cloudJobs(w http.ResponseWriter, r *http.Request) {
 
 // cloudSync POST /cloud/sync — 手动触发 Local Sync（Phase 4 §26）。
 func (h *SchedulerHandler) cloudSync(w http.ResponseWriter, r *http.Request) {
+	if !cloudSyncActive.CompareAndSwap(false, true) {
+		writeJSON(w, http.StatusConflict, map[string]any{"detail": "Cloud 数据同步已在执行中，请稍后重试"})
+		return
+	}
+	defer cloudSyncActive.Store(false)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 	results, err := h.scheduler.CloudSync(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			logger.Log.Warn().Err(err).Msg("scheduler_cloud_sync_client_canceled")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"detail": "Cloud 数据同步已被客户端取消"})
+			return
+		}
 		logger.Log.Error().Err(err).Msg("scheduler_cloud_sync_failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"detail": "Cloud 数据同步失败（内部错误）"})
 		return
@@ -450,7 +472,7 @@ func (h *SchedulerHandler) cloudUsage(w http.ResponseWriter, r *http.Request) {
 	stats := map[string]any{"entries": 0, "rows": 0, "files": 0, "bytes": 0}
 	if reg != nil {
 		rows, files, bytes := reg.Stats()
-		stats = map[string]any{"entries": len(reg.Completed()), "rows": rows, "files": files, "bytes": bytes}
+		stats = map[string]any{"entries": len(reg.Authoritative()), "rows": rows, "files": files, "bytes": bytes}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"usage":                     h.scheduler.CloudUsage(),

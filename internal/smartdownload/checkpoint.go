@@ -64,6 +64,8 @@ func NewCheckpointStore(root string) *CheckpointStore {
 func (s *CheckpointStore) Dir() string { return s.dir }
 
 func (s *CheckpointStore) Save(cp *CheckpointV3) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if cp == nil || cp.DatasetJobID == "" {
 		return errors.New("checkpoint dataset_job_id 为空")
 	}
@@ -119,12 +121,18 @@ func SplitBlockRange(from, to, chunkSize uint64) []BlockRange {
 		return nil
 	}
 	var out []BlockRange
-	for cur := from; cur <= to; cur += chunkSize {
-		end := cur + chunkSize - 1
-		if end > to {
-			end = to
+	for cur := from; ; {
+		end := to
+		// Calculate against the remaining distance so cur+chunkSize cannot wrap
+		// around uint64 and turn a bounded request into an infinite loop.
+		if chunkSize-1 < to-cur {
+			end = cur + chunkSize - 1
 		}
 		out = append(out, BlockRange{From: cur, To: end})
+		if end == to {
+			break
+		}
+		cur = end + 1
 	}
 	return out
 }
@@ -137,6 +145,11 @@ func (cp *CheckpointV3) Init(datasetJobID, address, dataset string, requested Bl
 	cp.Dataset = dataset
 	cp.RequestedFrom = requested.From
 	cp.RequestedTo = requested.To
+	cp.CompletedRanges = nil
+	cp.ConfirmedEmptyRanges = nil
+	cp.Parts = nil
+	cp.ProviderState = nil
+	cp.RowsCommitted = 0
 	cp.PendingRanges = SplitBlockRange(requested.From, requested.To, chunkSize)
 	cp.UpdatedAt = time.Now().UTC()
 }
@@ -149,17 +162,25 @@ func (s RangeKeySet) Has(r BlockRange) bool { _, ok := s[r.Key()]; return ok }
 
 // CompleteRange 完成一个 Range 并登记 Part。
 func (cp *CheckpointV3) CompleteRange(r BlockRange, part *PartInfo) {
+	if cp.IsRangeDone(r) {
+		return
+	}
 	cp.CompletedRanges = append(cp.CompletedRanges, r)
 	cp.PendingRanges = removeRange(cp.PendingRanges, r)
 	if part != nil {
 		cp.Parts = append(cp.Parts, *part)
-		cp.RowsCommitted += uint64(part.Rows)
+		if part.Rows > 0 {
+			cp.RowsCommitted += uint64(part.Rows)
+		}
 	}
 	cp.UpdatedAt = time.Now().UTC()
 }
 
 // ConfirmEmpty 确认某个 Range 为空（合法覆盖，不产生 Part）。
 func (cp *CheckpointV3) ConfirmEmpty(r BlockRange) {
+	if cp.IsRangeDone(r) {
+		return
+	}
 	cp.ConfirmedEmptyRanges = append(cp.ConfirmedEmptyRanges, r)
 	cp.PendingRanges = removeRange(cp.PendingRanges, r)
 	cp.UpdatedAt = time.Now().UTC()

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/downloadscheduler"
 )
 
@@ -164,9 +165,17 @@ func (h *Handler) routeTemplates(w http.ResponseWriter, r *http.Request, rest st
 		return
 	}
 	if len(parts) == 2 && parts[1] == "instantiate" && r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		var overrides TemplateInstantiateOverrides
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&overrides); err != nil && err != io.EOF {
+			writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "模板 overrides 解析失败: " + err.Error()})
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		result, err := h.svc.InstantiateTemplate(ctx, id)
+		result, err := h.svc.InstantiateTemplateWithOverrides(ctx, id, &overrides)
 		if err != nil {
 			writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
 			return
@@ -217,6 +226,18 @@ func (h *Handler) coverageQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	if !evmAddressRE.MatchString(body.Address) {
 		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "非法 EVM 地址"})
+		return
+	}
+	if _, err := chain.Resolve(body.ChainKey); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	if !ValidDataset(body.Dataset) {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "非法数据集: " + body.Dataset})
+		return
+	}
+	if body.ToBlock < body.FromBlock {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": "to_block 不能小于 from_block"})
 		return
 	}
 	result := h.svc.CoverageQuery(body.ChainKey, strings.ToLower(body.Address), body.Dataset,
@@ -320,6 +341,10 @@ func (h *Handler) routeResults(w http.ResponseWriter, r *http.Request, rest stri
 		return
 	}
 	if len(parts) == 2 && parts[1] == "export" && r.Method == http.MethodGet {
+		if h.svc.GetDataset(id) == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "数据集不存在: " + id})
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 		defer cancel()
 		path, format, rows, err := h.svc.Results().ExportDataset(ctx, id)
@@ -347,6 +372,10 @@ func (h *Handler) routeResults(w http.ResponseWriter, r *http.Request, rest stri
 		return
 	}
 	if len(parts) == 1 && r.Method == http.MethodGet {
+		if h.svc.GetDataset(id) == nil {
+			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "数据集不存在: " + id})
+			return
+		}
 		page, size := pagination(r)
 		sortCol := strings.TrimSpace(r.URL.Query().Get("sort"))
 		filter := strings.TrimSpace(r.URL.Query().Get("filter"))
@@ -354,7 +383,11 @@ func (h *Handler) routeResults(w http.ResponseWriter, r *http.Request, rest stri
 		defer cancel()
 		rows, total, err := h.svc.Results().QueryResults(ctx, id, page, size, sortCol, filter)
 		if err != nil {
-			writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": err.Error()})
+			if IsResultQueryParamError(err) {
+				writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+			} else {
+				writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": "结果查询失败"})
+			}
 			return
 		}
 		writeSmartJSON(w, http.StatusOK, map[string]any{
@@ -637,6 +670,10 @@ func (h *Handler) routeDataset(w http.ResponseWriter, r *http.Request, rest stri
 			ds, err := h.svc.PauseDataset(id)
 			writeLifecycle(w, ds, err)
 			return
+		case "resume":
+			ds, err := h.svc.ResumeDataset(id)
+			writeLifecycle(w, ds, err)
+			return
 		case "cancel":
 			ds, err := h.svc.CancelDataset(id)
 			writeLifecycle(w, ds, err)
@@ -646,6 +683,10 @@ func (h *Handler) routeDataset(w http.ResponseWriter, r *http.Request, rest stri
 	if len(parts) == 2 && r.Method == http.MethodGet {
 		switch parts[1] {
 		case "ledger":
+			if h.svc.GetDataset(id) == nil {
+				writeSmartJSON(w, http.StatusNotFound, map[string]any{"detail": "数据集不存在: " + id})
+				return
+			}
 			entries, err := h.svc.LedgerEntries(id)
 			if err != nil {
 				writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": err.Error()})
@@ -783,18 +824,41 @@ func (h *Handler) bridgePlan(w http.ResponseWriter, r *http.Request) {
 
 // ── 汇总 ──
 
-func (h *Handler) status(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
+	chainKey := strings.TrimSpace(r.URL.Query().Get("chain_key"))
+	if chainKey == "" {
+		chainKey = "bsc"
+	}
+	mode := DownloadMode(strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("mode"))))
+	if !mode.Valid() {
+		mode = DownloadModeAuto
+	}
+	availableDatasets := h.svc.AvailableDatasets(chainKey, mode)
+	// Creation-form capability refresh is latency-sensitive and does not need
+	// lifecycle counts. Avoid contending on the persisted task store while
+	// startup reconciliation or large-batch progress updates are active.
+	if r.URL.Query().Get("capabilities_only") == "true" {
+		writeSmartJSON(w, http.StatusOK, map[string]any{
+			"chain_key":          chainKey,
+			"mode":               mode,
+			"available_datasets": availableDatasets,
+		})
+		return
+	}
 	batches := h.svc.ListBatches()
 	counts := map[string]int{}
 	for _, b := range batches {
 		counts[string(b.Status)]++
 	}
 	writeSmartJSON(w, http.StatusOK, map[string]any{
-		"batches":     len(batches),
-		"counts":      counts,
-		"adapters":    h.svc.AdapterNames(),
-		"workers":     h.svc.Options().Workers,
-		"retry_limit": h.svc.Options().RetryLimit,
+		"batches":            len(batches),
+		"counts":             counts,
+		"adapters":           h.svc.AdapterNames(),
+		"workers":            h.svc.Options().Workers,
+		"retry_limit":        h.svc.Options().RetryLimit,
+		"chain_key":          chainKey,
+		"mode":               mode,
+		"available_datasets": availableDatasets,
 	})
 }
 

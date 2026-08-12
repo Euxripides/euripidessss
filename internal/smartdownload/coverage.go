@@ -28,7 +28,7 @@ func (s *Service) SetRangeCoverageSource(src RangeCoverageSource) {
 func (s *Service) registryCoverage(chainKey, address, dataset string, from, to uint64) []BlockRange {
 	var out []BlockRange
 	for _, e := range s.results.List() {
-		if e.ChainKey != chainKey || e.Dataset != dataset || e.Validation != "VALIDATED" {
+		if e.ChainKey != chainKey || e.Dataset != dataset || !s.results.isReusableIndexedResult(e) {
 			continue
 		}
 		if !strings.EqualFold(e.Address, address) {
@@ -65,11 +65,21 @@ func (s *Service) coveredRangesFor(ctx context.Context, chainKey, address, datas
 	if index != nil {
 		res := index.Resolve(chainKey, address, dataset, from, to, time.Now())
 		if res.Compatible && len(res.Covered) > 0 {
-			out := make([]BlockRange, 0, len(res.Covered))
-			for _, iv := range res.Covered {
-				out = append(out, BlockRange{From: iv.From, To: iv.To})
+			// Once this scope has Smart Download result versions, validate the
+			// derived coverage index against the authoritative result registry.
+			// This prevents legacy zero-row certifications from surviving forever
+			// in the append-only coverage shards.
+			if s.results.HasAnyForRange(chainKey, address, dataset, from, to) {
+				if trusted := s.registryCoverage(chainKey, address, dataset, from, to); len(trusted) > 0 {
+					return trusted
+				}
+			} else {
+				out := make([]BlockRange, 0, len(res.Covered))
+				for _, iv := range res.Covered {
+					out = append(out, BlockRange{From: iv.From, To: iv.To})
+				}
+				return out
 			}
-			return out
 		}
 	}
 	if src != nil {
@@ -204,12 +214,25 @@ func (s *Service) markDatasetReused(dsID string, requested BlockRange, ranges []
 	ds.CurrentProvider = "local_hit"
 	ds.EstimatedRows = uint64(localRows)
 	ds.DownloadedRows = uint64(localRows)
-	ds.Progress = ProgressSnapshot{Percent: 1, RowsCurrent: uint64(localRows), RowsTotal: uint64(localRows)}
+	ds.ValidatedRows = uint64(localRows)
+	blocks := requested.To - requested.From + 1
+	ds.Progress = ProgressSnapshot{Percent: 1, RowsCurrent: uint64(localRows), RowsTotal: uint64(localRows),
+		BlocksCurrent: blocks, BlocksTotal: blocks}
+	ds.Validation = &ValidationReport{DatasetJobID: dsID, Status: "VALIDATED", Score: 1,
+		Coverage: 1, BlockCoverage: 1, Rows: localRows, RawRows: localRows,
+		UniqueKeyCount: localRows, ActualCount: localRows, ExpectedCount: localRows,
+		LevelFile: true, LevelRecord: true, LevelCoverage: true, LevelProviderCnt: true, LevelCrossCheck: true,
+		CrossCheck: CrossCheckReport{Status: "PASS"}, ValidatedAt: now}
+	ds.Certification = CertificationDataset
+	ds.RelevantCertified = true
+	ds.RelevantCertifiedAt = &now
 	ds.FinishedAt = &now
 	ds.UpdatedAt = now
 	if err := s.store.SaveDataset(ds); err != nil {
 		return err
 	}
+	_ = ledger.Append(LedgerEntry{Event: LedgerDatasetCertified, DatasetJobID: dsID,
+		Provider: "local_hit", Error: fmt.Sprintf("authoritative_local_reuse rows=%d", localRows)})
 	s.finalizeAddressIfDoneLocked(ds.AddressJobID)
 	logger.Log.Info().Str("dataset_job", dsID).Int("ranges", len(ranges)).
 		Int64("rows", localRows).Msg("smartdownload_local_hit_full_reuse")

@@ -14,6 +14,7 @@ func TestLegacyPlanBridge(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(dir))
+	svc.RegisterAdapter(NewMockProvider())
 	bridge := NewLegacyPlanBridge(svc)
 	plan := &downloadscheduler.Plan{
 		ID: "legacy-plan-1",

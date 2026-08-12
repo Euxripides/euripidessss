@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -111,31 +112,43 @@ func handleExplorerIntelligenceHome(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rows, err := clickHouseClient.QueryJSON(c.Request.Context(), fmt.Sprintf(`SELECT
+	key := strconv.FormatUint(uint64(chainID), 10)
+	value, err := explorerHomeFlight.Do(key, func() (any, error) {
+		return computeExplorerHome(c.Request.Context(), chainID)
+	})
+	if err != nil {
+		writeExplorerIntelligenceError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, value)
+}
+
+func computeExplorerHome(ctx context.Context, chainID uint32) (gin.H, error) {
+	rows, err := clickHouseClient.QueryJSON(ctx, fmt.Sprintf(`SELECT
 (SELECT max(block_number) FROM onchain.chain_blocks FINAL WHERE chain_id=%d) latest_block,
 (SELECT count() FROM onchain.chain_transactions FINAL WHERE chain_id=%d) transaction_count,
 (SELECT count() FROM onchain.token_transfers FINAL WHERE chain_id=%d) token_transfer_count,
 (SELECT count() FROM onchain.data_coverage FINAL WHERE chain_id=%d AND status='COMPLETE') complete_ranges`, chainID, chainID, chainID, chainID))
 	if err != nil || len(rows) != 1 {
-		writeExplorerIntelligenceError(c, err)
-		return
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("explorer home summary query returned no rows")
 	}
-	latest, latestErr := clickHouseClient.QueryJSON(c.Request.Context(), fmt.Sprintf(`SELECT tx_hash,block_number,block_time,from_address,to_address,method_name,status,toString(value_decimal) amount,native_symbol FROM onchain.chain_transactions FINAL WHERE chain_id=%d ORDER BY block_time DESC,block_number DESC,transaction_index DESC LIMIT 10`, chainID))
+	latest, latestErr := clickHouseClient.QueryJSON(ctx, fmt.Sprintf(`SELECT tx_hash,block_number,block_time,from_address,to_address,method_name,status,toString(value_decimal) amount,native_symbol FROM onchain.chain_transactions FINAL WHERE chain_id=%d ORDER BY block_time DESC,block_number DESC,transaction_index DESC LIMIT 10`, chainID))
 	if latestErr != nil {
-		writeExplorerIntelligenceError(c, latestErr)
-		return
+		return nil, latestErr
 	}
-	large, largeErr := clickHouseClient.QueryJSON(c.Request.Context(), fmt.Sprintf(`SELECT tx_hash,block_number,block_time,address,counterparty_address,direction,token_symbol,toString(amount) amount,toString(historical_value_usdt) historical_value_usdt,toString(historical_value_usdt) usd_value FROM
+	large, largeErr := clickHouseClient.QueryJSON(ctx, fmt.Sprintf(`SELECT tx_hash,block_number,block_time,address,counterparty_address,direction,token_symbol,toString(amount) amount,toString(historical_value_usdt) historical_value_usdt,toString(historical_value_usdt) usd_value FROM
 (SELECT a.*,multiIf(isNotNull(a.usd_value),a.usd_value,a.token_address='0x55d398326f99059ff775485246999027b3197955',CAST(a.amount AS Nullable(Decimal(38,18))),q.token_address!='',CAST(a.amount*if(q.vwap>0,q.vwap,q.close) AS Nullable(Decimal(38,18))),p.token_address!='' AND dateDiff('second',p.timestamp_bucket,a.block_time)<=86400,CAST(a.amount*p.price_usd AS Nullable(Decimal(38,18))),a.token_address IN ('0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),CAST(a.amount AS Nullable(Decimal(38,18))),CAST(NULL AS Nullable(Decimal(38,18)))) historical_value_usdt
 FROM onchain.address_activity AS a FINAL
 LEFT JOIN (SELECT chain_id,token_address,minute,vwap,close FROM onchain.token_price_1m FINAL WHERE chain_id=%d) q ON a.chain_id=q.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=q.token_address AND toStartOfMinute(a.block_time)=q.minute
 ASOF LEFT JOIN (SELECT * FROM onchain.token_prices FINAL WHERE chain_id=%d ORDER BY chain_id,token_address,timestamp_bucket) p ON a.chain_id=p.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=p.token_address AND a.block_time>=p.timestamp_bucket WHERE a.chain_id=%d) t
 WHERE t.historical_value_usdt>=100000 ORDER BY t.historical_value_usdt DESC,block_time DESC,block_number DESC LIMIT 10`, chainID, chainID, chainID))
 	if largeErr != nil {
-		writeExplorerIntelligenceError(c, largeErr)
-		return
+		return nil, largeErr
 	}
-	c.JSON(http.StatusOK, gin.H{"chain_id": chainID, "coverage_ranges": rows[0]["complete_ranges"], "latest_block": rows[0]["latest_block"], "transaction_count": rows[0]["transaction_count"], "token_transfer_count": rows[0]["token_transfer_count"], "latest_transactions": latest, "large_transfers": large})
+	return gin.H{"chain_id": chainID, "coverage_ranges": rows[0]["complete_ranges"], "latest_block": rows[0]["latest_block"], "transaction_count": rows[0]["transaction_count"], "token_transfer_count": rows[0]["token_transfer_count"], "latest_transactions": latest, "large_transfers": large}, nil
 }
 
 func handleExplorerIntelligenceHeader(c *gin.Context) {

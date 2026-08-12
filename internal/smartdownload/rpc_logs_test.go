@@ -28,6 +28,28 @@ func (f *turboPolicyRPCFake) CallTurbo(_ context.Context, _, _ string, _ any) (j
 func (f *turboPolicyRPCFake) HasAnyConfigured(string) bool { return true }
 func (f *turboPolicyRPCFake) HasConfigured(string) bool    { return false }
 
+type routableRPCFake struct {
+	available      bool
+	turboAvailable bool
+}
+
+func (f *routableRPCFake) Call(context.Context, string, string, any) (json.RawMessage, string, error) {
+	return json.RawMessage(`"0x1"`), "fake", nil
+}
+func (f *routableRPCFake) HasConfigured(string) bool     { return true }
+func (f *routableRPCFake) HasAvailable(string) bool      { return f.available }
+func (f *routableRPCFake) HasTurboAvailable(string) bool { return f.turboAvailable }
+
+func TestRPCAdapterAvailabilityUsesRoutableHealth(t *testing.T) {
+	adapter := NewRPCTransferAdapter(&routableRPCFake{available: false, turboAvailable: true})
+	if adapter.AvailableForChain("bsc") || adapter.AvailableForMode("bsc", DownloadModeAuto) {
+		t.Fatal("configured but unroutable RPC must not be advertised in AUTO")
+	}
+	if !adapter.AvailableForMode("bsc", DownloadModeTurbo) || !adapter.AvailableForMode("bsc", DownloadModeEmergency) {
+		t.Fatal("Turbo/Emergency must use the explicit disabled-endpoint routing health policy")
+	}
+}
+
 type priceRPCFake struct{}
 
 func (priceRPCFake) Call(_ context.Context, _, method string, _ any) (json.RawMessage, string, error) {
@@ -122,14 +144,19 @@ func (f *groupLogsRPCFake) Call(_ context.Context, _, method string, params any)
 	case "eth_getLogs":
 		f.logCalls++
 		filter := params.([]any)[0].(map[string]any)
+		if _, hasTopics := filter["topics"]; hasTopics {
+			if _, hasAddress := filter["address"]; hasAddress {
+				return nil, "fake", fmt.Errorf("wallet transfer scan must not filter token contract address")
+			}
+			return json.RawMessage(`[
+				{"address":"0x1111111111111111111111111111111111111111","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"data":"0x01","blockNumber":"0x64","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logIndex":"0x1"}
+			]`), "fake", nil
+		}
 		addresses := append([]string(nil), filter["address"].([]string)...)
 		f.addresses = append(f.addresses, addresses)
-		if _, hasTopics := filter["topics"]; hasTopics {
-			return nil, "fake", fmt.Errorf("group scan must not filter topics")
-		}
 		return json.RawMessage(`[
-			{"address":"0x1111111111111111111111111111111111111111","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],"data":"0x01","blockNumber":"0x64","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logIndex":"0x1"},
-			{"address":"0x2222222222222222222222222222222222222222","topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x02","blockNumber":"0x64","transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","logIndex":"0x2"}
+			{"address":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x02","blockNumber":"0x64","transactionHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","logIndex":"0x2"},
+			{"address":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x03","blockNumber":"0x64","transactionHash":"0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","logIndex":"0x3"}
 		]`), "fake", nil
 	default:
 		return nil, "fake", fmt.Errorf("unexpected method %s", method)
@@ -144,29 +171,29 @@ func TestRPCGroupedLogScanUsesAddressArrayOnceAndFansOutDatasets(t *testing.T) {
 		t.Fatal(err)
 	}
 	results, err := adapter.executeGroupedLogScan(context.Background(), network, []string{
-		"0x1111111111111111111111111111111111111111",
-		"0x2222222222222222222222222222222222222222",
+		"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}, []string{DatasetTokenTransfers, DatasetLogs}, 100, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fake.logCalls != 1 {
-		t.Fatalf("eth_getLogs calls=%d want=1", fake.logCalls)
+	if fake.logCalls != 3 {
+		t.Fatalf("eth_getLogs calls=%d want=3 (from topic, to topic, contract logs)", fake.logCalls)
 	}
 	if len(fake.addresses) != 1 || len(fake.addresses[0]) != 2 {
 		t.Fatalf("unexpected address filters: %#v", fake.addresses)
 	}
-	first := results["0x1111111111111111111111111111111111111111"]
-	second := results["0x2222222222222222222222222222222222222222"]
+	first := results["0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+	second := results["0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
 	if len(first[DatasetTokenTransfers].Records) != 1 || len(first[DatasetLogs].Records) != 1 {
 		t.Fatalf("first fan-out mismatch: %#v", first)
 	}
-	if len(second[DatasetTokenTransfers].Records) != 0 || len(second[DatasetLogs].Records) != 1 {
+	if len(second[DatasetTokenTransfers].Records) != 1 || len(second[DatasetLogs].Records) != 1 {
 		t.Fatalf("second fan-out mismatch: %#v", second)
 	}
 	if first[DatasetTokenTransfers].Records[0].Address != "0x1111111111111111111111111111111111111111" ||
-		second[DatasetLogs].Records[0].Address != "0x2222222222222222222222222222222222222222" {
-		t.Fatal("records were not fanned out by contract address")
+		second[DatasetLogs].Records[0].Address != "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatal("records were not assigned using dataset-specific address semantics")
 	}
 }
 

@@ -78,7 +78,7 @@ func (s *Service) validateTurboLanesLocked(batchID string) error {
 			}
 			rpc, cloud := s.adapters["rpc"], s.adapters["sqd_cloud"]
 			rpcOK := adapterAvailableForMode(rpc, ds.ChainKey, DownloadModeTurbo) && rpc.Supports(ds.Dataset)
-			cloudOK := cloud != nil && cloud.Available() && cloud.Supports(ds.Dataset)
+			cloudOK := adapterAvailableForMode(cloud, ds.ChainKey, DownloadModeTurbo) && cloud.Supports(ds.Dataset)
 			if !rpcOK && !cloudOK {
 				return fmt.Errorf("Turbo 模式没有可用的 SQD Cloud/RPC lane: dataset=%s", ds.Dataset)
 			}
@@ -101,10 +101,10 @@ func (s *Service) applyModePlanLocked(batchID string, mode DownloadMode) error {
 	}
 	cloud := s.adapters["sqd_cloud"]
 	rpc := s.adapters["rpc"]
-	cloudAvailable := cloud != nil && cloud.Available()
 	for _, a := range s.store.ListAddressesByBatch(batchID) {
 		for _, ds := range s.store.ListDatasetsByAddress(a.ID) {
 			rpcAvailable := adapterAvailableForMode(rpc, ds.ChainKey, DownloadModeTurbo)
+			cloudAvailable := adapterAvailableForMode(cloud, ds.ChainKey, mode)
 			ranges := s.store.ListRangesByDataset(ds.ID)
 			var maxBlock uint64
 			for _, r := range ranges {
@@ -178,7 +178,8 @@ func (s *Service) TurboStatus(batchID string) (*TurboStatus, error) {
 			if adapterAvailableForMode(s.adapters["rpc"], ds.ChainKey, batch.Mode) {
 				status.RPCAvailable = true
 			}
-			for _, r := range s.store.ListRangesByDataset(ds.ID) {
+			ranges := s.store.ListRangesByDataset(ds.ID)
+			for _, r := range ranges {
 				if r.ReshardDepth > 0 {
 					status.ReshardActive = true
 				}
@@ -188,8 +189,6 @@ func (s *Service) TurboStatus(batchID string) (*TurboStatus, error) {
 				if r.HedgeOf != "" && !r.HedgeWinner {
 					continue
 				}
-				blocks := rangeBlockCount(r)
-				status.TotalBlocks += blocks
 				switch r.Owner {
 				case RangeOwnerCloud:
 					status.CloudRanges++
@@ -219,7 +218,6 @@ func (s *Service) TurboStatus(batchID string) (*TurboStatus, error) {
 					status.RunningRanges++
 				case RangeCompleted, RangeEmpty:
 					status.CompletedRanges++
-					status.CoveredBlocks += blocks
 					if r.FinishedAt != nil && (firstData == nil || r.FinishedAt.Before(*firstData)) {
 						v := *r.FinishedAt
 						firstData = &v
@@ -236,6 +234,10 @@ func (s *Service) TurboStatus(batchID string) (*TurboStatus, error) {
 					}
 				}
 			}
+			status.TotalBlocks += logicalBlockCount(ranges, nil)
+			status.CoveredBlocks += logicalBlockCount(ranges, func(r *RangeJob) bool {
+				return r.Status == RangeCompleted || r.Status == RangeEmpty
+			})
 		}
 	}
 	if status.TotalBlocks > 0 {

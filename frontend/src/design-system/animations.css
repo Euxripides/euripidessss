@@ -1,0 +1,459 @@
+/* ============================================================
+   Global animation & micro-interaction layer (light theme)
+   Loaded after design-system.css; honors prefers-reduced-motion.
+   ============================================================ */
+
+/* ---------- Page entrance ---------- */
+
+.content > *,
+.content-graph > *,
+.content-explorer > * {
+  animation: ds-page-in 480ms var(--ds-ease-out) backwards;
+}
+
+.ds-page > * {
+  animation: ds-rise-in 520ms var(--ds-ease-out) backwards;
+}
+.ds-page > *:nth-child(2) { animation-delay: 60ms; }
+.ds-page > *:nth-child(3) { animation-delay: 110ms; }
+.ds-page > *:nth-child(4) { animation-delay: 160ms; }
+.ds-page > *:nth-child(5) { animation-delay: 210ms; }
+.ds-page > *:nth-child(6) { animation-delay: 260ms; }
+.ds-page > *:nth-child(n + 7) { animation-delay: 300ms; }
+
+/* ---------- Buttons ---------- */
+
+.ant-btn {
+  transition:
+    transform 160ms var(--ds-ease-soft),
+    box-shadow 200ms ease,
+    border-color 200ms ease,
+    color 200ms ease,
+    background-color 200ms ease !important;
+}
+.ant-btn:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+.ant-btn:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+.ant-btn-primary:not(:disabled):hover {
+  box-shadow: 0 8px 18px rgba(23, 105, 224, 0.22);
+}
+.ant-btn-primary:not(:disabled):active {
+  box-shadow: 0 3px 10px rgba(23, 105, 224, 0.25);
+}
+.ant-btn-dangerous:not(:disabled):hover {
+  box-shadow: 0 8px 18px rgba(229, 72, 77, 0.2);
+}
+
+/* ---------- Cards ---------- */
+
+.ant-card {
+  transition:
+    transform 180ms var(--ds-ease-soft),
+    box-shadow 240ms ease,
+    border-color 200ms ease !important;
+}
+.ant-card:not(.ant-card-disabled):hover {
+  transform: translateY(-1px);
+  border-color: var(--ds-color-border-strong);
+  box-shadow: 0 12px 28px rgba(31, 53, 87, 0.1);
+}
+
+/* ---------- Tables ---------- */
+
+.ant-table-tbody > tr {
+  transition: background-color 160ms ease;
+}
+.ant-table-tbody > tr:hover > td {
+  background-color: #f2f7ff !important;
+}
+.ant-table-thead > tr > th {
+  transition: background-color 180ms ease;
+}
+
+/* ---------- Menus ---------- */
+
+.ant-menu-item,
+.ant-menu-submenu-title {
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+.side .ant-menu-item,
+.side .ant-menu-submenu-title {
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms var(--ds-ease-soft);
+}
+.side .ant-menu-item:hover {
+  transform: translateX(2px);
+}
+.side .ant-menu-item-selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ds-color-primary);
+  animation: ds-bar-grow 320ms var(--ds-ease-pop) backwards;
+}
+.side {
+  animation: xi-side-drift 14s ease-in-out infinite alternate;
+}
+
+/* ---------- Inputs / pickers ---------- */
+
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-select-selector,
+.ant-picker,
+.ant-input-number,
+.ant-input-number-affix-wrapper,
+.ant-mentions {
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease !important;
+}
+
+/* ---------- Tabs & tags ---------- */
+
+.ant-tabs-tab {
+  transition: color 160ms ease, background-color 160ms ease;
+}
+.ant-tabs-tab:hover {
+  color: var(--ds-color-primary);
+}
+.ant-tag {
+  transition:
+    transform 160ms var(--ds-ease-soft),
+    box-shadow 160ms ease,
+    opacity 160ms ease;
+}
+.ant-tag:not(.ant-tag-checkable-checked):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(31, 53, 87, 0.1);
+}
+
+/* ---------- Dropdown / popover menu items ---------- */
+
+.ant-dropdown-menu-item,
+.ant-dropdown-menu-submenu-title,
+.ant-select-item-option {
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+/* ---------- Ambient pastel blobs ---------- */
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+}
+.app-shell::before,
+.app-shell::after {
+  content: "";
+  position: fixed;
+  z-index: -1;
+  border-radius: 50%;
+  filter: blur(70px);
+  pointer-events: none;
+}
+.app-shell::before {
+  top: -140px;
+  left: -120px;
+  width: 520px;
+  height: 520px;
+  background: radial-gradient(circle, rgba(23, 105, 224, 0.18), transparent 65%);
+  animation: xi-blob-a 26s ease-in-out infinite alternate;
+}
+.app-shell::after {
+  right: -110px;
+  bottom: -120px;
+  width: 480px;
+  height: 480px;
+  background: radial-gradient(circle, rgba(217, 119, 6, 0.12), transparent 65%);
+  animation: xi-blob-b 32s ease-in-out infinite alternate;
+}
+
+/* ---------- Card entrance ---------- */
+
+.ant-card {
+  animation: ds-rise-in 420ms var(--ds-ease-out) backwards;
+}
+.ds-metric-card {
+  animation: ds-pop-in 480ms var(--ds-ease-pop) backwards;
+}
+.ds-metric-card:nth-child(2) { animation-delay: 60ms; }
+.ds-metric-card:nth-child(3) { animation-delay: 110ms; }
+.ds-metric-card:nth-child(4) { animation-delay: 160ms; }
+.ds-metric-card:nth-child(5) { animation-delay: 210ms; }
+.ds-metric-card:nth-child(n + 6) { animation-delay: 250ms; }
+.ds-metric-card .ds-metric-icon {
+  transition: transform 260ms var(--ds-ease-pop);
+}
+.ds-metric-card:hover .ds-metric-icon {
+  transform: scale(1.12) rotate(-4deg);
+}
+
+/* ---------- Table row entrance ---------- */
+
+.ant-table-tbody > tr {
+  animation: ds-row-in 360ms var(--ds-ease-out) backwards;
+}
+.ant-table-tbody > tr:nth-child(2) { animation-delay: 24ms; }
+.ant-table-tbody > tr:nth-child(3) { animation-delay: 48ms; }
+.ant-table-tbody > tr:nth-child(4) { animation-delay: 72ms; }
+.ant-table-tbody > tr:nth-child(5) { animation-delay: 96ms; }
+.ant-table-tbody > tr:nth-child(6) { animation-delay: 120ms; }
+.ant-table-tbody > tr:nth-child(7) { animation-delay: 144ms; }
+.ant-table-tbody > tr:nth-child(8) { animation-delay: 168ms; }
+.ant-table-tbody > tr:nth-child(n + 9) { animation-delay: 190ms; }
+
+/* ---------- Tags & alerts entrance ---------- */
+
+.ant-tag {
+  animation: ds-tag-in 320ms var(--ds-ease-pop) backwards;
+}
+.ant-alert {
+  animation: ds-rise-in 340ms var(--ds-ease-out) backwards;
+}
+
+/* ---------- Tabs content ---------- */
+
+.ant-tabs-tabpane-active {
+  animation: ds-rise-in 360ms var(--ds-ease-out) backwards;
+}
+
+/* ---------- Primary button shine sweep ---------- */
+
+.ant-btn-primary {
+  position: relative;
+  overflow: hidden;
+}
+.ant-btn-primary::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -80%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  transform: skewX(-20deg);
+  opacity: 0;
+  transition: left 0.55s var(--ds-ease-soft), opacity 0.2s ease;
+}
+.ant-btn-primary:not(:disabled):hover::after {
+  left: 130%;
+  opacity: 1;
+}
+
+/* ---------- Progress shimmer ---------- */
+
+.ant-progress-bg {
+  position: relative;
+  overflow: hidden;
+}
+.ant-progress-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  background-size: 200% 100%;
+  animation: xi-progress-shimmer 1.6s linear infinite;
+}
+
+/* ---------- Health pulse ---------- */
+
+.app-health i {
+  animation: xi-pulse 2.4s ease-in-out infinite;
+}
+.app-health-down i {
+  animation-name: xi-pulse-down;
+}
+
+/* ---------- Light pastel scrollbar ---------- */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border: 2px solid #f4f7fc;
+  border-radius: 8px;
+  background: #cbd7e8;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aebfd8;
+}
+
+/* ---------- Keyframes ---------- */
+
+@keyframes ds-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.995);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes ds-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ds-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes ds-row-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes ds-tag-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes xi-blob-a {
+  from {
+    transform: translate(0, 0) scale(1);
+  }
+  to {
+    transform: translate(70px, 50px) scale(1.15);
+  }
+}
+
+@keyframes xi-blob-b {
+  from {
+    transform: translate(0, 0) scale(1);
+  }
+  to {
+    transform: translate(-60px, -70px) scale(1.12);
+  }
+}
+
+@keyframes xi-progress-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes xi-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px var(--ds-color-success-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(15, 159, 110, 0);
+  }
+}
+
+@keyframes xi-pulse-down {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px var(--ds-color-risk-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(229, 72, 77, 0);
+  }
+}
+
+@keyframes ds-bar-grow {
+  from {
+    opacity: 0;
+    transform: scaleY(0);
+  }
+  to {
+    opacity: 1;
+    transform: scaleY(1);
+  }
+}
+
+@keyframes xi-side-drift {
+  from {
+    background-position: 50% 0%;
+  }
+  to {
+    background-position: 50% 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .content > *,
+  .content-graph > *,
+  .content-explorer > *,
+  .ds-page > *,
+  .ant-card,
+  .ds-metric-card,
+  .ant-table-tbody > tr,
+  .ant-tag,
+  .ant-alert,
+  .ant-tabs-tabpane-active,
+  .ant-btn,
+  .ant-menu-item,
+  .ant-menu-submenu-title,
+  .ant-input,
+  .ant-input-affix-wrapper,
+  .ant-select-selector,
+  .ant-picker,
+  .ant-input-number,
+  .ant-tabs-tab,
+  .ant-tag,
+  .ant-dropdown-menu-item,
+  .ant-select-item-option,
+  .app-shell::before,
+  .app-shell::after,
+  .ant-progress-bg::after,
+  .app-health i,
+  .ds-metric-card .ds-metric-icon,
+  .side,
+  .side .ant-menu-item-selected::before,
+  .side .ant-menu-item,
+  .side .ant-menu-submenu-title {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -217,11 +217,11 @@ func HandleGraphExpand(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"result":            res,
-		"cache_hit":         hit,
+		"result":             res,
+		"cache_hit":          hit,
 		"prefetch_scheduled": prefetchScheduled,
-		"candidates":        candidates,
-		"investigation_id":  invID,
+		"candidates":         candidates,
+		"investigation_id":   invID,
 	})
 }
 
@@ -231,6 +231,10 @@ func HandleInvestigationPrefetch(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "预取管理器未装配"})
 		return
 	}
+	if !investigationExists(c.Param("id")) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "调查不存在: " + c.Param("id")})
+		return
+	}
 	c.JSON(http.StatusOK, prefetchManager.Status(c.Param("id")))
 }
 
@@ -238,6 +242,10 @@ func HandleInvestigationPrefetch(c *gin.Context) {
 func HandleInvestigationPrefetchPin(c *gin.Context) {
 	if prefetchManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "预取管理器未装配"})
+		return
+	}
+	if !investigationExists(c.Param("id")) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "调查不存在: " + c.Param("id")})
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
@@ -288,6 +296,10 @@ func HandleInvestigationPrefetchPin(c *gin.Context) {
 func HandleInvestigationPrefetchUpgrade(c *gin.Context) {
 	if prefetchManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "预取管理器未装配"})
+		return
+	}
+	if !investigationExists(c.Param("id")) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "调查不存在: " + c.Param("id")})
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)

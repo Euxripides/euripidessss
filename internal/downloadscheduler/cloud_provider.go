@@ -55,7 +55,16 @@ func (p *CloudProvider) Available() bool {
 	if p.runtime == nil {
 		return false
 	}
-	return p.runtime.Status().Available
+	st := p.runtime.Status()
+	if !st.Available {
+		return false
+	}
+	switch st.State {
+	case cloudruntime.WorkerReady, cloudruntime.WorkerBusy, cloudruntime.WorkerIdle:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *CloudProvider) State() ProviderState {
@@ -65,12 +74,14 @@ func (p *CloudProvider) State() ProviderState {
 	switch p.runtime.Status().State {
 	case cloudruntime.WorkerNotConfigured:
 		return ProviderNotConfigured
-	case cloudruntime.WorkerFailed:
+	case cloudruntime.WorkerAbsent, cloudruntime.WorkerFailed, cloudruntime.WorkerRemoving:
 		return ProviderUnavailable
-	case cloudruntime.WorkerDegraded:
+	case cloudruntime.WorkerDeploying, cloudruntime.WorkerStarting, cloudruntime.WorkerDegraded:
 		return ProviderDegraded
-	default:
+	case cloudruntime.WorkerReady, cloudruntime.WorkerBusy, cloudruntime.WorkerIdle:
 		return ProviderHealthy
+	default:
+		return ProviderUnavailable
 	}
 }
 
@@ -114,6 +125,18 @@ func (p *CloudProvider) Execute(ctx context.Context, req Requirement) (*TaskResu
 	if req.Dataset != DatasetTokenTransfer {
 		return nil, errors.New("V1 Cloud 仅支持 token_transfer")
 	}
+	// ABSENT/DEPLOYING/STARTING 是可部署或可等待状态，但不是可执行健康状态。
+	// SubmitJob 会在入队前执行 EnsureWorker + sqd list 对账；其他不可用状态立即返原因。
+	st := p.runtime.Status()
+	deployableState := (st.State == cloudruntime.WorkerAbsent || st.State == cloudruntime.WorkerDeploying || st.State == cloudruntime.WorkerStarting) &&
+		st.Mode == cloudruntime.ModeCloud && st.DeploymentKeyConfigured && st.R2Configured && st.FailureCooldownUntil == nil
+	if !deployableState && !p.Available() {
+		reason := strings.TrimSpace(st.Reason)
+		if reason == "" {
+			reason = "状态=" + string(st.State)
+		}
+		return nil, fmt.Errorf("SQD Cloud 运行时不可执行: %s", reason)
+	}
 	resolve := p.resolveBlocks
 	if resolve == nil {
 		resolve = p.resolveBlockRange
@@ -128,12 +151,27 @@ func (p *CloudProvider) Execute(ctx context.Context, req Requirement) (*TaskResu
 	for i, chunk := range chunks {
 		jobID, err := p.runtime.SubmitJob(ctx, chunk)
 		if err != nil {
-			return nil, fmt.Errorf("应急 Cloud Chunk %d/%d 提交失败: %w", i+1, len(chunks), err)
+			// 多 Chunk 提交不是事务；任一后续 Chunk 失败时必须撤销此前已提交的
+			// Job，避免调度器返回失败后仍有付费孤儿任务在远端运行。
+			var cancelErrors []string
+			for j := len(jobIDs) - 1; j >= 0; j-- {
+				if cancelErr := p.runtime.CancelJob(context.Background(), jobIDs[j]); cancelErr != nil {
+					cancelErrors = append(cancelErrors, jobIDs[j]+": "+cancelErr.Error())
+				}
+			}
+			if len(cancelErrors) > 0 {
+				return nil, fmt.Errorf("应急 Cloud Chunk %d/%d 提交失败: %w；已提交 Chunk 撤销不完整: %s",
+					i+1, len(chunks), err, strings.Join(cancelErrors, "; "))
+			}
+			return nil, fmt.Errorf("应急 Cloud Chunk %d/%d 提交失败: %w；此前 %d 个 Chunk 已请求取消", i+1, len(chunks), err, len(jobIDs))
 		}
 		jobIDs = append(jobIDs, jobID)
 	}
 	p.mu.Lock()
 	p.chunkJobs[req.ID] = append([]string(nil), jobIDs...)
+	// Scheduler 使用 TaskResult.JobID 轮询；首 Job ID 必须映射到完整 Chunk
+	// 集合，否则首 Chunk 完成时会把仍在运行的其余范围误判为整体完成。
+	p.chunkJobs[jobIDs[0]] = append([]string(nil), jobIDs...)
 	p.mu.Unlock()
 	logger.Log.Info().Str("task", req.ID).Str("chain", strings.ToLower(strings.TrimSpace(req.ChainKey))).
 		Uint64("from_block", from).Uint64("to_block", to).Int("chunks", len(jobIDs)).
@@ -171,10 +209,12 @@ func splitCloudChunks(req Requirement, from, to uint64, addrsPerChunk int, block
 		if end > len(req.Addresses) {
 			end = len(req.Addresses)
 		}
-		for blockFrom := from; blockFrom <= to; blockFrom += blocksPerChunk + 1 {
-			blockTo := blockFrom + blocksPerChunk
-			if blockTo > to {
-				blockTo = to
+		for blockFrom := from; ; {
+			blockTo := to
+			// blocksPerChunk 表示区块数量；闭区间终点应为 from+size-1。
+			// 用剩余长度比较避免 uint64 上溢。
+			if blocksPerChunk > 0 && to-blockFrom >= blocksPerChunk {
+				blockTo = blockFrom + blocksPerChunk - 1
 			}
 			n++
 			out = append(out, cloudruntime.Job{
@@ -183,12 +223,16 @@ func splitCloudChunks(req Requirement, from, to uint64, addrsPerChunk int, block
 				PlanID:    req.PlanID,
 				TaskID:    req.ID,
 				ChainKey:  chainKey,
-				Addresses: req.Addresses[i:end],
+				Addresses: append([]string(nil), req.Addresses[i:end]...),
 				FromBlock: blockFrom,
 				ToBlock:   blockTo,
 				Priority:  90,
 				Attempt:   1,
 			})
+			if blockTo == to {
+				break
+			}
+			blockFrom = blockTo + 1
 		}
 	}
 	if len(out) == 0 {
@@ -209,15 +253,16 @@ func (p *CloudProvider) JobProgress(ctx context.Context, jobID string) (float64,
 	if len(ids) == 0 {
 		ids = []string{jobID}
 	}
-	var rows int64
 	done, failed := 0, 0
 	var firstErr error
 	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return 0, parquetdownload.StatusFailed, err
+		}
 		job, err := p.runtime.JobStatus(id)
 		if err != nil {
-			return 0, parquetdownload.StatusRunning, nil // 远端暂时不可读，不终止任务
+			return float64(done) / float64(len(ids)), parquetdownload.StatusFailed, fmt.Errorf("读取 Cloud Job %s 状态: %w", id, err)
 		}
-		rows += job.Rows
 		switch job.State {
 		case "queued":
 			// 等待
@@ -240,10 +285,7 @@ func (p *CloudProvider) JobProgress(ctx context.Context, jobID string) (float64,
 	if done == len(ids) {
 		return 1, parquetdownload.StatusDone, nil
 	}
-	if done > 0 {
-		return 0.5, parquetdownload.StatusRunning, nil
-	}
-	return 0, parquetdownload.StatusRunning, nil
+	return float64(done) / float64(len(ids)), parquetdownload.StatusRunning, nil
 }
 
 // ── 区块范围解析（V1：日期 → 区块，锚定 Portal finalized head）──

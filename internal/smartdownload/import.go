@@ -57,19 +57,27 @@ func importText(r io.Reader) (*ImportResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw := string(payload)
-	rows := int64(0)
-	nonEmpty := 0
-	for _, line := range strings.Split(raw, "\n") {
-		if strings.TrimSpace(line) != "" {
-			nonEmpty++
+	lines := make([]string, 0)
+	for _, line := range strings.Split(strings.ReplaceAll(string(payload), "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line != "" {
+			lines = append(lines, line)
 		}
-		rows++
 	}
-	summary := normalizeAddresses(raw)
-	col := DetectedColumn{Name: "address", Confidence: 1.0, Valid: summary.Valid, NonEmpty: nonEmpty}
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("文件为空")
+	}
+	if isAddressHeader(lines[0]) {
+		lines = lines[1:]
+	}
+	summary := normalizeAddresses(strings.Join(lines, "\n"))
+	confidence := 0.0
+	if len(lines) > 0 {
+		confidence = float64(summary.Valid) / float64(len(lines))
+	}
+	col := DetectedColumn{Name: "address", Confidence: confidence, Valid: summary.Valid, NonEmpty: len(lines)}
 	return &ImportResult{
-		Rows:            rows,
+		Rows:            int64(len(lines)),
 		DetectedColumns: []DetectedColumn{col},
 		SelectedColumn:  "address",
 		Valid:           summary.Valid,
@@ -77,6 +85,16 @@ func importText(r io.Reader) (*ImportResult, error) {
 		Invalid:         summary.Invalid,
 		FinalAddresses:  summary.Addresses,
 	}, nil
+}
+
+func isAddressHeader(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(value, "\ufeff")))
+	switch value {
+	case "address", "wallet", "wallet_address", "account_address", "地址", "钱包地址", "账户地址":
+		return true
+	default:
+		return false
+	}
 }
 
 // importCSV 读入内存（上限 32MB），逐列统计命中率并提取最佳列。
@@ -188,6 +206,9 @@ func analyzeColumns(all [][]string) (*ImportResult, error) {
 	}
 	rows := int64(0)
 	for _, row := range all[start:] {
+		if !rowHasData(row) {
+			continue
+		}
 		rows++
 		for i, cell := range row {
 			if i >= width {
@@ -209,7 +230,9 @@ func analyzeColumns(all [][]string) (*ImportResult, error) {
 		if c.NonEmpty == 0 {
 			continue
 		}
-		c.Confidence = float64(c.Valid) / float64(c.NonEmpty)
+		if rows > 0 {
+			c.Confidence = float64(c.Valid) / float64(rows)
+		}
 		if c.Confidence > bestScore || (c.Confidence == bestScore && c.Valid > 0 && (best < 0 || cols[best].Valid < c.Valid)) {
 			best, bestScore = i, c.Confidence
 		}
@@ -219,6 +242,9 @@ func analyzeColumns(all [][]string) (*ImportResult, error) {
 	}
 	var values []string
 	for _, row := range all[start:] {
+		if !rowHasData(row) {
+			continue
+		}
 		if best < len(row) {
 			values = append(values, row[best])
 		}
@@ -237,6 +263,15 @@ func analyzeColumns(all [][]string) (*ImportResult, error) {
 		Invalid:         summary.Invalid,
 		FinalAddresses:  summary.Addresses,
 	}, nil
+}
+
+func rowHasData(row []string) bool {
+	for _, cell := range row {
+		if strings.TrimSpace(cell) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 type importSummary struct {
@@ -264,6 +299,7 @@ func normalizeAddresses(raw string) importSummary {
 			summary.InvalidItems = append(summary.InvalidItems, v)
 			continue
 		}
+		summary.Valid++
 		if seen[v] {
 			summary.Duplicates++
 			continue
@@ -271,7 +307,6 @@ func normalizeAddresses(raw string) importSummary {
 		seen[v] = true
 		summary.Addresses = append(summary.Addresses, v)
 	}
-	summary.Valid = len(summary.Addresses)
 	summary.Invalid = len(summary.InvalidItems)
 	return summary
 }

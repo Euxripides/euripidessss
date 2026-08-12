@@ -58,8 +58,10 @@ import {
   getBatchReport,
   getPrefetchStats,
   getPrefetchStatus,
+  getSmartDownloadCapabilities,
   getTurboStatus,
   importAddressFile,
+  instantiateTaskTemplate,
   listBatchAddresses,
   listBatches,
   listRegistry,
@@ -71,6 +73,7 @@ import {
   queryResults,
   resultSummary,
   saveTaskTemplate,
+  smartDownloadErrorMessage,
   switchBatchMode,
   upgradePrefetch,
   type AddressDetail,
@@ -135,6 +138,26 @@ const datasetOptions = Object.keys(DATASET_LABELS).map((d) => ({
 }));
 
 const CHAIN_KEYS = new Set(["bsc", "eth", "base", "arbitrum"]);
+const TERMINAL_BATCH_STATUSES = new Set(["COMPLETED", "PARTIAL", "FAILED", "CANCELED"]);
+const TERMINAL_ADDRESS_STATUSES = new Set(["COMPLETED", "PARTIAL", "FAILED", "CANCELED"]);
+const BATCH_STATUS_FILTER_OPTIONS = [
+  "CREATED",
+  "RUNNING",
+  "PAUSED",
+  "PAUSED_BY_PRIORITY",
+  "COMPLETED",
+  "PARTIAL",
+  "FAILED",
+  "CANCELED",
+].map((status) => ({ value: status, label: status }));
+
+function canPauseBatch(status?: string): boolean {
+  return status === "RUNNING";
+}
+
+function canResumeBatch(status?: string): boolean {
+  return status === "CREATED" || status === "PAUSED";
+}
 
 // 多链输入：每行 `0x...` 后可跟空格加链名（如 `0x... eth`），缺省使用上方网络。
 function parseAddressLines(text: string): {
@@ -545,7 +568,11 @@ function HardeningPanel({ status, report }: { status: HardeningStatus; report: J
           </div>
         ))}
       </div>
-      {slowest !== "UNKNOWN" ? <Alert className="sd-hardening-alert" type="warning" showIcon message={`当前最慢层：${BOTTLENECK_LABELS[status.bottleneck.toUpperCase()] ?? status.slowest_stage ?? status.bottleneck}`} /> : null}
+      {slowest !== "UNKNOWN" ? (
+        <div className="sd-hardening-note">
+          当前最慢层：{BOTTLENECK_LABELS[status.bottleneck.toUpperCase()] ?? status.slowest_stage ?? status.bottleneck}
+        </div>
+      ) : null}
       <div className="sd-hardening-guards">
         <GuardTag label="Storage" guard={status.guards.storage} />
         <GuardTag label="RPC Quota" guard={status.guards.rpc} />
@@ -553,13 +580,17 @@ function HardeningPanel({ status, report }: { status: HardeningStatus; report: J
         <GuardTag label="ClickHouse" guard={status.guards.clickhouse} />
       </div>
       {status.failure ? (
-        <Alert
-          className="sd-hardening-alert"
-          type="error"
-          showIcon
-          message={`${status.failure.error_type ?? "任务失败"} · ${status.failure.stage ?? "UNKNOWN"}`}
-          description={`Dataset ${status.failure.dataset ?? "—"} · Range ${status.failure.range ?? "—"} · Provider ${status.failure.provider ?? "—"} · 完成 ${status.failure.completed_percent ?? 0}% · 恢复点 ${status.failure.checkpoint ?? "—"} · 建议 ${status.failure.recommended_action ?? "检查错误后从 checkpoint 继续"}`}
-        />
+        <div className="sd-hardening-note sd-hardening-error">
+          <b>
+            {status.failure.error_type ?? "任务失败"} · {status.failure.stage ?? "UNKNOWN"}
+          </b>
+          <span>
+            Dataset {status.failure.dataset ?? "—"} · Range {status.failure.range ?? "—"} · Provider{" "}
+            {status.failure.provider ?? "—"} · 完成 {status.failure.completed_percent ?? 0}% · 恢复点{" "}
+            {status.failure.checkpoint ?? "—"} · 建议{" "}
+            {status.failure.recommended_action ?? "检查错误后从 checkpoint 继续"}
+          </span>
+        </div>
       ) : null}
       {report ? (
         <div className="sd-job-report">
@@ -656,9 +687,49 @@ function abbr(v?: unknown): string {
 }
 
 function fmtTime(v?: unknown): string {
-  const n = Number(v);
-  if (!n || !Number.isFinite(n)) return "—";
-  return new Date(n * 1000).toISOString().replace("T", " ").slice(0, 19);
+  if (v == null || v === "") return "—";
+  let date: Date;
+  if (typeof v === "number" || (typeof v === "string" && /^[-+]?\d+(?:\.\d+)?$/.test(v.trim()))) {
+    const numeric = Number(v);
+    if (!Number.isFinite(numeric)) return "—";
+    date = new Date(Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1000 : numeric);
+  } else if (typeof v === "string") {
+    date = new Date(v);
+  } else {
+    return "—";
+  }
+  if (!Number.isFinite(date.getTime())) return "—";
+  return date.toISOString().replace("T", " ").slice(0, 19);
+}
+
+function compareIndexedResults(left: IndexedResult, right: IndexedResult): number {
+  const leftQuality = [
+    left.certification?.toUpperCase() === "CERTIFIED" ? 1 : 0,
+    left.merged_parquet ? 1 : 0,
+    left.row_count > 0 ? 1 : 0,
+  ];
+  const rightQuality = [
+    right.certification?.toUpperCase() === "CERTIFIED" ? 1 : 0,
+    right.merged_parquet ? 1 : 0,
+    right.row_count > 0 ? 1 : 0,
+  ];
+  for (let index = 0; index < leftQuality.length; index += 1) {
+    if (leftQuality[index] !== rightQuality[index]) return leftQuality[index] - rightQuality[index];
+  }
+  const leftIndexedAt = new Date(left.indexed_at).getTime();
+  const rightIndexedAt = new Date(right.indexed_at).getTime();
+  const leftIndexedValue = Number.isFinite(leftIndexedAt) ? leftIndexedAt : Number.NEGATIVE_INFINITY;
+  const rightIndexedValue = Number.isFinite(rightIndexedAt) ? rightIndexedAt : Number.NEGATIVE_INFINITY;
+  if (leftIndexedValue !== rightIndexedValue) return leftIndexedValue - rightIndexedValue;
+  return left.dataset_job_id.localeCompare(right.dataset_job_id);
+}
+
+function pickAuthoritativeResult(entries: IndexedResult[]): IndexedResult | undefined {
+  let authoritative: IndexedResult | undefined;
+  for (const entry of entries) {
+    if (!authoritative || compareIndexedResults(entry, authoritative) > 0) authoritative = entry;
+  }
+  return authoritative;
 }
 
 function fmtAmount(v?: unknown): string {
@@ -716,7 +787,7 @@ export default function SmartDownloadPage({ onOpenAddress, onNavigate }: SmartDo
   };
 
   return (
-    <div className="smart-download-page" style={{ padding: 24 }}>
+    <div className="smart-download-page">
       <Typography.Title level={4}>
         <ThunderboltOutlined /> 智能下载
       </Typography.Title>
@@ -881,6 +952,7 @@ function PrefetchTab({ refreshKey }: { refreshKey: number }) {
         size="small"
         dataSource={status?.candidates ?? []}
         columns={columns}
+        scroll={{ x: 940 }}
         pagination={{ pageSize: 20 }}
         locale={{ emptyText: "暂无预取候选 — 使用「创建下载」或图扩展接口生成候选后自动出现" }}
       />
@@ -920,6 +992,8 @@ function PrefetchTab({ refreshKey }: { refreshKey: number }) {
 
 function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   const [form] = Form.useForm();
+  const selectedChain = (Form.useWatch("chain_key", form) as string | undefined) ?? "bsc";
+  const selectedMode = (Form.useWatch("mode", form) as DownloadMode | undefined) ?? "AUTO";
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importing, setImporting] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -929,17 +1003,22 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   const [preflightRequest, setPreflightRequest] = useState<CreateBatchRequest | null>(null);
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [templateName, setTemplateName] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
-  const [planSummary, setPlanSummary] = useState<{
-    rows: number;
-    bytes: number;
-    buckets: Record<string, number>;
-    fullHits: number;
-    partialHits: number;
-    misses: number;
-    reusedRanges: number;
-  } | null>(null);
-  const [submittedCount, setSubmittedCount] = useState(0);
+  const [instantiatingTemplateId, setInstantiatingTemplateId] = useState<string | null>(null);
+  const [availableDatasets, setAvailableDatasets] = useState<string[] | null>(null);
+  const capabilityRequestSequence = useRef(0);
+  const importRequestSequence = useRef(0);
+
+  const capabilityDatasetOptions = useMemo(() => {
+    const available = availableDatasets ? new Set(availableDatasets) : null;
+    return datasetOptions.map((option) => {
+      const disabled = available !== null && !available.has(option.value);
+      return {
+        ...option,
+        disabled,
+        label: disabled ? `${option.label}（当前不可用）` : option.label,
+      };
+    });
+  }, [availableDatasets]);
 
   const refreshTemplates = () => void listTaskTemplates().then(setTemplates);
 
@@ -947,21 +1026,51 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     refreshTemplates();
   }, []);
 
+  useEffect(() => {
+    const sequence = ++capabilityRequestSequence.current;
+    setAvailableDatasets(null);
+    void getSmartDownloadCapabilities(selectedChain, selectedMode).then((capabilities) => {
+      if (sequence !== capabilityRequestSequence.current || !capabilities) return;
+      setAvailableDatasets(capabilities.available_datasets);
+      const available = new Set(capabilities.available_datasets);
+      const current = (form.getFieldValue("datasets") as Dataset[] | undefined) ?? [];
+      const supported = current.filter((dataset) => available.has(dataset));
+      if (supported.length !== current.length) {
+        form.setFieldValue("datasets", supported);
+        setPreflight(null);
+        setPlannerPreview(null);
+        setPreflightRequest(null);
+        void message.warning("已移除当前网络与执行模式下不可用的数据集");
+      }
+    });
+    return () => {
+      if (capabilityRequestSequence.current === sequence) capabilityRequestSequence.current += 1;
+    };
+  }, [form, selectedChain, selectedMode]);
+
   const handleFile = async (file: File) => {
+    const sequence = ++importRequestSequence.current;
     setImporting(true);
-    const res = await importAddressFile(file);
-    setImporting(false);
-    if (!res) {
-      void message.error("地址导入失败，请检查文件格式（TXT/CSV/XLSX）");
-      return false;
+    setImportResult(null);
+    try {
+      const res = await importAddressFile(file);
+      if (sequence !== importRequestSequence.current || !res) return false;
+      setImportResult(res);
+      setPreflight(null);
+      setPlannerPreview(null);
+      setPreflightRequest(null);
+      void message.success(
+        `识别地址列「${res.selected_column}」：原始 ${res.rows} 行 → 任务地址 ${
+          res.final_addresses?.length ?? res.valid
+        } 个（有效 ${res.valid} / 重复 ${res.duplicates} / 无效 ${res.invalid}）`,
+      );
+    } catch (error) {
+      if (sequence === importRequestSequence.current) {
+        void message.error(smartDownloadErrorMessage(error, "地址导入失败，请检查文件格式（TXT/CSV/XLSX）"));
+      }
+    } finally {
+      if (sequence === importRequestSequence.current) setImporting(false);
     }
-    setImportResult(res);
-    setPreflight(null);
-    setPlannerPreview(null);
-    setPreflightRequest(null);
-    void message.success(
-      `识别地址列「${res.selected_column}」：有效 ${res.valid} / 重复 ${res.duplicates} / 无效 ${res.invalid}`,
-    );
     return false;
   };
 
@@ -972,7 +1081,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     range_mode: "FULL" | "TIME" | "BLOCK";
     from_block?: number;
     to_block?: number;
-    date_range?: unknown[];
+    date_range?: [Dayjs, Dayjs];
     force_redownload?: boolean;
     mode: DownloadMode;
     priority: DownloadPriority;
@@ -984,7 +1093,6 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     resource_profile: ResourceProfile;
   }) => {
     let addresses: string[] = importResult?.final_addresses ?? [];
-    setSubmittedCount(addresses.length > 0 ? addresses.length : values.addresses?.split(/[\n,，;；\s]+/).filter(Boolean).length ?? 0);
     const parsed = parseAddressLines(values.addresses ?? "");
     const chainOverrides = parsed.overrides;
     if (addresses.length === 0 && values.addresses) {
@@ -1007,8 +1115,12 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         return;
       }
     }
-    if (values.range_mode === "TIME" && Array.isArray(values.date_range) && values.date_range.length === 2) {
-      const [from, to] = values.date_range as [Dayjs, Dayjs];
+    if (values.range_mode === "TIME") {
+      const [from, to] = values.date_range ?? [];
+      if (!from?.isValid() || !to?.isValid() || !from.isBefore(to)) {
+        void message.warning("请选择有效的起止时间，且结束时间必须晚于开始时间");
+        return;
+      }
       defaultRange.start_time = from.toISOString();
       defaultRange.end_time = to.toISOString();
     }
@@ -1069,6 +1181,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     }
     if (preflight.blocked) return;
     setCreating(true);
+    const analyzingKey = "sd-analyzing";
     try {
       const res = await createBatch(request);
       if (!res?.batch) {
@@ -1076,7 +1189,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         return;
       }
       // Discovery 反馈：先分析数据规模，再自动进入任务中心（不要求用户确认）
-      setAnalyzing(true);
+      message.loading({ key: analyzingKey, content: "正在分析数据规模…", duration: 0 });
       const plan = await planBatch(res.batch.id);
       const plannedDatasets = plan?.datasets ?? [];
       if (plannedDatasets.length > 0) {
@@ -1088,22 +1201,30 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
           bytes += d.estimated_bytes || 0;
           buckets[d.size_class] = (buckets[d.size_class] ?? 0) + 1;
         }
-        setPlanSummary({
-          rows,
-          bytes,
-          buckets,
-          fullHits: res.local_full_hits ?? 0,
-          partialHits: res.local_partial_hits ?? 0,
-          misses: res.local_misses ?? 0,
-          reusedRanges: res.reused_ranges ?? 0,
+        const hits = res.local_full_hits ?? 0;
+        const partial = res.local_partial_hits ?? 0;
+        const misses = res.local_misses ?? 0;
+        const reused = res.reused_ranges ?? 0;
+        message.loading({
+          key: analyzingKey,
+          content: `地址 ${addresses.length} 个 · 预计 ${Math.round(rows).toLocaleString()} 行 · ≈ ${(
+            bytes /
+            (1 << 30)
+          ).toFixed(1)} GB · 小型 ${buckets.S} / 中型 ${buckets.M} / 大型 ${buckets.L} / 超大型 ${
+            buckets.XL
+          } · 完全命中 ${hits} / 部分命中 ${partial} / 需下载 ${misses} · 复用 ${reused} 个区间 · 系统将自动选择最合适的数据源`,
+          duration: 0,
         });
       }
       await batchAction(res.batch.id, "start");
-      setAnalyzing(false);
+      message.success({ key: analyzingKey, content: "数据规模分析完成，任务已开始下载", duration: 3 });
       onCreated(res.batch.id);
       setPreflight(null);
       setPlannerPreview(null);
       setPreflightRequest(null);
+    } catch (err) {
+      message.destroy(analyzingKey);
+      message.error(err instanceof Error ? err.message : "任务启动失败");
     } finally {
       setCreating(false);
     }
@@ -1163,6 +1284,39 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     void message.success(`已删除模板「${template.name}」`);
   };
 
+  const instantiateTemplate = async (template: TaskTemplate) => {
+    const request = template.configuration as CreateBatchRequest;
+    setInstantiatingTemplateId(template.id);
+    try {
+      const estimate = await preflightBatch(request);
+      if (!estimate) {
+        void message.error("模板生产预检失败，未创建任务");
+        return;
+      }
+      if (estimate.blocked) {
+        void message.error(`模板已被资源保护策略阻止：${estimate.block_reasons.join("；") || "请检查资源状态"}`);
+        return;
+      }
+      const batch = await instantiateTaskTemplate(template.id);
+      if (!batch) {
+        void message.error("模板实例化失败");
+        return;
+      }
+      const started = await batchAction(batch.id, "start");
+      if (!started) {
+        void message.error("模板任务已创建，但启动失败，请到任务中心继续");
+        onCreated(batch.id);
+        return;
+      }
+      void message.success(`模板「${template.name}」预检通过，任务已启动`);
+      onCreated(batch.id);
+    } catch (error) {
+      void message.error(smartDownloadErrorMessage(error, "模板实例化失败"));
+    } finally {
+      setInstantiatingTemplateId(null);
+    }
+  };
+
   return (
     <Card>
       <Form
@@ -1205,9 +1359,19 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
           {templates.length > 0 ? (
             <div className="sd-template-list">
               {templates.map((template) => (
-                <Tag key={template.id} closable onClose={(event) => { event.preventDefault(); void removeTemplate(template); }}>
-                  {template.name} · {template.resource_profile}
-                </Tag>
+                <Space.Compact key={template.id} className="sd-template-item">
+                  <Tag closable onClose={(event) => { event.preventDefault(); void removeTemplate(template); }}>
+                    {template.name} · {template.resource_profile}
+                  </Tag>
+                  <Button
+                    size="small"
+                    loading={instantiatingTemplateId === template.id}
+                    disabled={instantiatingTemplateId !== null}
+                    onClick={() => void instantiateTemplate(template)}
+                  >
+                    预检并创建
+                  </Button>
+                </Space.Compact>
               ))}
             </div>
           ) : null}
@@ -1233,29 +1397,28 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             </Button>
           </Upload>
           {importResult && (
-            <Tag color="blue">
-              识别列「{importResult.selected_column}」 有效 {importResult.valid} / 重复 {importResult.duplicates} /
-              无效 {importResult.invalid}
-            </Tag>
+            <>
+              <Tag color="blue">
+                识别列「{importResult.selected_column}」 · 原始 {importResult.rows} 行 / 有效 {importResult.valid} /
+                重复 {importResult.duplicates} / 无效 {importResult.invalid} / 最终任务地址{" "}
+                {importResult.final_addresses?.length ?? importResult.valid} 个
+              </Tag>
+              <Button
+                size="small"
+                onClick={() => {
+                  importRequestSequence.current += 1;
+                  setImportResult(null);
+                  setPreflight(null);
+                  setPlannerPreview(null);
+                  setPreflightRequest(null);
+                  void message.success("已清除导入地址，可改用手工输入");
+                }}
+              >
+                清除导入
+              </Button>
+            </>
           )}
         </Space>
-        {importResult && (
-          <Alert
-            style={{ marginBottom: 16 }}
-            type="info"
-            showIcon
-            message={`原始记录 ${importResult.rows} 行，最终任务地址 ${importResult.final_addresses?.length ?? importResult.valid} 个`}
-            description={
-              <div>
-                列候选：
-                {(importResult.detected_columns ?? [])
-                  .filter((c) => c.valid > 0)
-                  .map((c) => `${c.name}(${(c.confidence * 100).toFixed(1)}%)`)
-                  .join("，")}
-              </div>
-            }
-          />
-        )}
         <Space size="large" wrap align="start">
           <Form.Item label="网络" name="chain_key" rules={[{ required: true }]}>
             <Select options={chainOptions} style={{ width: 240 }} />
@@ -1323,8 +1486,8 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             );
           }}
         </Form.Item>
-        <Form.Item label="数据" name="datasets" rules={[{ required: true }]}>
-          <Checkbox.Group options={datasetOptions} />
+        <Form.Item label="数据" name="datasets" rules={[{ required: true, message: "请至少选择一类数据" }]}>
+          <Checkbox.Group options={capabilityDatasetOptions} />
         </Form.Item>
         <Form.Item label="时间范围" name="range_mode">
           <Radio.Group>
@@ -1338,7 +1501,24 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
             const mode = getFieldValue("range_mode");
             if (mode === "TIME") {
               return (
-                <Form.Item name="date_range" label="时间区间">
+                <Form.Item
+                  name="date_range"
+                  label="时间区间"
+                  rules={[
+                    { required: true, message: "请选择起止时间" },
+                    {
+                      validator: (_, value?: [Dayjs, Dayjs]) => {
+                        if (!value || value.length !== 2 || !value[0]?.isValid() || !value[1]?.isValid()) {
+                          return Promise.reject(new Error("请选择有效的起止时间"));
+                        }
+                        if (!value[0].isBefore(value[1])) {
+                          return Promise.reject(new Error("结束时间必须晚于开始时间"));
+                        }
+                        return Promise.resolve();
+                      },
+                    },
+                  ]}
+                >
                   <DatePicker.RangePicker showTime />
                 </Form.Item>
               );
@@ -1406,19 +1586,6 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         <Form.Item name="force_redownload" valuePropName="checked" style={{ marginBottom: 8 }}>
           <Checkbox>强制忽略本地缓存重新下载（默认自动复用本地已验证数据）</Checkbox>
         </Form.Item>
-        {analyzing && (
-          <Alert
-            style={{ marginBottom: 12 }}
-            type="info"
-            showIcon
-            message="正在分析数据规模…"
-            description={
-              planSummary
-                ? `地址 ${submittedCount || "—"} 个 · 预计 ${Math.round(planSummary.rows).toLocaleString()} 行 · ≈ ${(planSummary.bytes / (1 << 30)).toFixed(1)} GB · 小型 ${planSummary.buckets.S} / 中型 ${planSummary.buckets.M} / 大型 ${planSummary.buckets.L} / 超大型 ${planSummary.buckets.XL} · 完全命中 ${planSummary.fullHits} / 部分命中 ${planSummary.partialHits} / 需下载 ${planSummary.misses} · 复用 ${planSummary.reusedRanges} 个区间 · 系统将自动选择最合适的数据源`
-                : "正在探测每个地址的数据规模…"
-            }
-          />
-        )}
         {preflight ? (
           <div className={`sd-preflight ${preflight.blocked ? "is-blocked" : "is-ready"}`}>
             <div className="sd-preflight-head">
@@ -1468,7 +1635,7 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
           loading={creating || preflighting}
           disabled={Boolean(preflight?.blocked)}
         >
-          {preflight ? "预检通过，开始智能下载" : "先执行生产预检"}
+          {preflighting ? "正在执行生产预检…" : preflight ? "预检通过，开始智能下载" : "先执行生产预检"}
         </Button>
       </Form>
     </Card>
@@ -1485,6 +1652,8 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
+  const [batchPage, setBatchPage] = useState(1);
+  const [batchPageSize, setBatchPageSize] = useState(10);
   const [detail, setDetail] = useState<AddressDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [ledgers, setLedgers] = useState<Record<string, LedgerEntry[]>>({});
@@ -1496,16 +1665,27 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   const [jobReport, setJobReport] = useState<JobReport | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [compareResult, setCompareResult] = useState<CompareRunsResult | null>(null);
+  const [comparableBatchIds, setComparableBatchIds] = useState<Set<string>>(() => new Set());
+  const [compareError, setCompareError] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
   const [switchingMode, setSwitchingMode] = useState(false);
+  const batchListRequestSequence = useRef(0);
+  const batchDetailRequestSequence = useRef(0);
+  const addressListRequestSequence = useRef(0);
+  const addressDetailRequestSequence = useRef(0);
 
   const load = () => {
+    const sequence = ++batchListRequestSequence.current;
     void listBatches().then(async (items) => {
       const reports = await Promise.all(items.map((batch) =>
         ["COMPLETED", "PARTIAL", "FAILED", "CANCELED"].includes(batch.status)
           ? getBatchReport(batch.id)
           : Promise.resolve(null),
       ));
+      if (sequence !== batchListRequestSequence.current) return;
+      const nextComparableIds = new Set(
+        items.filter((_, index) => reports[index] !== null).map((batch) => batch.id),
+      );
       setBatches(items.map((batch, index) => {
         const report = reports[index];
         return report ? {
@@ -1518,6 +1698,10 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
           result: report.certification ?? report.result ?? batch.status,
         } : batch;
       }));
+      setComparableBatchIds(nextComparableIds);
+      setCompareIds((current) => current.filter((id) => nextComparableIds.has(id)));
+      setCompareResult(null);
+      setCompareError(null);
     });
   };
 
@@ -1528,6 +1712,8 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
 
   useEffect(() => {
     if (!selectedBatch) {
+      batchDetailRequestSequence.current += 1;
+      addressListRequestSequence.current += 1;
       setAddresses([]);
       setAddressesExpanded(false);
       setBatchSnap(null);
@@ -1538,6 +1724,7 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
       setJobReport(null);
       return;
     }
+    const detailSequence = ++batchDetailRequestSequence.current;
     const selectedStatus = batches.find((batch) => batch.id === selectedBatch)?.status;
     const reportRequest = selectedStatus && ["COMPLETED", "PARTIAL", "FAILED", "CANCELED"].includes(selectedStatus)
       ? getBatchReport(selectedBatch)
@@ -1550,6 +1737,7 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
       getBatchAccelerator(selectedBatch),
       reportRequest,
     ]).then(([snapshot, nextSummary, nextTurboStatus, nextHardening, nextAccelerator, nextReport]) => {
+      if (detailSequence !== batchDetailRequestSequence.current) return;
       setBatchSnap(snapshot);
       setSummary(nextSummary);
       setTurboStatus(nextTurboStatus);
@@ -1558,14 +1746,18 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
       setJobReport(nextReport);
     });
     if (addressesExpanded) {
-      void listBatchAddresses(selectedBatch, page, 50, statusFilter).then((res) => {
+      const addressSequence = ++addressListRequestSequence.current;
+      void listBatchAddresses(selectedBatch, page, 50).then((res) => {
+        if (addressSequence !== addressListRequestSequence.current) return;
         if (res) {
           setAddresses(res.addresses);
           setTotal(res.total);
         }
       });
+    } else {
+      addressListRequestSequence.current += 1;
     }
-  }, [selectedBatch, page, statusFilter, refreshKey, addressesExpanded]);
+  }, [selectedBatch, page, refreshKey, addressesExpanded]);
 
   const runBatchAction = async (id: string, action: string) => {
     await batchAction(id, action);
@@ -1591,9 +1783,19 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
       void message.warning("请选择两个批次进行对比");
       return;
     }
+    if (compareIds.some((id) => !comparableBatchIds.has(id))) {
+      setCompareError("所选批次尚未生成终态报告，不能进行性能对比");
+      return;
+    }
     setComparing(true);
+    setCompareError(null);
     try {
-      setCompareResult(await compareBatchRuns(compareIds[0], compareIds[1]));
+      const result = await compareBatchRuns(compareIds[0], compareIds[1]);
+      if (!result || result.runs.length !== 2) throw new Error("后端未返回两个完整的运行报告");
+      setCompareResult(result);
+    } catch (error) {
+      setCompareResult(null);
+      setCompareError(smartDownloadErrorMessage(error, "任务对比失败"));
     } finally {
       setComparing(false);
     }
@@ -1606,7 +1808,9 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
 
   const setRefresh = () => {
     // 地址操作后强制刷新当前页数据
-    void listBatchAddresses(selectedBatch ?? "", page, 50, statusFilter).then((res) => {
+    const sequence = ++addressListRequestSequence.current;
+    void listBatchAddresses(selectedBatch ?? "", page, 50).then((res) => {
+      if (sequence !== addressListRequestSequence.current) return;
       if (res) {
         setAddresses(res.addresses);
         setTotal(res.total);
@@ -1615,8 +1819,9 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   };
 
   const openDetail = async (addressId: string) => {
+    const sequence = ++addressDetailRequestSequence.current;
     const d = await addressDetail(addressId);
-    if (!d) return;
+    if (sequence !== addressDetailRequestSequence.current || !d) return;
     setDetail(d);
     setDetailOpen(true);
     const map: Record<string, LedgerEntry[]> = {};
@@ -1625,12 +1830,19 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
         map[dd.dataset.id] = await datasetLedger(dd.dataset.id);
       }),
     );
+    if (sequence !== addressDetailRequestSequence.current) return;
     setLedgers(map);
   };
 
   const hasProviderSwitch = Object.values(ledgers).some((list) =>
     list.some((e) => e.event === "PROVIDER_SWITCHED"),
   );
+
+  useEffect(() => {
+    if (detailOpen && hasProviderSwitch) {
+      void message.warning("已自动切换下载方式：已完成数据不会重新下载，新 Provider 已从未完成区间继续");
+    }
+  }, [detailOpen, hasProviderSwitch]);
 
   const selectBatch = (batchId: string) => {
     setSelectedBatch(batchId);
@@ -1639,6 +1851,18 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
     setTotal(0);
     setPage(1);
   };
+
+  const filteredBatches = useMemo(
+    () => (statusFilter ? batches.filter((batch) => batch.status === statusFilter) : batches),
+    [batches, statusFilter],
+  );
+  const compareOptions = useMemo(
+    () => batches
+      .filter((batch) => comparableBatchIds.has(batch.id))
+      .map((batch) => ({ value: batch.id, label: batchDisplayName(batch) })),
+    [batches, comparableBatchIds],
+  );
+  const excludedComparisonCount = batches.length - compareOptions.length;
 
   const batchColumns: ColumnsType<BatchJob> = [
     {
@@ -1677,19 +1901,19 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
               地址
             </Button>
           </Tooltip>
-          <Tooltip title={r.status === "CREATED" || r.status === "PAUSED" ? "继续" : "当前状态不可继续"}>
+          <Tooltip title={canResumeBatch(r.status) ? "继续" : "当前状态不可继续"}>
             <Button
               size="small"
               icon={<PlayCircleOutlined />}
-              disabled={r.status !== "CREATED" && r.status !== "PAUSED"}
+              disabled={!canResumeBatch(r.status)}
               onClick={() => void runBatchAction(r.id, "resume")}
             />
           </Tooltip>
-          <Tooltip title={r.status === "RUNNING" ? "暂停全部" : "当前状态不可暂停"}>
+          <Tooltip title={canPauseBatch(r.status) ? "暂停全部" : "当前状态不可暂停"}>
             <Button
               size="small"
               icon={<PauseCircleOutlined />}
-              disabled={r.status !== "RUNNING"}
+              disabled={!canPauseBatch(r.status)}
               onClick={() => void runBatchAction(r.id, "pause")}
             />
           </Tooltip>
@@ -1698,7 +1922,7 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
               size="small"
               danger
               icon={<StopOutlined />}
-              disabled={r.status === "COMPLETED" || r.status === "CANCELED" || r.status === "FAILED"}
+              disabled={TERMINAL_BATCH_STATUSES.has(r.status)}
               onClick={() => void runBatchAction(r.id, "cancel")}
             />
           </Tooltip>
@@ -1708,7 +1932,7 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   ];
 
   const currentBatch = batches.find((batch) => batch.id === selectedBatch);
-  const modeSwitchDisabled = !currentBatch || ["COMPLETED", "CANCELED", "FAILED"].includes(currentBatch.status);
+  const modeSwitchDisabled = !currentBatch || TERMINAL_BATCH_STATUSES.has(currentBatch.status);
 
   const addressColumns: ColumnsType<AddressJob> = [
     {
@@ -1774,11 +1998,11 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
               详情
             </Button>
           </Tooltip>
-          <Tooltip title={r.status === "DOWNLOADING" || r.status === "WAITING" ? "暂停" : "当前状态不可暂停"}>
+          <Tooltip title={r.status === "DOWNLOADING" ? "暂停" : "当前状态不可暂停"}>
             <Button
               size="small"
               icon={<PauseCircleOutlined />}
-              disabled={r.status !== "DOWNLOADING" && r.status !== "WAITING"}
+              disabled={r.status !== "DOWNLOADING"}
               onClick={() => void runAddressAction(r.id, "pause")}
             />
           </Tooltip>
@@ -1795,7 +2019,7 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
               size="small"
               danger
               icon={<StopOutlined />}
-              disabled={r.status === "COMPLETED" || r.status === "CANCELED" || r.status === "FAILED"}
+              disabled={TERMINAL_ADDRESS_STATUSES.has(r.status)}
               onClick={() => void runAddressAction(r.id, "cancel")}
             />
           </Tooltip>
@@ -1815,8 +2039,11 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
               placeholder="状态筛选"
               style={{ width: 140 }}
               value={statusFilter}
-              onChange={setStatusFilter}
-              options={Object.keys(STATUS_COLOR).map((s) => ({ value: s, label: s }))}
+              onChange={(status) => {
+                setStatusFilter(status);
+                setBatchPage(1);
+              }}
+              options={BATCH_STATUS_FILTER_OPTIONS}
             />
             <Button icon={<ReloadOutlined />} onClick={load}>
               刷新
@@ -1827,9 +2054,18 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
         <Table
           rowKey="id"
           columns={batchColumns}
-          dataSource={batches}
+          dataSource={filteredBatches}
           scroll={{ x: 1500 }}
-          pagination={false}
+          pagination={{
+            current: batchPage,
+            pageSize: batchPageSize,
+            showSizeChanger: true,
+            showTotal: (totalCount) => `共 ${totalCount} 个任务`,
+            onChange: (nextPage, nextPageSize) => {
+              setBatchPage(nextPage);
+              setBatchPageSize(nextPageSize);
+            },
+          }}
           size="small"
           onRow={(r) => ({ onClick: () => selectBatch(r.id), style: { cursor: "pointer" } })}
         />
@@ -1842,14 +2078,39 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
             value={compareIds}
             placeholder="选择两个批次"
             style={{ minWidth: 460 }}
-            options={batches.map((batch) => ({ value: batch.id, label: batchDisplayName(batch) }))}
+            options={compareOptions}
             onChange={(ids) => {
               setCompareIds(ids.slice(-2));
               setCompareResult(null);
+              setCompareError(null);
             }}
           />
           <Button disabled={compareIds.length !== 2} loading={comparing} onClick={() => void runCompare()}>对比运行</Button>
         </Space>
+        <Typography.Text className="sd-compare-hint" type="secondary">
+          仅终态且已生成运行报告的批次可比较
+          {excludedComparisonCount > 0 ? `；已排除 ${excludedComparisonCount} 个不可比较批次` : ""}
+        </Typography.Text>
+        {compareOptions.length < 2 ? (
+          <Alert
+            className="sd-inline-feedback"
+            type="info"
+            showIcon
+            message="暂无足够的可比较批次"
+            description="至少需要两个已结束并成功生成运行报告的批次。"
+          />
+        ) : null}
+        {compareError ? (
+          <Alert
+            className="sd-inline-feedback"
+            type="error"
+            showIcon
+            closable
+            message="运行对比失败"
+            description={compareError}
+            onClose={() => setCompareError(null)}
+          />
+        ) : null}
         {compareResult ? (
           <Table
             style={{ marginTop: 12 }}
@@ -1919,13 +2180,29 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
                 <span>ETA {summary.snapshot.eta?.seconds ? `${Math.round(summary.snapshot.eta.seconds)}s` : "—"}</span>
                 <Space>
                   <Tooltip title="暂停全部">
-                    <Button size="small" icon={<PauseCircleOutlined />} onClick={() => void runBatchAction(selectedBatch, "pause")} />
+                    <Button
+                      size="small"
+                      icon={<PauseCircleOutlined />}
+                      disabled={!canPauseBatch(currentBatch?.status)}
+                      onClick={() => void runBatchAction(selectedBatch, "pause")}
+                    />
                   </Tooltip>
                   <Tooltip title="继续全部">
-                    <Button size="small" icon={<PlayCircleOutlined />} onClick={() => void runBatchAction(selectedBatch, "resume")} />
+                    <Button
+                      size="small"
+                      icon={<PlayCircleOutlined />}
+                      disabled={!canResumeBatch(currentBatch?.status)}
+                      onClick={() => void runBatchAction(selectedBatch, "resume")}
+                    />
                   </Tooltip>
                   <Tooltip title="取消任务（保留已下载数据）">
-                    <Button size="small" danger icon={<StopOutlined />} onClick={() => void runBatchAction(selectedBatch, "cancel")} />
+                    <Button
+                      size="small"
+                      danger
+                      icon={<StopOutlined />}
+                      disabled={!currentBatch || TERMINAL_BATCH_STATUSES.has(currentBatch.status)}
+                      onClick={() => void runBatchAction(selectedBatch, "cancel")}
+                    />
                   </Tooltip>
                 </Space>
               </Space>
@@ -1993,60 +2270,43 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
           />
         </>
       )}
-      <Drawer className="sd-drawer" title="地址详情" width={760} open={detailOpen} onClose={() => setDetailOpen(false)}>
+      <Drawer
+        className="sd-drawer"
+        title="地址详情"
+        width={760}
+        open={detailOpen}
+        onClose={() => {
+          addressDetailRequestSequence.current += 1;
+          setDetailOpen(false);
+        }}
+      >
         {detail && (
           <Space direction="vertical" style={{ width: "100%" }} size="middle">
-            <Alert
-              type="info"
-              showIcon
-              message={
-                <Space>
-                  <code>{detail.address.address}</code>
-                  <StatusPill status={detail.address.status} />
-                  <div style={{ width: 200 }}>
-                    <ProgressBar
-                      percent={detail.address.progress?.percent}
-                      status={detail.address.status}
-                      rows={detail.address.progress?.rows_current}
-                      speed={detail.address.progress?.speed_rows_per_sec}
-                      eta={detail.address.progress?.eta_seconds}
-                    />
-                  </div>
-                </Space>
-              }
-            />
-            <Alert
-              type="info"
-              showIcon
-              message={
-                <Space wrap>
-                  <span>链 {detail.address.chain_key?.toUpperCase()}</span>
-                  <span>
-                    范围 {detail.address.range?.mode ?? "FULL"}
-                    {detail.address.range?.from_block != null
-                      ? ` ${detail.address.range.from_block} - ${detail.address.range.to_block ?? "∞"}`
-                      : ""}
-                  </span>
-                  <span>
-                    ETA{" "}
-                    {detail.address.progress?.eta_seconds
-                      ? `${Math.round(detail.address.progress.eta_seconds)}s`
-                      : "—"}
-                  </span>
-                  <span>
-                    已下载 {detail.address.progress?.rows_current?.toLocaleString() ?? 0} 行
-                  </span>
-                </Space>
-              }
-            />
-            {hasProviderSwitch && (
-              <Alert
-                type="warning"
-                showIcon
-                message="已自动切换下载方式"
-                description="已完成数据不会重新下载；新 Provider 已从未完成区间继续。"
-              />
-            )}
+            <Space wrap>
+              <code>{detail.address.address}</code>
+              <StatusPill status={detail.address.status} />
+              <span>链 {detail.address.chain_key?.toUpperCase()}</span>
+              <span>
+                范围 {detail.address.range?.mode ?? "FULL"}
+                {detail.address.range?.from_block != null
+                  ? ` ${detail.address.range.from_block} - ${detail.address.range.to_block ?? "∞"}`
+                  : ""}
+              </span>
+              <span>
+                ETA{" "}
+                {detail.address.progress?.eta_seconds ? `${Math.round(detail.address.progress.eta_seconds)}s` : "—"}
+              </span>
+              <span>已下载 {detail.address.progress?.rows_current?.toLocaleString() ?? 0} 行</span>
+              <div style={{ width: 220 }}>
+                <ProgressBar
+                  percent={detail.address.progress?.percent}
+                  status={detail.address.status}
+                  rows={detail.address.progress?.rows_current}
+                  speed={detail.address.progress?.speed_rows_per_sec}
+                  eta={detail.address.progress?.eta_seconds}
+                />
+              </div>
+            </Space>
             {detail.datasets.map((dd) => (
               <Card
                 key={dd.dataset.id}
@@ -2084,13 +2344,13 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
                   eta={dd.dataset.progress?.eta_seconds}
                 />
                 {dd.dataset.validation && (
-                  <Alert
-                    style={{ margin: "8px 0" }}
-                    type={dd.dataset.validation.status === "VALIDATED" ? "success" : "warning"}
-                    showIcon
-                    message={`校验 ${dd.dataset.validation.status} · 完整性 ${(dd.dataset.validation.coverage * 100).toFixed(2)}% · 唯一 ${dd.dataset.validation.unique_key_count} · 重复 ${dd.dataset.validation.duplicate_count}`}
-                    description={`Score ${dd.dataset.validation.score} · Provider ${dd.dataset.validation.expected_count}/${dd.dataset.validation.actual_count} · 缺口 ${(dd.dataset.validation as { gaps?: Array<unknown> }).gaps?.length ?? 0}`}
-                  />
+                  <div className="sd-validation-note">
+                    校验 {dd.dataset.validation.status} · 完整性 {(dd.dataset.validation.coverage * 100).toFixed(2)}% ·
+                    唯一 {dd.dataset.validation.unique_key_count} · 重复 {dd.dataset.validation.duplicate_count} · Score{" "}
+                    {dd.dataset.validation.score} · Provider {dd.dataset.validation.expected_count}/
+                    {dd.dataset.validation.actual_count} · 缺口{" "}
+                    {(dd.dataset.validation as { gaps?: Array<unknown> }).gaps?.length ?? 0}
+                  </div>
                 )}
                 <Table
                   rowKey="id"
@@ -2154,29 +2414,81 @@ function ResultsTab({
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resultsError, setResultsError] = useState<string | null>(null);
+  const registryRequestSequence = useRef(0);
+  const resultRequestSequence = useRef(0);
+
+  const loadRegistry = () => {
+    const sequence = ++registryRequestSequence.current;
+    void listRegistry().then((list) => {
+      if (sequence !== registryRequestSequence.current) return;
+      setRegistry(list);
+      setSelected((current) => {
+        const currentEntry = list.find((entry) => entry.dataset_job_id === current);
+        const candidates = currentEntry
+          ? list.filter(
+              (entry) =>
+                entry.chain_key === currentEntry.chain_key &&
+                entry.address === currentEntry.address &&
+                entry.dataset === currentEntry.dataset,
+            )
+          : list;
+        return pickAuthoritativeResult(candidates)?.dataset_job_id ?? null;
+      });
+    });
+  };
 
   useEffect(() => {
-    void listRegistry().then((list) => {
-      setRegistry(list);
-      if (!selected && list.length > 0) setSelected(list[0].dataset_job_id);
-    });
+    loadRegistry();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
   useEffect(() => {
-    if (!selected) return;
+    const sequence = ++resultRequestSequence.current;
+    if (!selected) {
+      setSummary(null);
+      setRows([]);
+      setTotal(0);
+      setLoading(false);
+      setResultsError(null);
+      return;
+    }
     setLoading(true);
-    void resultSummary(selected).then(setSummary);
-    void queryResults(selected, page, 50, "", filter).then((res) => {
+    setResultsError(null);
+    void Promise.all([
+      resultSummary(selected).catch(() => null),
+      queryResults(selected, page, 50, "", filter),
+    ]).then(([nextSummary, res]) => {
+      if (sequence !== resultRequestSequence.current) return;
+      setSummary(nextSummary);
       if (res) {
         setRows(res.rows);
         setTotal(res.total);
+      } else {
+        setRows([]);
+        setTotal(0);
       }
-      setLoading(false);
+    }).catch((error: unknown) => {
+      if (sequence !== resultRequestSequence.current) return;
+      setRows([]);
+      setTotal(0);
+      setResultsError(smartDownloadErrorMessage(error, "查询结果失败"));
+    }).finally(() => {
+      if (sequence === resultRequestSequence.current) setLoading(false);
     });
+    return () => {
+      if (resultRequestSequence.current === sequence) resultRequestSequence.current += 1;
+    };
   }, [selected, page, filter, refreshKey]);
 
   const entry = registry.find((r) => r.dataset_job_id === selected);
+  const datasetTotal = entry?.row_count ?? 0;
+  const summaryCoverageRaw = Number(
+    summary?.validation && (summary.validation as { coverage?: number }).coverage,
+  );
+  const summaryCoverage = Number.isFinite(summaryCoverageRaw)
+    ? Math.max(0, Math.min(1, summaryCoverageRaw))
+    : null;
 
   // 按 地址 → 数据集 → 合并覆盖 分组（设计 §12-§13）
   const grouped = useMemo(() => {
@@ -2195,35 +2507,31 @@ function ResultsTab({
             validation: string;
             certification?: string;
             latest: string;
+            authoritative: IndexedResult;
           }
         >;
       }
     >();
     for (const e of registry) {
-      let g = map.get(e.address);
+      const groupKey = `${e.chain_key}:${e.address}`;
+      let g = map.get(groupKey);
       if (!g) {
         g = { address: e.address, chain_key: e.chain_key, datasets: new Map() };
-        map.set(e.address, g);
+        map.set(groupKey, g);
       }
-      let d = g.datasets.get(e.dataset);
-      if (!d) {
-        d = {
+      const current = g.datasets.get(e.dataset);
+      if (!current || compareIndexedResults(e, current.authoritative) > 0) {
+        g.datasets.set(e.dataset, {
           name: e.dataset,
           from: e.from_block,
           to: e.to_block,
-          rows: 0,
+          rows: e.row_count,
           validation: e.validation,
           certification: e.certification,
           latest: e.dataset_job_id,
-        };
-        g.datasets.set(e.dataset, d);
+          authoritative: e,
+        });
       }
-      d.from = Math.min(d.from, e.from_block);
-      d.to = Math.max(d.to, e.to_block);
-      d.rows += e.row_count;
-      d.latest = e.dataset_job_id;
-      d.validation = e.validation;
-      d.certification = e.certification;
     }
     return [...map.values()].map((g) => ({ ...g, datasets: [...g.datasets.values()] }));
   }, [registry]);
@@ -2323,11 +2631,14 @@ function ResultsTab({
               placeholder="筛选 from_address:0x…"
               allowClear
               style={{ width: 260 }}
-              onSearch={setFilter}
+              onSearch={(value) => {
+                setFilter(value);
+                setPage(1);
+              }}
             />
             <Button
               icon={<ReloadOutlined />}
-              onClick={() => void listRegistry().then(setRegistry)}
+              onClick={loadRegistry}
             >
               刷新
             </Button>
@@ -2335,10 +2646,11 @@ function ResultsTab({
         }
       >
         <Table
-          rowKey="address"
+          rowKey={(group) => `${group.chain_key}:${group.address}`}
           size="small"
           pagination={false}
           dataSource={grouped}
+          scroll={{ x: 620 }}
           expandable={{
             expandedRowRender: (g) => (
               <Table
@@ -2346,6 +2658,7 @@ function ResultsTab({
                 size="small"
                 pagination={false}
                 dataSource={g.datasets}
+                scroll={{ x: 880 }}
                 columns={[
                   { title: "数据集", dataIndex: "name", render: (v) => DATASET_LABELS[v] ?? v },
                   { title: "覆盖区间", render: (_, d) => `${d.from} → ${d.to}` },
@@ -2428,8 +2741,8 @@ function ResultsTab({
               <code>{entry.address}</code>
               {summary ? (
                 <span className="sd-status-pill is-validated">
-                  完整性 {((Number(summary.validation && (summary.validation as { coverage?: number }).coverage) ?? 1) * 100).toFixed(2)}%
-                  · {total.toLocaleString()} 行
+                  完整性 {summaryCoverage === null ? "—" : `${(summaryCoverage * 100).toFixed(2)}%`}
+                  · {datasetTotal.toLocaleString()} 行
                 </span>
               ) : null}
             </Space>
@@ -2437,7 +2750,7 @@ function ResultsTab({
           extra={
             <Space>
               <span className="sd-status-pill is-validated">
-                {total > 300000 ? "CSV（>30 万行）" : "XLSX（≤30 万行）"}
+                {datasetTotal > 300000 ? "CSV（>30 万行）" : "XLSX（≤30 万行）"}
               </span>
               <Button
                 type="primary"
@@ -2449,9 +2762,22 @@ function ResultsTab({
             </Space>
           }
         >
+          {resultsError ? (
+            <Alert
+              className="sd-inline-feedback"
+              type="error"
+              showIcon
+              closable
+              message="结果加载失败"
+              description={resultsError}
+              onClose={() => setResultsError(null)}
+            />
+          ) : null}
           <Table
             rowKey={(r) =>
-              (r.transaction_hash as string) ||
+              (r.transaction_hash
+                ? `${String(r.transaction_hash)}:${String(r.log_index ?? r.trace_address ?? "")}`
+                : undefined) ||
               (r.address as string) ||
               `${r.block_number}-${r.log_index}` ||
               JSON.stringify(r).slice(0, 32)
@@ -2460,6 +2786,7 @@ function ResultsTab({
             size="small"
             dataSource={rows}
             columns={columns}
+            locale={{ emptyText: filter ? `没有符合筛选「${filter}」的数据` : "当前结果没有数据" }}
             scroll={{ x: "max-content" }}
             pagination={{
               current: page,

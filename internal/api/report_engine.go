@@ -94,6 +94,10 @@ func HandleReportList(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "报告引擎未装配"})
 		return
 	}
+	if !investigationExists(c.Param("id")) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "调查不存在: " + c.Param("id")})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"investigation_id": c.Param("id"), "reports": reportEngine.List(c.Param("id"))})
 }
 
@@ -101,6 +105,10 @@ func HandleReportList(c *gin.Context) {
 func HandleReportGet(c *gin.Context) {
 	if reportEngine == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "报告引擎未装配"})
+		return
+	}
+	if !investigationExists(c.Param("id")) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "调查不存在: " + c.Param("id")})
 		return
 	}
 	report, snapshot, timeline, findings, evidence := reportEngine.Get(c.Param("id"), c.Param("report_id"))
@@ -295,6 +303,10 @@ func HandleReportExport(c *gin.Context) {
 func HandleReportDiff(c *gin.Context) {
 	if reportEngine == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "报告引擎未装配"})
+		return
+	}
+	if !investigationExists(c.Param("id")) {
+		c.JSON(http.StatusNotFound, gin.H{"detail": "调查不存在: " + c.Param("id")})
 		return
 	}
 	c.JSON(http.StatusOK, reportEngine.Diff(c.Param("id"), c.Param("a"), c.Param("b")))

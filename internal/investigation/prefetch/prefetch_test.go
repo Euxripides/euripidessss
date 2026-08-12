@@ -195,11 +195,12 @@ func TestEvictionPolicy(t *testing.T) {
 }
 
 type fakeManagerEnv struct {
-	created  []smartdownload.CreateBatchRequest
-	started  []string
-	paused   []string
-	resumed  []string
-	statuses map[string]string
+	created   []smartdownload.CreateBatchRequest
+	started   []string
+	paused    []string
+	resumed   []string
+	statuses  map[string]string
+	coverage  graphcache.CoverageInfo
 	userTasks int
 }
 
@@ -224,17 +225,17 @@ func TestManagerLifecycle(t *testing.T) {
 			env.created = append(env.created, req)
 			return &smartdownload.CreateBatchResponse{Batch: &smartdownload.BatchJob{ID: "batch-" + req.Addresses[0]}}, nil
 		},
-		Start: func(id string) error { env.started = append(env.started, id); return nil },
-		Pause: func(id string) error { env.paused = append(env.paused, id); return nil },
+		Start:  func(id string) error { env.started = append(env.started, id); return nil },
+		Pause:  func(id string) error { env.paused = append(env.paused, id); return nil },
 		Resume: func(id string) error { env.resumed = append(env.resumed, id); return nil },
 		BatchStatus: func(id string) (string, bool) {
 			s := env.statuses[id]
-			return s, s == "COMPLETED" || s == "FAILED"
+			return s, s == "COMPLETED" || s == "PARTIAL" || s == "FAILED" || s == "CANCELED"
 		},
 		CoverageQuery: func(_, _, _ string, _, _ uint64) graphcache.CoverageInfo {
-			return graphcache.CoverageInfo{Ratio: 0}
+			return env.coverage
 		},
-		ChainID: func(_ string) int64 { return 56 },
+		ChainID:         func(_ string) int64 { return 56 },
 		ActiveUserTasks: func() int { return env.userTasks },
 	}
 	cfg := DefaultConfig()
@@ -258,13 +259,16 @@ func TestManagerLifecycle(t *testing.T) {
 	if j.Status != StatusPrefetching || j.BatchID == "" {
 		t.Fatalf("任务状态错误: %+v", j)
 	}
-	// 用户点击升级：同一批处理继续
+	// 尚在运行的数据不可升级，也不得记为命中。
 	env.statuses[j.BatchID] = "RUNNING"
-	if err := m.Upgrade("inv-1", "bsc", "0xbbb"); err != nil {
-		t.Fatal(err)
+	if err := m.Upgrade("inv-1", "bsc", "0xbbb"); err == nil {
+		t.Fatal("运行中的批次不应升级")
 	}
-	if len(env.resumed) != 1 {
-		t.Fatalf("升级应恢复批处理: %v", env.resumed)
+	if len(env.resumed) != 0 || q.Get(j.ID).Status != StatusPrefetching {
+		t.Fatalf("拒绝升级不应恢复或改变任务: resumed=%v job=%+v", env.resumed, q.Get(j.ID))
+	}
+	if fb.Stats().Total != 0 || m.Stats().InteractiveUpgrades != 0 {
+		t.Fatalf("拒绝升级不应增加命中指标: feedback=%+v stats=%+v", fb.Stats(), m.Stats())
 	}
 	// 前台任务占用 → 预取暂停
 	env.userTasks = 1
@@ -275,12 +279,187 @@ func TestManagerLifecycle(t *testing.T) {
 	// 完成后就绪
 	env.userTasks = 0
 	env.statuses[j.BatchID] = "COMPLETED"
+	env.coverage = graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}
 	_ = m.tick(context.Background())
 	if q.Get(j.ID).Status != StatusReady {
 		t.Fatalf("完成后应 READY: %s", q.Get(j.ID).Status)
 	}
+	if err := m.Upgrade("inv-1", "bsc", "0xbbb"); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.Get(j.ID); got.Status != StatusInteractive || got.UpgradeCount != 1 {
+		t.Fatalf("认证数据应升级为 INTERACTIVE: %+v", got)
+	}
+	if st := fb.Stats(); st.Total != 1 || st.Used != 1 || st.HitRate != 1 {
+		t.Fatalf("认证数据升级应记录一次命中: %+v", st)
+	}
 	if env.created[0].Prefetch != true || env.created[0].PrefetchPriority != 3 {
 		t.Fatalf("预取标记错误: %+v", env.created[0])
+	}
+}
+
+func TestManagerUpgradeRejectsUnusableBatch(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   string
+		terminal bool
+		noBatch  bool
+		coverage graphcache.CoverageInfo
+	}{
+		{name: "missing batch", status: "COMPLETED", terminal: true, noBatch: true, coverage: graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}},
+		{name: "running", status: "RUNNING", coverage: graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}},
+		{name: "partial", status: "PARTIAL", terminal: true, coverage: graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}},
+		{name: "failed", status: "FAILED", terminal: true, coverage: graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}},
+		{name: "canceled", status: "CANCELED", terminal: true, coverage: graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}},
+		{name: "completed without coverage", status: "COMPLETED", terminal: true},
+		{name: "completed without full hit", status: "COMPLETED", terminal: true, coverage: graphcache.CoverageInfo{Ratio: 1, Certification: "CERTIFIED"}},
+		{name: "completed without certification", status: "COMPLETED", terminal: true, coverage: graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "PARTIAL"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			q, err := NewQueue(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget, err := NewBudgetStore(root, DefaultBudget())
+			if err != nil {
+				t.Fatal(err)
+			}
+			fb, err := NewFeedback(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			job, _, err := q.Enqueue(Candidate{
+				ChainKey: "bsc", Address: "0xbbb", Priority: PriorityHOT,
+				RequiredDatasets: MinimalBundle(), FromBlock: 100, ToBlock: 200,
+				InvestigationID: "inv-1", Score: 90, CreatedAt: time.Now().UTC(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tt.noBatch {
+				if err := q.SetBatch(job.ID, "batch-1"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := q.UpdateStatus(job.ID, StatusPrefetching); err != nil {
+				t.Fatal(err)
+			}
+			m := NewManager(q, budget, fb, nil, invcache.NewStore(root), BatchCallbacks{
+				BatchStatus: func(string) (string, bool) { return tt.status, tt.terminal },
+				CoverageQuery: func(_, _, _ string, _, _ uint64) graphcache.CoverageInfo {
+					return tt.coverage
+				},
+			}, Config{Interval: time.Hour})
+
+			if err := m.Upgrade("inv-1", "bsc", "0xbbb"); err == nil {
+				t.Fatal("不可用批次不应升级")
+			}
+			got := q.Get(job.ID)
+			if got.Status != StatusPrefetching || got.UpgradeCount != 0 || got.UsedAt != nil {
+				t.Fatalf("拒绝升级不应改变队列任务: %+v", got)
+			}
+			if st := fb.Stats(); st.Total != 0 || st.Used != 0 || st.HitRate != 0 {
+				t.Fatalf("拒绝升级不应增加命中率: %+v", st)
+			}
+			if m.Stats().InteractiveUpgrades != 0 {
+				t.Fatalf("拒绝升级不应增加升级计数: %+v", m.Stats())
+			}
+		})
+	}
+}
+
+func TestManagerUpgradeRequiresEveryDatasetCertified(t *testing.T) {
+	root := t.TempDir()
+	q, _ := NewQueue(root)
+	budget, _ := NewBudgetStore(root, DefaultBudget())
+	fb, _ := NewFeedback(root)
+	job, _, _ := q.Enqueue(Candidate{
+		ChainKey: "bsc", Address: "0xbbb", Priority: PriorityHOT,
+		RequiredDatasets: MinimalBundle(), FromBlock: 100, ToBlock: 200,
+		InvestigationID: "inv-1", Score: 90, CreatedAt: time.Now().UTC(),
+	})
+	_ = q.SetBatch(job.ID, "batch-1")
+	_ = q.UpdateStatus(job.ID, StatusReady)
+	ready := graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}
+	m := NewManager(q, budget, fb, nil, invcache.NewStore(root), BatchCallbacks{
+		BatchStatus: func(string) (string, bool) { return "COMPLETED", true },
+		CoverageQuery: func(_, _, dataset string, _, _ uint64) graphcache.CoverageInfo {
+			if dataset == "balances" {
+				return graphcache.CoverageInfo{Ratio: 0.5, Certification: "PARTIAL"}
+			}
+			return ready
+		},
+	}, Config{Interval: time.Hour})
+
+	if err := m.Upgrade("inv-1", "bsc", "0xbbb"); err == nil {
+		t.Fatal("任一必需数据集未就绪时不应升级")
+	}
+	if got := q.Get(job.ID); got.Status != StatusReady || got.UpgradeCount != 0 {
+		t.Fatalf("拒绝升级不应改变任务: %+v", got)
+	}
+	if fb.Stats().Total != 0 {
+		t.Fatalf("拒绝升级不应记录命中: %+v", fb.Stats())
+	}
+}
+
+func TestManagerCompletedWithoutCoverageFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	q, _ := NewQueue(root)
+	budget, _ := NewBudgetStore(root, DefaultBudget())
+	fb, _ := NewFeedback(root)
+	job, _, _ := q.Enqueue(Candidate{
+		ChainKey: "bsc", Address: "0xbbb", Priority: PriorityHOT,
+		RequiredDatasets: MinimalBundle(), FromBlock: 100, ToBlock: 200,
+		InvestigationID: "inv-1", Score: 90, CreatedAt: time.Now().UTC(),
+	})
+	_ = q.SetBatch(job.ID, "batch-1")
+	_ = q.UpdateStatus(job.ID, StatusPrefetching)
+	m := NewManager(q, budget, fb, nil, invcache.NewStore(root), BatchCallbacks{
+		BatchStatus: func(string) (string, bool) { return "COMPLETED", true },
+		CoverageQuery: func(_, _, _ string, _, _ uint64) graphcache.CoverageInfo {
+			return graphcache.CoverageInfo{}
+		},
+	}, Config{Interval: time.Hour})
+
+	m.reconcileJobs()
+	if got := q.Get(job.ID); got.Status != StatusFailed {
+		t.Fatalf("完成但无认证覆盖应 fail closed: %+v", got)
+	}
+}
+
+func TestManagerInvalidatesLegacyFalsePositiveFeedback(t *testing.T) {
+	root := t.TempDir()
+	q, _ := NewQueue(root)
+	budget, _ := NewBudgetStore(root, DefaultBudget())
+	fb, _ := NewFeedback(root)
+	job, _, _ := q.Enqueue(Candidate{
+		ChainKey: "bsc", Address: "0xbbb", Priority: PriorityHOT,
+		RequiredDatasets: MinimalBundle(), FromBlock: 100, ToBlock: 200,
+		InvestigationID: "inv-1", Score: 90, CreatedAt: time.Now().UTC(),
+	})
+	_ = q.SetBatch(job.ID, "batch-partial")
+	_ = q.UpdateStatus(job.ID, StatusInteractive)
+	if err := fb.RecordUse("inv-1", "0xbbb", "batch-partial", 43.8); err != nil {
+		t.Fatal(err)
+	}
+	if st := fb.Stats(); st.Total != 1 || st.Used != 1 || st.HitRate != 1 {
+		t.Fatalf("测试前置命中记录错误: %+v", st)
+	}
+
+	NewManager(q, budget, fb, nil, invcache.NewStore(root), BatchCallbacks{
+		BatchStatus: func(string) (string, bool) { return "PARTIAL", true },
+		CoverageQuery: func(_, _, _ string, _, _ uint64) graphcache.CoverageInfo {
+			return graphcache.CoverageInfo{Ratio: 1, Full: true, Certification: "CERTIFIED"}
+		},
+	}, Config{Interval: time.Hour})
+
+	if st := fb.Stats(); st.Total != 0 || st.Used != 0 || st.HitRate != 0 {
+		t.Fatalf("历史误命中应从指标中剔除: %+v", st)
+	}
+	if len(fb.records) != 1 || !fb.records[0].Invalidated || fb.records[0].InvalidatedAt == nil || fb.records[0].InvalidReason == "" {
+		t.Fatalf("历史记录应保留并标记失效: %+v", fb.records)
 	}
 }
 

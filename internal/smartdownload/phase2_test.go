@@ -2,6 +2,7 @@ package smartdownload
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -37,10 +38,26 @@ func newSwitchService(t *testing.T, adapters ...ProviderAdapter) (*Store, *Servi
 
 func waitCompleted(t *testing.T, svc *Service, batchID string) {
 	t.Helper()
-	waitFor(t, 60*time.Second, "批次 COMPLETED", func() bool {
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
 		b := svc.GetBatch(batchID)
-		return b != nil && b.Status == BatchCompleted
-	})
+		if b != nil && b.Status == BatchCompleted {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	b := svc.GetBatch(batchID)
+	if b == nil {
+		t.Fatal("等待批次 COMPLETED 超时：批次不存在")
+	}
+	var states []string
+	for _, address := range svc.store.ListAddressesByBatch(batchID) {
+		for _, dataset := range svc.store.ListDatasetsByAddress(address.ID) {
+			states = append(states, fmt.Sprintf("address=%s dataset=%s status=%s validation=%s certification=%s error=%q",
+				address.Status, dataset.Dataset, dataset.Status, reportStatus(dataset.Validation), dataset.Certification, dataset.Error))
+		}
+	}
+	t.Fatalf("等待批次 COMPLETED 超时：batch=%s states=%v", b.Status, states)
 }
 
 func rangeProvider(store *Store, dsID string, from uint64) string {

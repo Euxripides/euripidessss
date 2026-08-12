@@ -27,7 +27,7 @@ func (s *Service) RecoverAll(ctx context.Context) error {
 	if s.coverageIndex != nil {
 		var inputs []reg.RebuildInput
 		for _, e := range s.results.List() {
-			if e.Certification != "CERTIFIED" {
+			if !s.results.isReusableIndexedResult(e) {
 				continue
 			}
 			ds := s.store.GetDataset(e.DatasetJobID)
@@ -85,10 +85,22 @@ func (s *Service) RecoverAll(ctx context.Context) error {
 
 func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
 	for _, a := range s.store.ListAddressesByBatch(batchID) {
+		if a.CancelRequested || a.Status == AddressCanceled {
+			s.mu.Lock()
+			s.cancelAddressLocked(a.ID)
+			s.mu.Unlock()
+			continue
+		}
 		if a.Status.Terminal() {
 			continue
 		}
 		for _, ds := range s.store.ListDatasetsByAddress(a.ID) {
+			if ds.CancelRequested || ds.Status == DatasetCanceled {
+				s.mu.Lock()
+				s.cancelDatasetLocked(ds.ID)
+				s.mu.Unlock()
+				continue
+			}
 			if ds.Status.Terminal() {
 				continue
 			}
@@ -101,6 +113,12 @@ func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
 				logger.Log.Warn().Str("dataset_job", ds.ID).Err(err).Msg("smartdownload_recover_dataset_failed")
 				continue
 			}
+			if current := s.store.GetDataset(ds.ID); current != nil && current.PauseRequested {
+				current.PauseRequested = false
+				current.Status = DatasetPaused
+				current.UpdatedAt = time.Now().UTC()
+				_ = s.store.SaveDataset(current)
+			}
 			// 校验中任务在重启后重新触发校验（不标记失败）
 			if current := s.store.GetDataset(ds.ID); current != nil && current.Status == DatasetValidating {
 				go s.validateDatasetAndFinalize(ds.ID)
@@ -110,6 +128,12 @@ func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
 		s.recomputeAddressStatus(a.ID)
 	}
 	s.recomputeBatchStatus(batchID)
+	if batch := s.store.GetBatch(batchID); batch != nil &&
+		(batch.PauseRequested || batch.Status == BatchPaused || batch.Status == BatchPausedByPriority) {
+		s.mu.Lock()
+		s.transitionBatchPausedLocked(batchID)
+		s.mu.Unlock()
+	}
 	return nil
 }
 
@@ -129,7 +153,7 @@ func (s *Service) recoverDataset(ctx context.Context, datasetJobID string) error
 	partsDir := filepath.Join(s.PartsDir(), datasetJobID)
 	if items, err := os.ReadDir(partsDir); err == nil {
 		for _, e := range items {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			if e.IsDir() || (!strings.HasSuffix(e.Name(), ".jsonl") && !strings.HasSuffix(e.Name(), ".parquet")) {
 				continue
 			}
 			sha, err := fileSHA256(filepath.Join(partsDir, e.Name()))
@@ -170,9 +194,15 @@ func (s *Service) recoverDataset(ctx context.Context, datasetJobID string) error
 				Msg("smartdownload_recover_part_missing_or_sha_mismatch")
 			continue
 		}
+		info, statErr := os.Stat(filepath.Join(partsDir, e.Part))
+		if statErr != nil || info.Size() <= 0 {
+			logger.Log.Warn().Str("dataset_job", datasetJobID).Str("part", e.Part).
+				Msg("smartdownload_recover_part_stat_invalid")
+			continue
+		}
 		validParts[e.Part] = PartInfo{
 			Name: e.Part, SHA256: diskSHA, Rows: e.Rows,
-			RangeFrom: e.FromBlock, RangeTo: e.ToBlock,
+			Bytes: info.Size(), RangeFrom: e.FromBlock, RangeTo: e.ToBlock,
 		}
 	}
 
@@ -285,7 +315,7 @@ func (s *Service) recomputeAddressStatus(addressID string) {
 	if len(datasets) == 0 {
 		return // 数据集尚未落盘：不要据此完成地址（CreateBatch 半成品保护）
 	}
-	allDone, anyFailed, anyPartial, anyCanceled := true, false, false, false
+	allDone, anyFailed, anyPartial, canceled := true, false, false, 0
 	for _, ds := range datasets {
 		if !ds.Status.Terminal() {
 			allDone = false
@@ -297,16 +327,22 @@ func (s *Service) recomputeAddressStatus(addressID string) {
 			anyPartial = true
 		}
 		if ds.Status == DatasetCanceled {
-			anyCanceled = true
+			canceled++
 		}
 	}
 	now := time.Now().UTC()
 	switch {
-	case a.CancelRequested || anyCanceled:
+	case a.CancelRequested:
 		a.Status = AddressCanceled
 		a.FinishedAt = &now
 	case a.PauseRequested:
 		a.Status = AddressPaused
+	case allDone && canceled == len(datasets):
+		a.Status = AddressCanceled
+		a.FinishedAt = &now
+	case allDone && canceled > 0:
+		a.Status = AddressPartial
+		a.FinishedAt = &now
 	case allDone && anyFailed:
 		a.Status = AddressFailed
 		a.FinishedAt = &now
@@ -330,7 +366,7 @@ func (s *Service) recomputeBatchStatus(batchID string) {
 		return
 	}
 	addresses := s.store.ListAddressesByBatch(batchID)
-	allDone, anyFailed, anyPartial, anyCanceled, anyPaused := true, false, false, false, false
+	allDone, anyFailed, anyPartial, canceled := true, false, false, 0
 	for _, a := range addresses {
 		if !a.Status.Terminal() {
 			allDone = false
@@ -342,19 +378,22 @@ func (s *Service) recomputeBatchStatus(batchID string) {
 			anyPartial = true
 		}
 		if a.Status == AddressCanceled {
-			anyCanceled = true
-		}
-		if a.Status == AddressPaused {
-			anyPaused = true
+			canceled++
 		}
 	}
 	now := time.Now().UTC()
 	switch {
-	case batch.CancelRequested || anyCanceled:
+	case batch.CancelRequested:
 		batch.Status = BatchCanceled
 		batch.FinishedAt = &now
-	case batch.PauseRequested || anyPaused:
+	case batch.PauseRequested:
 		batch.Status = BatchPaused
+	case allDone && canceled == len(addresses):
+		batch.Status = BatchCanceled
+		batch.FinishedAt = &now
+	case allDone && canceled > 0:
+		batch.Status = BatchPartial
+		batch.FinishedAt = &now
 	case allDone && anyFailed:
 		batch.Status = BatchPartial
 		batch.FinishedAt = &now

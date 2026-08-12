@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/eventdecoder"
+	"github.com/etl/backend/internal/logger"
 	"github.com/etl/backend/internal/smartdownload"
 )
 
@@ -44,24 +45,26 @@ type AnalyticsRefresher interface {
 }
 
 type Writer struct {
-	sink            ClickHouseSink
-	duckdb          DuckDBQuery
-	insertRows      atomic.Uint64
-	insertBatches   atomic.Uint64
-	insertLatencyNS atomic.Int64
-	writerErrors    atomic.Uint64
-	latencyMu       sync.Mutex
-	latencyWindowMS []int64
-	refresher       AnalyticsRefresher
-	eventDecoder    *eventdecoder.Decoder
+	sink                   ClickHouseSink
+	duckdb                 DuckDBQuery
+	insertRows             atomic.Uint64
+	insertBatches          atomic.Uint64
+	insertLatencyNS        atomic.Int64
+	writerErrors           atomic.Uint64
+	analyticsRefreshErrors atomic.Uint64
+	latencyMu              sync.Mutex
+	latencyWindowMS        []int64
+	refresher              AnalyticsRefresher
+	eventDecoder           *eventdecoder.Decoder
 }
 
 type Metrics struct {
-	InsertRows      uint64 `json:"clickhouse_insert_rows_total"`
-	InsertBatches   uint64 `json:"clickhouse_insert_batches_total"`
-	InsertLatencyMS int64  `json:"clickhouse_insert_latency_ms"`
-	InsertP95MS     int64  `json:"clickhouse_insert_p95_ms"`
-	WriterErrors    uint64 `json:"clickhouse_writer_errors_total"`
+	InsertRows             uint64 `json:"clickhouse_insert_rows_total"`
+	InsertBatches          uint64 `json:"clickhouse_insert_batches_total"`
+	InsertLatencyMS        int64  `json:"clickhouse_insert_latency_ms"`
+	InsertP95MS            int64  `json:"clickhouse_insert_p95_ms"`
+	WriterErrors           uint64 `json:"clickhouse_writer_errors_total"`
+	AnalyticsRefreshErrors uint64 `json:"analytics_refresh_errors_total"`
 }
 
 func (w *Writer) Metrics() Metrics {
@@ -78,7 +81,7 @@ func (w *Writer) Metrics() Metrics {
 	}
 	return Metrics{InsertRows: w.insertRows.Load(), InsertBatches: w.insertBatches.Load(),
 		InsertLatencyMS: time.Duration(w.insertLatencyNS.Load()).Milliseconds(), InsertP95MS: p95,
-		WriterErrors: w.writerErrors.Load()}
+		WriterErrors: w.writerErrors.Load(), AnalyticsRefreshErrors: w.analyticsRefreshErrors.Load()}
 }
 
 var (
@@ -255,7 +258,13 @@ func (w *Writer) WriteIndexed(ctx context.Context, req smartdownload.IndexedWrit
 	w.insertRows.Add(uint64(result.InsertedRows + result.ActivityRows))
 	if w.refresher != nil && req.Address != "" {
 		if err := w.refresher.RefreshAddressAnalytics(ctx, uint32(req.ChainID), req.Address); err != nil {
-			return result, fmt.Errorf("refresh address analytics: %w", err)
+			// Canonical rows have already been inserted and reconciled at this
+			// point. A derived Explorer analytics refresh failure must not revoke
+			// the certified dataset or cause a duplicate DB-only retry.
+			w.analyticsRefreshErrors.Add(1)
+			logger.Log.Warn().Err(err).Str("dataset_job", req.DatasetJobID).
+				Str("dataset", req.Dataset).Str("address", req.Address).
+				Msg("datawarehouse_address_analytics_refresh_failed")
 		}
 	}
 	return result, nil

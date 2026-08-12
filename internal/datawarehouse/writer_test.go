@@ -38,6 +38,12 @@ type fakeSink struct {
 	inserts   []capturedInsert
 }
 
+type failingAnalyticsRefresher struct{}
+
+func (failingAnalyticsRefresher) RefreshAddressAnalytics(context.Context, uint32, string) error {
+	return fmt.Errorf("injected analytics refresh failure")
+}
+
 type verifyingSink struct {
 	fakeSink
 	rows int64
@@ -232,6 +238,24 @@ func TestWriterReturnsDatabaseFailureWithReconciliation(t *testing.T) {
 	}
 	if result.InputRows != result.InsertedRows+result.RejectedRows {
 		t.Fatalf("unreconciled result: %+v", result)
+	}
+}
+
+func TestAnalyticsRefreshFailureDoesNotRevokeCanonicalWrite(t *testing.T) {
+	sink := &fakeSink{}
+	w := NewWriter(sink, fakeDuckDB{csv: "chain_id,block_number,block_time,transaction_hash,transaction_index,from_address,to_address,value_raw,input,status,source_provider\n56,100,1700000000,0xhash,2,0xaaa,0xbbb,123,,1,sqd\n"})
+	w.SetAnalyticsRefresher(failingAnalyticsRefresher{})
+	req := request(smartdownload.DatasetTransactions, eDriveParquet(t))
+	req.Address = "0x1111111111111111111111111111111111111111"
+	result, err := w.WriteIndexed(context.Background(), req)
+	if err != nil {
+		t.Fatalf("derived analytics refresh revoked canonical write: result=%+v err=%v", result, err)
+	}
+	if result.InputRows != 1 || result.InsertedRows != 1 || result.RejectedRows != 0 {
+		t.Fatalf("unexpected reconciliation: %+v", result)
+	}
+	if metrics := w.Metrics(); metrics.AnalyticsRefreshErrors != 1 || metrics.WriterErrors != 0 {
+		t.Fatalf("refresh failure observability mismatch: %+v", metrics)
 	}
 }
 

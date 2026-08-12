@@ -5,6 +5,7 @@ import '@ant-design/v5-patch-for-react-19';
 import '@xyflow/react/dist/style.css';
 import './design-system/tokens.css';
 import './design-system/design-system.css';
+import './design-system/animations.css';
 import './styles/layout.css';
 import './styles/feedback.css';
 import './features/upload/upload.css';
@@ -24,8 +25,29 @@ import { AnalysisProvider } from './features/explorer-intelligence/analysisConte
 message.config({ top: 20, duration: 3, maxCount: 3 });
 notification.config({ placement: 'topRight', top: 20, duration: 4, maxCount: 4 });
 
-// 前端自检：任何 JS 错误直接显示在页面上，避免白屏无法排查
-function showBootError(message: string, stack?: string) {
+let bootErrorTimer: number | undefined;
+
+function errorMessage(reason: unknown): string {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === 'string' && reason.trim()) return reason;
+  if (reason && typeof reason === 'object') {
+    const candidate = reason as { detail?: unknown; message?: unknown; error?: unknown };
+    for (const value of [candidate.detail, candidate.message, candidate.error]) {
+      if (typeof value === 'string' && value.trim()) return value;
+    }
+    try {
+      const serialized = JSON.stringify(reason);
+      if (serialized && serialized !== '{}') return serialized;
+    } catch {
+      // Fall through to the stable generic message below.
+    }
+  }
+  return '发生未处理的前端错误，请重试或刷新页面';
+}
+
+// 前端自检：运行时错误提供可读提示，并在应用恢复后自动清除。
+function showBootError(reason: unknown, stack?: string) {
+  const message = errorMessage(reason);
   // 浏览器钱包扩展冲突（MetaMask/OKX 等重复定义 window.ethereum）不是应用错误，
   // 静默忽略，不显示任何提示。
   if (/ethereum|Cannot redefine property/i.test(message)) {
@@ -41,10 +63,15 @@ function showBootError(message: string, stack?: string) {
     document.body.appendChild(el);
   }
   el.textContent = `前端错误：${message}${stack ? `\n${stack}` : ''}`;
+  if (bootErrorTimer !== undefined) window.clearTimeout(bootErrorTimer);
+  bootErrorTimer = window.setTimeout(() => {
+    document.getElementById('__boot_error')?.remove();
+    bootErrorTimer = undefined;
+  }, 8000);
 }
 
-window.addEventListener('error', (e) => showBootError(e.message, e.error?.stack));
-window.addEventListener('unhandledrejection', (e) => showBootError(String(e.reason)));
+window.addEventListener('error', (e) => showBootError(e.error ?? e.message, e.error?.stack));
+window.addEventListener('unhandledrejection', (e) => showBootError(e.reason));
 
 console.info('Investigation OS build: 20260808-1900');
 

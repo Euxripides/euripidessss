@@ -102,7 +102,8 @@ type TokenResult struct {
 }
 
 type Report struct {
-	Results []TokenResult `json:"results"`
+	Results                  []TokenResult `json:"results"`
+	SkippedZeroAmountEvents int           `json:"skipped_zero_amount_events"`
 }
 
 type Query struct {

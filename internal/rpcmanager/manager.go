@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -27,20 +28,25 @@ import (
 
 const healthCheckInterval = 30 * time.Minute
 
+var ErrEndpointNotFound = errors.New("RPC endpoint not found")
+
 type Manager struct {
-	store       *store
-	secure      *secureStore
-	client      *http.Client
-	runtimesMu  sync.Mutex
-	runtimes    map[string]*endpointRuntime
-	cacheHits   atomic.Int64
-	cacheMisses atomic.Int64
-	turboCursor atomic.Uint64
-	close       chan struct{}
-	closed      chan struct{}
-	jobMu       sync.Mutex
-	jobCancel   map[string]context.CancelFunc
-	jobWG       sync.WaitGroup
+	store             *store
+	secure            *secureStore
+	client            *http.Client
+	runtimesMu        sync.Mutex
+	runtimes          map[string]*endpointRuntime
+	configuredMu      sync.RWMutex
+	enabledConfigured map[string]bool
+	anyConfigured     map[string]bool
+	cacheHits         atomic.Int64
+	cacheMisses       atomic.Int64
+	turboCursor       atomic.Uint64
+	close             chan struct{}
+	closed            chan struct{}
+	jobMu             sync.Mutex
+	jobCancel         map[string]context.CancelFunc
+	jobWG             sync.WaitGroup
 }
 
 type endpointRuntime struct {
@@ -112,9 +118,15 @@ func New(dataRoot string) (*Manager, error) {
 			DialContext:  (&net.Dialer{Timeout: 3 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			MaxIdleConns: 32, MaxIdleConnsPerHost: 8, IdleConnTimeout: 60 * time.Second,
 		}},
-		runtimes: make(map[string]*endpointRuntime),
-		close:    make(chan struct{}), closed: make(chan struct{}),
+		runtimes:          make(map[string]*endpointRuntime),
+		enabledConfigured: make(map[string]bool),
+		anyConfigured:     make(map[string]bool),
+		close:             make(chan struct{}), closed: make(chan struct{}),
 		jobCancel: make(map[string]context.CancelFunc),
+	}
+	if err := manager.refreshConfiguredCache(); err != nil {
+		_ = db.close()
+		return nil, fmt.Errorf("加载 RPC 配置缓存: %w", err)
 	}
 	go manager.healthLoop()
 	return manager, nil
@@ -174,6 +186,9 @@ func (m *Manager) Create(ctx context.Context, input EndpointInput) (Endpoint, er
 	}, EncryptedURL: encrypted, EncryptedTestURL: encryptedTest,
 		CapabilitiesConfigured: capabilitiesConfigured(input.SupportedMethods, input.ArchiveCapability, input.TraceCapability)}
 	if err := m.store.insertEndpoint(item); err != nil {
+		return Endpoint{}, err
+	}
+	if err := m.refreshConfiguredCache(); err != nil {
 		return Endpoint{}, err
 	}
 	if endpointRole == "PRIMARY" {
@@ -291,6 +306,9 @@ func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (E
 	if err := m.store.updateEndpoint(item); err != nil {
 		return Endpoint{}, err
 	}
+	if err := m.refreshConfiguredCache(); err != nil {
+		return Endpoint{}, err
+	}
 	if !item.Enabled {
 		health := m.store.health(item.ID)
 		health.Status = StatusDisabled
@@ -301,8 +319,17 @@ func (m *Manager) Update(ctx context.Context, id string, patch EndpointPatch) (E
 }
 
 func (m *Manager) Delete(id string) error {
+	if _, err := m.store.endpoint(id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrEndpointNotFound
+		}
+		return err
+	}
 	m.resetRuntime(id)
-	return m.store.deleteEndpoint(id)
+	if err := m.store.deleteEndpoint(id); err != nil {
+		return err
+	}
+	return m.refreshConfiguredCache()
 }
 
 func (m *Manager) Endpoints() ([]Endpoint, error) {
@@ -319,15 +346,98 @@ func (m *Manager) Endpoints() ([]Endpoint, error) {
 }
 
 func (m *Manager) HasConfigured(chainKey string) bool {
+	m.configuredMu.RLock()
+	defer m.configuredMu.RUnlock()
+	return m.enabledConfigured[strings.ToLower(strings.TrimSpace(chainKey))]
+}
+
+// HasAvailable reports whether normal Call routing has at least one eligible
+// endpoint without issuing network I/O. It intentionally mirrors routeAllowed:
+// enabled endpoints with stale/unknown health may be preflighted by Call,
+// active open circuits and known misconfiguration are excluded, and an expired
+// open circuit transitions to half-open and becomes routable for recovery.
+func (m *Manager) HasAvailable(chainKey string) bool {
 	items, err := m.store.endpoints(chainKey, true)
-	return err == nil && len(items) > 0
+	if err != nil {
+		return false
+	}
+	for _, item := range items {
+		if m.routeAllowed(item, false) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAnyAvailable reports whether normal routing has an eligible endpoint on
+// any configured chain. It is used by chain-agnostic provider health views;
+// actual Smart Download admission remains chain-scoped through HasAvailable.
+func (m *Manager) HasAnyAvailable() bool {
+	items, err := m.store.endpoints("", true)
+	if err != nil {
+		return false
+	}
+	for _, item := range items {
+		if m.routeAllowed(item, false) {
+			return true
+		}
+	}
+	return false
 }
 
 // HasAnyConfigured reports whether a chain has any persisted endpoint. Turbo
 // uses this without changing the endpoint's normal enabled state.
 func (m *Manager) HasAnyConfigured(chainKey string) bool {
+	m.configuredMu.RLock()
+	defer m.configuredMu.RUnlock()
+	return m.anyConfigured[strings.ToLower(strings.TrimSpace(chainKey))]
+}
+
+// HasTurboAvailable reports whether Turbo may actually route at least one
+// persisted endpoint now. Disabled endpoints remain eligible by design, but a
+// known bad credential/configuration and an active circuit-open interval must
+// not make Smart Download reserve work for an unusable RPC lane.
+func (m *Manager) HasTurboAvailable(chainKey string) bool {
 	items, err := m.store.endpoints(chainKey, false)
-	return err == nil && len(items) > 0
+	if err != nil {
+		return false
+	}
+	now := time.Now().UTC()
+	for _, item := range items {
+		health := m.store.health(item.ID)
+		if health.Status == StatusMisconfigured {
+			continue
+		}
+		if health.CircuitState == CircuitOpen && health.CircuitOpenUntil != nil && now.Before(*health.CircuitOpenUntil) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (m *Manager) refreshConfiguredCache() error {
+	items, err := m.store.endpoints("", false)
+	if err != nil {
+		return err
+	}
+	enabled := make(map[string]bool)
+	anyConfigured := make(map[string]bool)
+	for _, item := range items {
+		key := strings.ToLower(strings.TrimSpace(item.ChainKey))
+		if key == "" {
+			continue
+		}
+		anyConfigured[key] = true
+		if item.Enabled {
+			enabled[key] = true
+		}
+	}
+	m.configuredMu.Lock()
+	m.enabledConfigured = enabled
+	m.anyConfigured = anyConfigured
+	m.configuredMu.Unlock()
+	return nil
 }
 
 // SealSecret encrypts a non-RPC provider secret with the same machine-bound

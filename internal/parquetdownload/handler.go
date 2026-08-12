@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/chain"
 	"github.com/etl/backend/internal/datasourcemanager"
 	"github.com/etl/backend/internal/rpcmanager"
 )
@@ -255,6 +256,10 @@ func (h *Handler) firstSeen(writer http.ResponseWriter, request *http.Request) {
 	address := strings.ToLower(strings.TrimSpace(parts[1]))
 	if !isEVMAddress(address) {
 		writeError(writer, http.StatusBadRequest, errors.New("EVM 地址格式错误"))
+		return
+	}
+	if _, err := chain.Resolve(chainKey); err != nil {
+		writeError(writer, http.StatusBadRequest, err)
 		return
 	}
 	resp, err := h.manager.queryFirstSeen(request.Context(), chainKey, address)

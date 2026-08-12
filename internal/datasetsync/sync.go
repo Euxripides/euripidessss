@@ -6,19 +6,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/etl/backend/internal/logger"
 	"github.com/etl/backend/internal/s3store"
 )
 
 var (
-	faultOnceMu      sync.Mutex
+	faultOnceMu       sync.Mutex
 	faultOnceConsumed bool
 )
 
@@ -53,15 +54,23 @@ type ParquetValidator interface {
 
 // Validation 校验结果（Phase 4 §28）。
 type Validation struct {
-	Rows               int64    `json:"rows"`
-	UniqueKeyCount     int64    `json:"unique_key_count"`
-	DuplicateCount     int64    `json:"duplicate_count"`
-	MinBlock           uint64   `json:"min_block"`
-	MaxBlock           uint64   `json:"max_block"`
-	SchemaOK           bool     `json:"schema_ok"`
-	MissingColumns     []string `json:"missing_columns,omitempty"`
-	RangeViolations    int64    `json:"range_violation_count,omitempty"`
-	UnexpectedAddresses int64   `json:"unexpected_address_count,omitempty"`
+	Rows                int64            `json:"rows"`
+	UniqueKeyCount      int64            `json:"unique_key_count"`
+	DuplicateCount      int64            `json:"duplicate_count"`
+	MinBlock            uint64           `json:"min_block"`
+	MaxBlock            uint64           `json:"max_block"`
+	SchemaOK            bool             `json:"schema_ok"`
+	MissingColumns      []string         `json:"missing_columns,omitempty"`
+	RangeViolations     int64            `json:"range_violation_count,omitempty"`
+	UnexpectedAddresses int64            `json:"unexpected_address_count,omitempty"`
+	ChainViolations     int64            `json:"chain_violation_count,omitempty"`
+	RequiredNulls       int64            `json:"required_null_count,omitempty"`
+	InvalidHashes       int64            `json:"invalid_hash_count,omitempty"`
+	InvalidAddresses    int64            `json:"invalid_address_count,omitempty"`
+	InvalidValues       int64            `json:"invalid_value_count,omitempty"`
+	InvalidTimestamps   int64            `json:"invalid_timestamp_count,omitempty"`
+	InvalidTypes        []string         `json:"invalid_types,omitempty"`
+	AddressRowCounts    map[string]int64 `json:"address_row_counts,omitempty"`
 }
 
 // Syncer Local Sync Worker（Phase 4 §26-27）。
@@ -84,7 +93,11 @@ type SyncResult struct {
 	Files         int    `json:"files"`
 	Skipped       bool   `json:"skipped"`
 	MergedParquet string `json:"merged_parquet,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
+
+var manifestEVMAddress = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 
 // SyncAll 扫描 completed Manifest 并同步未登记 Chunk。
 func (s *Syncer) SyncAll(ctx context.Context) ([]SyncResult, error) {
@@ -99,6 +112,10 @@ func (s *Syncer) SyncAll(ctx context.Context) ([]SyncResult, error) {
 		}
 	}
 	var out []SyncResult
+	if s.registry != nil {
+		s.registry.Refresh()
+	}
+	indexedAny := false
 	for _, m := range manifests {
 		if err := ctx.Err(); err != nil {
 			return out, err
@@ -108,13 +125,26 @@ func (s *Syncer) SyncAll(ctx context.Context) ([]SyncResult, error) {
 			logger.Log.Warn().Str("manifest", m).Err(err).Msg("datasetsync_manifest_failed")
 			// 失败必须可见且可重试（Phase 5.2 §9）：Registry 已标记 LOCAL_SYNC_FAILED，
 			// 这里继续处理其余 manifest，避免单个坏 chunk 阻塞整批同步。
+			out = append(out, SyncResult{ChunkKey: chunkKeyFromManifestPath(m), Status: "FAILED", Error: err.Error()})
 			continue
+		}
+		if res.Status == "" {
+			if res.Skipped {
+				res.Status = "SKIPPED"
+			} else {
+				res.Status = "INDEXED"
+			}
+		}
+		if res.Status == "INDEXED" && !res.Skipped {
+			indexedAny = true
 		}
 		out = append(out, res)
 	}
-	// 无论是否有新 chunk，都重建统一查询层：修复历史 merged.parquet
-	// 被单个 chunk 覆盖/缺失的问题（全量合并 + 去重 + 原子替换）。
-	s.rebuildAllMerged(ctx)
+	// 仅有新索引时才重建统一查询层。无新增时重复全量哈希/合并会让手动
+	// Cloud sync 在数据量增长后超时，且不会产生任何新的查询结果。
+	if indexedAny {
+		s.rebuildAllMerged(ctx)
+	}
 	return out, nil
 }
 
@@ -124,13 +154,13 @@ func (s *Syncer) rebuildAllMerged(ctx context.Context) {
 		return
 	}
 	chains := map[string]bool{}
-	for _, e := range s.registry.Active() {
+	for _, e := range s.registry.Authoritative() {
 		if e != nil && e.ChainKey != "" {
 			chains[e.ChainKey] = true
 		}
 	}
 	for chain := range chains {
-		all := activeLocalParquet(s.registry)
+		all := activeLocalParquetForChain(s.registry, chain)
 		if len(all) == 0 {
 			continue
 		}
@@ -152,8 +182,7 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 	}
 	jobID, chunkID := parts[0], parts[1]
 	chunkKey := jobID + "/" + chunkID
-	if s.registry.Has(chunkKey) {
-		existing := s.registry.Get(chunkKey)
+	if existing := s.registry.GetCached(chunkKey); existing != nil {
 		// 隔离/取消为终态：保留证据但绝不重试、不参与 merged/coverage（Phase 5.2 P0-1）
 		if existing != nil &&
 			(existing.Status == StatusQuarantined ||
@@ -161,10 +190,17 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 				existing.Status == StatusCancelled) {
 			return SyncResult{ChunkKey: chunkKey, Skipped: true}, nil
 		}
-		// 有效且已同步/已索引 → 跳过；FAILED/LOCAL_SYNC_FAILED/隔离 → 允许重试
-		if existing != nil && existing.IsActive() &&
-			(existing.SyncState == SyncLocalSynced || existing.SyncState == SyncIndexed) {
+		// 只有 INDEXED 权威条目才能跳过。LOCAL_SYNCED 是可能尚未合并成功的
+		// 中间态，必须允许重试，不能制造“已同步但不可查询”的永久孤儿。
+		if existing != nil && existing.IsAuthoritative() {
 			return SyncResult{ChunkKey: chunkKey, Skipped: true}, nil
+		}
+		// Parquet 内容/Manifest 契约校验失败通常是确定性的。自动同步每分钟
+		// 立即重跑会重复下载、DuckDB 扫描和哈希同一坏产物，拖慢正常任务。
+		// 保留周期性重试能力，但在 15 分钟冷却窗口内直接跳过；下载/网络类
+		// LOCAL_SYNC_FAILED 不受此限制，仍可在下一轮立即恢复。
+		if existing.SyncState == SyncValidationFailed && time.Since(existing.SyncedAt) < 15*time.Minute {
+			return SyncResult{ChunkKey: chunkKey, Skipped: true, Status: "SKIPPED"}, nil
 		}
 	}
 	payload, err := s.store.Get(ctx, manifestKey)
@@ -207,12 +243,17 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 			SHA256 string `json:"sha256"`
 		} `json:"parts,omitempty"`
 		CompletedAt string `json:"completed_at"`
+		Completed   bool   `json:"completed"`
 	}
 	if err := json.Unmarshal(payload, &m); err != nil {
 		return SyncResult{}, fmt.Errorf("解析 manifest: %w", err)
 	}
 	if m.JobID != jobID || m.ChunkID != chunkID {
 		return SyncResult{}, fmt.Errorf("manifest 路径与内容不一致: %s", manifestKey)
+	}
+	if err := validateManifestContract(m.SchemaVersion, m.Completed, m.ChainID, m.Dataset,
+		m.FromBlock, m.ToBlock, m.RowCount, m.Addresses, len(m.Parts), len(m.Files)); err != nil {
+		return SyncResult{}, err
 	}
 	localDir := filepath.Join(s.localRoot, "jobs", jobID, chunkID)
 	entry := &Entry{
@@ -221,6 +262,9 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 		Dataset: m.Dataset, FromBlock: m.FromBlock, ToBlock: m.ToBlock,
 		Addresses: m.Addresses, Provider: "SQD_CLOUD_EXPORT", SyncState: SyncLocalSynced,
 		ManifestPath: manifestKey, LocalDir: localDir,
+	}
+	if completedAt, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(m.CompletedAt)); parseErr == nil {
+		entry.CompletedAt = completedAt
 	}
 	type manifestFile struct {
 		Path   string
@@ -239,19 +283,30 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 		}
 	}
 	var localPaths []string
+	seenManifestPaths := map[string]bool{}
 	for _, f := range manifestFiles {
-		if !strings.HasPrefix(f.Path, "token_transfers/") {
+		cleanPath, pathErr := safeManifestPartPath(f.Path)
+		if pathErr != nil {
 			logger.Log.Warn().Str("manifest", manifestKey).Str("path", f.Path).
 				Msg("datasetsync_legacy_manifest_path_without_token_transfers")
-			return SyncResult{}, fmt.Errorf("legacy manifest 文件路径缺少 token_transfers/ 前缀（registry_skip，不自动删除）")
+			return SyncResult{}, pathErr
+		}
+		f.Path = cleanPath
+		pathKey := strings.ToLower(cleanPath)
+		if seenManifestPaths[pathKey] {
+			return SyncResult{}, fmt.Errorf("manifest Part 路径重复: %s", cleanPath)
+		}
+		seenManifestPaths[pathKey] = true
+		if f.Bytes <= 0 || !validSHA256(f.SHA256) {
+			return SyncResult{}, fmt.Errorf("manifest 文件声明无效: path=%s bytes=%d sha256=%q", f.Path, f.Bytes, f.SHA256)
 		}
 		// 产物上传到 leased/{job}/{chunk}/（设计 §13/§34）；manifest 在 completed/ 只保存元数据。
 		remoteKey := leasedPrefix + jobID + "/" + chunkID + "/" + f.Path
-		localPath, err := s.downloadVerified(ctx, remoteKey, localDir, f.Path, f.SHA256)
+		localPath, err := s.downloadVerified(ctx, remoteKey, localDir, f.Path, f.SHA256, f.Bytes)
 		if err != nil {
 			// 回退：部分产物可能位于 completed 目录
 			fallbackKey := manifestKey[:strings.LastIndex(manifestKey, "/")] + "/" + f.Path
-			localPath, err = s.downloadVerified(ctx, fallbackKey, localDir, f.Path, f.SHA256)
+			localPath, err = s.downloadVerified(ctx, fallbackKey, localDir, f.Path, f.SHA256, f.Bytes)
 			if err != nil {
 				entry.Status = StatusFailed
 				entry.SyncState = SyncLocalFailed
@@ -261,7 +316,7 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 		}
 		localPaths = append(localPaths, localPath)
 		entry.Files = append(entry.Files, FileInfo{
-			Path: filepath.ToSlash(filepath.Join(f.Path)), Bytes: f.Bytes, SHA256: f.SHA256,
+			Path: filepath.ToSlash(filepath.Join(f.Path)), Bytes: f.Bytes, Rows: f.Rows, SHA256: f.SHA256,
 		})
 	}
 	if s.validator != nil {
@@ -270,7 +325,7 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 			// Manifest V2：row_count 由 Validator 按 sum(parts.rows) 权威校正（Phase 5.4.1）
 			expectedRows = -1
 		}
-		validation, err := s.validateChunk(ctx, localPaths, expectedRows, m.FromBlock, m.ToBlock, m.Addresses)
+		validation, err := s.validateChunk(ctx, localPaths, expectedRows, m.FromBlock, m.ToBlock, m.ChainID, m.Addresses)
 		if err != nil {
 			entry.Status = StatusFailed
 			entry.SyncState = SyncValidationFailed
@@ -279,6 +334,7 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 			entry.DuplicateCount = validation.DuplicateCount
 			entry.MinBlock = validation.MinBlock
 			entry.MaxBlock = validation.MaxBlock
+			entry.AddressRowCounts = validation.AddressRowCounts
 			_ = s.registry.Register(entry)
 			return SyncResult{}, err
 		}
@@ -295,11 +351,30 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 				"LOCAL_VALIDATION_FAILED：越界 %d 行（manifest %d-%d，parquet %d-%d）",
 				validation.RangeViolations, m.FromBlock, m.ToBlock, validation.MinBlock, validation.MaxBlock)
 		}
+		if validation.DuplicateCount > 0 || validation.UnexpectedAddresses > 0 || validation.ChainViolations > 0 ||
+			validation.RequiredNulls > 0 || validation.InvalidHashes > 0 || validation.InvalidAddresses > 0 ||
+			validation.InvalidValues > 0 || validation.InvalidTimestamps > 0 {
+			entry.Status = StatusFailed
+			entry.SyncState = SyncValidationFailed
+			entry.RowCount = validation.Rows
+			entry.UniqueKeyCount = validation.UniqueKeyCount
+			entry.DuplicateCount = validation.DuplicateCount
+			entry.MinBlock = validation.MinBlock
+			entry.MaxBlock = validation.MaxBlock
+			entry.AddressRowCounts = validation.AddressRowCounts
+			_ = s.registry.Register(entry)
+			return SyncResult{}, fmt.Errorf(
+				"LOCAL_VALIDATION_FAILED：duplicates=%d unexpected_addresses=%d chain=%d required_nulls=%d invalid_hashes=%d invalid_addresses=%d invalid_values=%d invalid_timestamps=%d",
+				validation.DuplicateCount, validation.UnexpectedAddresses, validation.ChainViolations,
+				validation.RequiredNulls, validation.InvalidHashes, validation.InvalidAddresses,
+				validation.InvalidValues, validation.InvalidTimestamps)
+		}
 		entry.RowCount = validation.Rows
 		entry.UniqueKeyCount = validation.UniqueKeyCount
 		entry.DuplicateCount = validation.DuplicateCount
 		entry.MinBlock = validation.MinBlock
 		entry.MaxBlock = validation.MaxBlock
+		entry.AddressRowCounts = validation.AddressRowCounts
 		// Manifest V2：sum(parts.rows) == row_count
 		if m.SchemaVersion >= 2 && len(localPaths) > 0 {
 			if pr, ok := s.validator.(interface {
@@ -312,10 +387,19 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 					_ = s.registry.Register(entry)
 					return SyncResult{}, fmt.Errorf("part rows 统计失败: %w", perr)
 				}
-				var sum int64
+				var sum, declaredSum int64
 				for i, n := range partRows {
 					if i < len(entry.Files) {
+						declared := entry.Files[i].Rows
+						if declared != n {
+							entry.Status = StatusFailed
+							entry.SyncState = SyncValidationFailed
+							_ = s.registry.Register(entry)
+							return SyncResult{}, fmt.Errorf("LOCAL_VALIDATION_FAILED：part %s rows 声明=%d actual=%d",
+								entry.Files[i].Path, declared, n)
+						}
 						entry.Files[i].Rows = n
+						declaredSum += declared
 					}
 					sum += n
 				}
@@ -326,11 +410,13 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 					return SyncResult{}, fmt.Errorf(
 						"LOCAL_VALIDATION_FAILED：sum(parts.rows)=%d != row_count=%d", sum, validation.Rows)
 				}
-				if m.RowCount != validation.Rows {
-					logger.Log.Warn().Str("manifest", manifestKey).
-						Int64("manifest_rows", m.RowCount).Int64("actual_rows", validation.Rows).
-						Msg("datasetsync_manifest_row_reconciled")
-					_ = s.correctManifestRows(ctx, manifestKey, validation.Rows)
+				if declaredSum != m.RowCount || m.RowCount != validation.Rows {
+					entry.Status = StatusFailed
+					entry.SyncState = SyncValidationFailed
+					_ = s.registry.Register(entry)
+					return SyncResult{}, fmt.Errorf(
+						"LOCAL_VALIDATION_FAILED：sum(parts.rows)=%d manifest=%d actual=%d",
+						declaredSum, m.RowCount, validation.Rows)
 				}
 			}
 		}
@@ -357,15 +443,25 @@ func (s *Syncer) syncManifest(ctx context.Context, manifestKey string) (SyncResu
 		return SyncResult{}, err
 	}
 	res := SyncResult{ChunkKey: chunkKey, Rows: entry.RowCount, Files: len(entry.Files)}
+	if len(localPaths) == 0 {
+		// 0 行是合法且有业务意义的认证结果；即使没有 Parquet 文件，也必须
+		// 进入 INDEXED，避免后续每次同步都把它当成未完成中间态反复处理。
+		entry.SyncState = SyncIndexed
+		if err := s.registry.Register(entry); err != nil {
+			return SyncResult{}, err
+		}
+	}
 	if len(localPaths) > 0 {
 		// 统一查询层必须包含全部已同步 chunk（含历史），否则新 chunk 会覆盖旧数据。
-		allPaths := activeLocalParquet(s.registry)
-		if len(allPaths) == 0 {
-			allPaths = localPaths
-		}
+		allPaths := append(activeLocalParquetForChain(s.registry, entry.ChainKey), localPaths...)
+		allPaths = uniquePaths(allPaths)
 		merged, err := mergeParquet(ctx, s.validator, allPaths, filepath.Join(s.localRoot, "warehouse", "sqd_cloud", "token_transfers", "chain="+entry.ChainKey))
 		if err != nil {
 			logger.Log.Warn().Str("chunk", chunkKey).Err(err).Msg("datasetsync_merge_skipped")
+			entry.Status = StatusFailed
+			entry.SyncState = SyncLocalFailed
+			_ = s.registry.Register(entry)
+			return SyncResult{}, fmt.Errorf("LOCAL_MERGE_FAILED: %w", err)
 		} else {
 			entry.MergedParquet = merged
 			entry.SyncState = "INDEXED"
@@ -403,7 +499,12 @@ func (s *Syncer) correctManifestRows(ctx context.Context, manifestKey string, ro
 
 // validateChunk 调用带范围约束的校验器（无该能力时回退基础校验）。
 func (s *Syncer) validateChunk(ctx context.Context, paths []string, expectedRows int64,
-	fromBlock, toBlock uint64, addresses []string) (Validation, error) {
+	fromBlock, toBlock uint64, chainID int64, addresses []string) (Validation, error) {
+	if vr, ok := s.validator.(interface {
+		ValidateRangeForChain(ctx context.Context, paths []string, expectedRows int64, fromBlock, toBlock uint64, chainID int64, addresses []string) (Validation, error)
+	}); ok {
+		return vr.ValidateRangeForChain(ctx, paths, expectedRows, fromBlock, toBlock, chainID, addresses)
+	}
 	if vr, ok := s.validator.(interface {
 		ValidateRange(ctx context.Context, paths []string, expectedRows int64, fromBlock, toBlock uint64, addresses []string) (Validation, error)
 	}); ok {
@@ -412,32 +513,119 @@ func (s *Syncer) validateChunk(ctx context.Context, paths []string, expectedRows
 	return s.validator.Validate(ctx, paths, expectedRows)
 }
 
-// activeLocalParquet 收集 registry 中 ACTIVE 条目的本地 parquet（隔离/失败/取消不参与 merged）。
+// activeLocalParquet 只收集 Registry 权威版本在 Manifest 中明确声明的文件。
+// 不能 WalkDir 整个 job 目录，否则失败重试遗留或旧版本文件会再次混入 merged。
 func activeLocalParquet(registry *Registry) []string {
+	return activeLocalParquetForChain(registry, "")
+}
+
+func activeLocalParquetForChain(registry *Registry, chainKey string) []string {
 	if registry == nil {
 		return nil
 	}
 	var out []string
-	for _, e := range registry.Active() {
-		if e == nil || e.LocalDir == "" {
+	for _, e := range registry.Authoritative() {
+		if e == nil || e.LocalDir == "" ||
+			(chainKey != "" && !strings.EqualFold(strings.TrimSpace(e.ChainKey), strings.TrimSpace(chainKey))) {
 			continue
 		}
-		_ = filepath.WalkDir(e.LocalDir, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil
+		for _, f := range e.Files {
+			path := f.Path
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(e.LocalDir, filepath.FromSlash(path))
 			}
-			if !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".parquet") {
+			if strings.EqualFold(filepath.Ext(path), ".parquet") {
 				out = append(out, path)
 			}
-			return nil
-		})
+		}
+	}
+	sort.Strings(out)
+	return uniquePaths(out)
+}
+
+func uniquePaths(paths []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = filepath.Clean(path)
+		key := strings.ToLower(path)
+		if path == "." || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, path)
 	}
 	sort.Strings(out)
 	return out
 }
 
+func chunkKeyFromManifestPath(manifestKey string) string {
+	rest := strings.TrimPrefix(manifestKey, completedPrefix)
+	parts := strings.Split(rest, "/")
+	if len(parts) < 2 {
+		return manifestKey
+	}
+	return parts[0] + "/" + parts[1]
+}
+
+func validateManifestContract(schemaVersion int, completed bool, chainID int64, dataset string,
+	fromBlock, toBlock uint64, rowCount int64, addresses []string, partCount, fileCount int) error {
+	if schemaVersion < 1 {
+		return fmt.Errorf("manifest schema_version 无效: %d", schemaVersion)
+	}
+	if !completed {
+		return fmt.Errorf("manifest completed=false")
+	}
+	if chainID <= 0 || chainKeyForID(chainID) == fmt.Sprintf("chain-%d", chainID) {
+		return fmt.Errorf("manifest chain_id 不支持: %d", chainID)
+	}
+	dataset = strings.ToLower(strings.TrimSpace(dataset))
+	if dataset != "token_transfer" && dataset != "token_transfers" {
+		return fmt.Errorf("manifest dataset 不支持: %s", dataset)
+	}
+	if toBlock < fromBlock {
+		return fmt.Errorf("manifest 区块范围非法: %d-%d", fromBlock, toBlock)
+	}
+	if rowCount < 0 {
+		return fmt.Errorf("manifest row_count 不能为负数: %d", rowCount)
+	}
+	if len(addresses) == 0 {
+		return fmt.Errorf("manifest addresses 为空")
+	}
+	seen := map[string]bool{}
+	for _, address := range addresses {
+		address = strings.ToLower(strings.TrimSpace(address))
+		if !manifestEVMAddress.MatchString(address) {
+			return fmt.Errorf("manifest address 非法: %s", address)
+		}
+		if seen[address] {
+			return fmt.Errorf("manifest address 重复: %s", address)
+		}
+		seen[address] = true
+	}
+	if rowCount > 0 && partCount+fileCount == 0 {
+		return fmt.Errorf("manifest 声明 %d 行但没有 Part 文件", rowCount)
+	}
+	if schemaVersion >= 2 && partCount == 0 && rowCount > 0 {
+		return fmt.Errorf("manifest v2 声明 %d 行但 parts 为空", rowCount)
+	}
+	return nil
+}
+
+func safeManifestPartPath(path string) (string, error) {
+	raw := filepath.ToSlash(strings.TrimSpace(path))
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(raw)))
+	if raw == "" || filepath.IsAbs(filepath.FromSlash(raw)) || clean != raw ||
+		strings.Contains(raw, ":") || strings.HasPrefix(clean, "../") ||
+		!strings.HasPrefix(clean, "token_transfers/") ||
+		!strings.EqualFold(filepath.Ext(clean), ".parquet") {
+		return "", fmt.Errorf("manifest Part 路径非法: %s", path)
+	}
+	return clean, nil
+}
+
 // downloadVerified 下载 + .partial + SHA256 + 原子重命名（Phase 4 §27/§28）。
-func (s *Syncer) downloadVerified(ctx context.Context, remoteKey, localDir, relPath, wantSHA string) (string, error) {
+func (s *Syncer) downloadVerified(ctx context.Context, remoteKey, localDir, relPath, wantSHA string, wantBytes int64) (string, error) {
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		return "", err
 	}
@@ -452,6 +640,9 @@ func (s *Syncer) downloadVerified(ctx context.Context, remoteKey, localDir, relP
 	body, err := s.store.Get(ctx, remoteKey)
 	if err != nil {
 		return "", err
+	}
+	if wantBytes <= 0 || int64(len(body)) != wantBytes {
+		return "", fmt.Errorf("文件大小不匹配：got %d want %d", len(body), wantBytes)
 	}
 	if err := os.WriteFile(partial, body, 0o644); err != nil {
 		return "", err

@@ -18,8 +18,8 @@ import (
 // ── Batch collect real BSC addresses across multiple SQD rounds ──
 
 func TestBatchCollect500KAddresses(t *testing.T) {
-	if testing.Short() {
-		t.Skip("batch collection skipped in short mode")
+	if testing.Short() || os.Getenv("DOWNLOADENGINE_REAL_BATCH_COLLECT") != "1" {
+		t.Skip("set DOWNLOADENGINE_REAL_BATCH_COLLECT=1 to run the networked 500K address collector")
 	}
 
 	outDir := filepath.Join("..", "..", "stress-data", "bsc_real")

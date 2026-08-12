@@ -72,7 +72,15 @@ func (p *RPCProvider) Kind() ProviderKind { return ProviderRPC }
 func (p *RPCProvider) Name() string       { return "RPC Provider" }
 func (p *RPCProvider) Tier() ProviderTier { return TierNormal }
 func (p *RPCProvider) ManualOnly() bool   { return false }
-func (p *RPCProvider) Available() bool    { return p.client != nil }
+func (p *RPCProvider) Available() bool {
+	if p.client == nil {
+		return false
+	}
+	if health, ok := p.client.(interface{ HasAnyAvailable() bool }); ok {
+		return health.HasAnyAvailable()
+	}
+	return true
+}
 func (p *RPCProvider) CanHandle(d Dataset) bool {
 	return d == DatasetBalance || d == DatasetTokenTransfer
 }
@@ -86,7 +94,10 @@ func (p *RPCProvider) State() ProviderState {
 
 func (p *RPCProvider) StateReasons() []string {
 	if !p.Available() {
-		return []string{"RPC 管理器未装配"}
+		if p.client == nil {
+			return []string{"RPC 管理器未装配"}
+		}
+		return []string{"没有可路由的 RPC 节点"}
 	}
 	return nil
 }

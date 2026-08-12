@@ -176,6 +176,20 @@ func (s *SmartScheduler) Health() *ProviderHealthTracker { return s.health }
 
 // Candidates 返回支持该 Dataset 的候选（排序：可用 > 手动 > 分数）。
 func (s *SmartScheduler) Candidates(dataset string) []ProviderScore {
+	return s.candidates(dataset, "", DownloadModeAuto, false)
+}
+
+// CandidatesFor returns only providers executable for the selected chain and
+// mode. The legacy Candidates method remains an unscoped registry view for
+// diagnostics and backward-compatible callers.
+func (s *SmartScheduler) CandidatesFor(dataset, chainKey string, mode DownloadMode) []ProviderScore {
+	if mode == "" {
+		mode = DownloadModeAuto
+	}
+	return s.candidates(dataset, chainKey, mode, true)
+}
+
+func (s *SmartScheduler) candidates(dataset, chainKey string, mode DownloadMode, scoped bool) []ProviderScore {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []ProviderScore
@@ -183,29 +197,25 @@ func (s *SmartScheduler) Candidates(dataset string) []ProviderScore {
 		if !a.Supports(dataset) {
 			continue
 		}
+		available := a.Available()
+		if scoped {
+			available = adapterAvailableForMode(a, chainKey, mode)
+		}
 		out = append(out, ProviderScore{
 			Name:       name,
-			Available:  a.Available(),
+			Available:  available,
 			ManualOnly: manualOnly(a),
 			Score:      baseScore(name, dataset, 0),
 			Reasons:    []string{"Provider Adapter 已注册"},
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Available != out[j].Available {
-			return out[i].Available
-		}
-		if out[i].ManualOnly != out[j].ManualOnly {
-			return !out[i].ManualOnly
-		}
-		return out[i].Score > out[j].Score
-	})
+	sortProviderScores(out)
 	return out
 }
 
 // PlanDataset 探测 + 评分，生成单 Dataset 执行计划。
 func (s *SmartScheduler) PlanDataset(ctx context.Context, req ProbeRequest) (*DatasetPlan, error) {
-	cands := s.Candidates(req.Dataset)
+	cands := s.CandidatesFor(req.Dataset, req.ChainKey, DownloadModeAuto)
 	best := ProbeResult{Confidence: 0}
 	for _, c := range cands {
 		if c.ManualOnly || !c.Available {
@@ -227,8 +237,11 @@ func (s *SmartScheduler) PlanDataset(ctx context.Context, req ProbeRequest) (*Da
 	for _, c := range cands {
 		c.Score = baseScore(c.Name, req.Dataset, best.EstimatedRows)
 		c.SizeClass = cls
-		if s.historyBonus != nil {
-			if bonus := s.historyBonus(req.ChainID, req.Dataset, c.Name, cls); bonus > 0 {
+		s.mu.Lock()
+		historyBonus := s.historyBonus
+		s.mu.Unlock()
+		if historyBonus != nil {
+			if bonus := historyBonus(req.ChainID, req.Dataset, c.Name, cls); bonus > 0 {
 				c.Score += int(bonus)
 				c.Reasons = append(c.Reasons, fmt.Sprintf("历史画像加成 +%.0f", bonus))
 			}
@@ -239,6 +252,10 @@ func (s *SmartScheduler) PlanDataset(ctx context.Context, req ProbeRequest) (*Da
 		}
 		scores = append(scores, c)
 	}
+	// Probe-derived size and history/health adjustments change effective scores.
+	// Re-sort before choosing a preferred provider; otherwise the initial
+	// small-dataset order can incorrectly keep CSV/RPC ahead of SQD for L/XL.
+	sortProviderScores(scores)
 	preferred := ""
 	for _, c := range scores {
 		if !c.ManualOnly && c.Available && !s.health.Exhausted(c.Name) {
@@ -258,9 +275,34 @@ func (s *SmartScheduler) PlanDataset(ctx context.Context, req ProbeRequest) (*Da
 	}, nil
 }
 
+func sortProviderScores(scores []ProviderScore) {
+	sort.SliceStable(scores, func(i, j int) bool {
+		if scores[i].Available != scores[j].Available {
+			return scores[i].Available
+		}
+		if scores[i].ManualOnly != scores[j].ManualOnly {
+			return !scores[i].ManualOnly
+		}
+		if scores[i].Score != scores[j].Score {
+			return scores[i].Score > scores[j].Score
+		}
+		return scores[i].Name < scores[j].Name
+	})
+}
+
 // SelectProvider 为单个 Range 选择 Provider（跳过已失败/冷却 Provider，Cloud 最后兜底）。
 func (s *SmartScheduler) SelectProvider(dataset string, failed []string) (string, bool) {
 	cands := s.Candidates(dataset)
+	return s.selectProvider(cands, failed)
+}
+
+// SelectProviderFor applies chain/mode capability checks before failover.
+func (s *SmartScheduler) SelectProviderFor(dataset, chainKey string, mode DownloadMode, failed []string) (string, bool) {
+	cands := s.CandidatesFor(dataset, chainKey, mode)
+	return s.selectProvider(cands, failed)
+}
+
+func (s *SmartScheduler) selectProvider(cands []ProviderScore, failed []string) (string, bool) {
 	for _, c := range cands {
 		if c.ManualOnly || !c.Available {
 			continue
@@ -281,6 +323,9 @@ func (s *SmartScheduler) SelectProvider(dataset string, failed []string) (string
 		if containsString(failed, c.Name) {
 			continue
 		}
+		if s.health.Exhausted(c.Name) {
+			continue
+		}
 		return c.Name, true
 	}
 	return "", false
@@ -289,6 +334,11 @@ func (s *SmartScheduler) SelectProvider(dataset string, failed []string) (string
 // HasNextProvider 是否还有未失败的可用 Provider。
 func (s *SmartScheduler) HasNextProvider(dataset string, failed []string) bool {
 	_, ok := s.SelectProvider(dataset, failed)
+	return ok
+}
+
+func (s *SmartScheduler) HasNextProviderFor(dataset, chainKey string, mode DownloadMode, failed []string) bool {
+	_, ok := s.SelectProviderFor(dataset, chainKey, mode, failed)
 	return ok
 }
 

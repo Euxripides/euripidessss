@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -50,7 +51,8 @@ func indexedFixture(t *testing.T, writer IndexedWriter) (*Service, string) {
 	ds := &DatasetJob{ID: "d1", BatchID: batch.ID, AddressJobID: address.ID, Address: address.Address,
 		ChainKey: "bsc", Dataset: DatasetTransactions, Status: DatasetIndexing, CurrentProvider: "sqd",
 		DownloadedRows: 2,
-		CreatedAt:      now, UpdatedAt: now, Validation: &ValidationReport{Status: "PASS", Coverage: 1}}
+		CreatedAt:      now, UpdatedAt: now,
+		Validation: &ValidationReport{Status: "PASS", Coverage: 1, BlockCoverage: 1}}
 	if err := store.SaveBatch(batch); err != nil {
 		t.Fatal(err)
 	}
@@ -60,10 +62,25 @@ func indexedFixture(t *testing.T, writer IndexedWriter) (*Service, string) {
 	if err := store.SaveDataset(ds); err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(store, DefaultOptions(), nil)
+	partWriter := NewJSONLPartWriter(root)
+	svc := NewService(store, DefaultOptions(), partWriter)
 	svc.SetIndexedWriter(writer)
-	if err := svc.cp.Save(&CheckpointV3{DatasetJobID: ds.ID, Dataset: ds.Dataset, Address: ds.Address,
-		RequestedFrom: 10, RequestedTo: 20}); err != nil {
+	records := []Record{
+		{ChainID: 56, BlockNumber: 10, TransactionHash: "0x" + strings.Repeat("1", 64), Dataset: DatasetTransactions},
+		{ChainID: 56, BlockNumber: 11, TransactionHash: "0x" + strings.Repeat("2", 64), Dataset: DatasetTransactions},
+	}
+	written, err := partWriter.WritePart(context.Background(), PartMeta{
+		DatasetJobID: ds.ID, PartName: "part-000001.jsonl", Provider: "sqd", FromBlock: 10, ToBlock: 20,
+	}, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := &CheckpointV3{DatasetJobID: ds.ID, Dataset: ds.Dataset, Address: ds.Address,
+		RequestedFrom: 10, RequestedTo: 20, RowsCommitted: 2,
+		CompletedRanges: []BlockRange{{From: 10, To: 20}},
+		Parts: []PartInfo{{Name: "part-000001.jsonl", SHA256: written.SHA256, Rows: written.Rows,
+			Bytes: written.Bytes, RangeFrom: 10, RangeTo: 20}}}
+	if err := svc.cp.Save(cp); err != nil {
 		t.Fatal(err)
 	}
 	certStore := v3.NewGapStore(root, ds.ID)
@@ -100,6 +117,7 @@ func TestRawLogsAreWarehouseDataset(t *testing.T) {
 func TestIndexedWriterFailureIsRetryableWithoutDownload(t *testing.T) {
 	writer := &fakeIndexedWriter{fail: true, result: IndexedWriteResult{InputRows: 2, InsertedRows: 2}}
 	svc, dsID := indexedFixture(t, writer)
+	svc.SetWarehouseRequired(true)
 	callbacks := 0
 	svc.SetOnDatasetIndexed(func(*IndexedResult) { callbacks++ })
 	svc.indexDataset(dsID)

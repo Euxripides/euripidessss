@@ -14,9 +14,9 @@ import (
 
 // Config 是预取管理器配置。
 type Config struct {
-	Interval         time.Duration
-	SavedWaitSeconds float64 // 预取命中为用户节省的等待时间（默认 43.8s）
-	Progressive      bool                // 渐进式 7d/90d 窗口
+	Interval          time.Duration
+	SavedWaitSeconds  float64 // 预取命中为用户节省的等待时间（默认 43.8s）
+	Progressive       bool    // 渐进式 7d/90d 窗口
 	ProgressiveStages []ProgressiveStage
 }
 
@@ -28,15 +28,15 @@ func DefaultConfig() Config {
 
 // BatchCallbacks 是管理器与 Smart Download 的桥接回调。
 type BatchCallbacks struct {
-	Create        func(ctx context.Context, req smartdownload.CreateBatchRequest) (*smartdownload.CreateBatchResponse, error)
-	Start         func(batchID string) error
-	Pause         func(batchID string) error
-	Resume        func(batchID string) error
-	BatchStatus   func(batchID string) (status string, terminal bool)
-	CoverageQuery func(chainKey, address, dataset string, from, to uint64) graphcache.CoverageInfo
-	ChainID       func(chainKey string) int64
+	Create          func(ctx context.Context, req smartdownload.CreateBatchRequest) (*smartdownload.CreateBatchResponse, error)
+	Start           func(batchID string) error
+	Pause           func(batchID string) error
+	Resume          func(batchID string) error
+	BatchStatus     func(batchID string) (status string, terminal bool)
+	CoverageQuery   func(chainKey, address, dataset string, from, to uint64) graphcache.CoverageInfo
+	ChainID         func(chainKey string) int64
 	ActiveUserTasks func() int
-	HeadBlock     func() uint64
+	HeadBlock       func() uint64
 }
 
 // Manager 是 Smart Prefetch 调度器（设计 §28-§32、§59、§66、§69-§75）。
@@ -72,7 +72,7 @@ func NewManager(queue *Queue, budget *BudgetStore, feedback *Feedback,
 	}
 	active, _ := NewActiveRegistry(queue.Root())
 	leases := NewLeaseStore(queue.Root(), 2*time.Minute)
-	return &Manager{
+	m := &Manager{
 		queue:      queue,
 		budget:     budget,
 		feedback:   feedback,
@@ -87,6 +87,25 @@ func NewManager(queue *Queue, budget *BudgetStore, feedback *Feedback,
 		leases:     leases,
 		reorg:      ReorgPolicy{SafetyBlocks: 20},
 		stop:       make(chan struct{}),
+	}
+	m.reconcileInvalidFeedback()
+	return m
+}
+
+func (m *Manager) reconcileInvalidFeedback() {
+	if m == nil || m.queue == nil || m.feedback == nil || m.callbacks.BatchStatus == nil {
+		return
+	}
+	for _, j := range m.queue.List() {
+		if j == nil || j.BatchID == "" {
+			continue
+		}
+		status, terminal := m.callbacks.BatchStatus(j.BatchID)
+		if !terminal || (strings.EqualFold(status, "COMPLETED") && m.coverageFull(j.Candidate)) {
+			continue
+		}
+		_ = m.feedback.InvalidateUse(j.Candidate.InvestigationID, j.Candidate.Address, j.BatchID,
+			"legacy upgrade invalidated: batch="+status+" or coverage not certified")
 	}
 }
 
@@ -141,14 +160,14 @@ func (m *Manager) Stop() {
 func (m *Manager) Plan(ctx context.Context, invID, chainKey string, chainID int64,
 	focus string, snap invcache.ContextSnapshot) ([]Candidate, error) {
 	key := graphcache.Key{
-		ChainID:    chainID,
-		Address:    focus,
-		Direction:  string(graphcache.DirectionAll),
-		DatasetSet: GraphBundle(),
-		TokenFilter: firstToken(snap.Tokens),
-		FromBlock:  snap.FromBlock,
-		ToBlock:    snap.ToBlock,
-		Depth:      1,
+		ChainID:            chainID,
+		Address:            focus,
+		Direction:          string(graphcache.DirectionAll),
+		DatasetSet:         GraphBundle(),
+		TokenFilter:        firstToken(snap.Tokens),
+		FromBlock:          snap.FromBlock,
+		ToBlock:            snap.ToBlock,
+		Depth:              1,
 		AggregationVersion: 1,
 	}
 	res, _, err := m.graph.GetOrBuild(ctx, key)
@@ -226,34 +245,15 @@ func (m *Manager) Upgrade(invID, chainKey, address string) error {
 		return fmt.Errorf("prefetch: 没有该地址的预取任务")
 	}
 	var lastErr error
+	upgraded := false
 	for _, j := range jobs {
-		terminal := false
-		status := ""
-		if j.BatchID != "" && m.callbacks.BatchStatus != nil {
-			status, terminal = m.callbacks.BatchStatus(j.BatchID)
+		if err := m.requireUpgradeReady(j); err != nil {
+			lastErr = err
+			continue
 		}
-		if terminal && status == "COMPLETED" {
-			// 数据已就绪：无需恢复批处理，直接标记已使用（任务 ID 不变）
-			if err := m.queue.Upgrade(j.ID); err != nil {
-				lastErr = err
-				continue
-			}
-			_ = m.queue.UpdateStatus(j.ID, StatusReady)
-		} else if j.BatchID != "" && !terminal && m.callbacks.Resume != nil {
-			if err := m.callbacks.Resume(j.BatchID); err != nil {
-				lastErr = err
-				continue
-			}
-			if err := m.queue.Upgrade(j.ID); err != nil {
-				lastErr = err
-				continue
-			}
-		} else {
-			// 尚未启动批处理：升级为 INTERACTIVE，由后台循环立即启动
-			if err := m.queue.Upgrade(j.ID); err != nil {
-				lastErr = err
-				continue
-			}
+		if err := m.queue.Upgrade(j.ID); err != nil {
+			lastErr = err
+			continue
 		}
 		if m.feedback != nil {
 			_ = m.feedback.RecordUse(invID, address, j.BatchID, m.cfg.SavedWaitSeconds)
@@ -261,8 +261,29 @@ func (m *Manager) Upgrade(invID, chainKey, address string) error {
 		m.mu.Lock()
 		m.upgrades++
 		m.mu.Unlock()
+		upgraded = true
+	}
+	if upgraded {
+		return nil
 	}
 	return lastErr
+}
+
+func (m *Manager) requireUpgradeReady(j *Job) error {
+	if j.BatchID == "" {
+		return fmt.Errorf("prefetch: 预取批次尚未创建")
+	}
+	if m.callbacks.BatchStatus == nil {
+		return fmt.Errorf("prefetch: 无法确认预取批次状态")
+	}
+	status, terminal := m.callbacks.BatchStatus(j.BatchID)
+	if !terminal || !strings.EqualFold(status, "COMPLETED") {
+		return fmt.Errorf("prefetch: 预取批次未就绪: %s", status)
+	}
+	if !m.coverageFull(j.Candidate) {
+		return fmt.Errorf("prefetch: 预取结果未完成认证覆盖")
+	}
+	return nil
 }
 
 // OnDatasetIndexed 数据入库后：失效图缓存并推进预取任务状态。
@@ -283,7 +304,7 @@ func (m *Manager) OnDatasetIndexed(chainKey, address, dataset string) {
 		if !terminal {
 			continue
 		}
-		if status == "COMPLETED" {
+		if strings.EqualFold(status, "COMPLETED") && m.coverageFull(j.Candidate) {
 			_ = m.queue.UpdateStatus(j.ID, StatusReady)
 			_ = m.budget.Release()
 			_ = m.budget.RecordDownload(j.Candidate.EstimatedBytes, j.Candidate.EstimatedBytes)
@@ -332,9 +353,9 @@ func (m *Manager) Stats() Stats {
 	st := Stats{
 		TotalJobs: total, ActiveJobs: m.queue.Active(), ReadyJobs: m.queue.ReadyCount(),
 		InteractiveUpgrades: m.upgrades,
-		Budget: m.budget.Config(), Counters: m.budget.Counters(),
+		Budget:              m.budget.Config(), Counters: m.budget.Counters(),
 		Feedback: m.feedback.Stats(),
-		LastRun: m.lastRun,
+		LastRun:  m.lastRun,
 	}
 	return st
 }
@@ -408,8 +429,8 @@ func (m *Manager) startJob(ctx context.Context, j *Job) error {
 			FromBlock: j.Candidate.FromBlock,
 			ToBlock:   j.Candidate.ToBlock,
 		},
-		SkipCovered: boolPtr(true),
-		Prefetch:    true,
+		SkipCovered:      boolPtr(true),
+		Prefetch:         true,
 		PrefetchPriority: priorityNum(j.Candidate.Priority),
 	}
 	resp, err := m.callbacks.Create(ctx, req)
@@ -449,7 +470,7 @@ func (m *Manager) reconcileJobs() {
 		status, terminal := m.callbacks.BatchStatus(j.BatchID)
 		_ = m.queue.UpdateBatchStatus(j.ID, status)
 		if terminal {
-			if status == "COMPLETED" {
+			if strings.EqualFold(status, "COMPLETED") && m.coverageFull(j.Candidate) {
 				_ = m.queue.UpdateStatus(j.ID, StatusReady)
 			} else {
 				_ = m.queue.UpdateStatus(j.ID, StatusFailed)
@@ -514,12 +535,12 @@ func (m *Manager) pauseAllPrefetch() {
 }
 
 func (m *Manager) coverageFull(c Candidate) bool {
-	if m.callbacks.CoverageQuery == nil {
+	if m.callbacks.CoverageQuery == nil || len(c.RequiredDatasets) == 0 {
 		return false
 	}
 	for _, ds := range c.RequiredDatasets {
 		ci := m.callbacks.CoverageQuery(c.ChainKey, c.Address, ds, c.FromBlock, c.ToBlock)
-		if ci.Ratio < 1 {
+		if !ci.Full || ci.Ratio < 1 || !strings.EqualFold(ci.Certification, "CERTIFIED") {
 			return false
 		}
 	}

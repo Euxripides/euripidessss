@@ -29,7 +29,12 @@ func (p *AWSProvider) Kind() ProviderKind { return ProviderAWS }
 func (p *AWSProvider) Name() string       { return "AWS Provider" }
 func (p *AWSProvider) Tier() ProviderTier { return TierNormal }
 func (p *AWSProvider) ManualOnly() bool   { return false }
-func (p *AWSProvider) Available() bool    { return p.engine != nil }
+
+// Available is deliberately false. parquetdownload.Manager now routes the
+// transactions selection through SQD streaming, so presenting this wrapper as
+// AWS would be a false capability claim until a real AWS discover/execute path
+// is wired back in.
+func (p *AWSProvider) Available() bool { return false }
 
 // CanHandle 仅 BSC 原生交易（AWS S3 公开数据集的唯一可用范围）。
 func (p *AWSProvider) CanHandle(d Dataset) bool { return d == DatasetTransactions }
@@ -42,10 +47,7 @@ func (p *AWSProvider) State() ProviderState {
 }
 
 func (p *AWSProvider) StateReasons() []string {
-	if !p.Available() {
-		return []string{"Parquet 下载管理器未装配"}
-	}
-	return nil
+	return []string{"AWS legacy 路径已禁用：transactions 当前由 SQD 流式执行"}
 }
 
 func (p *AWSProvider) Score(d Dataset) ProviderScore {
@@ -67,6 +69,9 @@ func (p *AWSProvider) Score(d Dataset) ProviderScore {
 }
 
 func (p *AWSProvider) Execute(ctx context.Context, req Requirement) (*TaskResult, error) {
+	if !p.Available() {
+		return nil, errors.New("AWS Provider 已禁用：当前 transactions 由 SQD 流式执行")
+	}
 	if p.engine == nil {
 		return nil, errors.New("AWS Provider 未装配（Parquet 下载管理器不可用）")
 	}

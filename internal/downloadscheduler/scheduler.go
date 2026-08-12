@@ -195,7 +195,10 @@ func (s *Scheduler) CloudSync(ctx context.Context) ([]datasetsync.SyncResult, er
 	if err == nil && s.dataIndexedHook != nil {
 		var entries []*datasetsync.Entry
 		for _, r := range results {
-			if r.Skipped {
+			// 只有本轮真正完成本地校验和索引的结果才能触发覆盖/预取升级。
+			// FAILED 结果也会出现在 SyncAll 返回列表中；把它们送入 hook 会让
+			// 下游错误地对账未认证数据，历史坏 manifest 较多时还会阻塞请求。
+			if r.Skipped || r.Status != "INDEXED" {
 				continue
 			}
 			if e := s.dsRegistry.Get(r.ChunkKey); e != nil {
@@ -800,7 +803,7 @@ func (s *Scheduler) tryCloudFallback(ctx context.Context, plan *Plan, t *PlanTas
 		})
 		return nil
 	}
-	coverage, _ := s.coverage.Check(ctx, t.Requirement.ChainKey, t.Requirement.Addresses, []Dataset{t.Requirement.Dataset})
+	coverage, _ := s.coverage.CheckRequirement(ctx, t.Requirement)
 	states := s.health.Snapshot()
 	if s.fault.AllNormalProvidersFail {
 		// 故障注入：模拟全部常规 Provider 熔断（设计 §96，仅测试环境）

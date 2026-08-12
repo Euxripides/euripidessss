@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -234,8 +235,12 @@ func handleFinancialPnLV1(c *gin.Context) {
 	if !ok {
 		return
 	}
+	token := strings.ToLower(c.Query("token"))
+	if token == "" {
+		token = fmt.Sprintf("native:%d", id)
+	}
 	persist := strings.EqualFold(c.Query("persist"), "true")
-	result, snapshotID, err := financialPnLV1.Calculate(c.Request.Context(), financialpnl.Query{ChainID: id, Address: c.Param("address"), Token: strings.ToLower(c.Query("token")), AsOf: asOf}, persist)
+	result, snapshotID, err := financialPnLV1.Calculate(c.Request.Context(), financialpnl.Query{ChainID: id, Address: c.Param("address"), Token: token, AsOf: asOf}, persist)
 	if err != nil {
 		writeFinancialError(c, err)
 		return
@@ -295,7 +300,16 @@ func handleFinancialQualityV1(c *gin.Context) {
 	if !ok {
 		return
 	}
-	result, err := financialQualityV1.Report(c.Request.Context(), id, financialquality.Filter{Window: strings.ToUpper(defaultString(c.Query("window"), "30D"))})
+	window := strings.ToUpper(defaultString(c.Query("window"), "30D"))
+	key := fmt.Sprintf("%d:%s", id, window)
+	if cached, ok := financialQualityTTL.Get(key); ok {
+		writeFinancialResult(c, cached, nil)
+		return
+	}
+	result, err := financialQualityV1.Report(c.Request.Context(), id, financialquality.Filter{Window: window})
+	if err == nil {
+		financialQualityTTL.Set(key, result)
+	}
 	writeFinancialResult(c, result, err)
 }
 

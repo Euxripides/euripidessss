@@ -151,6 +151,25 @@ func TestRejectsGasForNonNativeAsset(t *testing.T) {
 	}
 }
 
+func TestSkipsZeroAmountEvents(t *testing.T) {
+	t0 := time.Now().UTC()
+	events := []Event{
+		{Address: testAddressA, Token: testToken, Direction: DirectionIn, Time: t0, Amount: "10"},
+		{Address: testAddressA, Token: testToken, Direction: DirectionOut, Time: t0.Add(time.Minute), Amount: "0"},
+		{Address: testAddressA, Token: testToken, Direction: DirectionOut, Time: t0.Add(2 * time.Minute), Amount: "4"},
+	}
+	report, err := Analyze(events, Snapshot{ID: "skip-zero", AsOf: t0.Add(3 * time.Hour), PriceVersion: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SkippedZeroAmountEvents != 1 {
+		t.Fatalf("expected 1 skipped zero-amount event, got %d", report.SkippedZeroAmountEvents)
+	}
+	if len(report.Results) != 1 {
+		t.Fatalf("expected 1 token result, got %d", len(report.Results))
+	}
+}
+
 func window(t *testing.T, result TokenResult, name string) WindowMetric {
 	t.Helper()
 	all := append(append([]WindowMetric{}, result.RetentionWindows...), result.PassThroughWindows...)

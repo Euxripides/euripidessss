@@ -157,7 +157,7 @@ func TestV31CaseFDensityAwareShardSizing(t *testing.T) {
 	}
 }
 
-func TestV31CaseGProgressiveCertificationTTFRAndAutoDowngrade(t *testing.T) {
+func TestV31CaseGRangeCertificationWaitsForDatasetQualityGate(t *testing.T) {
 	store, svc := newTurboService(t)
 	t.Cleanup(svc.Shutdown)
 	created, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
@@ -188,16 +188,17 @@ func TestV31CaseGProgressiveCertificationTTFRAndAutoDowngrade(t *testing.T) {
 	relevant.Status = RangeCompleted
 	svc.certifyRangeLocked(relevant)
 	svc.mu.Unlock()
-	if got := store.GetBatch(created.Batch.ID).Mode; got != DownloadModeTurbo {
-		t.Fatalf("relevant certification did not auto downgrade EMERGENCY: %s", got)
+	if got := store.GetBatch(created.Batch.ID).Mode; got != DownloadModeEmergency {
+		t.Fatalf("range evidence prematurely downgraded EMERGENCY: %s", got)
 	}
 	ds := store.GetDataset(relevant.DatasetJobID)
-	if !ds.RelevantCertified || ds.Certification != CertificationDatasetPartial {
-		t.Fatalf("dataset was not partial-certified: %+v", ds)
+	if ds.RelevantCertified || ds.Certification != CertificationDatasetPartial {
+		t.Fatalf("range evidence prematurely certified the dataset: %+v", ds)
 	}
 	status, _ := svc.TurboStatus(created.Batch.ID)
-	if status.TimeToFirstRelevantSecs <= 0 || status.RelevantCertification == "" || status.CompletedRanges == len(store.ListRanges()) {
-		t.Fatalf("TTFR/progressive status invalid: %+v", status)
+	if status.TimeToFirstRelevantSecs <= 0 || status.RelevantCertification != "RANGE_CERTIFIED" ||
+		status.CompletedRanges == len(store.ListRanges()) {
+		t.Fatalf("range-level TTFR evidence was not labeled precisely: %+v", status)
 	}
 }
 

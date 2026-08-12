@@ -36,11 +36,11 @@ func (m *mockRPCClient) Call(ctx context.Context, chainKey, method string, param
 }
 
 type mockSQDEngine struct {
-	jobStatus string
-	progress  float64
-	startErr  error
-	getErr    error
-	started   bool
+	jobStatus     string
+	progress      float64
+	startErr      error
+	getErr        error
+	started       bool
 	lastFromBlock uint64
 	lastToBlock   uint64
 }
@@ -124,10 +124,14 @@ func TestRegistrySelect(t *testing.T) {
 	if provider == nil || score.Provider != ProviderRPC || provider.Kind() != ProviderRPC {
 		t.Fatalf("balance 应选择 RPC，得到 %+v", score)
 	}
-	// transactions → AWS（V3 Router：历史交易优先 AWS > SQD，AWS 89 > SQD 79）
+	// transactions → SQD；旧 AWS wrapper 已禁用，避免把 SQD 流式任务伪报为 AWS。
 	score, provider = s.Registry().Select(DatasetTransactions)
-	if provider == nil || score.Provider != ProviderAWS || provider.Kind() != ProviderAWS {
-		t.Fatalf("transactions 应选择 AWS，得到 %+v", score)
+	if provider == nil || score.Provider != ProviderSQD || provider.Kind() != ProviderSQD {
+		t.Fatalf("transactions 应选择 SQD，得到 %+v", score)
+	}
+	aws := NewAWSProvider(&mockSQDEngine{jobStatus: parquetdownload.StatusDone})
+	if aws.Available() || aws.State() != ProviderUnavailable {
+		t.Fatalf("legacy AWS wrapper must fail closed: available=%t state=%s", aws.Available(), aws.State())
 	}
 	// token_transfer → SQD（Logs/Transfers 优先 SQD > AWS）
 	score, provider = s.Registry().Select(DatasetTokenTransfer)
@@ -188,9 +192,9 @@ func TestSubmitObjectiveExpansion(t *testing.T) {
 	s := newTestScheduler(nil, parquetdownload.StatusDone)
 	plan, err := s.Submit(context.Background(), []Requirement{{
 		Dataset: DatasetTokenTransfer, ChainKey: "bsc",
-		Addresses:    []string{"0x" + strings.Repeat("a", 40), "0x" + strings.Repeat("b", 40)},
-		FromBlock:    114450000,
-		ToBlock:      114499999,
+		Addresses:     []string{"0x" + strings.Repeat("a", 40), "0x" + strings.Repeat("b", 40)},
+		FromBlock:     114450000,
+		ToBlock:       114499999,
 		ObjectiveType: "fund_sink",
 	}})
 	if err != nil {

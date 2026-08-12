@@ -105,6 +105,10 @@ func (h *Handler) endpoint(writer http.ResponseWriter, request *http.Request, su
 		writeResult(writer, item, err)
 	case http.MethodDelete:
 		err := h.manager.Delete(id)
+		if errors.Is(err, ErrEndpointNotFound) {
+			writeError(writer, http.StatusNotFound, err.Error())
+			return
+		}
 		writeResult(writer, map[string]any{"success": err == nil}, err)
 	default:
 		writeError(writer, http.StatusMethodNotAllowed, "请求方法不支持")

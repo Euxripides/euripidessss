@@ -50,6 +50,12 @@ func (p *RPCTransferAdapter) AvailableForChain(chainKey string) bool {
 	if p.client == nil {
 		return false
 	}
+	// Runtime routing health is authoritative when the client exposes it. A
+	// merely configured endpoint may be misconfigured, rate-limited, or behind
+	// an open circuit and therefore must not make AUTO advertise executable RPC.
+	if available, ok := p.client.(interface{ HasAvailable(string) bool }); ok {
+		return available.HasAvailable(chainKey)
+	}
 	if configured, ok := p.client.(interface{ HasConfigured(string) bool }); ok {
 		return configured.HasConfigured(chainKey)
 	}
@@ -57,6 +63,9 @@ func (p *RPCTransferAdapter) AvailableForChain(chainKey string) bool {
 }
 func (p *RPCTransferAdapter) AvailableForMode(chainKey string, mode DownloadMode) bool {
 	if isTurboMode(mode) {
+		if available, ok := p.client.(interface{ HasTurboAvailable(string) bool }); ok {
+			return available.HasTurboAvailable(chainKey)
+		}
 		if configured, ok := p.client.(turboRPCClient); ok {
 			return configured.HasAnyConfigured(chainKey)
 		}
@@ -102,8 +111,10 @@ func (p *RPCTransferAdapter) MaxAddressGroupSize(dataset string) int {
 	return 0
 }
 
-// SupportedDatasetBundles returns defensive copies of the only RPC bundles
-// that can be derived from one unfiltered eth_getLogs response.
+// SupportedDatasetBundles returns defensive copies of the RPC group bundles.
+// Token transfers and contract logs use different eth_getLogs semantics, so a
+// combined bundle is executed as separate provider queries and merged only
+// after each dataset has been assigned to the correct requested address.
 func (p *RPCTransferAdapter) SupportedDatasetBundles() [][]string {
 	return [][]string{
 		{DatasetTokenTransfers},
@@ -160,10 +171,10 @@ func (p *RPCTransferAdapter) ExecuteRange(ctx context.Context, req RangeRequest)
 	}
 }
 
-// ExecuteGroupRange scans one normalized address group once per block chunk
-// and fans the raw logs out to the requested datasets. It intentionally does
-// not fall back to per-address calls: an invalid or unsupported bundle fails
-// before provider I/O so callers can split or reroute it explicitly.
+// ExecuteGroupRange scans one normalized address group per block chunk. Token
+// transfers match wallet participation through indexed from/to topics, while
+// raw logs match contracts through the EVM log address. It intentionally does
+// not fall back to per-address calls: invalid bundles fail before provider I/O.
 func (p *RPCTransferAdapter) ExecuteGroupRange(ctx context.Context, req GroupRangeRequest) (map[string]map[string]*ProviderResult, error) {
 	if p.client == nil {
 		return nil, fmt.Errorf("RPC 管理器未装配")
@@ -303,10 +314,10 @@ type rpcLog struct {
 	LogIndex        string   `json:"logIndex"`
 }
 
-// executeGroupedLogScan performs one raw eth_getLogs scan per block chunk for
-// an address group, then derives every requested dataset from the same log
-// payload. Results are keyed by normalized contract address and dataset so the
-// V3.3 adapter can fan them out without another provider request.
+// executeGroupedLogScan keeps the two address meanings separate: token
+// transfers are assigned by indexed participant topics, while raw logs are
+// assigned by the emitting contract address. Results are keyed by the original
+// requested address and dataset.
 func (p *RPCTransferAdapter) executeGroupedLogScan(ctx context.Context, network chain.EVM, addresses, datasets []string, fromBlock, toBlock uint64) (map[string]map[string]*ProviderResult, error) {
 	var err error
 	addresses, err = normalizeAndValidateRPCLogAddresses(addresses)
@@ -342,24 +353,40 @@ func (p *RPCTransferAdapter) executeGroupedLogScan(ctx context.Context, network 
 		if toBlock-chunkFrom > rpcLogChunkBlocks {
 			chunkTo = chunkFrom + rpcLogChunkBlocks
 		}
-		logs, err := p.getAllLogsChunkForAddresses(ctx, network.Key, addresses, chunkFrom, chunkTo)
-		if err != nil {
-			return nil, fmt.Errorf("RPC eth_getLogs group（%d-%d）: %w", chunkFrom, chunkTo, err)
-		}
-		for _, item := range logs {
-			address := strings.ToLower(item.Address)
-			addressResults, belongsToGroup := results[address]
-			if !belongsToGroup {
-				continue
+		if wantTransfers {
+			logs, err := p.getTransferLogsChunkForAddresses(ctx, network.Key, addresses, chunkFrom, chunkTo)
+			if err != nil {
+				return nil, fmt.Errorf("RPC eth_getLogs transfer group（%d-%d）: %w", chunkFrom, chunkTo, err)
 			}
-			if wantTransfers {
-				if transfer, ok := parseTransferLog(network, item); ok {
-					if appendGroupedRecord(addressResults[DatasetTokenTransfers], transfer, seenTransfers, address) {
+			for _, item := range logs {
+				transfer, ok := parseTransferLog(network, item)
+				if !ok {
+					continue
+				}
+				fromAddress, _ := transfer.Payload["from_address"].(string)
+				toAddress, _ := transfer.Payload["to_address"].(string)
+				for _, participant := range []string{fromAddress, toAddress} {
+					addressResults, belongsToGroup := results[participant]
+					if !belongsToGroup {
+						continue
+					}
+					if appendGroupedRecord(addressResults[DatasetTokenTransfers], transfer, seenTransfers, participant) {
 						addressResults[DatasetTokenTransfers].Bytes += 160
 					}
 				}
 			}
-			if wantLogs {
+		}
+		if wantLogs {
+			logs, err := p.getAllLogsChunkForAddresses(ctx, network.Key, addresses, chunkFrom, chunkTo)
+			if err != nil {
+				return nil, fmt.Errorf("RPC eth_getLogs contract group（%d-%d）: %w", chunkFrom, chunkTo, err)
+			}
+			for _, item := range logs {
+				address := strings.ToLower(item.Address)
+				addressResults, belongsToGroup := results[address]
+				if !belongsToGroup {
+					continue
+				}
 				record, ok, err := p.parseRawLogRecord(ctx, network, item, times)
 				if err != nil {
 					return nil, err
@@ -493,7 +520,26 @@ func (p *RPCTransferAdapter) countLogs(ctx context.Context, chainKey, address st
 
 // getLogsChunk 查询区块分块；结果触顶时二分收窄。
 func (p *RPCTransferAdapter) getLogsChunk(ctx context.Context, chainKey, address string, from, to uint64) ([]rpcLog, error) {
-	logs, err := p.getLogsRange(ctx, chainKey, address, from, to)
+	return p.getTransferLogsChunkForAddresses(ctx, chainKey, []string{address}, from, to)
+}
+
+func (p *RPCTransferAdapter) getTransferLogsChunkForAddresses(ctx context.Context, chainKey string, addresses []string, from, to uint64) ([]rpcLog, error) {
+	logs, err := p.getTransferLogsRangeForAddresses(ctx, chainKey, addresses, from, to)
+	if err != nil {
+		if from == to || !isRPCLogRangeLimitError(err) {
+			return nil, err
+		}
+		mid := from + (to-from)/2
+		left, leftErr := p.getTransferLogsChunkForAddresses(ctx, chainKey, addresses, from, mid)
+		if leftErr != nil {
+			return nil, leftErr
+		}
+		right, rightErr := p.getTransferLogsChunkForAddresses(ctx, chainKey, addresses, mid+1, to)
+		if rightErr != nil {
+			return nil, rightErr
+		}
+		return append(left, right...), nil
+	}
 	if err != nil || len(logs) < rpcLogResultLimit {
 		return logs, err
 	}
@@ -501,11 +547,11 @@ func (p *RPCTransferAdapter) getLogsChunk(ctx context.Context, chainKey, address
 		return logs, nil
 	}
 	mid := from + (to-from)/2
-	left, errL := p.getLogsChunk(ctx, chainKey, address, from, mid)
+	left, errL := p.getTransferLogsChunkForAddresses(ctx, chainKey, addresses, from, mid)
 	if errL != nil {
 		return nil, errL
 	}
-	right, errR := p.getLogsChunk(ctx, chainKey, address, mid+1, to)
+	right, errR := p.getTransferLogsChunkForAddresses(ctx, chainKey, addresses, mid+1, to)
 	if errR != nil {
 		return nil, errR
 	}
@@ -513,19 +559,49 @@ func (p *RPCTransferAdapter) getLogsChunk(ctx context.Context, chainKey, address
 }
 
 func (p *RPCTransferAdapter) getLogsRange(ctx context.Context, chainKey, address string, from, to uint64) ([]rpcLog, error) {
-	filter := map[string]any{
-		"address":   []string{strings.ToLower(address)},
-		"topics":    []string{transferTopic},
-		"fromBlock": fmt.Sprintf("0x%x", from),
-		"toBlock":   fmt.Sprintf("0x%x", to),
-	}
-	raw, _, err := p.call(ctx, chainKey, "eth_getLogs", []any{filter})
+	return p.getTransferLogsRangeForAddresses(ctx, chainKey, []string{address}, from, to)
+}
+
+// getTransferLogsRangeForAddresses performs two topic-indexed scans: requested
+// wallets as Transfer.from and as Transfer.to. It never restricts the log
+// emitter address because that field is the token contract, not the wallet.
+func (p *RPCTransferAdapter) getTransferLogsRangeForAddresses(ctx context.Context, chainKey string, addresses []string, from, to uint64) ([]rpcLog, error) {
+	normalized, err := normalizeAndValidateRPCLogAddresses(addresses)
 	if err != nil {
 		return nil, err
 	}
-	var logs []rpcLog
-	if err := json.Unmarshal(raw, &logs); err != nil {
-		return nil, fmt.Errorf("解析 eth_getLogs 响应: %w", err)
+	padded := make([]string, 0, len(normalized))
+	for _, address := range normalized {
+		padded = append(padded, "0x"+strings.Repeat("0", 24)+strings.TrimPrefix(address, "0x"))
+	}
+	base := map[string]any{
+		"fromBlock": fmt.Sprintf("0x%x", from),
+		"toBlock":   fmt.Sprintf("0x%x", to),
+	}
+	filters := []map[string]any{
+		{"topics": []any{transferTopic, padded}},
+		{"topics": []any{transferTopic, nil, padded}},
+	}
+	logs := make([]rpcLog, 0)
+	seen := make(map[string]struct{})
+	for _, topicFilter := range filters {
+		filter := map[string]any{"fromBlock": base["fromBlock"], "toBlock": base["toBlock"], "topics": topicFilter["topics"]}
+		raw, _, callErr := p.call(ctx, chainKey, "eth_getLogs", []any{filter})
+		if callErr != nil {
+			return nil, callErr
+		}
+		var directionLogs []rpcLog
+		if unmarshalErr := json.Unmarshal(raw, &directionLogs); unmarshalErr != nil {
+			return nil, fmt.Errorf("解析 eth_getLogs 响应: %w", unmarshalErr)
+		}
+		for _, item := range directionLogs {
+			key := strings.ToLower(item.TransactionHash) + ":" + strings.ToLower(item.LogIndex) + ":" + strings.ToLower(item.Address)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			logs = append(logs, item)
+		}
 	}
 	return logs, nil
 }
