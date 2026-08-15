@@ -136,3 +136,56 @@ func TestPrefetchWritesRejectUnknownInvestigationWithoutSideEffects(t *testing.T
 		t.Fatalf("不存在调查的写请求不应改变升级或反馈统计: before=%+v after=%+v", before, after)
 	}
 }
+
+func TestNormalizeGraphDirection(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{"", "ALL", true},
+		{"all", "ALL", true},
+		{"ALL", "ALL", true},
+		{"both", "ALL", true},
+		{"BOTH", "ALL", true},
+		{"upstream", "IN", true},
+		{"UPSTREAM", "IN", true},
+		{"in", "IN", true},
+		{"downstream", "OUT", true},
+		{"DOWNSTREAM", "OUT", true},
+		{"out", "OUT", true},
+		{" side ", "", false},
+		{"diagonal", "", false},
+	}
+	for _, tc := range cases {
+		got, err := normalizeGraphDirection(tc.input)
+		if tc.ok {
+			if err != nil {
+				t.Fatalf("normalizeGraphDirection(%q) 不应报错: %v", tc.input, err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("normalizeGraphDirection(%q) = %q，期望 %q", tc.input, got, tc.want)
+			}
+		} else if err == nil {
+			t.Fatalf("normalizeGraphDirection(%q) 应报错，实际 %q", tc.input, got)
+		}
+	}
+}
+
+func TestGraphExpandRejectsUnknownDirection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	api := router.Group("/api")
+	registerInvestigationCacheRoutes(api)
+	body, _ := json.Marshal(map[string]any{
+		"address":   "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+		"direction": "sideways",
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/graph/expand", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("非法方向应 400，实际 %d: %s", w.Code, w.Body.String())
+	}
+}

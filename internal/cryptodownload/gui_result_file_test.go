@@ -81,7 +81,28 @@ func TestFailAddressWithResultKeepsDiagnosticFileButMarksFailure(t *testing.T) {
 	}
 }
 
-func TestCSVEmailDestinationDoesNotRotateAliases(t *testing.T) {
+func TestCSVEmailAliasRotatesGmailAliases(t *testing.T) {
+	client := &CSVExportClient{mail: CSVMailConfig{Email: "user@gmail.com"}}
+	first := client.emailExportAlias("bsc", "transactions")
+	second := client.emailExportAlias("bsc", "transactions")
+	if first == second {
+		t.Fatalf("expected rotated aliases, got identical %q", first)
+	}
+	for _, alias := range []string{first, second} {
+		if !strings.HasPrefix(alias, "user+okl") || !strings.HasSuffix(alias, "@gmail.com") {
+			t.Fatalf("unexpected alias format %q", alias)
+		}
+	}
+}
+
+func TestCSVEmailAliasGooglemailDomainRotates(t *testing.T) {
+	client := &CSVExportClient{mail: CSVMailConfig{Email: "user@googlemail.com"}}
+	if got := client.emailExportAlias("bsc", "transactions"); !strings.HasSuffix(got, "@googlemail.com") || !strings.Contains(got, "+okl") {
+		t.Fatalf("expected googlemail alias, got %q", got)
+	}
+}
+
+func TestCSVEmailAliasNonGmailUnchanged(t *testing.T) {
 	client := &CSVExportClient{mail: CSVMailConfig{Email: "user@example.com"}}
 	if got := client.emailExportAlias("bsc", "transactions"); got != "user@example.com" {
 		t.Fatalf("expected configured email unchanged, got %q", got)

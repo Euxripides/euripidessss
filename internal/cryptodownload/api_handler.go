@@ -3,6 +3,7 @@ package cryptodownload
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -38,6 +39,9 @@ func (m *GUIManager) handleSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		settings.CSVIMAPPassword = ""
+		settings.CSVMailPool = "" // 池条目含密码，不回传
+		settings.CSVProxyPool = maskCSVProxyPoolUserinfo(settings.CSVProxyPool)
+		settings.CSVIMAPProxyPool = maskCSVProxyPoolUserinfo(settings.CSVIMAPProxyPool)
 		writeJSON(w, settings)
 	case http.MethodPost:
 		var settings GUIPersistedSettings
@@ -50,8 +54,44 @@ func (m *GUIManager) handleSettings(w http.ResponseWriter, r *http.Request) {
 				settings.CSVIMAPPassword = previous.CSVIMAPPassword
 			}
 		}
+		if strings.TrimSpace(settings.CSVMailPool) == "" {
+			if previous, err := loadGUISettingsFromConfigDir(m.configDir); err == nil {
+				settings.CSVMailPool = previous.CSVMailPool
+			}
+		}
+		if strings.Contains(settings.CSVProxyPool, "***") {
+			// Masked proxy credentials were echoed back; restore the saved pool.
+			previous, err := loadGUISettingsFromConfigDir(m.configDir)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			settings.CSVProxyPool = previous.CSVProxyPool
+		}
+		if strings.Contains(settings.CSVIMAPProxyPool, "***") {
+			previous, err := loadGUISettingsFromConfigDir(m.configDir)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			settings.CSVIMAPProxyPool = previous.CSVIMAPProxyPool
+		}
 		settings = normalizeGUIPersistedSettings(settings)
 		if err := validateGUIMailIdentity(settings.CSVEmail, settings.CSVIMAPHost, settings.CSVIMAPUser); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Validate pools before persisting; apply HTTP/IMAP proxy pools
+		// only after a successful save (they are process-wide).
+		if _, err := ParseCSVMailPool(settings.CSVMailPool); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validateCSVHTTPProxyPool(settings.CSVProxyPool); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validateCSVIMAPProxyPool(settings.CSVIMAPProxyPool); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -59,7 +99,13 @@ func (m *GUIManager) handleSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Saved: apply the proxy pools to running tasks.
+		_ = SetCSVHTTPProxyPool(settings.CSVProxyPool)
+		_ = SetCSVIMAPProxyPool(settings.CSVIMAPProxyPool)
 		settings.CSVIMAPPassword = ""
+		settings.CSVMailPool = "" // 池条目含密码，不回传
+		settings.CSVProxyPool = maskCSVProxyPoolUserinfo(settings.CSVProxyPool)
+		settings.CSVIMAPProxyPool = maskCSVProxyPoolUserinfo(settings.CSVIMAPProxyPool)
 		writeJSON(w, settings)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -93,6 +139,12 @@ func (m *GUIManager) hydrateCSVStartRequest(req GUIStartRequest) (GUIStartReques
 	req.CSVIMAPHost = firstNonEmpty(strings.TrimSpace(req.CSVIMAPHost), settings.CSVIMAPHost)
 	req.CSVIMAPUser = firstNonEmpty(strings.TrimSpace(req.CSVIMAPUser), settings.CSVIMAPUser)
 	req.CSVIMAPPassword = firstNonEmpty(strings.TrimSpace(req.CSVIMAPPassword), settings.CSVIMAPPassword)
+	req.CSVMailPool = firstNonEmpty(strings.TrimSpace(req.CSVMailPool), settings.CSVMailPool)
+	req.CSVProxyPool = firstNonEmpty(strings.TrimSpace(req.CSVProxyPool), settings.CSVProxyPool)
+	req.CSVIMAPProxyPool = firstNonEmpty(strings.TrimSpace(req.CSVIMAPProxyPool), settings.CSVIMAPProxyPool)
+	if req.CSVProxyPin <= 0 {
+		req.CSVProxyPin = settings.CSVProxyPin
+	}
 	req.CSVDeliveryMode = normalizeCSVDeliveryMode(firstNonEmpty(strings.TrimSpace(req.CSVDeliveryMode), settings.CSVDeliveryMode))
 	if req.CSVIMAPPort <= 0 {
 		req.CSVIMAPPort = settings.CSVIMAPPort
@@ -125,9 +177,13 @@ func (m *GUIManager) hydrateCSVStartRequest(req GUIStartRequest) (GUIStartReques
 		return req, errors.New("CSV 模式缺少 IMAP 用户名")
 	case strings.TrimSpace(req.CSVIMAPPassword) == "":
 		return req, errors.New("CSV 模式缺少 IMAP 密码或授权码")
-	default:
-		return req, nil
 	}
+	if req.CSVProxyPin > 0 {
+		if entries, parseErr := parseCSVProxyList(req.CSVProxyPool, "HTTP"); parseErr == nil && req.CSVProxyPin > len(entries) {
+			return req, fmt.Errorf("IP 锁定 %d 超出代理池数量（当前 %d 个）：请检查代理池或选择自动轮换", req.CSVProxyPin, len(entries))
+		}
+	}
+	return req, nil
 }
 
 func validateGUIMailIdentity(email, host, user string) error {

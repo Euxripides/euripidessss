@@ -29,10 +29,15 @@ type ImportResult struct {
 	Duplicates      int              `json:"duplicates"`
 	Invalid         int              `json:"invalid"`
 	FinalAddresses  []string         `json:"final_addresses,omitempty"`
+	Persisted       int              `json:"persisted"`
+	ChainKey        string           `json:"chain_key,omitempty"`
 }
 
 // importMaxBytes 导入文件读取上限（32MB；超大文件建议分批）。
 const importMaxBytes = 32 << 20
+
+// importMaxCells XLSX 全工作簿单元格累计上限（约 200 万单元格，防超大工作簿耗尽内存）。
+const importMaxCells = 2_000_000
 
 // ImportAddresses 解析 TXT/CSV/XLSX 并自动识别地址列（多列候选返回给前端手动改选）。
 func (s *Service) ImportAddresses(filename string, r io.Reader) (*ImportResult, error) {
@@ -108,6 +113,8 @@ func importCSV(r io.Reader) (*ImportResult, error) {
 	return analyzeColumns(all)
 }
 
+// importXLSX 遍历全部工作表：每个 Sheet 独立读取行并识别地址列，
+// 无地址列的说明页记录诊断后继续扫描，跨 Sheet 合并地址并统一去重。
 func importXLSX(r io.Reader) (*ImportResult, error) {
 	workbook, err := excelize.OpenReader(r)
 	if err != nil {
@@ -118,26 +125,83 @@ func importXLSX(r io.Reader) (*ImportResult, error) {
 	if len(sheets) == 0 {
 		return nil, fmt.Errorf("XLSX 没有工作表")
 	}
-	rowsIt, err := workbook.Rows(sheets[0])
-	if err != nil {
-		return nil, err
-	}
-	defer rowsIt.Close()
-	var all [][]string
-	first := true
-	for rowsIt.Next() {
-		row, err := rowsIt.Columns()
+	var mergedValues []string
+	selected := ""
+	bestValid := -1
+	totalRows := int64(0)
+	totalCells := 0
+	totalDup := 0
+	totalInvalid := 0
+	totalValid := 0
+	validSheets := 0
+	var single *ImportResult // 仅一个有效 Sheet 时保留原单表行为（含完整列统计）
+	for _, sheet := range sheets {
+		rowsIt, err := workbook.Rows(sheet)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("读取工作表 %s: %w", sheet, err)
 		}
-		if first && len(row) > 0 && looksLikeHeader(row) {
-			first = false
-		} else {
-			first = false
+		var all [][]string
+		for rowsIt.Next() {
+			row, err := rowsIt.Columns()
+			if err != nil {
+				rowsIt.Close()
+				return nil, fmt.Errorf("读取工作表 %s: %w", sheet, err)
+			}
+			totalCells += len(row)
+			if totalCells > importMaxCells {
+				rowsIt.Close()
+				return nil, fmt.Errorf("XLSX 单元格数量超过 %d 上限", importMaxCells)
+			}
+			all = append(all, row)
 		}
-		all = append(all, row)
+		if err := rowsIt.Error(); err != nil {
+			rowsIt.Close()
+			return nil, fmt.Errorf("读取工作表 %s: %w", sheet, err)
+		}
+		rowsIt.Close()
+		if len(all) == 0 {
+			continue
+		}
+		result, err := analyzeColumns(all)
+		if err != nil {
+			continue // 说明页/无地址列 Sheet：记录诊断后继续扫描
+		}
+		// 地址纯度门：说明页中偶发的地址示例（如“0x... 不应被识别”）不算地址 Sheet。
+		// 只有大多数数据行是 EVM 地址的 Sheet 才参与合并。
+		if result.Rows == 0 || float64(result.Valid)/float64(result.Rows) <= 0.5 {
+			continue
+		}
+		totalRows += result.Rows
+		totalValid += result.Valid
+		totalDup += result.Duplicates
+		totalInvalid += result.Invalid
+		if selected == "" || result.Valid > bestValid {
+			selected = result.SelectedColumn
+			bestValid = result.Valid
+		}
+		mergedValues = append(mergedValues, result.FinalAddresses...)
+		validSheets++
+		if single == nil {
+			single = result
+		}
 	}
-	return analyzeColumns(all)
+	if len(mergedValues) == 0 {
+		return nil, fmt.Errorf("未识别到地址列（有效 EVM 地址为 0）")
+	}
+	// 仅一个有效 Sheet：保留 analyzeColumns 的原始统计与列信息（与旧行为一致）。
+	if validSheets == 1 {
+		return single, nil
+	}
+	summary := normalizeAddresses(strings.Join(mergedValues, "\n"))
+	return &ImportResult{
+		Rows:            totalRows,
+		DetectedColumns: []DetectedColumn{{Name: selected, Confidence: 1}},
+		SelectedColumn:  selected,
+		Valid:           totalValid,
+		Duplicates:      totalDup + summary.Duplicates,
+		Invalid:         totalInvalid,
+		FinalAddresses:  summary.Addresses,
+	}, nil
 }
 
 func readCSVAll(reader *csv.Reader) ([][]string, error) {

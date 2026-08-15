@@ -269,6 +269,14 @@ func (r *Repository) Risk(ctx context.Context, chainID uint32, address string) (
 	if e1 != nil || e2 != nil || e3 != nil {
 		return RiskResult{}, ErrInvalidData
 	}
+	if events == 0 {
+		// 没有活动数据时不能得出“低风险”结论：明确区分“未筛查”与“零风险”。
+		return RiskResult{Address: address, RiskLevel: "insufficient_data",
+			RiskReason: "当前地址没有可用于风险筛查的活动数据", DataSufficient: false,
+			Rules: []string{}, TransactionFrequency: 0, CounterpartyConcentration: 0,
+			UniqueCounterparties: 0, EventCount: 0, ActiveDays: days,
+			Method: "deterministic_clickhouse_screening_v1"}, nil
+	}
 	concentration := 0.0
 	if events > 0 {
 		topQuery := fmt.Sprintf(`SELECT count() AS counterparty_events
@@ -322,7 +330,8 @@ func (r *Repository) Risk(ctx context.Context, chainID uint32, address string) (
 	if len(rules) > 0 {
 		reason = "Rule-based screening: " + strings.Join(rules, ", ")
 	}
-	return RiskResult{Address: address, RiskScore: score, RiskLevel: level, RiskReason: reason, Rules: rules,
+	scorePtr := score
+	return RiskResult{Address: address, RiskScore: &scorePtr, RiskLevel: level, RiskReason: reason, DataSufficient: true, Rules: rules,
 		TransactionFrequency: freq, CounterpartyConcentration: concentration, UniqueCounterparties: counterparties,
 		EventCount: events, ActiveDays: days, Method: "deterministic_clickhouse_screening_v1"}, nil
 }
@@ -384,11 +393,11 @@ func (r *Repository) Graph(ctx context.Context, input GraphQuery) (Graph, error)
 	query := fmt.Sprintf(`SELECT if(direction='IN',counterparty_address,address) AS source,
  if(direction='IN',address,counterparty_address) AS target,
  activity_type AS kind,token_address AS token,toString(sum(amount)) AS amount,
- toString(sum(ifNull(historical_value_usdt,0))) AS historical_value_usdt,
- multiIf(countIf(isNotNull(historical_value_usdt))=count(),'VALUED',countIf(isNotNull(historical_value_usdt))>0,'PARTIAL','NO_PRICE') AS valuation_status,
+ toString(sum(if(isNotNull(raw_historical_value_usdt) AND isFinite(ifNull(raw_historical_value_usdt,0)) AND ifNull(raw_historical_value_usdt,0) BETWEEN 0 AND 1e15,raw_historical_value_usdt,0))) AS historical_value_usdt,
+ multiIf(countIf(isNotNull(raw_historical_value_usdt) AND isFinite(ifNull(raw_historical_value_usdt,0)) AND ifNull(raw_historical_value_usdt,0) BETWEEN 0 AND 1e15)=count(),'VALUED',countIf(isNotNull(raw_historical_value_usdt) AND isFinite(ifNull(raw_historical_value_usdt,0)) AND ifNull(raw_historical_value_usdt,0) BETWEEN 0 AND 1e15)>0,'PARTIAL','NO_PRICE') AS valuation_status,
  uniqExact(tx_hash) AS tx_count
 FROM
-(SELECT a.*,multiIf(isNotNull(a.usd_value),a.usd_value,a.token_address='0x55d398326f99059ff775485246999027b3197955',CAST(a.amount AS Nullable(Decimal(38,18))),p.token_address!='' AND dateDiff('second',p.timestamp_bucket,a.block_time)<=86400,CAST(a.amount*p.price_usd AS Nullable(Decimal(38,18))),a.token_address IN ('0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),CAST(a.amount AS Nullable(Decimal(38,18))),CAST(NULL AS Nullable(Decimal(38,18)))) AS historical_value_usdt
+(SELECT a.*,multiIf(isNotNull(a.usd_value),toFloat64(a.usd_value),a.token_address='0x55d398326f99059ff775485246999027b3197955',toFloat64(a.amount),p.token_address!='' AND dateDiff('second',p.timestamp_bucket,a.block_time)<=86400,toFloat64(a.amount)*toFloat64(p.price_usd),a.token_address IN ('0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),toFloat64(a.amount),CAST(NULL AS Nullable(Float64))) AS raw_historical_value_usdt
 FROM onchain.address_activity AS a FINAL ASOF LEFT JOIN (SELECT * FROM onchain.token_prices FINAL WHERE chain_id=%d ORDER BY chain_id,token_address,timestamp_bucket) p ON a.chain_id=p.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=p.token_address AND a.block_time>=p.timestamp_bucket WHERE a.chain_id=%d)
 WHERE chain_id=%d AND direction='OUT' AND counterparty_address != ''
  GROUP BY source,target,kind,token ORDER BY tx_count DESC,source ASC,target ASC,kind ASC,token ASC LIMIT %d`, input.ChainID, input.ChainID, input.ChainID, limit)

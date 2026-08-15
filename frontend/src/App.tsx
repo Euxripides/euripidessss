@@ -182,6 +182,7 @@ import {
 } from "./features/upload/uploadApi";
 import { TransferPanel } from "./features/upload/TransferPanel";
 import SmartDownloadPage from "./features/smart-download/SmartDownloadPage";
+import AddressLibraryInput from "./features/address-library/AddressLibraryInput";
 import { loadSystemNavigationPreference } from "./features/system/systemSettingsStore";
 import {
   ENTITY_KIND_OPTIONS,
@@ -476,7 +477,7 @@ export function App() {
   }, [active]);
 
   // 全局搜索 → 地址详情页（图谱页搜索框合并复用同一入口）
-  const openAddressDetail = (address: string) => {
+  const openAddressDetail = (address: string, chainKey = analysisState.chain) => {
     const normalized = address.trim().toLowerCase();
     // 与图谱页搜索框（graphUpgrade.isValidAddress）一致的 EVM 地址校验，
     // 防止脏输入进入后端请求路径
@@ -485,7 +486,7 @@ export function App() {
       return;
     }
     setActiveAddressParam(normalized);
-    updateAnalysis({ rootAddress: normalized, pendingQuery: "", tab: "overview" });
+    updateAnalysis({ chain: chainKey, rootAddress: normalized, pendingQuery: "", tab: "overview" });
     setActive("explorer");
     setMobileNavOpen(false);
   };
@@ -575,14 +576,13 @@ export function App() {
           {active !== "analytics-graph" && active !== "explorer" ? (
             <header className="app-header">
               <div className="app-header-search">
-                <Input
-                  allowClear
-                  prefix={<SearchOutlined />}
+                <AddressLibraryInput
                   placeholder="搜索地址 / 交易哈希"
                   value={globalQuery}
-                  onChange={(event) => setGlobalQuery(event.target.value)}
+                  onChange={setGlobalQuery}
+                  onSelect={(address, item) => openAddressDetail(address, item?.chain_key ?? analysisState.chain)}
                   onPressEnter={runGlobalSearch}
-                  aria-label="全局搜索地址或交易哈希"
+                  ariaLabel="全局搜索地址或交易哈希"
                 />
               </div>
               <div className="app-header-context">

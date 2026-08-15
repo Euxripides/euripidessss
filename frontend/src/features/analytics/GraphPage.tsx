@@ -52,7 +52,7 @@ import type {
   ResultRow,
   TempGroup,
 } from "./FlowLeftPanel";
-import { expandGraphCache, queryCoverageIndex, type CoverageQueryResult } from "../smart-download/smartDownloadApi";
+import { expandGraphCache, queryCoverageIndex, type CoverageQueryResult, type GraphCacheExpansionResult } from "../smart-download/smartDownloadApi";
 import { resolveEntity, searchEntities, type EntityResolution } from "../entity/entityApi";
 import { analyzeFundFlow, type FlowPath, type FundFlowAnalysis } from "../fundflow/fundFlowApi";
 import "./graph-page.css";
@@ -63,6 +63,38 @@ const DEFAULT_DIRECTION: FocusDirection = "all";
 const DEFAULT_DEPTH: FocusDepth = 2;
 const CHAIN = "bsc";
 const CHAIN_ID = 56;
+
+function graphFromExpansion(rootAddress: string, result?: GraphCacheExpansionResult): GraphData | null {
+  if (!result) return null;
+  const root = rootAddress.toLowerCase();
+  const edges = (result.edges ?? []).map((edge) => {
+    const incoming = edge.direction.toUpperCase() === "IN";
+    return {
+      source: incoming ? edge.counterparty.toLowerCase() : root,
+      target: incoming ? root : edge.counterparty.toLowerCase(),
+      kind: "TRANSFER",
+      token: edge.token,
+      amount: incoming ? edge.inflow : edge.outflow,
+      tx_count: edge.tx_count,
+      valuation_status: "NO_PRICE",
+    };
+  });
+  const degree = new Map<string, number>();
+  for (const edge of edges) {
+    degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+    degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+  }
+  const addresses = new Set((result.nodes ?? []).map((node) => node.address.toLowerCase()));
+  addresses.add(root);
+  for (const edge of edges) {
+    addresses.add(edge.source);
+    addresses.add(edge.target);
+  }
+  return {
+    nodes: [...addresses].map((id) => ({ id, type: "address", risk_score: 0, degree: degree.get(id) ?? 0, pagerank: 0 })),
+    edges,
+  };
+}
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
@@ -87,6 +119,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [loading, setLoading] = useState(true);
   const [graph, setGraph] = useState<GraphData | null>(null);
+  const [focusedGraph, setFocusedGraph] = useState<GraphData | null>(null);
   const [searchInput, setSearchInput] = useState(analysisState.rootAddress);
   const [focus, setFocus] = useState<FocusSelection | null>(null);
   const [direction, setDirection] = useState<FocusDirection>(DEFAULT_DIRECTION);
@@ -564,9 +597,10 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   );
 
   const workspaceGraph = useMemo(() => {
-    if (!graph) return null;
-    return buildWorkspaceGraph(graph, workspaceMode);
-  }, [graph, workspaceMode]);
+    const source = focusedGraph ?? graph;
+    if (!source) return null;
+    return buildWorkspaceGraph(source, workspaceMode);
+  }, [focusedGraph, graph, workspaceMode]);
 
   const elements = useMemo(
     () => {
@@ -1016,19 +1050,41 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
     };
   }, [focus]);
 
-  // Investigation Cache V2：聚焦地址自动预热图扩展缓存（设计 §46-§47）
+  // Investigation Cache V2：聚焦地址直接使用地址级扩展结果。全局图是有界
+  // Top-N，不能用“未出现在全局图”推断地址没有本地数据。
   useEffect(() => {
-    if (!focus) return;
-    void expandGraphCache({
+    if (!focus) {
+      setFocusedGraph(null);
+      return;
+    }
+    let alive = true;
+    setFocusedGraph(null);
+    expandGraphCache({
       investigation_id: "default",
       chain_key: CHAIN,
       address: focus.address,
       direction: focus.direction,
       depth: focus.depth,
+    }).then((response) => {
+      if (!alive) return;
+      const next = graphFromExpansion(focus.address, response?.result);
+      if (next && next.edges.length > 0) {
+        setFocusedGraph(next);
+        setSmartFillOpen(false);
+        return;
+      }
+      const existsInGlobal = graph?.nodes.some((node) => node.id.toLowerCase() === focus.address);
+      if (!existsInGlobal) {
+        void message.warning("本地暂无该地址关系数据，已自动打开智能补充");
+        setSmartFillOpen(true);
+      }
     }).catch(() => {
-      /* 预热失败不打断用户操作 */
+      /* 地址统计和交易记录仍可使用；扩展失败不清空现有视图。 */
     });
-  }, [focus]);
+    return () => {
+      alive = false;
+    };
+  }, [focus, graph]);
 
   // Entity Intelligence：聚焦地址解析实体/标签/证据（Graph Node Label Overlay）
   useEffect(() => {
@@ -1074,8 +1130,8 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   }, [focus]);
 
   // 聚焦中心（定位失败不清空现有视图）
-  const onLocate = useCallback(async () => {
-    const raw = searchInput.trim();
+  const onLocate = useCallback(async (selectedAddress?: string) => {
+    const raw = (selectedAddress ?? searchInput).trim();
     if (!isValidAddress(raw)) {
       // V2 §29 搜索增强：支持实体名 / 书签名定位
       const active = multiRootResult ?? fundFlow;
@@ -1115,21 +1171,11 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       return;
     }
     const addr = normalizeAddress(raw);
-    if (graph && !graph.nodes.some((n) => n.id.toLowerCase() === addr)) {
-      // 地址不在本地库：仍可聚焦，并自动打开智能补数（下载完成后自动回填图）
-      lastCenterRef.current = addr;
-      setCoreAddress(addr);
-      setFocus({ address: addr, direction, depth });
-      setSearchInput("");
-      void message.warning("本地暂无该地址数据，已自动打开智能补充");
-      setSmartFillOpen(true);
-      return;
-    }
     lastCenterRef.current = addr;
     setCoreAddress(addr);
     setFocus({ address: addr, direction, depth });
     setSearchInput("");
-  }, [searchInput, graph, direction, depth, onOpenAddress, multiRootResult, fundFlow, bookmarks, restoreBookmark]);
+  }, [searchInput, direction, depth, onOpenAddress, multiRootResult, fundFlow, bookmarks, restoreBookmark]);
 
   const onClearFocus = useCallback(() => {
     setFocus(null);
@@ -1359,6 +1405,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
         kindFilter={kindFilter}
         onKindFilter={setKindFilter}
         onClearFocus={onClearFocus}
+        chainKey={analysisState.chain}
       />
 
       <div className="flow-workspace-body">

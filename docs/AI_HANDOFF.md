@@ -4970,7 +4970,7 @@ Normal Provider Exhausted（故障注入）
 - 同时修复：旧进程未清理时端口 8000 冲突导致新实例启动失败。
 
 ### Changes
-- `run.ps1`: 
+- `run.ps1`:
   - 启动前先通过 `Get-Process -Name "etl-server"` 查找并 `Stop-Process` 旧进程。
   - `& $binPath` 前台阻塞调用 → `Start-Process -WindowStyle Hidden -PassThru` 后台非阻塞调用，脚本立即返回。
   - 移除不必要的 stdout/stderr 重定向（服务内部已通过 zerolog 写 `backend/data/logs/app.log`）。
@@ -5951,7 +5951,7 @@ record[idx] = fmt.Sprint(row[mapping.SourceColumn])
 - queryEdgeRows 匹配逻辑改为遍历所有源端/目标端备用列（source_column, source_account_column, source_name_column, source_id_column），任一匹配即成功。
 - HandleImportedFlowEdgeDetail 的 payload 结构体新增 8 个备用列字段，queryEdgeRows 参数结构体对应新增。
 - HandleBuildImportedFlow 重构为使用 lowColumnMappingFromPayload。
-- matchesDateRange 内部日期过滤逻辑增加了 
+- matchesDateRange 内部日期过滤逻辑增加了
 ormalizeFilterBoundary 精确时间边界处理。
 
 ### New Functionality
@@ -6525,8 +6525,8 @@ ormalizeFilterBoundary 精确时间边界处理。
 
 # AI Handoff Document
 
-> 生成时间: 2026-05-24  
-> 项目: 资金数据智能分析平台 (Financial Data ETL Platform)  
+> 生成时间: 2026-05-24
+> 项目: 资金数据智能分析平台 (Financial Data ETL Platform)
 > 代码路径: `E:\codex\etl`
 
 ---
@@ -10290,3 +10290,245 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 - 修改：`AI_HANDOFF.md` 原“不要通过 Gmail `+alias` 或账号轮换规避限流”规则句改为允许；`CHANGELOG_AI.md` 由用户同步修改；`csv_scraper.go` 的 `emailExportAlias` 注释更新为当前政策口径。
 - 历史记录（“邮件收件地址固定使用用户配置，不再生成 Gmail `+alias` 地址”“邮件目标不做别名轮换”）保留为历史，由本条政策取代。
 - 注意：当前实现 `emailExportAlias` 仍返回配置邮箱，不自动生成别名；轮换需要由用户配置对应接收邮箱与 IMAP 身份（Gmail 需应用专用密码）。
+
+## 2026-08-12 Gmail +alias 自动轮换实现（交接）
+
+- 按政策实现 CSV 邮箱自动化轮换：`emailExportAlias`（csv_scraper.go）对 Gmail/googlemail 接收邮箱每次调用返回 `local+oklN@domain`（进程内 `atomic.Uint64` 计数器递增），非 Gmail 邮箱原样返回；无开关，直接启用。
+- 生效面：4 个调用点（token 申请、直链 payload、requestCSV 普通/token）每次请求重新调用，超时重发与重试自动携带新 alias，未改动重试/冷却/退避逻辑（请求冷却 3 分钟、退避 3min 翻倍上限 10min 保留）。
+- 为什么安全：收信匹配（correlateCSVEmailCandidate）不检查邮件收件人，只按 UID 基线/时间窗/链接含目标地址/kind；持久化 key 为 host|user，alias 变化不影响断点续跑；Gmail `+tag` 邮件进同一收件箱，IMAP 凭据不变。
+- 边界（已知）：+alias 只能绕“按收件邮箱”的风控；不能绕 IP/会话级 429 限流与 50113 签名错误（仍走检查点+冷却策略）；非 Gmail 邮箱不轮换。
+- 测试：`TestCSVEmailAliasRotatesGmailAliases` / `TestCSVEmailAliasGooglemailDomainRotates` / `TestCSVEmailAliasNonGmailUnchanged` 替换旧 `TestCSVEmailDestinationDoesNotRotateAliases`。
+- 验证：`go test ./internal/cryptodownload/... -count=1` 全绿、`go vet` 零告警；已用 run.ps1 重启。
+- 未完成：多邮箱账号池轮换未实现（如需再评估）；真实 OKLink 邮箱申请未重测（避免外部限流），需有效 Gmail + 应用专用密码在平台验收。
+
+## 2026-08-12 绕限流手段全量实现（交接）
+
+- 用户确认"绕限流的手段全部加上"，在 Gmail +alias 基础上新增 6 类手段（全部无开关直接生效，池为空时行为与旧版完全一致）：
+  1. **UA 轮换 + Sec-CH-UA**：CSV 请求头不再固定 Chrome/125，改用 `useragent` 池（8 浏览器 UA，按 host 稳定缓存、跨进程随机），并带匹配的 Sec-CH-UA / Sec-CH-UA-Mobile / Sec-CH-UA-Platform；Safari/Firefox 不发 Sec-CH-UA（拟真）。
+  2. **浏览器子进程代理打通**：`csvBrowserSubprocessEnv` 白名单补 OKLINK_PROXY/HTTPS_PROXY/HTTP_PROXY（mjs 已支持读取，此前传不进去）。
+  3. **直链重试 1→3 次**：`csvDirectDownloadAttempts=3`，复用 csvRequestRetryDelay（2s/5s/15s）退避；pacing 350ms + 429 冷却 30s 仍约束节奏。
+  4. **多邮箱账号池**：`ParseCSVMailPool` 解析多行 `邮箱|IMAP主机|IMAP端口|IMAP用户|IMAP密码`；等待邮件超时或 IMAP login 失败自动切下一账号（环绕），Gmail 账号叠加 +alias；429/50113 不切（非邮箱问题）；错误信息密码脱敏（只保留 邮箱|主机|端口）。
+  5. **IP 代理池**：HTTP（http/https/socks5 按连接轮换，空池回退环境变量）+ IMAP（socks5 轮换，空池回退 OKLINK_IMAP_PROXY/ALL_PROXY）；`csvHTTPProxyFunc` 挂到共享 Transport。
+  6. **browser_stealth 接线**：此前零引用方的 stealth 包（canvas 噪声/WebGL 伪造/webdriver 隐藏）经 base64 env 注入 mjs，`Page.addScriptToEvaluateOnNewDocument` 在导航前执行；脚本唯一来源为 Go 包。
+- 配置入口：CLI flag `--csv-mail-pool/--csv-proxy-pool/--csv-imap-proxy-pool` + 环境变量 OKLINK_CSV_MAIL_POOL / OKLINK_CSV_PROXY_POOL / OKLINK_CSV_IMAP_PROXY_POOL；内置 GUI 设置面板 3 个 textarea；/api/settings（GET 不回传邮箱池——含密码，POST 留空保留旧值，与密码策略一致）；自动化配置；React CryptoDownloadPanel 表单。
+- 新文件：`csv_mail_pool.go`、`csv_proxy_pool.go`、`csv_rotate_test.go`；修改 csv_scraper.go、http_transport.go、csv_mail_imap_dial.go、csv_browser_email.go、tools/oklink_browser_email.mjs、gui.go、gui_pause.go、api_handler.go、csv_automation.go、main.go、useragent/rotator.go、CryptoDownloadPanel.tsx。
+- 验证：cryptodownload 测试/vet 全绿（新增 9 测试）、全仓 `go test ./internal/... -short` 73 包全绿、`node --check` mjs 通过、前端 `npm run build` 通过、run.ps1 重启成功。
+- 边界：+alias/账号池只绕"按收件邮箱"风控；代理池绕 IP 维度；429（会话级）与 50113（签名）仍走检查点+冷却；stealth 注入真实 Chrome 行为改变，若 OKLink 反检测异常需回退（无开关，移除 env 注入即可——当前脚本仅 3 个轻量补丁）。
+- 未完成：账号池/代理池列表为空（等用户填入）；真实 OKLink 端到端未重测（避免外部限流）；crawl4ai（python）引擎未接 stealth（其自带 enable_stealth 参数，默认 False）。
+
+#### 追加：review/security 修复轮（同日晚间）
+
+- review 复审（pass）：4 个 should-fix 全部修复——①代理池仅非空配置才在 NewCSVExportClient 应用（防后任务清空前任务池）；②prepareCSVEmailRequest 改用 activeMail()（消除 c.mail 数据竞争）；③sanitiseCSVMailPoolLine 只保留 邮箱|主机 并用于端口错误信息；④React 保存补三个池字段（CryptoDownloadStartValues/CryptoDownloadFormValues/CryptoDownloadSettings 类型补齐）。
+- security_review 2 个 HIGH 已修：⑤standalone GUI 的 GET /api/settings 此前明文回传 CSVIMAPPassword 与含密码的 CSVMailPool（与 api_handler 行为不一致，漏改）——现回传前清空，POST 空密码/空池保留旧值、校验池格式、先保存后应用代理池；⑥api_handler 的代理池由"校验即应用"改为"校验→保存成功→应用"，消除半应用状态（新增 validateCSVHTTPProxyPool/validateCSVIMAPProxyPool 纯校验函数，Set 内部复用）。
+- 新增测试：TestHandleGUISettingsDoesNotEchoSecrets / TestHandleGUISettingsPostKeepsSecretsWhenBlank / 脱敏用例扩展（6 字段/端口无效/3 字段）。
+- 既有 MEDIUM（非本轮引入，记录在案）：tools/oklink_browser_email.mjs 硬编码 OKLink API key（a2c903cc-…）参与 x-apiKey 构造，若为站点前端公开常量则风险有限，需确认来源。
+- 验证：cryptodownload 测试/vet 全绿；前端 npm run build 通过；已重启。
+
+## 2026-08-12 更多规避手段：IP 亲和/请求头拟真/Token 随机冷却（交接）
+
+- 在既有 6 类手段基础上新增 3 类（纯代码，无新配置面除一个环境变量）：
+  1. **IP 亲和窗口**（csv_proxy_pool.go）：代理不再按连接轮换——默认 30 秒或 12 次请求窗口内复用同一代理（真实浏览器单 IP 行为，避免同会话多 IP 可疑特征），窗口到期才轮换；HTTP 与 IMAP 池同规则；`OKLINK_CSV_PROXY_AFFINITY`（秒）可调窗口，0=禁用亲和（回到按连接轮换）；Set 新池时重置亲和状态。
+  2. **请求头拟真补全**（useragent/rotator.go + setCSVUserAgentHeaders）：Chrome UA 现在携带完整客户端提示——Sec-CH-UA-Full-Version-List（完整版本号）、Sec-CH-UA-Arch、Sec-CH-UA-Bitness、Sec-CH-UA-Platform-Version、Sec-CH-UA-Model（按平台匹配：Windows/macOS/Linux/iOS）；新增 Sec-Fetch-Site=same-origin、Sec-Fetch-Mode=cors、Sec-Fetch-Dest=empty；Accept-Language 从 5 语言池按 host 稳定轮换（与 UA 同虚拟身份绑定）；Safari/Firefox 不发客户端提示（拟真）。
+  3. **Token 段间随机冷却**（csv_scraper.go）：`csvTokenSegmentCooldown` 0 → 随机 5-15s（Min 5s + jitter 10s），Token 每段申请前等待，降低连续申请触发风控概率。
+- 修改：csv_proxy_pool.go、useragent/rotator.go、csv_scraper.go、csv_rotate_test.go。
+- 验证：cryptodownload 测试/vet 全绿（新增 TestCSVProxyPoolHTTPAffinity / TestUserAgentAcceptLanguageStablePerHost，扩展 3 组断言）、全仓 `go test ./internal/... -short` 73 包全绿、run.ps1 重启成功。
+- 注意：亲和窗口对"多任务并发共享池"仍有效（窗口按进程计）；Token 冷却使 Token 多段任务总时长增加（每段 +5-15s，相对 45 分钟邮件等待可忽略）。
+- 未完成：TLS 指纹按 UA 匹配轮换（utls HelloChrome_Auto 已自动选型，收益低未做）；crawl4ai 引擎 stealth（其自带 enable_stealth 参数，引擎未启用时无意义）。
+
+#### 追加：review 修复轮（同日晚间）
+
+- CSV 链路 UA 改为 Chrome-only 池（useragent.GetChrome，3 条目 Win131/Win130/Linux131）：与共享 Transport 的 utls HelloChrome_Auto TLS 指纹一致，消除"Chrome TLS 指纹 + Safari/Firefox UA"的不一致画像；Sec-CH-UA 系列头恒完整发送，Sec-CH-UA-Mobile 恒 ?0（桌面 Chrome，正确）。
+- Token 段间冷却可用 `OKLINK_CSV_TOKEN_COOLDOWN`（秒）调整 base，jitter=base（delay ∈ [base, 2×base)）；默认仍 5s/10s。
+- Set 代理池时重置轮换索引（Store(0)），轮换起点确定。
+- AcceptLanguage 注释修正（per-host 缓存，非与 UA 绑定）。
+- 新增测试 TestUserAgentGetChromeAlwaysChrome；review 复审 pass（3 个 nit 不阻塞：env 0 值无法禁用冷却、env 解析无直接测试、UA 池缩至 3 条目熵降低属刻意权衡）。
+- 验证：cryptodownload 测试/vet 全绿、全仓 `go test ./internal/... -short` 73 包全绿、run.ps1 重启成功（PID 42408）。
+
+#### 追加：security 修复轮（最终）
+
+- security_review（最终）判定 warn，2 个 HIGH 已修：
+  1. **GET /settings 代理池明文回传**（api_handler.go + gui.go handleGUISettings）：HTTP 代理 URL 可内嵌 user:pass——现回传前 `maskCSVProxyPoolUserinfo` 掩码为 `scheme://***@host`；POST 时检测到 `***` 占位则从磁盘还原旧池（防掩码文本被存回）。
+  2. **代理 URL 空 host 校验**：`validateCSVHTTPProxyPool` 补 `u.Host == ""` 拒绝。
+- 第三个 HIGH（POST /settings 无鉴权可改写运行中任务代理）：平台既有安全模型（8000 端口无鉴权、CORS *），非本轮引入，记录在案——如需修复须平台级加鉴权（单独任务，未做）。
+- MEDIUM 既有：browser_scraper/mjs 硬编码共享 API key（a2c903cc-…），若为私有凭据须轮换并改 env 配置（未动）。
+- 新增测试 TestMaskCSVProxyPoolUserinfo；全量 -short 回归出现 2 个无关包偶发失败（intelligence/smartdownload 时序敏感测试），重跑通过。
+- 验证：cryptodownload 测试/vet 全绿、全仓回归全绿、run.ps1 重启成功（PID 45684）。
+
+#### 追加：最终 review 修复轮（3 个 should-fix）
+
+- 邮箱池密码字段补 TrimSpace（行尾空白进入 IMAP 密码导致认证失败并触发全池轮换）。
+- CSVIMAPProxyPool 凭据掩码：GET/POST /settings 双路由对 IMAP 池同样 `maskCSVProxyPoolUserinfo`（socks5://user:pass@host），POST `***` 占位同样还原旧池（含还原失败 500）。
+- 新增 `http_pacing_test.go`（7 个测试）：pacer 间隔/本地豁免/jitter 范围/Retry-After 秒与 HTTP-date/429 冷却/Retry-After 覆盖——此前绕限流关键路径（pacer）零测试，现已补齐。
+- 验证：cryptodownload 测试/vet 全绿、全仓 `-short` 73 包全绿、git diff --check 通过、run.ps1 重启成功（PID 42616）。
+
+## 2026-08-13 真实测试 + 转发域名渠道（交接）
+
+- **真实测试（2026-08-13 00:02）全部通过**：
+  1. 直链任务 de8486a31ad6de72（BSC 0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d，08-10~08-13 窗口）：transactions 9 行 + token_transfers 12/12 全直链，12 秒完成；日志证实 `CSV total failed: unexpected end of JSON input` 后直链重试（attempt 1/2）兜底成功——新直链重试机制真实生效；产出 CSV 数据真实（哈希/时间窗/地址匹配）。
+  2. 邮箱任务 1750e396a117ee86（强制 email）：transactions 9 行 + token_transfers 12 行全部经邮箱通道（email=21，direct=0）——Crawl4AI/Patchright 浏览器签名申请邮件 → OKLink 投递 → Gmail IMAP 收信匹配 → 链接下载全链路真实通过；`CSV email cooldown wait 2m45s` 证实 Token 段随机冷却真实生效；UA 轮换/Sec-CH-UA 头在真实请求中无 50113/403。
+- **邮箱批量渠道**：确认 aurore.online 为 Cloudflare Email Routing（MX route1/2/3.mx.cloudflare.net，SPF _spf.mx.cloudflare.net）——任意 `xxx@aurore.online` 转发到 Gmail，无需注册账号，即"无限邮箱池"。Dune 批量注册已在用同一机制。
+- **新增功能**：`OKLINK_CSV_FORWARD_DOMAINS`（逗号/分号/空格分隔）——对转发域名邮箱，emailExportAlias 每次生成 `okl<hex8>@domain` 随机前缀（复用 csvEmailAliasSeq）；已设用户级环境变量 `OKLINK_CSV_FORWARD_DOMAINS=aurore.online`。用法：邮箱池条目填 `任意@aurore.online|imap.gmail.com|993|<gmail用户>|<应用密码>`，IMAP 用 Gmail 收信。
+- 验证：新增 TestRotateCSVEmailAliasForwardDomain；cryptodownload 测试/vet 全绿、全仓 -short 全绿、run.ps1 重启成功（PID 27276）。
+- 未完成：转发域名真实收信未实测（需要用户在邮箱池填一条 aurore.online 条目后跑真实任务）；重启中断的 token 邮件等待未发生（任务在重启前已完成）。
+
+#### 追加：转发域名 review 修复轮
+
+- parseCSVForwardDomains 函数化（init 调用）：分隔符补 tab（逗号/分号/换行/tab/空格），小写归一，空项跳过；新增 TestParseCSVForwardDomains。
+- 注释修正：`okl%08x` 为进程内单调递增前缀（非随机），转发域名依赖 catch-all 路由前提已注明。
+- 验证：cryptodownload 测试/vet 全绿、全仓 -short 全绿、run.ps1 重启成功（PID 13512）。
+
+## 2026-08-13 20 IP 池 + 每 IP 独立指纹（交接）
+
+- 用户提供 20 个 Webshare 代理（ip:port:user:pass），已写入 csvProxyPool 设置并持久化（响应掩码回显 http://***@ip:port；邮箱/密码设置未受影响）。
+- 新增能力：
+  1. **裸格式代理**：`normalizeCSVProxyEntry` 支持 `ip:port[:user:pass]`（自动转 http://user:pass@ip:port），mask/validate/Set 全链路支持。
+  2. **每 IP 独立指纹**：`setCSVUserAgentHeaders` 的 identity 改为活跃代理 IP（无池才回退 host）；Chrome UA 池扩充为生成式 45 条（15 版本 × Windows/macOS/Linux）；`GetChrome`/`AcceptLanguage` 用 fnv32a 确定性映射——**同一 IP 跨进程重启都是同一浏览器指纹**（版本/平台/客户端提示/语言全套绑定），每个 IP = 独立固定用户；IP 亲和窗口保证 UA 与实际代理一致（`csvActiveHTTPProxyKey` 预览下一代理，不消费轮换计数）。
+- 真实验证：任务 6d8f22eb92feeb3e（direct 模式，BSC 小窗口）在 20 IP 池下 13 秒完成 21 行全直链——Webshare 代理真实可用。
+- 限制（已知）：TLS 指纹统一 utls HelloChrome_Auto（最新 Chrome），未按 IP 区分（需 per-proxy Transport 改造，未做）；IP 亲和窗口默认 30s/12 请求，跨窗口后请求走新 IP 与新指纹。
+- 验证：新增 TestNormalizeCSVProxyEntry / TestSetCSVHTTPProxyPoolBareFormat / TestUserAgentBoundToProxyIP；cryptodownload 测试/vet 全绿、全仓 -short 全绿、run.ps1 重启成功（PID 42944）。
+
+## 2026-08-13 反限流优化四项（交接）
+
+- 用户确认实施"高价值低成本四项"，全部落地：
+  1. **IP 失败冷却 + 429 强制切 IP**：MarkCSVHTTPProxyFailed（429/403/503/连接错误时由 downloadCSVDirect/requestCSV 的 noteProxyFailure 触发）→ 当前 IP 进冷却名单（默认 10 分钟，OKLINK_CSV_PROXY_COOLDOWN 可调）并清除亲和槽，下个请求强制轮换；nextCSVHTTPProxy 轮换时跳过冷却 IP（全冷却回退）。Set 新池时清空冷却与健康计数。
+  2. **账号池失败记忆**：advanceMailOnFailure 记录连续失败，≥2 次（csvMailFailureThreshold）→ 该账号冷却 1 小时（csvMailCooldownAfterFailures），轮换跳过（全冷却回退）；懒初始化 map 兼容旧构造。
+  3. **代理健康检查**：Set 池后启动（Once）后台 goroutine，每 5 分钟（OKLINK_CSV_PROXY_HEALTH_INTERVAL 可调，0=禁用）对池内每 IP TCP 探活（3s 超时），连续 2 次失败 → 进冷却名单。
+  4. 附：此前已记录但顺带闭环——新建池清空冷却状态，避免测试/重配污染。
+- 新增测试：TestCSVProxyFailedCooldownForcesRotation（失败 IP 持续被跳过）、TestCSVMailPoolFailureCooldown（连续失败冷却/跳过/全冷却回退）。
+- 验证：cryptodownload 测试/vet 全绿、全仓 -short 73 包全绿、run.ps1 重启成功（PID 6176）。
+- 未完成（记录在案）：TLS 指纹按 IP 绑定（utls 版本化指纹 + per-IP Transport）、HTTP/2 SETTINGS 拟真、crawl4ai stealth、住宅 IP 扩充——用户未选择实施。
+
+## 2026-08-13 TLS 指纹按 IP / HTTP2 SETTINGS 拟真 / crawl4ai stealth（交接）
+
+- 用户确认实施三项，全部落地：
+  1. **TLS 指纹按 IP 绑定**：UA 版本池调整为与 utls v1.6.7 可用指纹一致的 7 版本（72/83/87/96/100/102/120）× 3 平台 = 21 个 UA（覆盖 20 IP 零碰撞）；池配置时重建 per-IP HTTP client（newCSVPerProxyClients）——每个 client 的 Transport 固定单一代理 + 对应版本 utls 指纹（chromeTLSFingerprintForIndex），请求经 httpClientFor → csvHTTPProxyIndexForUse（消费语义，含冷却跳过）选择对应 client。**每个 IP 的 UA 版本与 TLS 指纹完全一致**。
+  2. **HTTP/2 SETTINGS 拟真**：Go 1.25 http.HTTP2Config——MaxConcurrentStreams=1000、HeaderTableSize=65536×2、MaxReadFrameSize=16384、MaxReceiveBufferPerStream=4194303（Go 上限 <4MiB，Chrome 6MiB 无法表达）；http2Transport.MaxHeaderListSize=262144。所有 transport（共享+per-IP）统一应用。
+  3. **crawl4ai stealth**：oklink_crawl4ai_email.py enable_stealth 改为默认 True（OKLINK_CRAWL4AI_STEALTH env 可关）。
+- 轮换状态机重构：nextCSVHTTPProxy 拆出 csvHTTPProxyIndexForUse（消费语义返回 index）+ current index 字段（csvHTTPProxyCurrentIdx），亲和/冷却/指纹选择共用同一决策。
+- 新增测试：TestChromeTLSFingerprintPerIndex（21 UA 版本与池版本一致 + 相邻版本组指纹不同）。
+- 验证：cryptodownload 测试/vet 全绿、全仓 -short 73 包全绿、git diff --check 通过、run.ps1 重启成功（PID 13812）。
+- 限制（记录）：Chrome 的 SETTINGS_INITIAL_WINDOW_SIZE 6MiB 超过 Go http2 上限（<4MiB，用 4194303）；Go 不发 SETTINGS_MAX_CONCURRENT_STREAMS（服务器按规范默认，与 Chrome 显式 1000 有差异）；旧版 Chrome UA（72-102）在真实流量中占比较小，服务器一般不校验版本新旧。
+
+## 2026-08-13 任务级 IP 锁定（并发多独立用户）（交接）
+
+- 用户确认"域名邮箱 + 单独 IP 并发"方案，实现任务级 IP 锁定：
+  1. Config/GUIStartRequest/GUIPersistedSettings 加 CSVProxyPin（设置语义：0=自动轮换，1..N=锁定池第 N 个 IP；Config 语义 -1=轮换，≥0=池 index）。
+  2. csvHTTPProxyIndexForUse(pin)：pin≥0 时锁定返回该 index（不消费轮换/不受冷却影响）；越界或无池返回 -1 回退默认 client。setCSVUserAgentHeaders 等头函数加 pin 参数（c.proxyPin 传入），请求上下文机制不变——pinned 任务 UA/指纹/TLS 与 IP 严格一致。
+  3. 配置入口：CLI --csv-proxy-pin（env OKLINK_CSV_PROXY_PIN）、GUI 设置下拉（0/IP1-20）、React 表单 Select（自动轮换/IP1-20）、自动化配置、API hydrate。
+  4. 前端：CryptoDownloadPanel CSV 设置加"IP 锁定"Select（0-20）；GUI HTML 加 csvProxyPin 下拉 + JS 接线。
+- 用法：开 N 个任务分别锁 IP 1..N → N 个独立用户并发（各自 IP+指纹+TLS+域名邮箱前缀）。
+- 新增测试：TestCSVProxyPinLocksIndex（锁定不轮换/越界回退/无池回退/unpinned 轮换）。
+- 验证：cryptodownload 测试/vet 全绿、全仓 -short 全绿、tsc/build 通过、git diff --check 通过、run.ps1 重启成功（PID 14960）。
+- 风险与限制（务必知悉）：①所有域名邮箱转发到同一 Gmail，N 任务=N 个 IMAP watcher 并发轮询同一账号——Gmail IMAP 限流风险，建议并发任务 ≤3-5；②邮件申请冷却按链全局（3 分钟），多任务同链申请串行排队（安全保护）；③直链签名同源，若 OKLink 按签名聚合风控则多 IP 无效（浏览器模式签名更独立）；④pinned IP 被 429 冷却时任务仍锁定该 IP（由任务重试/暂停处理），非 pinned 任务自动跳过冷却 IP。
+
+#### 追加：IP 锁定 review/security 修复轮
+
+- review（blocking→pass）：①pinned 请求冷却标记改为从请求上下文取 index（csvHTTPProxyByIndex），不再冷却错 IP；②pin 越界 API 校验基于 req.CSVProxyPool（请求自带池为准）+ 请求自带池越界用例；③前端文案澄清（设置值=默认，每任务启动可各自选择——start payload 经 ...values 已含 csvProxyPin）。
+- security_review（warn→MEDIUM 已修）：④CLI/自动化入口的 pin 越界改为 NewCSVExportClient 构建期 poolErr（errors.Join 并入），任务启动即显式报错，不再静默降级真实出口 IP；新增 TestCSVProxyPinExceedsPoolAtClientBuild。
+- 新增测试：TestCSVProxyPinFailureMarksPinnedIP / TestCSVProxyPinExceedsPoolRejected（含请求自带池）/ TestCSVProxyPinExceedsPoolAtClientBuild / TestCSVProxyPinLocksIndex。
+- 验证：cryptodownload 测试/vet 全绿、全仓 -short 全绿、tsc/build 通过、git diff --check 通过、run.ps1 重启成功（PID 39016）。
+- 残余 nit（记录）：SetCSVHTTPProxyPool 三次独立加锁（窗口期 client 与池短暂不一致，无越界）；noteProxyFailure 非 pinned 回退 current 可能冷却近似 IP（调度影响非安全）。
+
+## 2026-08-15 项目启动验收
+
+- 执行 `run.ps1` 完成 Windows/amd64 后端构建与服务重启，新进程 PID 为 5336。
+- 独立请求 `http://127.0.0.1:8000/api/health` 返回 HTTP 200 且 `status=ok`；DuckDB 分析平面与 SQLite 控制平面均可用。
+- 独立请求首页返回 HTTP 200、`text/html`，并确认包含 React 根节点；8000 端口由 `E:\codex\etl\bin\etl-server.exe` 监听。
+- 本次仅启动和验收项目，无业务代码、API、数据库结构或前端组件变更，无未完成事项。
+
+## 2026-08-15 地址导入无法跨功能使用诊断
+
+- Smart Download 的文件“导入”当前仅调用 `/api/smart-download/import` 解析地址，并将 `final_addresses` 保存在 `CreateTab` 的临时 React state；只有继续预检、创建批次后才写入 AddressJob，不是全局地址库导入。
+- Playwright 真实上传 3 个有效 EVM 地址后显示“最终任务地址 3 个”，刷新页面后摘要消失且未创建任务，证明导入状态不持久化。
+- 当前 91 个批次共有 94 个 AddressJob、11 个唯一地址，最大单批次 3 个地址；状态为 COMPLETED 37、CANCELED 29、FAILED 18、PARTIAL 10。
+- Smart Download Registry 当前 32 个结果只对应 1 个唯一地址；30 个为 VALIDATED/CERTIFIED，2 个为 VALIDATED/DB_WRITE_FAILED。
+- 数据同步日志持续出现 `manifest addresses 为空` 与缺少 `_SUCCESS`，相关产物被跳过，不能进入共用数据层。
+- Explorer 首页当前实测 HTTP 503；ClickHouse 查询因异常超大金额触发 `DECIMAL_OVERFLOW`，这是独立的全局功能故障，即使地址已有数据也会影响相关页面。
+- 导入器仅接受 `0x` + 40 位十六进制 EVM 地址；Smart Download 仅支持 BSC/Ethereum/Base/Arbitrum。文件导入不会生成逐地址链覆盖，混链文件会统一使用页面所选网络。
+- 本次仅诊断，无业务代码、API、数据库结构或前端组件变更。待用户确认后再实施“统一地址资产库 + 导入持久化 + 下载/认证/入仓状态门 + Explorer 溢出修复”。
+
+## 2026-08-15 地址资产库与跨功能复用修复（交接）
+
+- 已新增 SQLite 控制面 `address_library` 表及索引，字段覆盖链、地址、来源、首次/最后导入时间和导入次数；所有写入均使用参数化 SQL 和事务。启动时会从已有 Smart Download 地址任务幂等回填，不修改或伪造原任务结果。
+- 新增 `GET /api/address-library` 与 `POST /api/address-library/import`：支持链/关键词/分页查询和手工批量持久化；单次最多 50,000 个、请求体最多 8 MiB，只接受受支持链及合法 EVM 地址。Smart Download 文件导入现在同一请求携带 `chain_key` 并持久化最终去重地址，响应增加 `persisted`、`chain_key`。
+- 地址资产状态按真实证据分层：`IMPORTED`、`DOWNLOADING`、`PARTIAL`、`FAILED`、`CERTIFIED`、`AVAILABLE`；ClickHouse 中存在活动行才标记 `AVAILABLE`，下载失败不会被误报为可分析。
+- 新增复用组件 `AddressLibraryInput`，已接入全局搜索、地址分析、风险分析和资金追踪；Explorer 搜索会同时查询链上索引与地址资产库。Smart Download 可一键载入当前链全部已导入地址，刷新后资产仍可恢复。
+- 修复 Explorer 大额交易、地址活动及 Analytics Graph 的 ClickHouse `Decimal(38,18)` 溢出：估值改用 Float64，并要求有限值且位于合理区间；异常超大金额被排除，不再令整个页面返回 503。
+- 修复数据源错配：当前主数据源为 ClickHouse 时，旧 `/api/analytics/address-stats`、`flow-stats` 和 `/api/graph/expand` 不再绑定缺失的 DuckDB 样本文件。Graph Expansion 改用 ClickHouse Flow/Profile，缓存聚合版本升至 2；前端会把地址级扩展结果真正合入当前画布，不能再因地址未进入全局 Top-500 图而误判为“本地无数据”。
+- 主要修改：`internal/storage/control/store.go`、`internal/smartdownload/{api.go,import.go,address_availability.go}`、`internal/api/{handlers.go,address_library_handlers.go,explorer_intelligence_handlers.go,clickhouse_analytics_handlers.go,investigation_cache.go}`、`internal/clickhouseanalytics/repository.go`、`internal/clickhouseinvestigation/repository.go`、`internal/explorer/repository.go`，以及 `frontend/src/features/address-library/`、Smart Download、Explorer、地址/风险/资金追踪页面与共享样式；新增对应后端回归测试。
+- 验证：`go test ./internal/... -count=1` 全部通过；`go vet ./...` 通过；`npm run build` 通过（仅既有大 chunk 警告）；`run.ps1` 最终重启成功，PID 11436。真实接口 `/api/analytics/graph?limit=5000` 返回 311 节点、500 边，Explorer 首页恢复 200；地址库现有 11 条，其中 AVAILABLE 3、CERTIFIED 4、PARTIAL 1、FAILED 3。
+- 浏览器验收：桌面端文件导入/刷新/载入地址库、全局搜索跳转、Explorer 合并搜索、地址分析、风险分析、资金追踪均出现地址库建议。选择 `0xf43b...3906` 后，Graph、地址统计、全局统计、图扩展、地址活动五个请求全部 200，画布实际显示 4 节点/4 关系，无误开的智能补充弹窗、HTTP 错误或 console error；390x844 移动端无横向溢出。
+- 边界：当前仍仅支持 BSC/Ethereum/Base/Arbitrum 的 EVM 地址；历史上从未形成任务记录的临时导入无法回填；`FAILED`/`PARTIAL` 只是可复用地址资产，不代表数据完整；Explorer `latest_block=0` 是独立的既有数据新鲜度缺口，未在本任务中修复。
+
+## 2026-08-15 地址资产跨功能验收测试用例（交接）
+
+- 新增 `docs/ADDRESS_LIBRARY_FUNCTIONAL_TEST_CASES.md`，供其他 Agent 对“导入地址持久化并在各功能复用”的修复执行独立验收。
+- 文档共 78 条独立用例、16 个功能域，覆盖环境与数据基线、地址库 API/持久化、TXT/CSV/XLSX 导入、Smart Download 载入、六级状态真实性、统一地址输入、全局搜索、Explorer、地址画像、风险分析、资金追踪、跨链、安全/错误恢复、响应式和性能容量。
+- 每条用例均要求同时核对页面状态、请求载荷、刷新或重启后的持久性、ClickHouse/控制面数据和业务语义；明确规定 HTTP 200、按钮可点击或任务显示完成均不能单独判定通过。
+- 文档包含动态 Fixture 获取、当前可复现地址、并行/互斥规则、证据目录规范、P0/P1/P2 执行顺序、自动化断言、单条报告模板和整轮汇总模板。
+- 本轮只新增测试文档，无业务代码、API、数据库结构或前端组件变更，不需要重启服务。
+- 已验证：用例编号脚本确认 78/78 唯一、无重复；Markdown 代码围栏成对；文档中的主要 API 路径与当前路由/前端客户端一致；`git diff --check` 通过。
+- 未完成事项：本文档尚未替代真实执行结果；测试 Agent 需按 P0 优先级开始，容量、并发、重启和历史回填用例必须使用隔离数据或维护窗口，不能与共享环境的功能用例并行。
+
+## 2026-08-15 资金追踪画布纯白背景（交接）
+
+- 资金追踪专用 `FlowCanvasShell` 已移除 React Flow `Background` 点阵层；`graph-page.css` 与 `graph-page-light.css` 同时取消径向点阵，并将画布外壳和 React Flow 容器固定为纯白 `#ffffff`。
+- 修改文件：`frontend/src/features/analytics/flowCanvasShell.tsx`、`frontend/src/features/analytics/graph-page.css`、`frontend/src/features/analytics/graph-page-light.css`。未修改仪表盘的独立图谱缩略图。
+- 无 API、后端、数据库结构、依赖或其他前端组件契约变更；仅前端静态资源变化，不需要执行 `run.ps1`。
+- 验证：`npm run build` 通过；Playwright 在 `http://127.0.0.1:8000` 进入资金追踪、输入真实 AVAILABLE 地址后显示 4 个节点/4 组关系。白底和深色两种侧栏主题下，画布外壳与 React Flow 计算背景均为 `rgb(255, 255, 255)`、`background-image=none`、`.react-flow__background` 数量为 0；缩放控制可改变 viewport，console/page error 均为 0。
+- 未完成事项：未执行 Safari/Firefox 浏览器矩阵；Chromium 1440×900 的真实交互与截图验收已通过。
+
+## 2026-08-15 地址资产测试报告独立审阅（RUN_ID 20260815-A03）
+
+- 审阅 `tmp/qa-evidence-20260815-A03/SUMMARY.md`、19 份断言 JSON、关键网络/console 记录、失败截图及对应现行代码；五个缺陷的现象与代码根因总体成立。
+- 产品验收结论应为 **FAIL**：RISK-003 为测试规范明确的 P0 FAIL；资金追踪方向、无数据 summary 404、XLSX 多 Sheet、地址建议残留/重复为 P1 缺陷。测试执行完整度另记 **PARTIAL**，因为生命周期、故障注入、容量、快照、UI-003 全状态和部分性能用例未完整执行。
+- 原报告严重度标注不一致：摘要“1 个 P0、4 个 P1”符合测试规范，但正文把 P1 的 GRAPH-006 错标为 P0；GRAPH-006 在测试用例文档中明确为 P1。
+- 报告计数无法从现有落盘证据完整重算：矩阵为 268 PASS / 9 FAIL，但 19 份 `*-assertions.json` 合计只有 247 条（239 PASS / 8 FAIL）。缺少的 30 PASS / 1 FAIL 没有逐条映射；SD-IMP-003 的失败仅有文字描述，没有保存原始 API 响应。
+- `graph012-assertions.json` 将 `snapshot button not found; skip` 记为 PASS，必须改为 SKIPPED/BLOCKED；报告同时把 ALIB-007 写入已通过矩阵和“容量跳过”清单，需消除矛盾。UI-003 要求每个页面具备 loading/成功/空或失败三类状态证据，现有汇总未证明完整覆盖。
+- 当前代码抽查继续支持根因：graphcache 只接受 `ALL/IN/OUT`；风险仓库对零事件默认 `low`；XLSX 只读取 `sheets[0]`；地址建议以裸 address 作为 option value。
+- 本轮仅审阅和记录，不修改 `SUMMARY.md`、业务代码、API、数据库或前端组件，不需要重启项目。下一步应先修复报告口径/证据映射，再按缺陷优先级实施代码修复与定向复测。
+
+## 2026-08-15 地址资产验收缺陷修复方案文档（交接）
+
+- 新增 `docs/ADDRESS_LIBRARY_QA_FIX_PLAN.md`，将 20260815-A03 测试报告中的 1 个 P0、4 个 P1 产品缺陷和报告审计问题整理为可直接执行的修复方案。
+- 文档覆盖风险无数据语义、图方向枚举转换、summary 空状态、XLSX 全 Sheet 扫描、地址建议唯一键/请求竞态、测试报告计数与跳过状态修订。
+- 每项均列出代码位置、建议接口语义、边界条件、单元测试和真实 UI 验收要求，并提供分阶段实施顺序、验证命令、最终验收门槛和 Agent 完成定义。
+- 本轮只新增 Markdown 方案并更新交接文档，无业务代码、API、数据库结构或前端组件变更，不需要重启项目；五项缺陷仍待实施和复测。
+
+## 2026-08-15 用户级真实端到端测试流程（交接）
+
+- 新增 `docs/ADDRESS_LIBRARY_USER_E2E_TEST_FLOW.md`，将地址导入与跨功能验收从分散接口/组件断言改为连续用户旅程。
+- 主流程定义 UJ-01..UJ-12：首次打开、TXT/CSV/多 Sheet XLSX 导入、真实批次创建、任务运行/暂停/恢复/取消、结果与导出、全局搜索、Explorer、画像/风险、资金追踪、跨链、刷新/浏览器重开/服务重启、错误恢复、移动端和键盘。
+- 硬性规则：正常业务动作只能通过真实浏览器完成；API、控制库和 ClickHouse 只能在用户操作后做只读核证；至少一个真实下载任务必须形成完整结果和入仓闭环；不得用 HTTP 200、任务完成标签、脚本退出码或静态截图代替业务验收。
+- `docs/ADDRESS_LIBRARY_FUNCTIONAL_TEST_CASES.md` 已增加执行顺序说明：78 条功能用例降为边界补充目录，必须先执行用户旅程，再补容量、安全、竞态和故障注入。
+- 本轮仅新增/更新 Markdown 文档，无业务代码、API、数据库结构或前端组件变更，不需要重启项目；新用户旅程尚未实际执行。
+
+## 2026-08-15 地址资产跨功能验收测试执行（交接，RUN_ID 20260815-A03）
+
+- 已按测试文档执行整轮验收（API + Playwright UI），结论 PARTIAL：268 PASS / 9 FAIL；P0 缺陷 1 个（RISK-003 无数据自动判低风险）、P1 缺陷 4 个。
+- 阻断缺陷（建议优先修复）：
+  1. `internal/graphcache/builder.go` + `HandleGraphExpand`（internal/api/investigation_cache.go）：前端方向值 upstream/downstream/both 未归一化为 ALL/IN/OUT，图扩展恒空、误开智能补数（GRAPH-006 三向 FAIL）。
+  2. `/api/analytics/address/:addr/risk`（无数据地址返回 risk_score=0/level=low）应返回"数据不足"语义。
+  3. `/api/v1/explorer/:chain/address/:addr/summary` 无数据时返回 404 造成 console error，应 200 + NO_DATA。
+  4. `internal/smartdownload/import.go` importXLSX 只读 sheets[0]，需跨 Sheet 扫描地址列（SD-IMP-003）。
+  5. `frontend/src/features/address-library/AddressLibraryInput.tsx` AutoComplete options 用 address 作 value/key，跨链同地址时 key 冲突致下拉渲染错乱；应改用 `chain_key:address`。
+- 验证记录：ALIB 全系列（分页/关键词/链隔离/混合与全非法导入/50,000 与 8MiB 边界/并发导入/重启持久化/回填幂等）全 PASS；EXP-004 活动分页 cursor（next_cursor）无重叠、严格递减；GRAPH-005 缓存 aggregation_version=2 且二次命中结果一致；SEC-001/002（SQL 注入、XSS source_name）全 PASS；桌面 1440 与移动 390px 无横向溢出；console/network 除缺陷 #2/#3 场景外无错误。
+- 环境注意：测试期间服务重启 2 次（PID 6772）；数据平面 health 显示 duckdb-cli 模式但 ClickHouse 数据平面日志就绪；地址库现有 BSC 11 条 + ETH 1 条（测试导入），A_AVAILABLE import_count 已增至 27，属测试副作用。
+- 证据：`tmp/qa-evidence-20260815-A03/SUMMARY.md`（完整结果矩阵、缺陷复现步骤、数据边界、截图与 JSON 清单）。测试未修改任何源码；后续修复缺陷后需重启并回归 GRAPH-006/RISK-003/SD-IMP-003/INPUT-004。
+
+## 2026-08-15 地址资产验收缺陷修复（交接）
+
+- 五个缺陷全部修复并有成对证据（修复前 FAIL 断言 ↔ 修复后 PASS 断言），产品验收由 FAIL 转 PASS（覆盖仍 PARTIAL：故障注入/容量/真实任务用例未执行）。
+- 后端：风险零事件 insufficient_data（risk_score 可空）、方向归一 normalizeGraphDirection（all/both→ALL、upstream→IN、downstream→OUT、其他 400）、summary NO_DATA（200 空状态）、XLSX 全 Sheet 扫描（纯度>0.5 入选、跨 Sheet 合并、单 Sheet 口径不变）。
+- 前端：风险页/画像页数据不足分支与等级中英映射；AddressLibraryInput 唯一 key（chain:address）+ 请求竞态防护（立即失效、序号+查询词核对、500 清空、卸载安全）。
+- 验证：go test ./internal/... 全绿；go vet 4 包通过；tsc/noEmit、npm run build 通过；服务已重启；API 回归 19/19、UI 回归 19/19。
+- 报告：tmp/qa-evidence-20260815-A03/SUMMARY.md 已按 FIX-006 修订（口径可复算、严重度、跳过状态、SD-IMP-003 证据、断言文件映射）。
+- 遗留：STATE-006/SD-LIB-004（真实下载任务）、PROFILE-003/ERR-001/002（故障注入）、SD-LIB-002/PERF-002（容量）、GRAPH-012 写路径仍为 SKIPPED；风险评分口径面板文案仍保留"其余为低风险"（属口径说明，非结论标签，若需严格化可改为"其余为未触发规则"）。
+
+## 2026-08-15 用户级真实端到端测试（交接，RUN_ID 20260815-UAT-01）
+
+- UJ-01..12 已按用户级 UAT 流程执行完毕（唯一代码变更：AddressLibraryInput option value=chain:address + onSelect 回写，修复 UAT-BUG-02 跨链选 BSC 跳 ETH；已 tsc/build/重启）。
+- 未修复缺陷：UAT-BUG-01 浏览器后退 about:blank 白屏（P2，入口 replaceState 覆盖历史；建议 pushState/popstate 处理）。观察项：Explorer 详情刷新 URL 与页面状态不一致；非法地址预检提示未定位输入行。
+- UJ-04 暂停：请求链路 PASS（pause_requested=True，异步等待当前 range 完成）；PAUSED 状态级验证受大任务下载时长限制，按文档记 PARTIAL；解除条件=可控制时长的任务窗口重测。
+- 测试副作用：BSC 地址库 13 条（+0x8894e0a0/0x9f8f72aa），既有地址 import_count 增长（0xf43ba0b5=45）；创建批次 8 个（1 COMPLETED + 7 CANCELED 已清理）；导出文件保留在证据目录。
+- 证据：tmp/qa-evidence-20260815-UAT-01/（SUMMARY-UAT.md、各旅程断言/网络/console JSON、截图、导出 XLSX、verify-* 核证）。

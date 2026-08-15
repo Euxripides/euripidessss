@@ -21,6 +21,10 @@ export type CryptoDownloadStartValues = {
   readonly csvImapPort?: number;
   readonly csvImapUser?: string;
   readonly csvImapPassword?: string;
+  readonly csvMailPool?: string;
+  readonly csvProxyPool?: string;
+  readonly csvImapProxyPool?: string;
+  readonly csvProxyPin?: number;
   readonly csvDeliveryMode?: CryptoCSVDeliveryMode;
   readonly csvStartTime?: number;
   readonly csvEndTime?: number;
@@ -57,6 +61,10 @@ export type CryptoDownloadSettings = Partial<Pick<
   | 'csvImapPort'
   | 'csvImapUser'
   | 'csvImapPassword'
+  | 'csvMailPool'
+  | 'csvProxyPool'
+  | 'csvImapProxyPool'
+  | 'csvProxyPin'
   | 'csvDeliveryMode'
   | 'csvStartTime'
   | 'csvEndTime'

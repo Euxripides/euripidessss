@@ -102,8 +102,11 @@ func TestRiskIsExplicitlyRuleBased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RiskScore != 100 || result.RiskLevel != "high" || result.Method != "deterministic_clickhouse_screening_v1" {
+	if result.RiskScore == nil || *result.RiskScore != 100 || result.RiskLevel != "high" || result.Method != "deterministic_clickhouse_screening_v1" {
 		t.Fatalf("unexpected risk: %+v", result)
+	}
+	if !result.DataSufficient {
+		t.Fatalf("data_sufficient must be true when events exist: %+v", result)
 	}
 	if len(result.Rules) != 3 || !strings.Contains(result.RiskReason, "Rule-based screening") {
 		t.Fatalf("rules not explicit: %+v", result)
@@ -115,6 +118,34 @@ func TestRiskIsExplicitlyRuleBased(t *testing.T) {
 		if !strings.Contains(q, "FINAL") {
 			t.Fatalf("risk query missing FINAL: %s", q)
 		}
+	}
+}
+
+func TestRiskZeroEventsIsInsufficientData(t *testing.T) {
+	stub := &stubClient{rows: [][]map[string]any{
+		{{"event_count": "0", "active_days": "0", "unique_counterparties": "0"}},
+	}}
+	result, err := NewRepository(stub).Risk(context.Background(), 56, testAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RiskLevel != "insufficient_data" {
+		t.Fatalf("zero-event address must be insufficient_data, got %q", result.RiskLevel)
+	}
+	if result.RiskScore != nil {
+		t.Fatalf("zero-event address must not carry a score, got %v", *result.RiskScore)
+	}
+	if result.DataSufficient {
+		t.Fatalf("data_sufficient must be false for zero-event address")
+	}
+	if strings.Contains(result.RiskLevel, "low") {
+		t.Fatalf("zero-event result must not claim low risk: %+v", result)
+	}
+	if result.EventCount != 0 || len(result.Rules) != 0 {
+		t.Fatalf("zero-event result must have no rules/events: %+v", result)
+	}
+	if result.Method != "deterministic_clickhouse_screening_v1" {
+		t.Fatalf("method missing: %+v", result)
 	}
 }
 
@@ -137,6 +168,15 @@ func TestTwoHopAndGraphQueriesAreBounded(t *testing.T) {
 	}
 	if !strings.Contains(stub.queries[0], "LIMIT 25") || !strings.Contains(stub.queries[1], "LIMIT 100") {
 		t.Fatalf("unbounded queries: %v", stub.queries)
+	}
+	graphQuery := stub.queries[1]
+	if strings.Contains(graphQuery, "Decimal(38,18)") {
+		t.Fatalf("graph query still narrows values to Decimal(38,18): %s", graphQuery)
+	}
+	for _, fragment := range []string{"toFloat64(a.amount)", "isFinite", "BETWEEN 0 AND 1e15"} {
+		if !strings.Contains(graphQuery, fragment) {
+			t.Fatalf("graph query missing %q quality guard: %s", fragment, graphQuery)
+		}
 	}
 	for _, q := range stub.queries {
 		if strings.Contains(strings.ToUpper(q), "OFFSET") {

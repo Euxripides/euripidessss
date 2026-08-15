@@ -18,7 +18,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/etl/backend/internal/cryptodownload/useragent"
 )
 
 const (
@@ -31,18 +34,58 @@ const (
 	csvEmailTimeoutBackoffBase      = 3 * time.Minute
 	csvIMAPCommandTimeout           = 20 * time.Second
 	csvMailTimestampTolerance       = 5 * time.Second
-	csvDirectDownloadAttempts       = 1
+	csvDirectDownloadAttempts       = 3
 	csvDirectSegmentAttempts        = 2
 	csvMaxSegmentRetries            = 1
 	csvCompletenessTolerance  int64 = 100
-	csvTokenWindowSeconds           = int64(0)
-	csvTokenSegmentCooldown         = 0 * time.Second
+	csvTokenWindowSeconds      = int64(0)
 )
+
+var (
+	csvTokenSegmentCooldownMin    = 5 * time.Second
+	csvTokenSegmentCooldownJitter = 10 * time.Second
+	// csvForwardDomains holds lower-cased custom domains that route inbound
+	// mail to the configured IMAP mailbox (e.g. Cloudflare Email Routing,
+	// which requires a catch-all rule for arbitrary prefixes).
+	// Destinations on these domains rotate a fresh prefix per request, so a
+	// single IMAP identity yields an unbounded recipient pool.
+	csvForwardDomains = map[string]bool{}
+)
+
+func init() {
+	// OKLINK_CSV_TOKEN_COOLDOWN (seconds) sets the base Token segment
+	// cooldown; jitter equals the base (so delay is base..2×base).
+	if raw := strings.TrimSpace(os.Getenv("OKLINK_CSV_TOKEN_COOLDOWN")); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			csvTokenSegmentCooldownMin = time.Duration(seconds) * time.Second
+			csvTokenSegmentCooldownJitter = csvTokenSegmentCooldownMin
+		}
+	}
+	// OKLINK_CSV_FORWARD_DOMAINS: comma/semicolon/whitespace separated custom
+	// domains whose mail is delivered to the configured IMAP mailbox.
+	csvForwardDomains = parseCSVForwardDomains(os.Getenv("OKLINK_CSV_FORWARD_DOMAINS"))
+}
+
+// parseCSVForwardDomains parses a forward-domain list (comma/semicolon/
+// whitespace separated) into a lower-cased set.
+func parseCSVForwardDomains(raw string) map[string]bool {
+	domains := map[string]bool{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	}) {
+		domain := strings.ToLower(strings.TrimSpace(part))
+		if domain != "" {
+			domains[domain] = true
+		}
+	}
+	return domains
+}
 
 var (
 	errCSVEmailTimeout = errors.New("timeout waiting for csv download email")
 	csvEmailChainMu    sync.Mutex
 	csvEmailChainLast  = make(map[string]time.Time)
+	csvEmailAliasSeq   atomic.Uint64
 )
 
 type CSVExportClient struct {
@@ -50,6 +93,13 @@ type CSVExportClient struct {
 	httpClient            *http.Client
 	timingObserver        requestTimingObserver
 	mail                  CSVMailConfig
+	mailPool              []CSVMailConfig
+	mailPoolMu            sync.Mutex
+	mailPoolIdx           int
+	mailFailures          map[int]int
+	mailCooldownUntil     map[int]time.Time
+	proxyPin              int
+	poolErr               error
 	rawDir                string
 	seenPath              string
 	downloadSigner        *csvDownloadSigner
@@ -192,6 +242,28 @@ func NewCSVExportClient(cfg Config) *CSVExportClient {
 		seenPath = filepath.Join(raw, "csv_seen_links.json")
 	}
 	signedRequest, signedRequestErr := loadCSVAsyncSignedRequest(strings.TrimSpace(cfg.CSVRequestHAR))
+	mailPool, mailPoolErr := ParseCSVMailPool(cfg.CSVMailPoolText)
+	// Proxy pools are process-wide (shared transports); only apply a
+	// non-empty configuration here so a later task with no pool cannot
+	// silently clear the pool of a running task.  Saving settings applies
+	// the pools explicitly (see handleSettings).
+	proxyPoolErr := error(nil)
+	if strings.TrimSpace(cfg.CSVHTTPProxyPool) != "" {
+		proxyPoolErr = SetCSVHTTPProxyPool(cfg.CSVHTTPProxyPool)
+	}
+	if proxyPoolErr == nil && strings.TrimSpace(cfg.CSVIMAPProxyPool) != "" {
+		proxyPoolErr = SetCSVIMAPProxyPool(cfg.CSVIMAPProxyPool)
+	}
+	// A pinned task must fail loudly instead of silently degrading to the
+	// real egress IP when the pin is out of range (CLI/automation paths do
+	// not go through the API validation).
+	pinErr := error(nil)
+	if cfg.CSVProxyPin >= 0 {
+		entries, _ := parseCSVProxyList(cfg.CSVHTTPProxyPool, "HTTP")
+		if len(entries) == 0 || cfg.CSVProxyPin >= len(entries) {
+			pinErr = fmt.Errorf("IP 锁定 %d 超出代理池数量（当前 %d 个）：请检查代理池或选择自动轮换", cfg.CSVProxyPin+1, len(entries))
+		}
+	}
 	return &CSVExportClient{
 		baseURL:    baseURL,
 		httpClient: newSharedHTTPClient(cfg.Timeout),
@@ -203,6 +275,10 @@ func NewCSVExportClient(cfg Config) *CSVExportClient {
 			Password:         cfg.CSVIMAPPassword,
 			FolderCandidates: csvMailFolderCandidates(os.Getenv("OKLINK_CSV_IMAP_FOLDERS")),
 		},
+		mailPool:              mailPool,
+		mailFailures:          map[int]int{},
+		mailCooldownUntil:     map[int]time.Time{},
+		proxyPin:              cfg.CSVProxyPin,
 		rawDir:                raw,
 		seenPath:              seenPath,
 		downloadSigner:        newCSVDownloadSigner(baseURL),
@@ -210,11 +286,31 @@ func NewCSVExportClient(cfg Config) *CSVExportClient {
 		newMailWatcher:        newCSVMailWatcher,
 		signedRequest:         signedRequest,
 		signedRequestErr:      signedRequestErr,
+		poolErr:               errors.Join(mailPoolErr, proxyPoolErr, pinErr),
 		durableRename:         os.Rename,
 	}
 }
 
+// csvProxyIndexKey carries the consumed proxy pool index on the request
+// context so UA selection and client selection share one decision.
+type csvProxyIndexKey struct{}
+
+// httpClientFor returns the HTTP client for the proxy pool entry chosen when
+// the request headers were built (matching UA + TLS fingerprint); without a
+// pool it returns the default shared client (environment proxies).
+func (c *CSVExportClient) httpClientFor(request *http.Request) *http.Client {
+	if index, ok := request.Context().Value(csvProxyIndexKey{}).(int); ok && index >= 0 {
+		if client := csvHTTPClientForIndex(index); client != nil {
+			return client
+		}
+	}
+	return c.httpClient
+}
+
 func (c *CSVExportClient) CollectAddress(ctx context.Context, cfg Config, chain string) (ExportData, error) {
+	if c.poolErr != nil {
+		return ExportData{}, c.poolErr
+	}
 	var data ExportData
 	chainLower := strings.ToLower(chain)
 	data.Summaries = append(data.Summaries, csvSummaryRow(cfg.Address, chain))
@@ -422,13 +518,14 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 		}
 	}
 	for segment := hydrated.NextSegment; end > start; segment++ {
-		if kind.Sheet == "token" && segment > 1 && csvTokenSegmentCooldown > 0 {
-			reportProgress(cfg, "CSV token cooldown %s: %s segment %d wait %s", strings.ToUpper(chain), kind.Name, segment, csvTokenSegmentCooldown)
+		if kind.Sheet == "token" && segment > 1 {
+			delay := csvTokenSegmentCooldownMin + jitterDuration(csvTokenSegmentCooldownJitter)
+			reportProgress(cfg, "CSV token cooldown %s: %s segment %d wait %s", strings.ToUpper(chain), kind.Name, segment, delay.Round(time.Second))
 			select {
 			case <-ctx.Done():
 				check = finalizeCSVDownloadCheck(check, len(allRaw), strictTotal)
 				return allMapped, allRaw, allHeaders, check, ctx.Err()
-			case <-time.After(csvTokenSegmentCooldown):
+			case <-time.After(delay):
 			}
 		}
 		rangeStart := csvSegmentRangeStart(kind, start, end)
@@ -573,6 +670,10 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 				})
 				if err != nil {
 					if retry < csvMaxSegmentRetries && isCSVEmailNoLinkTimeout(err) {
+						if c.advanceMailOnFailure(err) {
+							mailWatcher = nil
+							reportProgress(cfg, "CSV mail pool %s: %s 第 %d 段等待超时，切换邮箱后重新申请", strings.ToUpper(chain), kind.Name, segment)
+						}
 						backoff := csvEmailTimeoutBackoff(retry)
 						if backoff > 0 {
 							reportProgress(cfg, "CSV email timeout backoff %s: %s segment %d wait %s before re-request", strings.ToUpper(chain), kind.Name, segment, backoff.Round(time.Second))
@@ -584,6 +685,16 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 							}
 						}
 						reportProgress(cfg, "CSV纯下载 %s: %s 第 %d 段等待邮件超时，重新请求CSV", strings.ToUpper(chain), kind.Name, segment)
+						requestedAt, err = requestEmailCSV()
+						if err != nil {
+							check = failCSVDownloadCheck(check, len(allRaw), strictTotal, err)
+							return allMapped, allRaw, allHeaders, check, err
+						}
+						continue
+					}
+					if retry < csvMaxSegmentRetries && c.advanceMailOnFailure(err) {
+						mailWatcher = nil
+						reportProgress(cfg, "CSV mail pool %s: %s 第 %d 段邮箱失败（%v），切换后重新申请", strings.ToUpper(chain), kind.Name, segment, err)
 						requestedAt, err = requestEmailCSV()
 						if err != nil {
 							check = failCSVDownloadCheck(check, len(allRaw), strictTotal, err)
@@ -961,8 +1072,8 @@ func (c *CSVExportClient) fetchCSVListTotalGET(ctx context.Context, fullURL, ref
 	if err != nil {
 		return 0, err
 	}
-	setCSVBrowserAPIHeaders(req, c.baseURL, referer, "application/json")
-	resp, err := doHTTPRequest(c.httpClient, req, c.timingObserver)
+	req = setCSVBrowserAPIHeaders(req, c.baseURL, referer, "application/json", c.proxyPin)
+	resp, err := doHTTPRequest(c.httpClientFor(req), req, c.timingObserver)
 	if err != nil {
 		return 0, err
 	}
@@ -983,9 +1094,9 @@ func (c *CSVExportClient) fetchCSVListTotalPOST(ctx context.Context, apiURL, ref
 	if err != nil {
 		return 0, err
 	}
-	setCSVBrowserAPIHeaders(req, c.baseURL, referer, "application/json")
+	req = setCSVBrowserAPIHeaders(req, c.baseURL, referer, "application/json", c.proxyPin)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := doHTTPRequest(c.httpClient, req, c.timingObserver)
+	resp, err := doHTTPRequest(c.httpClientFor(req), req, c.timingObserver)
 	if err != nil {
 		return 0, err
 	}
@@ -1000,20 +1111,20 @@ func (c *CSVExportClient) fetchCSVListTotalPOST(ctx context.Context, apiURL, ref
 	return parseCSVListTotal(respBody)
 }
 
-func setCSVBrowserAPIHeaders(req *http.Request, baseURL, referer, accept string) {
+func setCSVBrowserAPIHeaders(req *http.Request, baseURL, referer, accept string, pin int) *http.Request {
 	req.Header.Set("Accept", accept)
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("App-Type", "web")
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Pragma", "no-cache")
 	req.Header.Set("Referer", referer)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+	req = setCSVUserAgentHeaders(req, baseURL, pin)
 	req.Header.Set("x-apiKey", browserXAPIKey())
 	req.Header.Set("x-locale", "zh_CN")
 	req.Header.Set("x-utc", "8")
 	if baseURL != "" {
 		req.Header.Set("Origin", baseURL)
 	}
+	return req
 }
 
 func parseCSVListTotal(body []byte) (int64, error) {
@@ -1075,11 +1186,11 @@ func (c *CSVExportClient) countCSV(ctx context.Context, cfg Config, chain string
 		if err != nil {
 			return 0, err
 		}
-		setCSVPostHeaders(req, c.baseURL, referer, "application/json")
+		req = setCSVPostHeaders(req, c.baseURL, referer, "application/json", c.proxyPin)
 		if err := c.applyCSVDownloadSignature(ctx, req, body, chain, cfg.Address); err != nil {
 			return 0, err
 		}
-		resp, err := doHTTPRequest(c.httpClient, req, c.timingObserver)
+		resp, err := doHTTPRequest(c.httpClientFor(req), req, c.timingObserver)
 		if err != nil {
 			lastErr = err
 		} else {
@@ -1161,12 +1272,13 @@ func (c *CSVExportClient) downloadCSVDirect(ctx context.Context, cfg Config, cha
 		if err != nil {
 			return nil, "", err
 		}
-		setCSVPostHeaders(req, c.baseURL, referer, "*/*")
+		req = setCSVPostHeaders(req, c.baseURL, referer, "*/*", c.proxyPin)
 		if err := c.applyCSVDownloadSignature(ctx, req, body, chain, cfg.Address); err != nil {
 			return nil, "", err
 		}
-		resp, err := doHTTPRequest(c.httpClient, req, c.timingObserver)
+		resp, err := doHTTPRequest(c.httpClientFor(req), req, c.timingObserver)
 		if err != nil {
+			c.noteProxyFailure(req, 0, err)
 			lastErr = err
 		} else {
 			respBody, readErr := io.ReadAll(resp.Body)
@@ -1174,6 +1286,7 @@ func (c *CSVExportClient) downloadCSVDirect(ctx context.Context, cfg Config, cha
 			if readErr != nil {
 				lastErr = readErr
 			} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				c.noteProxyFailure(req, resp.StatusCode, nil)
 				lastErr = csvHTTPStatusError(resp.StatusCode, respBody)
 				if !csvRetryableHTTPStatus(resp.StatusCode) {
 					return nil, "", lastErr
@@ -1237,14 +1350,106 @@ func csvTokenRequestPayload(cfg Config, baseURL, chain string, start, end int64,
 	return payload
 }
 
-func setCSVPostHeaders(req *http.Request, baseURL, referer, accept string) {
+func setCSVPostHeaders(req *http.Request, baseURL, referer, accept string, pin int) *http.Request {
 	req.Header.Set("Accept", accept)
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", baseURL)
 	req.Header.Set("Referer", referer)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+	req = setCSVUserAgentHeaders(req, baseURL, pin)
 	req.Header.Set("x-apiKey", browserXAPIKey())
+	return req
+}
+
+// setCSVUserAgentHeaders sets a rotated browser User-Agent plus the full
+// matching client-hint and fetch-metadata header set, so the CSV download
+// requests look like a real browser rather than a fixed Chrome client.
+// The proxy pool decision is consumed here exactly once per request and
+// carried on the request context, so the HTTP client (and its TLS
+// fingerprint) selected at send time always matches this UA.  Returns the
+// request (context may have been replaced).
+func setCSVUserAgentHeaders(req *http.Request, baseURL string, pin int) *http.Request {
+	index := csvHTTPProxyIndexForUse(pin)
+	var agent, language string
+	if index >= 0 {
+		req = req.WithContext(context.WithValue(req.Context(), csvProxyIndexKey{}, index))
+		agent = useragent.ChromeByIndex(index)
+		language = useragent.AcceptLanguageByIndex(index)
+	} else {
+		identity := ""
+		if parsed, err := url.Parse(baseURL); err == nil && parsed.Host != "" {
+			identity = parsed.Host
+		}
+		agent = useragent.GetChrome(identity)
+		language = useragent.AcceptLanguage(identity)
+	}
+	req.Header.Set("User-Agent", agent)
+	req.Header.Set("Accept-Language", language)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	brand := useragent.SecCHUABrand(agent)
+	if brand == "" {
+		return req
+	}
+	req.Header.Set("Sec-CH-UA", brand)
+	mobile := "?0"
+	if useragent.IsMobileUA(agent) {
+		mobile = "?1"
+	}
+	req.Header.Set("Sec-CH-UA-Mobile", mobile)
+	if full := useragent.SecCHUAFullVersionList(agent); full != "" {
+		req.Header.Set("Sec-CH-UA-Full-Version-List", full)
+	}
+	if platform := useragent.SecCHUAPlatform(agent); platform != "" {
+		req.Header.Set("Sec-CH-UA-Platform", platform)
+	}
+	setCSVClientHintDetails(req, agent)
+	return req
+}
+
+// setCSVClientHintDetails adds the architecture/bitness/platform-version/
+// model client hints matching the User-Agent's platform.
+func setCSVClientHintDetails(req *http.Request, agent string) {
+	arch := `"x86"`
+	platformVersion := `"15.0.0"`
+	model := `""`
+	switch useragent.SecCHUAPlatform(agent) {
+	case "macOS":
+		platformVersion = `"14.6.0"`
+	case "Linux":
+		platformVersion = `""`
+	case "iOS":
+		arch = `"arm"`
+		platformVersion = `"18.1.0"`
+		model = `"iPhone"`
+	default:
+		if !strings.Contains(agent, "Windows") {
+			return
+		}
+	}
+	req.Header.Set("Sec-CH-UA-Arch", arch)
+	req.Header.Set("Sec-CH-UA-Bitness", `"64"`)
+	req.Header.Set("Sec-CH-UA-Platform-Version", platformVersion)
+	req.Header.Set("Sec-CH-UA-Model", model)
+}
+
+// noteProxyFailure marks the proxy IP that actually carried the request as
+// failed when it hit a 429/403/503 status or a connection-level error.  For
+// pinned tasks the IP comes from the request context (the pinned entry may
+// never be the affinity current); otherwise the current affinity proxy is
+// used.  This forces an IP rotation on the next request instead of waiting
+// on a flagged IP.
+func (c *CSVExportClient) noteProxyFailure(request *http.Request, status int, err error) {
+	if status != http.StatusTooManyRequests && status != http.StatusForbidden && status != http.StatusServiceUnavailable && err == nil {
+		return
+	}
+	host := csvCurrentHTTPProxyHost()
+	if index, ok := request.Context().Value(csvProxyIndexKey{}).(int); ok && index >= 0 {
+		if proxy := csvHTTPProxyByIndex(index); proxy != nil {
+			host = proxy.Host
+		}
+	}
+	MarkCSVHTTPProxyFailed(host)
 }
 
 func csvResponseFilename(resp *http.Response) string {
@@ -1357,7 +1562,7 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 		if err != nil {
 			return err
 		}
-		setCSVPostHeaders(req, c.baseURL, referer, "application/json")
+		req = setCSVPostHeaders(req, c.baseURL, referer, "application/json", c.proxyPin)
 		var signErr error
 		signerVersion, signErr = c.applyCSVDownloadSignatureWithVersion(ctx, req, body, chain, cfg.Address)
 		if signErr != nil {
@@ -1366,8 +1571,9 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 		if c.downloadSigner == nil && c.signedRequest != nil {
 			c.signedRequest.Apply(req, c.baseURL, referer, timestamp)
 		}
-		resp, err := doHTTPRequest(c.httpClient, req, c.timingObserver)
+		resp, err := doHTTPRequest(c.httpClientFor(req), req, c.timingObserver)
 		if err != nil {
+			c.noteProxyFailure(req, 0, err)
 			lastErr = err
 		} else {
 			respBody, readErr := io.ReadAll(resp.Body)
@@ -1375,6 +1581,7 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 			if readErr != nil {
 				lastErr = readErr
 			} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				c.noteProxyFailure(req, resp.StatusCode, nil)
 				lastErr = csvHTTPStatusError(resp.StatusCode, respBody)
 			} else {
 				apiResp := csvAsyncResponse{}
@@ -1406,13 +1613,37 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 	return lastErr
 }
 
-// emailExportAlias returns the configured destination as-is.  Project policy
+// emailExportAlias returns the CSV email destination.  Project policy
 // (2026-08-12) allows mailbox/alias rotation to handle OKLink CSV email
-// throttling; rotation is applied by the operator through the configured
-// mailbox rather than generated here, so mail correlation stays tied to the
-// destination actually being polled.
+// throttling: for Gmail destinations every call yields a fresh
+// "local+oklN@domain" alias.  Gmail delivers +tagged mail to the same
+// inbox, so IMAP credentials, UID baselines and mail correlation stay
+// unchanged while OKLink sees a new recipient per request (including
+// retries after timeout/cooldown).  When a mail pool is configured the
+// active pool mailbox is used, falling back to the configured mailbox.
+// Non-Gmail destinations are returned as-is.
 func (c *CSVExportClient) emailExportAlias(chain, kind string) string {
-	return strings.TrimSpace(c.mail.Email)
+	return rotateCSVEmailAlias(c.activeMail().Email)
+}
+
+// rotateCSVEmailAlias applies rotation to a destination: Gmail addresses get
+// a +oklN alias; custom forward domains (OKLINK_CSV_FORWARD_DOMAINS) get a
+// fresh rotating prefix (okl%08x, monotonic per process); everything else is
+// returned unchanged.
+func rotateCSVEmailAlias(email string) string {
+	email = strings.TrimSpace(email)
+	local, domain, found := strings.Cut(email, "@")
+	if !found || local == "" {
+		return email
+	}
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "gmail.com" || domain == "googlemail.com" {
+		return fmt.Sprintf("%s+okl%d@%s", local, csvEmailAliasSeq.Add(1), domain)
+	}
+	if csvForwardDomains[domain] {
+		return fmt.Sprintf("okl%08x@%s", csvEmailAliasSeq.Add(1), domain)
+	}
+	return email
 }
 
 func (c *CSVExportClient) beginCSVEmailRequest(ctx context.Context, cfg Config, chain string, kind csvExportKind) (func(), error) {

@@ -75,6 +75,10 @@ type GUIStartRequest struct {
 	CSVIMAPPort      int               `json:"csvImapPort"`
 	CSVIMAPUser      string            `json:"csvImapUser"`
 	CSVIMAPPassword  string            `json:"csvImapPassword"`
+	CSVMailPool      string            `json:"csvMailPool"`
+	CSVProxyPool     string            `json:"csvProxyPool"`
+	CSVIMAPProxyPool string            `json:"csvImapProxyPool"`
+	CSVProxyPin      int               `json:"csvProxyPin"`
 	CSVDeliveryMode  string            `json:"csvDeliveryMode"`
 	CSVStartTime     int64             `json:"csvStartTime"`
 	CSVEndTime       int64             `json:"csvEndTime"`
@@ -154,6 +158,10 @@ type GUIPersistedSettings struct {
 	CSVIMAPPort      int     `json:"csvImapPort"`
 	CSVIMAPUser      string  `json:"csvImapUser"`
 	CSVIMAPPassword  string  `json:"csvImapPassword"`
+	CSVMailPool      string  `json:"csvMailPool"`
+	CSVProxyPool     string  `json:"csvProxyPool"`
+	CSVIMAPProxyPool string  `json:"csvImapProxyPool"`
+	CSVProxyPin      int     `json:"csvProxyPin"`
 	CSVDeliveryMode  string  `json:"csvDeliveryMode"`
 	CSVStartTime     int64   `json:"csvStartTime"`
 	CSVEndTime       int64   `json:"csvEndTime"`
@@ -271,6 +279,10 @@ func handleGUISettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		settings.CSVIMAPPassword = ""
+		settings.CSVMailPool = "" // 池条目含密码，不回传
+		settings.CSVProxyPool = maskCSVProxyPoolUserinfo(settings.CSVProxyPool)
+		settings.CSVIMAPProxyPool = maskCSVProxyPoolUserinfo(settings.CSVIMAPProxyPool)
 		writeJSON(w, settings)
 	case http.MethodPost:
 		var settings GUIPersistedSettings
@@ -278,11 +290,58 @@ func handleGUISettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if strings.TrimSpace(settings.CSVIMAPPassword) == "" {
+			if previous, err := loadGUIPersistedSettings(); err == nil {
+				settings.CSVIMAPPassword = previous.CSVIMAPPassword
+			}
+		}
+		if strings.TrimSpace(settings.CSVMailPool) == "" {
+			if previous, err := loadGUIPersistedSettings(); err == nil {
+				settings.CSVMailPool = previous.CSVMailPool
+			}
+		}
+		if strings.Contains(settings.CSVProxyPool, "***") {
+			// Masked proxy credentials were echoed back; restore the saved pool.
+			previous, err := loadGUIPersistedSettings()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			settings.CSVProxyPool = previous.CSVProxyPool
+		}
+		if strings.Contains(settings.CSVIMAPProxyPool, "***") {
+			previous, err := loadGUIPersistedSettings()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			settings.CSVIMAPProxyPool = previous.CSVIMAPProxyPool
+		}
 		settings = normalizeGUIPersistedSettings(settings)
+		// Validate pools before persisting; apply HTTP/IMAP proxy pools
+		// only after a successful save (they are process-wide).
+		if _, err := ParseCSVMailPool(settings.CSVMailPool); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validateCSVHTTPProxyPool(settings.CSVProxyPool); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := validateCSVIMAPProxyPool(settings.CSVIMAPProxyPool); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if err := saveGUIPersistedSettings(settings); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		_ = SetCSVHTTPProxyPool(settings.CSVProxyPool)
+		_ = SetCSVIMAPProxyPool(settings.CSVIMAPProxyPool)
+		settings.CSVIMAPPassword = ""
+		settings.CSVMailPool = ""
+		settings.CSVProxyPool = maskCSVProxyPoolUserinfo(settings.CSVProxyPool)
+		settings.CSVIMAPProxyPool = maskCSVProxyPoolUserinfo(settings.CSVIMAPProxyPool)
 		writeJSON(w, settings)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -315,6 +374,12 @@ func normalizeGUIPersistedSettings(settings GUIPersistedSettings) GUIPersistedSe
 	settings.CSVIMAPHost = strings.TrimSpace(settings.CSVIMAPHost)
 	settings.CSVIMAPUser = strings.TrimSpace(settings.CSVIMAPUser)
 	settings.CSVIMAPPassword = strings.TrimSpace(settings.CSVIMAPPassword)
+	settings.CSVMailPool = strings.TrimSpace(settings.CSVMailPool)
+	settings.CSVProxyPool = strings.TrimSpace(settings.CSVProxyPool)
+	settings.CSVIMAPProxyPool = strings.TrimSpace(settings.CSVIMAPProxyPool)
+	if settings.CSVProxyPin < 0 {
+		settings.CSVProxyPin = 0
+	}
 	settings.CSVDeliveryMode = normalizeCSVDeliveryMode(settings.CSVDeliveryMode)
 	mail := normalizeCSVMailConfig(Config{
 		CSVEmail:        settings.CSVEmail,
@@ -750,6 +815,10 @@ func (r GUIStartRequest) toConfig() Config {
 		CSVIMAPPort:     r.CSVIMAPPort,
 		CSVIMAPUser:     strings.TrimSpace(r.CSVIMAPUser),
 		CSVIMAPPassword: strings.TrimSpace(r.CSVIMAPPassword),
+		CSVMailPoolText: strings.TrimSpace(r.CSVMailPool),
+		CSVHTTPProxyPool: strings.TrimSpace(r.CSVProxyPool),
+		CSVIMAPProxyPool: strings.TrimSpace(r.CSVIMAPProxyPool),
+		CSVProxyPin:      r.CSVProxyPin - 1,
 		CSVDeliveryMode: normalizeCSVDeliveryMode(r.CSVDeliveryMode),
 		CSVStartTime:    r.CSVStartTime,
 		CSVEndTime:      r.CSVEndTime,
@@ -1843,6 +1912,48 @@ const guiHTML = `<!doctype html>
             <input id="csvImapPassword" type="password" form="credentialForm" autocomplete="current-password">
           </div>
         </div>
+        <div class="field">
+          <label>邮箱池（每行：邮箱|IMAP主机|IMAP端口|IMAP用户|IMAP密码）</label>
+          <textarea id="csvMailPool" rows="3" placeholder="account1@gmail.com|imap.gmail.com|993|account1@gmail.com|应用专用密码&#10;account2@gmail.com|imap.gmail.com|993|account2@gmail.com|应用专用密码"></textarea>
+          <div class="hint">等待邮件超时或 IMAP 登录失败时自动切换到下一个账号（Gmail 还叠加 +alias 轮换）；留空使用上方单个邮箱。已保存的池不回显，重新保存时留空将保留旧池。</div>
+        </div>
+        <div class="field">
+          <label>IP 锁定（每任务固定一个 IP + 独立指纹 + 域名邮箱，适合并发多任务）</label>
+          <select id="csvProxyPin">
+            <option value="0">0 - 自动轮换</option>
+            <option value="1">IP 1</option>
+            <option value="2">IP 2</option>
+            <option value="3">IP 3</option>
+            <option value="4">IP 4</option>
+            <option value="5">IP 5</option>
+            <option value="6">IP 6</option>
+            <option value="7">IP 7</option>
+            <option value="8">IP 8</option>
+            <option value="9">IP 9</option>
+            <option value="10">IP 10</option>
+            <option value="11">IP 11</option>
+            <option value="12">IP 12</option>
+            <option value="13">IP 13</option>
+            <option value="14">IP 14</option>
+            <option value="15">IP 15</option>
+            <option value="16">IP 16</option>
+            <option value="17">IP 17</option>
+            <option value="18">IP 18</option>
+            <option value="19">IP 19</option>
+            <option value="20">IP 20</option>
+          </select>
+          <div class="hint">固定使用代理池第 N 个 IP；0=自动轮换。每个 IP 自带独立浏览器指纹与域名邮箱前缀，多任务并发即多独立用户。</div>
+        </div>
+        <div class="field">
+          <label>HTTP 代理池（每行一个：http/https/socks5）</label>
+          <textarea id="csvProxyPool" rows="2" placeholder="http://127.0.0.1:7890&#10;socks5://127.0.0.1:1080"></textarea>
+          <div class="hint">CSV 直链与申请请求按连接轮换代理；留空使用环境变量代理（HTTPS_PROXY 等）。</div>
+        </div>
+        <div class="field">
+          <label>IMAP 代理池（每行一个：socks5://）</label>
+          <textarea id="csvImapProxyPool" rows="2" placeholder="socks5://127.0.0.1:1080"></textarea>
+          <div class="hint">IMAP 收信轮换 SOCKS5 代理；留空使用 OKLINK_IMAP_PROXY / ALL_PROXY。</div>
+        </div>
         <div class="grid">
           <div class="field">
             <label>CSV开始时间（Unix秒，0不限）</label>
@@ -2143,6 +2254,10 @@ const guiHTML = `<!doctype html>
         csvImapPort: num('csvImapPort'),
         csvImapUser: $('csvImapUser').value,
         csvImapPassword: $('csvImapPassword').value,
+        csvMailPool: $('csvMailPool').value,
+        csvProxyPool: $('csvProxyPool').value,
+        csvImapProxyPool: $('csvImapProxyPool').value,
+        csvProxyPin: num('csvProxyPin'),
         csvStartTime: num('csvStartTime') || DEFAULT_CSV_START_TIME,
         csvEndTime: num('csvEndTime'),
         incremental: $('incrementalMode').checked,
@@ -2167,6 +2282,10 @@ const guiHTML = `<!doctype html>
       setInputValue('csvImapPort', settings.csvImapPort || 993);
       setInputValue('csvImapUser', settings.csvImapUser);
       setInputValue('csvImapPassword', settings.csvImapPassword);
+      if (settings.csvMailPool) $('csvMailPool').value = settings.csvMailPool;
+      setInputValue('csvProxyPool', settings.csvProxyPool);
+      setInputValue('csvImapProxyPool', settings.csvImapProxyPool);
+      setInputValue('csvProxyPin', settings.csvProxyPin || 0);
       setInputValue('csvStartTime', settings.csvStartTime || DEFAULT_CSV_START_TIME);
       setInputValue('csvEndTime', settings.csvEndTime || 0);
       $('incrementalMode').checked = !!settings.incremental;
@@ -2198,7 +2317,7 @@ const guiHTML = `<!doctype html>
       saveTimer = setTimeout(saveSettings, 400);
     }
     function bindAutoSaveSettings() {
-      const ids = ['csvEmail','csvImapHost','csvImapPort','csvImapUser','csvImapPassword','csvStartTime','csvEndTime','incrementalMode','riskCooldownMinutes','workers','rps','timeoutSeconds','rawDir','outputDir','outputPrefix'];
+      const ids = ['csvEmail','csvImapHost','csvImapPort','csvImapUser','csvImapPassword','csvMailPool','csvProxyPool','csvImapProxyPool','csvProxyPin','csvStartTime','csvEndTime','incrementalMode','riskCooldownMinutes','workers','rps','timeoutSeconds','rawDir','outputDir','outputPrefix'];
       for (const id of ids) {
         const el = $(id);
         if (!el) continue;
@@ -2233,6 +2352,10 @@ const guiHTML = `<!doctype html>
         csvImapPort: num('csvImapPort'),
         csvImapUser: $('csvImapUser').value,
         csvImapPassword: $('csvImapPassword').value,
+        csvMailPool: $('csvMailPool').value,
+        csvProxyPool: $('csvProxyPool').value,
+        csvImapProxyPool: $('csvImapProxyPool').value,
+        csvProxyPin: num('csvProxyPin'),
         csvStartTime: num('csvStartTime') || DEFAULT_CSV_START_TIME,
         csvEndTime: num('csvEndTime'),
         incremental: sourceMode === 'csv' && $('incrementalMode').checked,

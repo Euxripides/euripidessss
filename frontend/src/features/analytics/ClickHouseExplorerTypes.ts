@@ -10,6 +10,8 @@ export type ClickHouseActivityKind =
 export interface ClickHouseAddressSummary {
   chain_id: number;
   address: string;
+  /** NO_DATA 表示地址合法但当前无链上活动数据（200 空状态）。 */
+  data_status?: "NO_DATA" | string;
   address_type: string;
   first_seen_time: string;
   last_seen_time: string;

@@ -3,16 +3,17 @@
 // 72px：品牌区 | 完整地址搜索（Enter=定位）| 方向分段 | 深度分段 | 操作。
 // 方向/深度必须使用分段按钮，不得使用普通下拉框。
 
-import { ArrowDownOutlined, ArrowUpOutlined, SearchOutlined } from "@ant-design/icons";
-import { Button, Input, Segmented, Select } from "antd";
+import { ArrowDownOutlined, ArrowUpOutlined } from "@ant-design/icons";
+import { Button, Segmented, Select } from "antd";
 import type { ReactNode } from "react";
+import AddressLibraryInput from "../address-library/AddressLibraryInput";
 import type { FocusDepth, FocusDirection, FocusSelection } from "./graphUpgrade";
 import type { GraphKind } from "./flowWorkspaceGraph";
 
 export interface FlowWorkspaceHeaderProps {
   searchInput: string;
   onSearchInput: (value: string) => void;
-  onLocate: () => void;
+  onLocate: (value?: string) => void;
   focus: FocusSelection | null;
   direction: FocusDirection;
   depth: FocusDepth;
@@ -21,6 +22,7 @@ export interface FlowWorkspaceHeaderProps {
   kindFilter: GraphKind;
   onKindFilter: (kind: GraphKind) => void;
   onClearFocus: () => void;
+  chainKey: string;
 }
 
 const DIRECTION_OPTIONS: Array<{ label: React.ReactNode; value: FocusDirection }> = [
@@ -48,6 +50,7 @@ export default function FlowWorkspaceHeader({
   kindFilter,
   onKindFilter,
   onClearFocus,
+  chainKey,
 }: FlowWorkspaceHeaderProps) {
   return (
     <header className="flow-workspace-header">
@@ -57,14 +60,14 @@ export default function FlowWorkspaceHeader({
       </div>
 
       <div className="flow-workspace-search">
-        <Input
-          aria-label="地址搜索"
+        <AddressLibraryInput
+          ariaLabel="地址搜索"
           placeholder="输入完整 EVM 地址（Enter 定位）"
-          prefix={<SearchOutlined />}
           value={searchInput}
-          onChange={(event) => onSearchInput(event.target.value)}
-          onPressEnter={onLocate}
-          allowClear
+          chainKey={chainKey}
+          onChange={onSearchInput}
+          onSelect={(value) => { onSearchInput(value); onLocate(value); }}
+          onPressEnter={() => onLocate()}
         />
       </div>
 

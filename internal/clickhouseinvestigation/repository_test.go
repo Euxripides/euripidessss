@@ -90,6 +90,30 @@ func TestFlowsAreBoundedAndMapped(t *testing.T) {
 	}
 }
 
+func TestFlowStatsUsesFullClickHouseAggregation(t *testing.T) {
+	fake := &fakeQueryClient{rows: [][]map[string]any{{{
+		"node_count": "3", "edge_count": "2", "tx_count": "4",
+		"total_in": "10", "total_out": "8", "net": "2",
+	}}}}
+	repo, _ := New(fake, 56)
+	stats, err := repo.FlowStats(context.Background(), "bsc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Graph.NodeCount != 3 || stats.Graph.EdgeCount != 2 || stats.Flow.Net != "2" || !stats.Completeness.Complete {
+		t.Fatalf("unexpected flow stats: %+v", stats)
+	}
+	query := fake.queries[0]
+	for _, want := range []string{"FROM address_activity FINAL", "chain_id=56", "uniqExact(tx_hash)"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("flow stats query missing %q: %s", want, query)
+		}
+	}
+	if strings.Contains(strings.ToUpper(query), "LIMIT") {
+		t.Fatalf("flow stats aggregation must not be truncated: %s", query)
+	}
+}
+
 func TestQueryErrorsAreWrapped(t *testing.T) {
 	fake := &fakeQueryClient{err: errors.New("database unavailable")}
 	repo, _ := New(fake, 56)

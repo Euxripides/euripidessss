@@ -270,7 +270,7 @@ async def _run(raw_request: str) -> dict[str, Any]:
             viewport_height=900,
             accept_downloads=False,
             ignore_https_errors=False,
-            enable_stealth=False,
+            enable_stealth=_boolean_env("OKLINK_CRAWL4AI_STEALTH", True),
             verbose=False,
         )
         adapter = UndetectedAdapter()

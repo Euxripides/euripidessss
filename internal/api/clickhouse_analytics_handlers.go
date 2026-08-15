@@ -213,6 +213,24 @@ func handleClickHouseAnalyticsCompatibility(c *gin.Context) bool {
 		result, err := clickHouseAnalytics.Graph(ctx, clickhouseanalytics.GraphQuery{ChainID: chainID, Limit: limit})
 		writeClickHouseAnalyticsResult(c, result, err)
 		return true
+	case path == "flow-stats":
+		repository, err := repositoryForInvestigation(chainID)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "ClickHouse analytics query failed"})
+			return true
+		}
+		result, err := repository.FlowStats(ctx, c.DefaultQuery("chain", "bsc"), c.Query("token"))
+		writeClickHouseAnalyticsResult(c, result, err)
+		return true
+	case path == "address-stats":
+		repository, err := repositoryForInvestigation(chainID)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "ClickHouse analytics query failed"})
+			return true
+		}
+		result, err := repository.AddressStats(ctx, c.Query("address"), c.Query("token"))
+		writeClickHouseAnalyticsResult(c, result, err)
+		return true
 	case strings.HasPrefix(path, "address/"):
 		parts := strings.Split(path, "/")
 		if len(parts) != 3 {
@@ -226,7 +244,7 @@ func handleClickHouseAnalyticsCompatibility(c *gin.Context) bool {
 				writeClickHouseAnalyticsResult(c, nil, err)
 				return true
 			}
-			c.JSON(http.StatusOK, gin.H{"risk_score": result.RiskScore, "risk_level": result.RiskLevel, "risk_reason": result.RiskReason, "transaction_frequency": result.TransactionFrequency, "top_holder_ratio": 0, "shared_counterparty_score": result.CounterpartyConcentration, "method": result.Method, "rules": result.Rules})
+			c.JSON(http.StatusOK, gin.H{"risk_score": result.RiskScore, "risk_level": result.RiskLevel, "risk_reason": result.RiskReason, "data_sufficient": result.DataSufficient, "transaction_frequency": result.TransactionFrequency, "top_holder_ratio": 0, "shared_counterparty_score": result.CounterpartyConcentration, "method": result.Method, "rules": result.Rules, "event_count": result.EventCount, "active_days": result.ActiveDays})
 			return true
 		case "path":
 			result, err := clickHouseAnalytics.TwoHopPaths(ctx, clickhouseanalytics.PathQuery{ChainID: chainID, Address: address, Limit: 100})

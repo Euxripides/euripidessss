@@ -157,6 +157,47 @@ LIMIT %d`, r.chainID, address, tokenClause, r.flowLimit)
 	return result, nil
 }
 
+// FlowStats provides the legacy graph-statistics contract from the active
+// ClickHouse warehouse. Aggregation is server-side and does not inherit the
+// per-address flow row limit.
+func (r *Repository) FlowStats(ctx context.Context, chain, token string) (*analyticsapi.FlowStats, error) {
+	token, err := normalizeAddress(token, "token", true)
+	if err != nil {
+		return nil, err
+	}
+	tokenClause := ""
+	if token != "" {
+		tokenClause = " AND token_address = '" + token + "'"
+	}
+	query := fmt.Sprintf(`SELECT
+  uniqExact(address) AS node_count,
+  uniqExactIf(tuple(address,counterparty_address,token_address),counterparty_address!='') AS edge_count,
+  uniqExact(tx_hash) AS tx_count,
+  toString(sumIf(amount,direction='IN')) AS total_in,
+  toString(sumIf(amount,direction='OUT')) AS total_out,
+  toString(sumIf(amount,direction='IN')-sumIf(amount,direction='OUT')) AS net
+FROM address_activity FINAL
+WHERE chain_id=%d AND direction IN ('IN','OUT')%s`, r.chainID, tokenClause)
+	rows, err := r.client.QueryJSON(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query ClickHouse flow stats: %w", err)
+	}
+	stats := &analyticsapi.FlowStats{
+		Scope:        analyticsapi.FlowStatsScope{Chain: chain, ChainID: int64(r.chainID), Token: token},
+		Completeness: analyticsapi.FlowCompleteness{Complete: true},
+	}
+	if len(rows) > 0 {
+		row := rows[0]
+		stats.Graph.NodeCount = integer(row["node_count"])
+		stats.Graph.EdgeCount = integer(row["edge_count"])
+		stats.Graph.TxCount = integer(row["tx_count"])
+		stats.Flow.TotalIn = text(row["total_in"])
+		stats.Flow.TotalOut = text(row["total_out"])
+		stats.Flow.Net = text(row["net"])
+	}
+	return stats, nil
+}
+
 // AddressStats implements fundflow.FlowSource using server-side Decimal256
 // aggregation and bounded grouped concentration queries.
 func (r *Repository) AddressStats(ctx context.Context, address, token string) (*analyticsapi.AddressStats, error) {

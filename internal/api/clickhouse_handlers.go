@@ -331,8 +331,14 @@ func handleExplorerSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	result, err := clickHouseExplorer.GetAddressSummary(c.Request.Context(), chainID, c.Param("address"))
+	address := strings.ToLower(strings.TrimSpace(c.Param("address")))
+	result, err := clickHouseExplorer.GetAddressSummary(c.Request.Context(), chainID, address)
 	if err != nil {
+		if errors.Is(err, explorer.ErrNotFound) {
+			// 合法地址但无活动数据：业务空状态，不是资源缺失（避免 404 与浏览器资源加载错误）。
+			c.JSON(http.StatusOK, explorer.NoDataSummary(chainID, address))
+			return
+		}
 		writeExplorerError(c, err)
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/etl/backend/internal/cryptodownload/browser_stealth"
 )
 
 const (
@@ -300,6 +303,7 @@ func requestCSVBrowserProcess(ctx context.Context, executable, script string, re
 	}
 	command := csvBrowserCommandContext(requestCtx, executable, script)
 	command.Env = csvBrowserSubprocessEnv()
+	command.Env = append(command.Env, "OKLINK_STEALTH_SCRIPT="+base64.StdEncoding.EncodeToString([]byte(browserstealth.AllStealthScripts())))
 	stdout, stderr, err := runCSVBrowserCommand(command, input)
 	if err != nil {
 		detail := sanitiseCSVBrowserDiagnostic(string(stderr))
@@ -366,6 +370,7 @@ func csvBrowserSubprocessEnv() []string {
 		"USERPROFILE", "HOMEDRIVE", "HOMEPATH", "PATH", "PATHEXT", "COMSPEC",
 		"PLAYWRIGHT_BROWSERS_PATH", "OKLINK_CRAWL4AI_HEADLESS", "OKLINK_CRAWL4AI_PROFILE_DIR",
 		"OKLINK_CHROME_PATH", "OKLINK_CSV_BROWSER_PROFILE_DIR",
+		"OKLINK_PROXY", "HTTPS_PROXY", "HTTP_PROXY",
 	}
 	environment := make([]string, 0, len(allowed)+2)
 	for _, key := range allowed {

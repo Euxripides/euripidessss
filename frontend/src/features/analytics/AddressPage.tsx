@@ -2,14 +2,15 @@ import {
   ApartmentOutlined,
   CalendarOutlined,
   DatabaseOutlined,
-  SearchOutlined,
   SwapOutlined,
   WalletOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Descriptions, Empty, Input, Progress, Table, Tag } from "antd";
+import { Alert, Button, Descriptions, Empty, Progress, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
 import { DetailPanel, MetricCard, PageHeader } from "../../design-system/DesignSystem";
+import AddressLibraryInput from "../address-library/AddressLibraryInput";
+import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
 import {
   fetchFlows,
   fetchPaths,
@@ -28,6 +29,7 @@ interface Props {
 }
 
 export default function AddressPage({ initialAddress }: Props) {
+  const { state: analysisState } = useAnalysisContext();
   const [addr, setAddr] = useState(initialAddress ?? "");
   const [input, setInput] = useState(initialAddress ?? "");
   const [profile, setProfile] = useState<AddressProfile | null>(null);
@@ -108,12 +110,12 @@ export default function AddressPage({ initialAddress }: Props) {
 
       <DetailPanel className="analytics-query-panel">
         <div className="analytics-query-row">
-          <Input
-            allowClear
-            prefix={<SearchOutlined />}
+          <AddressLibraryInput
             placeholder="输入 0x 地址"
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            chainKey={analysisState.chain}
+            onChange={setInput}
+            onSelect={(value) => { setInput(value); void load(value); }}
             onPressEnter={() => void load(input)}
           />
           <Button type="primary" loading={loading} onClick={() => void load(input)}>查询地址</Button>
@@ -154,13 +156,16 @@ export default function AddressPage({ initialAddress }: Props) {
           <div className="address-detail-grid">
             <DetailPanel title="风险评分" description="当前地址的规则评分与关键驱动">
               {risk ? (
+                risk.data_sufficient === false || risk.risk_level === "insufficient_data" ? (
+                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="数据不足：当前地址没有足够的活动数据，无法完成风险筛查" />
+                ) : (
                 <div className="address-risk-content">
                   <div className="address-risk-score">
-                    <strong className={`risk-text-${riskTone(risk.risk_level)}`}>{risk.risk_score.toFixed(1)}</strong>
+                    <strong className={`risk-text-${riskTone(risk.risk_level)}`}>{typeof risk.risk_score === "number" ? risk.risk_score.toFixed(1) : "—"}</strong>
                     <span>/ 100</span>
                   </div>
                   <Progress
-                    percent={risk.risk_score}
+                    percent={typeof risk.risk_score === "number" ? risk.risk_score : 0}
                     showInfo={false}
                     strokeColor={riskStroke(risk.risk_level)}
                     trailColor="#edf1f6"
@@ -172,6 +177,7 @@ export default function AddressPage({ initialAddress }: Props) {
                     <span><small>关联度</small><strong>{risk.shared_counterparty_score.toFixed(3)}</strong></span>
                   </div>
                 </div>
+                )
               ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无风险评分" />}
             </DetailPanel>
 

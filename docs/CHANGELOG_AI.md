@@ -1,3 +1,65 @@
+### 2026-08-12 更多规避手段：IP 亲和窗口/请求头拟真/Token 随机冷却（部署）
+
+#### 新增
+
+- **IP 亲和窗口**：代理池窗口内（默认 30s/12 次）复用同一代理，到期才轮换（HTTP+IMAP）；`OKLINK_CSV_PROXY_AFFINITY` 可调，0=禁用；模拟真实浏览器单 IP 行为。
+- **请求头拟真补全**：完整客户端提示套件（Sec-CH-UA-Full-Version-List/Arch/Bitness/Platform-Version/Model）+ Sec-Fetch-Site/Mode/Dest + Accept-Language 按 host 稳定轮换（5 语言池，与 UA 同身份）。
+- **Token 段间随机冷却**：5-15s 随机（原为 0 连续申请），降低 Token 申请触发风控概率。
+
+#### 已验证
+
+- `go test ./internal/... -short` 73 包全绿（新增 2 测试 + 扩展 3 组断言）；`go vet` 零告警；run.ps1 重启成功。
+
+#### 未完成与注意事项
+
+- TLS 指纹按 UA 匹配轮换未做（utls HelloChrome_Auto 已自动选型，收益低）；crawl4ai 引擎 stealth 未启用（引擎默认未使用）。
+- Token 多段任务每段增加 5-15s（相对 45 分钟邮件等待可忽略）。
+
+### 2026-08-12 绕限流手段全量实现：UA/代理池/账号池/stealth（部署）
+
+#### 新增
+
+- **UA 轮换 + Sec-CH-UA**：`useragent` 包新增 SecCHUABrand/SecCHUAPlatform/IsMobileUA；`setCSVUserAgentHeaders` 统一设置轮换 UA 与匹配客户端提示（不再固定 Chrome/125）。
+- **多邮箱账号池**（`csv_mail_pool.go`）：多行 `邮箱|IMAP主机|IMAP端口|IMAP用户|IMAP密码`，邮件超时/IMAP login 失败自动切下一账号（Gmail 叠加 +alias）；错误信息脱敏。
+- **IP 代理池**（`csv_proxy_pool.go`）：HTTP（http/https/socks5 轮换，空池回退 env）与 IMAP SOCKS5 池；共享 Transport 挂 `csvHTTPProxyFunc`。
+- **browser_stealth 接线**：canvas/WebGL/webdriver 脚本经 base64 env 注入 Chrome/CDP 引擎（`Page.addScriptToEvaluateOnNewDocument`）。
+- **直链重试 1→3 次**（`csvDirectDownloadAttempts=3`，2s/5s/15s 退避）。
+- **浏览器子进程代理 env 白名单**补 OKLINK_PROXY/HTTPS_PROXY/HTTP_PROXY。
+- 配置入口：CLI flag + 环境变量（OKLINK_CSV_MAIL_POOL/OKLINK_CSV_PROXY_POOL/OKLINK_CSV_IMAP_PROXY_POOL）、内置 GUI 面板、/api/settings（池不回传、留空保留旧值）、自动化配置、React 表单。
+
+#### 已验证
+
+- `go test ./internal/... -short` 73 包全绿（新增 11 测试）；`go vet` 零告警；`node --check` mjs 通过；前端 `npm run build` 通过；run.ps1 重启成功。
+
+#### 修复轮（review + security）
+
+- 代理池：仅非空配置在 NewCSVExportClient 应用（防并发覆盖）；handleSettings/handleGUISettings 先校验→保存成功→应用（无半应用状态）；新增 validateCSV*ProxyPool 纯校验。
+- 安全：standalone GUI GET /api/settings 不再回传密码与邮箱池（此前漏改）；POST 空密码/空池保留旧值。
+- 数据竞争：prepareCSVEmailRequest 改用 activeMail() 锁内读。
+- 脱敏：错误信息仅保留 邮箱|主机；新增 GUI settings 安全测试 2 个。
+
+#### 未完成与注意事项
+
+- 账号池/代理池列表暂空，等待用户填入资产。
+- 边界：+alias/账号池绕"按收件邮箱"风控、代理池绕 IP 维度；429/50113 仍走检查点+冷却。
+- crawl4ai（python）引擎未接 stealth（自带 enable_stealth，默认 False）；真实 OKLink 端到端未重测。
+
+### 2026-08-12 CSV 邮箱 Gmail +alias 自动轮换（部署）
+
+#### 新增
+
+- `internal/cryptodownload/csv_scraper.go`：`emailExportAlias` 对 Gmail/googlemail 接收邮箱每次调用返回 `local+oklN@domain`（`atomic.Uint64` 计数器递增），非 Gmail 原样返回；无开关直接启用。4 个调用点（token 申请、直链 payload、requestCSV 普通/token）每次请求重新调用，超时重发/重试自动带新 alias。
+- 保留现有节奏：请求冷却 3 分钟、普通交易邮件等待 15 分钟、Token 邮件等待 45 分钟、超时退避 3min 翻倍上限 10min 均未改动。
+
+#### 已验证
+
+- `go test ./internal/cryptodownload/... -count=1` 全绿；`go vet` 零告警；新增 3 个轮换测试替换旧"不轮换"测试；run.ps1 重启完成。
+
+#### 未完成与注意事项
+
+- 边界：+alias 只绕"按收件邮箱"风控；429/IP 级限流与 50113 签名错误不受影响，仍走检查点+冷却；多邮箱账号池未实现。
+- 真实 OKLink 邮箱申请未重测（避免外部限流），需有效 Gmail + 应用专用密码做平台验收。
+
 ### 2026-08-11 智能下载生产预检修复：按地址差异化估算（部署）
 
 #### 追加：预检终点取链头 + 任务中心分页 + 移除蓝色 Alert
@@ -7942,3 +8004,103 @@ ormalizeFilterBoundary 精确时间边界处理。
 - 用户修改政策：允许使用 Gmail `+alias` 或邮箱/账号轮换应对 OKLink CSV 邮箱限流；遇到 `429`、`50113` 或风控仍按检查点和冷却策略处理。
 - 同步更新 `AI_HANDOFF.md` 规则句与 `internal/cryptodownload/csv_scraper.go` 的 `emailExportAlias` 注释；更早的历史实现记录（“不再生成 alias”“不做别名轮换”）保留为历史，由本条及后续条目取代。
 - 本轮仅调整政策与文档口径，未实现自动轮换逻辑；轮换由用户通过配置接收邮箱/IMAP 身份完成。
+
+## 2026-08-15 项目启动验收
+
+- 运行 `run.ps1` 完成构建和重启，服务进程 PID 5336。
+- `/api/health` 实测 HTTP 200、`status=ok`，分析平面与控制平面可用；首页实测 HTTP 200 且 React 根节点存在。
+- 8000 端口确认由 `E:\codex\etl\bin\etl-server.exe` 监听。
+- 无代码、接口、数据库结构或前端组件变更。
+
+## 2026-08-15 地址导入跨功能不可用诊断
+
+- 确认 Smart Download 文件导入只返回解析结果并保存在页面临时 state，不会直接写全局地址库；Playwright 上传 3 个地址后刷新即丢失。
+- 真实数据现状：91 个批次、94 个地址任务、11 个唯一地址；仅 37 个任务完成。Registry 的 32 个结果只对应 1 个唯一地址。
+- 同步层持续拒绝地址为空或缺少 `_SUCCESS` 的 manifest，导致部分完成产物无法进入共用分析数据层。
+- Explorer 首页实测 HTTP 503，根因是 ClickHouse `DECIMAL_OVERFLOW`，构成与地址导入无关的第二个全局故障。
+- 导入仅支持 EVM `0x` 40 位地址及 BSC/ETH/Base/Arbitrum；文件导入不携带逐地址链信息。
+- 本轮只完成诊断和数据级/UI 级复现，无功能代码、API 或数据库结构变更。
+
+## 2026-08-15 地址导入持久化与跨功能复用修复
+
+- 新增 SQLite `address_library` 地址资产表、索引、事务化 upsert 和历史任务幂等回填；新增 `GET /api/address-library`、`POST /api/address-library/import`。
+- Smart Download 文件导入新增 `chain_key`，解析成功后在同一请求持久化最终去重地址，返回 `persisted`；文件与手工导入统一限制最多 50,000 地址，拒绝非法链和非法 EVM 地址。
+- 地址状态新增真实数据门：导入、下载中、部分、失败、认证、可分析分开呈现，只有 ClickHouse 存在活动数据时为 `AVAILABLE`。
+- 新增前端 `AddressLibraryInput` 及 API 客户端，接入全局搜索、地址分析、风险分析、资金追踪；Explorer 合并链上搜索与资产库结果；Smart Download 支持载入当前链全部资产。
+- 修复 Explorer 大额转账、地址活动和 Analytics Graph 的 Decimal 溢出，改用有限 Float64 估值并过滤异常值；资金图接口由 503 恢复为真实 311 节点/500 边响应。
+- 修复 ClickHouse 模式下地址统计、图统计和 Graph Expansion 仍依赖缺失 DuckDB warehouse 的数据源错配；新增 ClickHouse 全量图统计兼容查询，地址统计复用 ClickHouse Investigation，图缓存构建器切换为 ClickHouse 且聚合版本升至 2。
+- 资金追踪不再用有界全局 Top-500 图判断任意地址是否有数据；地址级扩展结果现转换并合入画布，已有数据地址不会误弹智能补数。
+- 新增 `address_library_test.go`、`import_persistence_test.go`、`address_library_handlers_test.go`、Explorer/Graph 查询保护回归；全仓测试、vet、前端生产构建通过。
+- `run.ps1` 最终重启成功，PID 11436；真实地址库 11 条（AVAILABLE 3、CERTIFIED 4、PARTIAL 1、FAILED 3）。选择现有地址后 Graph、地址统计、图统计、图扩展、地址活动全部 200，画布显示 4 节点/4 关系且无 console/HTTP 错误；桌面和 390px 移动端交互回归通过。
+- 未改变 API 既有路径、33 列标准表头或文件系统主数据架构。现有限制为四条 EVM 链；无历史任务的旧临时导入不可恢复，失败/部分任务仍需重新下载后才能成为完整分析数据。
+
+## 2026-08-15 地址资产跨功能验收测试用例文档
+
+- 新增 `docs/ADDRESS_LIBRARY_FUNCTIONAL_TEST_CASES.md`，形成可交由其他 Agent 直接执行的地址导入、持久化及跨功能复用验收说明。
+- 共编制 78 条唯一用例，覆盖 16 个功能域，并提供测试 Fixture、证据规范、数据级断言、P0/P1/P2 顺序、自动化断言和报告模板。
+- 通过标准要求 UI、API、控制面、ClickHouse 明细/聚合和刷新/重启持久性相互印证；HTTP 200、任务完成状态或控件可操作不能单独作为 PASS。
+- 本轮无代码、接口、数据库结构或前端组件变更，不需要执行 `run.ps1`；测试 Agent 尚需实际执行用例并提交证据。
+- 文档静态校验：78 个用例编号全部唯一、代码围栏成对、主要 API 契约与当前实现一致、`git diff --check` 通过。
+
+## 2026-08-15 资金追踪画布改为纯白无点阵
+
+- 移除 `flowCanvasShell.tsx` 中 React Flow `Background` 点阵层，并清除深色/白底主题 CSS 的径向点阵背景。
+- 资金追踪画布外壳和 React Flow 容器现固定使用纯白 `#ffffff`；仪表盘独立缩略图不受影响。
+- 前端 `npm run build` 通过。Chromium Playwright 使用真实地址加载 4 节点/4 关系，白底和深色侧栏主题下均验证背景为纯白、无背景图片、点阵 DOM 为 0，缩放交互正常且无 console/page error。
+- 无后端、API、数据库结构或依赖变更，不需要重启后端。未执行 Safari/Firefox 浏览器矩阵。
+
+## 2026-08-15 地址资产测试报告审阅（20260815-A03）
+
+- 独立复核测试汇总、断言 JSON、网络/console、失败截图及对应代码；确认五个缺陷方向成立。
+- 将结论拆分为：产品验收 **FAIL**（RISK-003 P0 失败）与执行覆盖 **PARTIAL**（多项 P1/P2、故障注入和 UI-003 未完整执行）。
+- 发现报告审计缺口：摘要 268 PASS / 9 FAIL，落盘断言只能重算 239 PASS / 8 FAIL；SD-IMP-003 缺少原始响应；GRAPH-012 把 skip 记作 PASS；GRAPH-006 的正文 P0 标注与测试规范 P1 冲突；ALIB-007 同时出现在通过和跳过清单。
+- 本轮未修改原始 `SUMMARY.md` 或业务代码，无 API、数据库、前端组件变更，不需要重启。后续需先修订报告和证据映射，再修复五项产品缺陷并定向复测。
+
+## 2026-08-15 地址资产验收缺陷修复方案文档
+
+- 新增 `docs/ADDRESS_LIBRARY_QA_FIX_PLAN.md`，详细定义 1 个 P0、4 个 P1 缺陷及测试报告审计问题的修复方式。
+- 文档包含接口语义、代码位置、边界处理、测试矩阵、实施顺序、验证命令、验收门槛和 Agent 交付要求。
+- 本轮仅新增 Markdown 文档，无业务代码、API、数据库结构或前端组件变更，不需要重启；缺陷修复尚未实施。
+
+## 2026-08-15 用户级真实端到端测试流程
+
+- 新增 `docs/ADDRESS_LIBRARY_USER_E2E_TEST_FLOW.md`，以连续真实用户操作取代接口驱动的主测试顺序。
+- 覆盖从真实文件导入、地址持久化、真实下载任务生命周期、结果/导出，到搜索、Explorer、画像、风险、资金追踪、跨链、刷新重启、移动端和错误恢复的完整旅程。
+- 明确 API/数据库只用于事后只读核证；至少一个真实任务必须完成结果文件和入仓核对，HTTP 200、任务状态或脚本退出码不能单独判定通过。
+- `ADDRESS_LIBRARY_FUNCTIONAL_TEST_CASES.md` 现在定位为用户旅程后的边界补充目录。
+- 无业务代码、接口、数据库结构或前端组件变更，不需要重启；测试流程尚待实际执行。
+
+## 2026-08-15 地址资产跨功能验收测试执行（RUN_ID 20260815-A03）
+
+- 依据 docs/ADDRESS_LIBRARY_FUNCTIONAL_TEST_CASES.md 执行完整验收：API 层（PowerShell）+ UI 层（Playwright core + 系统 Chrome，headless；Browser 插件不可用，报告已注明 fallback）。
+- 结果：268 PASS / 9 FAIL / 部分跳过 → 整轮 PARTIAL。P0 中 RISK-003 FAIL；另确认 4 个 P1 缺陷。证据目录：`tmp/qa-evidence-20260815-A03/`（SUMMARY.md 及全部断言 JSON、网络/console 记录、截图、fixtures）。
+- 缺陷 #1（P0，GRAPH-006 方向控制）：前端传 upstream/downstream/both，后端 graphcache 仅识别 ALL/IN/OUT，地址级扩展恒空并误开智能补数。证据 ui-part4b-*。
+- 缺陷 #2（P0，RISK-003）：FAILED 无数据地址被自动判定 low 风险（risk_score=0, level=low, rules=[]），页面显示"低风险"标签。
+- 缺陷 #3（P1）：无数据地址 /summary 返回 404，浏览器产生 console error 与 HTTP 4xx（页面降级正确但 404 应改 200+NO_DATA）。
+- 缺陷 #4（P1，SD-IMP-003）：XLSX 多 Sheet 导入只读 sheets[0]，数据在第二个 Sheet 时识别失败（internal/smartdownload/import.go importXLSX）。
+- 缺陷 #5（P1，INPUT-004/006）：跨链同地址时 AddressLibraryInput 的 AutoComplete options 以 address 为 value/key，React key 冲突导致建议下拉残留/重复项。
+- 通过域：ENV-001..003、ALIB-001..010（含 50,000 边界、并发 10 导入、重启持久化、回填幂等）、STATE-001..005、INPUT-001..003/005、GSEARCH-001..003、EXP-001..006、PROFILE-001/002/004、RISK-001、GRAPH-001..005/009..011/013、SD-IMP-001/002/004..006、SD-LIB-001/003、CHAIN-001/002、SEC-001/002、UI-001/002、PERF-001。
+- 跳过/未执行：STATE-006 与 SD-LIB-004（需启动真实下载任务，外部副作用）、PROFILE-003 与 ERR-001/002（故障注入）、SD-LIB-002/PERF-002（>5000 容量，P2 隔离环境）、GRAPH-012 部分（快照按钮在调色板 Modal，余额快照依赖 RPC）。
+- 测试副作用：A_AVAILABLE BSC import_count 2→27、新增 ETH 记录（ic=3）、A_PARTIAL ic=3、0x0000..11/12 ic=2；服务重启 2 次验证持久化；未修改源码。
+
+## 2026-08-15 地址资产验收缺陷修复（FIX-001..005 + 报告修订 FIX-006）
+
+- FIX-001（P0，RISK-003）：`clickhouseanalytics.Risk` 零事件地址提前返回 `insufficient_data`（risk_score 可空 `*float64`→null、新增 `data_sufficient`/`event_count`/`active_days`）；`/api/analytics/address/:addr/risk` 响应补齐新字段。前端 `RiskResult` 类型 risk_score 可空；RiskAnalysisPage/AddressPage 在数据不足时显示"数据不足"Alert/Empty，不显示低风险标签、0 分进度条与旧分数；新增 `riskLevelLabel` 中英映射（high/medium/low/insufficient_data）。新增 TestRiskZeroEventsIsInsufficientData。
+- FIX-002（P1，GRAPH-006）：新增 `normalizeGraphDirection`（internal/api/investigation_cache.go），API 边界归一：all/both→ALL、upstream→IN、downstream→OUT、ALL/IN/OUT 保持、其他 400；校验提前于缓存装配检查。新增 TestNormalizeGraphDirection、TestGraphExpandRejectsUnknownDirection。
+- FIX-003（P1，summary 404）：`handleExplorerSummary` 对 `explorer.ErrNotFound` 返回 200 + `explorer.NoDataSummary`（data_status=NO_DATA，含 address/chain_id/零值统计）；非法地址仍 400，ClickHouse 故障仍 503。前端 `ClickHouseAddressSummary` 增加 data_status，`fetchProfile` 对 NO_DATA 返回 null（页面降级为"画像数据不可用"）。
+- FIX-004（P1，SD-IMP-003）：`importXLSX` 重写为遍历全部工作表——每 Sheet 独立读行/列识别，地址纯度 >0.5 才入选（说明页偶发地址示例不计），跨 Sheet 合并去重，单元格累计上限 2,000,000；单有效 Sheet 保留 analyzeColumns 原始统计（一致性测试口径不变）。新增 import_xlsx_test.go 5 用例（多 Sheet 识别、双 Sheet 合并、全无地址失败、空+有效、损坏文件）。
+- FIX-005（P1，INPUT-004/006）：AddressLibraryInput 的 option 增加 `chain:address` 唯一 key（value 保持地址，避免跨链同地址 React/rc-select key 冲突）；value/chain 变化立即递增序列失效旧请求；响应写入前核对序号+查询词；500/超时清空建议并关闭下拉；组件卸载不写状态（mountedRef）。
+- 修改文件：internal/clickhouseanalytics/{models,repository,repository_test}.go、internal/api/{clickhouse_analytics_handlers,clickhouse_handlers,investigation_cache,investigation_cache_test}.go、internal/explorer/models.go、internal/smartdownload/{import,import_xlsx_test}.go、frontend/src/features/address-library/AddressLibraryInput.tsx、frontend/src/features/analytics/{analyticsApi,RiskAnalysisPage,AddressPage,ClickHouseExplorerTypes}.ts(x)。
+- 验证：`go test ./internal/... -count=1` 全绿；`go vet`（4 包）通过；`tsc --noEmit`、`npm run build` 通过；重启后 API 回归 19/19（fix001-004）、UI 回归 19/19（fix001/002/003/005），修复前失败的 ui-part3/4b/7 断言均有对应修复后 PASS 证据。
+- FIX-006：SUMMARY.md 修订——产品验收（修复前 FAIL / 修复后 PASS）与测试覆盖（PARTIAL）分开；断言统计按落盘文件逐项可复算（修复前 238 落盘 + 30 观察 = 268/9，修复后 277/0）；GRAPH-006 严重度改为 P1；GRAPH-012 记 SKIPPED；ALIB-007 从跳过清单删除。
+
+## 2026-08-15 用户级真实端到端测试执行（RUN_ID 20260815-UAT-01）
+
+- 依据用户级 UAT 流程执行 UJ-01..12 连续用户旅程（真实浏览器/真实文件/真实任务），并修复测试中发现的跨链选择错链缺陷。
+- 结果：UJ-01 PARTIAL（UAT-BUG-01 后退白屏）、UJ-04 PARTIAL（暂停终态流转受任务时长限制）、其余旅程 PASS；产品验收 PARTIAL。证据：`tmp/qa-evidence-20260815-UAT-01/SUMMARY-UAT.md`。
+- UAT-BUG-01（P2，未修复）：新标签进入应用后点击浏览器后退回到 about:blank 白屏；根因为入口 replaceState 覆盖 `/` 历史条目且菜单切换不产生历史。建议 pushState 或 popstate 重定向。
+- UAT-BUG-02（P1，已修复）：跨链同地址建议点击 BSC 项跳转 ETH；根因 AddressLibraryInput option value 用裸地址致 rc-select 按 value 查错项；修复为 value/key=chain:address 并在 onSelect 回写 item.address（frontend/src/features/address-library/AddressLibraryInput.tsx），修复前后成对证据（debug-bsc-select.cjs）。
+- 真实任务验证：创建批次（ea594cfb COMPLETED/BATCH_CERTIFIED）、UI 取消 2 个批次（CANCELED 终态+刷新保持）、暂停请求链路（pause_requested=True，异步等待 range 完成）；7 个测试批次已取消清理。
+- 文件导入全类型通过：TXT（12 行/8 有效/2 重复/6 唯一）、CSV（BOM、address 列、6 唯一）、3-Sheet XLSX（7 唯一、跨 Sheet 去重、说明页不识别）、坏文件（明确错误+恢复）。
+- 跨功能复用闭环通过：导入地址在 Smart Download/全局搜索/Explorer/画像/风险/资金追踪连续可用；刷新、第二无痕 Context、服务重启 2 次后地址与任务保持。
+- 观察项：Explorer 详情刷新后 URL 与页面状态不一致（SPA 无路由既有特性）；非法地址预检提示未定位具体输入行。
