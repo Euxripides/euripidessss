@@ -65,12 +65,17 @@ export interface FlowEdge {
 }
 
 export interface RiskResult {
-  risk_score: number;
+  risk_score: number | null;
   risk_level: string;
   risk_reason: string;
+  data_sufficient?: boolean;
   transaction_frequency: number;
   top_holder_ratio: number;
   shared_counterparty_score: number;
+  event_count?: number;
+  active_days?: number;
+  rules?: string[];
+  method?: string;
 }
 
 export interface PathItem {
@@ -93,6 +98,9 @@ export async function fetchDashboard(): Promise<DashboardOverview | null> {
 
 export async function fetchProfile(address: string): Promise<AddressProfile | null> {
   const summary = await fetchClickHouseAddressSummary(address);
+  if (!summary || summary.data_status === "NO_DATA" || typeof summary.transaction_count !== "number") {
+    return null;
+  }
   return {
     address: summary.address,
     first_activity_time: summary.first_seen_time,

@@ -52,6 +52,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ClickHouseActivity } from "../analytics/ClickHouseExplorerTypes";
+import { listAddressLibrary } from "../address-library/addressLibraryApi";
 import { useAnalysisContext, type AnalysisDirection, type AnalysisWindow, type ExplorerChainKey } from "./analysisContext";
 import { HistoricalPriceCell } from "./HistoricalPriceCell";
 import { TokenIdentity } from "./TokenIdentity";
@@ -196,9 +197,29 @@ export default function ExplorerPage({ onNavigate }: Props) {
     const timer = window.setTimeout(async () => {
       setSearching(true);
       try {
-        const response = await searchExplorer(state.chain, query.trim());
+        const [explorerResult, libraryResult] = await Promise.allSettled([
+          searchExplorer(state.chain, query.trim()),
+          listAddressLibrary(state.chain, query.trim(), 20, true),
+        ]);
         if (current !== searchSequence.current) return;
-        setOptions(response.items.map((item) => ({ value: `${item.kind}:${item.value}`, item, label: <div className="xi-search-option"><span className="xi-search-kind">{item.kind}</span><span><b>{item.title}</b><small>{item.subtitle}</small></span>{item.verified ? <CheckCircleFilled /> : null}</div> })));
+        const combined: SearchItem[] = explorerResult.status === "fulfilled" ? [...explorerResult.value.items] : [];
+        const seen = new Set(combined.map((item) => `${item.kind}:${item.value.toLowerCase()}`));
+        if (libraryResult.status === "fulfilled") {
+          for (const asset of libraryResult.value.items) {
+            const key = `ADDRESS:${asset.address}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            combined.push({
+              kind: "ADDRESS",
+              title: asset.label || asset.address,
+              subtitle: `地址资产库 · ${asset.state}${asset.activity_rows > 0 ? ` · ${asset.activity_rows.toLocaleString()} 行` : ""}`,
+              value: asset.address,
+              chain_id: asset.chain_id,
+              verified: asset.state === "AVAILABLE" || asset.state === "CERTIFIED",
+            });
+          }
+        }
+        setOptions(combined.map((item) => ({ value: `${item.kind}:${item.value}`, item, label: <div className="xi-search-option"><span className="xi-search-kind">{item.kind}</span><span><b>{item.title}</b><small>{item.subtitle}</small></span>{item.verified ? <CheckCircleFilled /> : null}</div> })));
       } catch { if (current === searchSequence.current) setOptions([]); }
       finally { if (current === searchSequence.current) setSearching(false); }
     }, 220);

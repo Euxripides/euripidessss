@@ -328,3 +328,22 @@ body {
   color: #475569;
   font-size: 13px;
 }
+
+.address-library-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.address-library-option code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.address-library-option small {
+  color: #64748b;
+  white-space: nowrap;
+}

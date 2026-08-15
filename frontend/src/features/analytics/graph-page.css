@@ -177,21 +177,20 @@
   min-height: 0;
 }
 
-/* ── 画布（设计 §5.3：暗色点阵背景）── */
+/* ── 画布：纯白无纹理背景 ── */
 
 .flow-canvas-shell {
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  background-color: var(--fg-canvas-bg);
-  background-image: radial-gradient(var(--fg-dot) 1px, transparent 1px);
-  background-size: 22px 22px;
+  background: #ffffff;
 }
 
 .flow-canvas-shell > .react-flow {
   width: 100%;
   height: 100%;
+  background: #ffffff;
 }
 
 .flow-canvas-center-state {

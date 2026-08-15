@@ -40,6 +40,7 @@ import {
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd";
 import type { Dayjs } from "dayjs";
+import { listAddressLibrary, type AddressLibraryItem } from "../address-library/addressLibraryApi";
 import {
   DATASET_LABELS,
   addressAction,
@@ -1002,6 +1003,8 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   const selectedMode = (Form.useWatch("mode", form) as DownloadMode | undefined) ?? "AUTO";
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importing, setImporting] = useState(false);
+  const [libraryTotal, setLibraryTotal] = useState(0);
+  const [libraryLoading, setLibraryLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [preflighting, setPreflighting] = useState(false);
   const [preflight, setPreflight] = useState<PreflightEstimate | null>(null);
@@ -1033,6 +1036,23 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    void listAddressLibrary(selectedChain, "", 1, false)
+      .then((result) => { if (active) setLibraryTotal(result.total); })
+      .catch(() => { if (active) setLibraryTotal(0); });
+    return () => { active = false; };
+  }, [selectedChain]);
+
+  useEffect(() => {
+    if (importResult?.chain_key && importResult.chain_key !== selectedChain) {
+      setImportResult(null);
+      setPreflight(null);
+      setPlannerPreview(null);
+      setPreflightRequest(null);
+    }
+  }, [importResult?.chain_key, selectedChain]);
+
+  useEffect(() => {
     const sequence = ++capabilityRequestSequence.current;
     setAvailableDatasets(null);
     void getSmartDownloadCapabilities(selectedChain, selectedMode).then((capabilities) => {
@@ -1059,16 +1079,17 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
     setImporting(true);
     setImportResult(null);
     try {
-      const res = await importAddressFile(file);
+      const res = await importAddressFile(file, selectedChain);
       if (sequence !== importRequestSequence.current || !res) return false;
       setImportResult(res);
+      void listAddressLibrary(selectedChain, "", 1, false).then((result) => setLibraryTotal(result.total));
       setPreflight(null);
       setPlannerPreview(null);
       setPreflightRequest(null);
       void message.success(
-        `识别地址列「${res.selected_column}」：原始 ${res.rows} 行 → 任务地址 ${
+        `识别地址列「${res.selected_column}」并写入地址资产库：原始 ${res.rows} 行 → 任务地址 ${
           res.final_addresses?.length ?? res.valid
-        } 个（有效 ${res.valid} / 重复 ${res.duplicates} / 无效 ${res.invalid}）`,
+        } 个（持久化 ${res.persisted} / 有效 ${res.valid} / 重复 ${res.duplicates} / 无效 ${res.invalid}）`,
       );
     } catch (error) {
       if (sequence === importRequestSequence.current) {
@@ -1078,6 +1099,39 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
       if (sequence === importRequestSequence.current) setImporting(false);
     }
     return false;
+  };
+
+  const loadAddressLibrary = async () => {
+    setLibraryLoading(true);
+    try {
+      const pageSize = 5000;
+      const first = await listAddressLibrary(selectedChain, "", pageSize, false);
+      const offsets: number[] = [];
+      for (let offset = pageSize; offset < first.total; offset += pageSize) offsets.push(offset);
+      const remaining = await Promise.all(offsets.map((offset) => listAddressLibrary(selectedChain, "", pageSize, false, offset)));
+      const items: AddressLibraryItem[] = first.items.concat(...remaining.map((page) => page.items));
+      const addresses = items.map((item) => item.address);
+      setImportResult({
+        rows: addresses.length,
+        detected_columns: [],
+        selected_column: "地址资产库",
+        valid: addresses.length,
+        duplicates: 0,
+        invalid: 0,
+        final_addresses: addresses,
+        persisted: addresses.length,
+        chain_key: selectedChain,
+      });
+      setLibraryTotal(first.total);
+      setPreflight(null);
+      setPlannerPreview(null);
+      setPreflightRequest(null);
+      void message.success(`已从 ${selectedChain.toUpperCase()} 地址资产库载入 ${addresses.length} 个地址`);
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : "地址资产库载入失败");
+    } finally {
+      setLibraryLoading(false);
+    }
   };
 
   const onCreate = async (values: {
@@ -1409,12 +1463,20 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
               上传 CSV / XLSX / TXT
             </Button>
           </Upload>
+          <Button
+            icon={<DatabaseOutlined />}
+            loading={libraryLoading}
+            disabled={libraryTotal === 0}
+            onClick={() => void loadAddressLibrary()}
+          >
+            使用 {selectedChain.toUpperCase()} 地址资产库（{libraryTotal}）
+          </Button>
           {importResult && (
             <>
               <Tag color="blue">
                 识别列「{importResult.selected_column}」 · 原始 {importResult.rows} 行 / 有效 {importResult.valid} /
                 重复 {importResult.duplicates} / 无效 {importResult.invalid} / 最终任务地址{" "}
-                {importResult.final_addresses?.length ?? importResult.valid} 个
+                {importResult.final_addresses?.length ?? importResult.valid} 个 · 已持久化 {importResult.persisted}
               </Tag>
               <Button
                 size="small"

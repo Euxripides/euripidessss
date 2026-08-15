@@ -5,8 +5,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/emersion/go-imap/client"
@@ -67,19 +65,6 @@ func dialCSVIMAPTLS(ctx context.Context, config CSVMailConfig) (*client.Client, 
 		return nil, err
 	}
 	return mail, nil
-}
-
-// csvIMAPSOCKS5Addr returns the SOCKS5 proxy address when OKLINK_IMAP_PROXY
-// or ALL_PROXY is set to a socks5:// URL, otherwise "".
-func csvIMAPSOCKS5Addr() string {
-	raw := firstNonEmpty(
-		strings.TrimSpace(os.Getenv("OKLINK_IMAP_PROXY")),
-		strings.TrimSpace(os.Getenv("ALL_PROXY")),
-	)
-	if raw == "" || !strings.HasPrefix(raw, "socks5://") {
-		return ""
-	}
-	return strings.TrimPrefix(raw, "socks5://")
 }
 
 // socksContextDialer wraps a proxy.Dialer so it satisfies proxy.ContextDialer.

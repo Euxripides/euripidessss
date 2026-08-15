@@ -201,6 +201,8 @@ export interface ImportResult {
   duplicates: number;
   invalid: number;
   final_addresses?: string[];
+  persisted: number;
+  chain_key?: string;
 }
 
 export interface LedgerEntry {
@@ -561,9 +563,10 @@ export const DATASET_LABELS: Record<string, string> = {
   nft_transfers: "NFT",
 };
 
-export async function importAddressFile(file: File): Promise<ImportResult | null> {
+export async function importAddressFile(file: File, chainKey: string): Promise<ImportResult | null> {
   const form = new FormData();
   form.append("file", file);
+  form.append("chain_key", chainKey);
   const { response, payload } = await postForm<ImportResult>(
     "/api/smart-download/import",
     form,
@@ -755,6 +758,21 @@ export async function getPrefetchStats(): Promise<PrefetchStats | null> {
   return response.ok ? payload.prefetch ?? null : null;
 }
 
+export interface GraphCacheExpansionResult {
+  key: { address: string; chain_id: number; direction: string; depth: number };
+  nodes?: Array<{ address: string; type?: string; tx_count: number }>;
+  edges?: Array<{
+    counterparty: string;
+    direction: string;
+    token?: string;
+    inflow?: string;
+    outflow?: string;
+    tx_count: number;
+  }>;
+  coverage: number;
+  certification?: string;
+}
+
 export async function expandGraphCache(input: {
   investigation_id?: string;
   chain_key: string;
@@ -764,9 +782,9 @@ export async function expandGraphCache(input: {
   from_block?: number;
   to_block?: number;
   depth?: number;
-}): Promise<{ result?: unknown; cache_hit?: boolean; prefetch_scheduled?: boolean; candidates?: unknown[] } | null> {
+}): Promise<{ result?: GraphCacheExpansionResult; cache_hit?: boolean; prefetch_scheduled?: boolean; candidates?: unknown[] } | null> {
   const { response, payload } = await postJson<{
-    result?: unknown;
+    result?: GraphCacheExpansionResult;
     cache_hit?: boolean;
     prefetch_scheduled?: boolean;
     candidates?: unknown[];

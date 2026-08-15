@@ -139,16 +139,20 @@ func computeExplorerHome(ctx context.Context, chainID uint32) (gin.H, error) {
 	if latestErr != nil {
 		return nil, latestErr
 	}
-	large, largeErr := clickHouseClient.QueryJSON(ctx, fmt.Sprintf(`SELECT tx_hash,block_number,block_time,address,counterparty_address,direction,token_symbol,toString(amount) amount,toString(historical_value_usdt) historical_value_usdt,toString(historical_value_usdt) usd_value FROM
-(SELECT a.*,multiIf(isNotNull(a.usd_value),a.usd_value,a.token_address='0x55d398326f99059ff775485246999027b3197955',CAST(a.amount AS Nullable(Decimal(38,18))),q.token_address!='',CAST(a.amount*if(q.vwap>0,q.vwap,q.close) AS Nullable(Decimal(38,18))),p.token_address!='' AND dateDiff('second',p.timestamp_bucket,a.block_time)<=86400,CAST(a.amount*p.price_usd AS Nullable(Decimal(38,18))),a.token_address IN ('0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),CAST(a.amount AS Nullable(Decimal(38,18))),CAST(NULL AS Nullable(Decimal(38,18)))) historical_value_usdt
-FROM onchain.address_activity AS a FINAL
-LEFT JOIN (SELECT chain_id,token_address,minute,vwap,close FROM onchain.token_price_1m FINAL WHERE chain_id=%d) q ON a.chain_id=q.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=q.token_address AND toStartOfMinute(a.block_time)=q.minute
-ASOF LEFT JOIN (SELECT * FROM onchain.token_prices FINAL WHERE chain_id=%d ORDER BY chain_id,token_address,timestamp_bucket) p ON a.chain_id=p.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=p.token_address AND a.block_time>=p.timestamp_bucket WHERE a.chain_id=%d) t
-WHERE t.historical_value_usdt>=100000 ORDER BY t.historical_value_usdt DESC,block_time DESC,block_number DESC LIMIT 10`, chainID, chainID, chainID))
+	large, largeErr := clickHouseClient.QueryJSON(ctx, explorerLargeTransfersQuery(chainID))
 	if largeErr != nil {
 		return nil, largeErr
 	}
 	return gin.H{"chain_id": chainID, "coverage_ranges": rows[0]["complete_ranges"], "latest_block": rows[0]["latest_block"], "transaction_count": rows[0]["transaction_count"], "token_transfer_count": rows[0]["token_transfer_count"], "latest_transactions": latest, "large_transfers": large}, nil
+}
+
+func explorerLargeTransfersQuery(chainID uint32) string {
+	return fmt.Sprintf(`SELECT tx_hash,block_number,block_time,address,counterparty_address,direction,token_symbol,toString(amount) amount,toString(historical_value_usdt) historical_value_usdt,toString(historical_value_usdt) usd_value FROM
+(SELECT a.*,multiIf(isNotNull(a.usd_value),toFloat64(a.usd_value),a.token_address='0x55d398326f99059ff775485246999027b3197955',toFloat64(a.amount),q.token_address!='',toFloat64(a.amount)*toFloat64(if(q.vwap>0,q.vwap,q.close)),p.token_address!='' AND dateDiff('second',p.timestamp_bucket,a.block_time)<=86400,toFloat64(a.amount)*toFloat64(p.price_usd),a.token_address IN ('0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),toFloat64(a.amount),CAST(NULL AS Nullable(Float64))) historical_value_usdt
+FROM onchain.address_activity AS a FINAL
+LEFT JOIN (SELECT chain_id,token_address,minute,vwap,close FROM onchain.token_price_1m FINAL WHERE chain_id=%d) q ON a.chain_id=q.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=q.token_address AND toStartOfMinute(a.block_time)=q.minute
+ASOF LEFT JOIN (SELECT * FROM onchain.token_prices FINAL WHERE chain_id=%d ORDER BY chain_id,token_address,timestamp_bucket) p ON a.chain_id=p.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=p.token_address AND a.block_time>=p.timestamp_bucket WHERE a.chain_id=%d) t
+WHERE isFinite(t.historical_value_usdt) AND t.historical_value_usdt BETWEEN 100000 AND 1e15 ORDER BY t.historical_value_usdt DESC,block_time DESC,block_number DESC LIMIT 10`, chainID, chainID, chainID)
 }
 
 func handleExplorerIntelligenceHeader(c *gin.Context) {

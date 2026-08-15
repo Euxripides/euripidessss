@@ -156,6 +156,10 @@ type Config struct {
 	CSVIMAPPort     int
 	CSVIMAPUser     string
 	CSVIMAPPassword string
+	CSVMailPoolText string
+	CSVHTTPProxyPool string
+	CSVIMAPProxyPool string
+	CSVProxyPin    int
 	CSVDeliveryMode string
 	CSVStartTime    int64
 	CSVEndTime      int64
@@ -384,6 +388,10 @@ func parseFlags() Config {
 		csvIMAPPort    = flag.Int("csv-imap-port", envInt("CSV_IMAP_PORT", 993), "CSV 下载邮箱 IMAP 端口")
 		csvIMAPUser    = flag.String("csv-imap-user", os.Getenv("CSV_IMAP_USER"), "CSV 下载邮箱 IMAP 用户名")
 		csvIMAPPass    = flag.String("csv-imap-password", os.Getenv("CSV_IMAP_PASSWORD"), "CSV 下载邮箱 IMAP 密码或授权码")
+		csvMailPool    = flag.String("csv-mail-pool", os.Getenv("OKLINK_CSV_MAIL_POOL"), "CSV 邮箱池：分号分隔 邮箱|IMAP主机|IMAP端口|IMAP用户|IMAP密码，用于限流时自动切换")
+		csvProxyPool   = flag.String("csv-proxy-pool", os.Getenv("OKLINK_CSV_PROXY_POOL"), "CSV HTTP 代理池：分号分隔 http(s):// 或 socks5:// 地址，轮换使用")
+		csvProxyPin    = flag.Int("csv-proxy-pin", envInt("OKLINK_CSV_PROXY_PIN", 0), "CSV 任务锁定代理池第 N 个 IP（1 起；0=自动轮换）")
+		csvIMAPProxyPool = flag.String("csv-imap-proxy-pool", os.Getenv("OKLINK_CSV_IMAP_PROXY_POOL"), "CSV IMAP SOCKS5 代理池：分号分隔 socks5:// 地址，轮换使用")
 		csvStartTime   = flag.Int64("csv-start-time", 0, "CSV 模式开始时间 Unix 秒，0 表示尽可能早")
 		csvEndTime     = flag.Int64("csv-end-time", 0, "CSV 模式结束时间 Unix 秒，0 表示当前时间")
 		csvRequestHAR  = flag.String("csv-request-har", os.Getenv("OKLINK_CSV_REQUEST_HAR"), "CSV 邮箱下载浏览器 HAR 请求文件，用于复用 OKLink 签名头")
@@ -432,6 +440,10 @@ func parseFlags() Config {
 		CSVIMAPPort:     *csvIMAPPort,
 		CSVIMAPUser:     strings.TrimSpace(*csvIMAPUser),
 		CSVIMAPPassword: strings.TrimSpace(*csvIMAPPass),
+		CSVMailPoolText: strings.TrimSpace(*csvMailPool),
+		CSVHTTPProxyPool: strings.TrimSpace(*csvProxyPool),
+		CSVIMAPProxyPool: strings.TrimSpace(*csvIMAPProxyPool),
+		CSVProxyPin:      *csvProxyPin - 1,
 		CSVStartTime:    *csvStartTime,
 		CSVEndTime:      *csvEndTime,
 		CSVRequestHAR:   strings.TrimSpace(*csvRequestHAR),

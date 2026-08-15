@@ -47,6 +47,10 @@ type CryptoDownloadFormValues = {
   readonly csvImapPort?: number;
   readonly csvImapUser?: string;
   readonly csvImapPassword?: string;
+  readonly csvMailPool?: string;
+  readonly csvProxyPool?: string;
+  readonly csvImapProxyPool?: string;
+  readonly csvProxyPin?: number;
   readonly csvDeliveryMode?: CryptoCSVDeliveryMode;
   readonly csvStartTime?: number;
   readonly csvEndTime?: number;
@@ -82,6 +86,15 @@ const sourceOptions = [
   { label: '浏览器', value: 'browser' },
 ];
 
+// simplifyPauseMessage strips the "已暂停：" prefix and everything after a
+// "原因：" marker, keeping only the actionable guidance for the toast
+// notification.  Full details remain visible in the task status area.
+function simplifyPauseMessage(message: string): string {
+  const trimmed = message.replace(/^已暂停[：:]\s*/, '');
+  const reasonIndex = trimmed.indexOf('原因：');
+  return reasonIndex >= 0 ? trimmed.slice(0, reasonIndex).trim() : trimmed;
+}
+
 export function CryptoDownloadPanel() {
   const [form] = Form.useForm<CryptoDownloadFormValues>();
   const [notificationApi, notificationHolder] = notification.useNotification({ placement: 'topRight', maxCount: 4 });
@@ -98,6 +111,7 @@ export function CryptoDownloadPanel() {
   const [addressChainModalOpen, setAddressChainModalOpen] = useState(false);
   const [pendingAddressChains, setPendingAddressChains] = useState<readonly CryptoDownloadAddressChain[]>([]);
   const timerRef = useRef<number | null>(null);
+  const pausedNotifiedRef = useRef<string | null>(null);
   const pendingStartValuesRef = useRef<CryptoDownloadFormValues | null>(null);
 
   useEffect(() => {
@@ -116,6 +130,23 @@ export function CryptoDownloadPanel() {
     if (timerRef.current) return;
     timerRef.current = window.setInterval(() => void refreshJob(false), 1000);
   }, [currentJob?.id, currentJob?.running]);
+
+  useEffect(() => {
+    const status = currentJob?.status;
+    if (!currentJob?.id || (status !== 'paused' && status !== 'cooling')) {
+      pausedNotifiedRef.current = null;
+      return;
+    }
+    const signature = `${currentJob.id}|${status}|${currentJob.message ?? ''}`;
+    if (pausedNotifiedRef.current === signature) return;
+    pausedNotifiedRef.current = signature;
+    notificationApi.warning({
+      key: `crypto-paused-${currentJob.id}`,
+      message: status === 'paused' ? '任务已暂停' : '任务冷却中',
+      description: simplifyPauseMessage(currentJob.message ?? '') || '请检查下载配置和网络后重试',
+      duration: 10,
+    });
+  }, [currentJob?.id, currentJob?.status, currentJob?.message]);
 
   useEffect(() => {
     if (!currentJob?.id) return;
@@ -295,6 +326,9 @@ export function CryptoDownloadPanel() {
         csvImapPort: values.csvImapPort,
         csvImapUser: values.csvImapUser,
         csvImapPassword: values.csvImapPassword,
+        csvMailPool: values.csvMailPool,
+        csvProxyPool: values.csvProxyPool,
+        csvImapProxyPool: values.csvImapProxyPool,
         csvDeliveryMode: values.csvDeliveryMode,
         csvStartTime: values.csvStartTime,
         csvEndTime: values.csvEndTime,
@@ -334,6 +368,10 @@ export function CryptoDownloadPanel() {
         csvImapPort: values.csvImapPort,
         csvImapUser: values.csvImapUser,
         csvImapPassword: values.csvImapPassword,
+        csvMailPool: values.csvMailPool,
+        csvProxyPool: values.csvProxyPool,
+        csvImapProxyPool: values.csvImapProxyPool,
+        csvProxyPin: values.csvProxyPin ?? 0,
         csvDeliveryMode: values.csvDeliveryMode,
         csvStartTime: values.csvStartTime,
         csvEndTime: values.csvEndTime,
@@ -642,6 +680,21 @@ export function CryptoDownloadPanel() {
                         <Input.Password autoComplete="new-password" />
                       </Form.Item>
                       <Form.Item name="csvRequestHar" label="OKLink HAR"><Input placeholder="可选，复用签名请求" /></Form.Item>
+                      <Form.Item name="csvMailPool" label="邮箱池（绕限流）" extra="每行：邮箱|IMAP主机|IMAP端口|IMAP用户|IMAP密码；等待邮件超时或 IMAP 登录失败自动切换下一账号（Gmail 叠加 +alias）。已保存的池不回显，留空保留旧池">
+                        <Input.TextArea rows={3} placeholder="account1@gmail.com|imap.gmail.com|993|account1@gmail.com|应用专用密码" />
+                      </Form.Item>
+                      <Form.Item name="csvProxyPool" label="HTTP 代理池" extra="每行一个 http/https/socks5 代理，CSV 请求按连接轮换；留空使用环境变量代理">
+                        <Input.TextArea rows={2} placeholder="http://127.0.0.1:7890" />
+                      </Form.Item>
+                      <Form.Item name="csvImapProxyPool" label="IMAP 代理池" extra="每行一个 socks5:// 代理，IMAP 收信轮换；留空使用 OKLINK_IMAP_PROXY / ALL_PROXY">
+                        <Input.TextArea rows={2} placeholder="socks5://127.0.0.1:1080" />
+                      </Form.Item>
+                      <Form.Item name="csvProxyPin" label="IP 锁定" extra="固定使用代理池中某个 IP（每 IP 独立指纹+域名邮箱）。此值为新任务默认，每次启动任务时仍可各自选择——开 N 个任务锁不同 IP 即 N 个独立用户并发；0=自动轮换。锁定超出池数量会报错">
+                        <Select options={[
+                          { value: 0, label: '自动轮换' },
+                          ...Array.from({ length: 20 }, (_, index) => ({ value: index + 1, label: `IP ${index + 1}` })),
+                        ]} />
+                      </Form.Item>
                       <Form.Item name="csvStartTime" label="CSV 开始时间（Unix 秒）"><InputNumber min={0} className="full" /></Form.Item>
                       <Form.Item name="csvEndTime" label="CSV 结束时间（Unix 秒）"><InputNumber min={0} className="full" /></Form.Item>
                     </div>
@@ -712,7 +765,9 @@ export function CryptoDownloadPanel() {
                 <Statistic title="队列运行" value={currentJob?.queueActive ?? 0} />
                 <Statistic title="队列等待" value={currentJob?.queueWaiting ?? 0} />
               </div>
-              <Alert type={currentJob?.status === 'failed' ? 'error' : 'info'} showIcon message={currentJob?.message || '等待任务'} />
+              {currentJob?.status !== 'paused' && currentJob?.status !== 'cooling' && (
+                <Alert type={currentJob?.status === 'failed' ? 'error' : 'info'} showIcon message={currentJob?.message || '等待任务'} />
+              )}
             </Space>
           </Card>
 

@@ -105,9 +105,10 @@ type AddressAnalytics struct {
 // label or a finding. Rules documents exactly which observable triggered.
 type RiskResult struct {
 	Address                   string   `json:"address"`
-	RiskScore                 float64  `json:"risk_score"`
+	RiskScore                 *float64 `json:"risk_score"`
 	RiskLevel                 string   `json:"risk_level"`
 	RiskReason                string   `json:"risk_reason"`
+	DataSufficient            bool     `json:"data_sufficient"`
 	Rules                     []string `json:"rules"`
 	TransactionFrequency      float64  `json:"transaction_frequency"`
 	CounterpartyConcentration float64  `json:"counterparty_concentration"`

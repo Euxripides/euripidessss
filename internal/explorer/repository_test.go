@@ -174,10 +174,16 @@ func TestListActivityIncludesCanonicalTokenAndHistoricalPriceEvidence(t *testing
 		"AS historical_value_usdt",
 		"AS valuation_status",
 		"onchain.token_price_1m FINAL",
+		"toFloat64(amount_decimal)",
+		"isFinite",
+		">1e15",
 	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("canonical evidence query missing %q: %s", want, query)
 		}
+	}
+	if strings.Contains(query, "Decimal(38,18)") {
+		t.Fatalf("activity valuation must not narrow arbitrary amounts to Decimal(38,18): %s", query)
 	}
 	if strings.Contains(strings.ToLower(query), "t.symbol = a.token_symbol") {
 		t.Fatalf("token metadata must never join by symbol: %s", query)

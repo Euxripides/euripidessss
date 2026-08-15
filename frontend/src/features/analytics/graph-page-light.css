@@ -78,8 +78,7 @@
 
 /* 画布 */
 .graph-light .flow-canvas-shell {
-  background-color: var(--fg-canvas-bg);
-  background-image: radial-gradient(var(--fg-dot) 1px, transparent 1px);
+  background: #ffffff;
 }
 
 .graph-light .flow-canvas-mode-label,

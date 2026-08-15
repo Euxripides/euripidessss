@@ -617,6 +617,9 @@ func setupSmartDownload() {
 	svc := smartdownload.NewService(store, opts, partWriter)
 	svc.SetWarehouseRequired(cfg.ClickHouse.Required)
 	smartDownloadService = svc
+	if err := backfillAddressLibrary(svc); err != nil {
+		log.Warn().Err(err).Msg("address_library_backfill_failed")
+	}
 	svc.SetV32ResourceMetricsSource(&smartDownloadResourceMetrics{root: root, rpcManager: rpcManager})
 	// FULL/TIME 模式终点：以链当前高度为准（RPC eth_blockNumber），
 	// 避免写死 DefaultEndBlock（50M）导致预检与实际下载只覆盖旧高度。
@@ -734,7 +737,7 @@ func setupSmartDownload() {
 	if downloadScheduler != nil {
 		planLookup = downloadScheduler.Plan
 	}
-	smartDownloadAPI = http.StripPrefix("/api/smart-download", smartdownload.NewHandler(svc, planLookup))
+	smartDownloadAPI = http.StripPrefix("/api/smart-download", smartdownload.NewHandler(svc, planLookup, persistAddressLibrary))
 	setupSemanticJobsV2()
 	setupInvestigationCacheV2(svc)
 	// 启动恢复：回放 Range Ledger → 校验 Parts → 未完成 Range 重新入队
@@ -1072,6 +1075,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/investigation/*path", HandleInvestigationV2)
 		api.Any("/scheduler/*path", HandleSchedulerAPI)
 		api.Any("/smart-download/*path", HandleSmartDownloadAPI)
+		registerAddressLibraryRoutes(api)
 		api.GET("/dataset/events", HandleDatasetEvents)
 		api.GET("/graph/status", HandleGraphStatus)
 		api.GET("/address/*path", HandleAddressAnalytics)

@@ -39,6 +39,9 @@ func (m *GUIManager) handleResume(w http.ResponseWriter, r *http.Request) {
 		request.CSVIMAPPort = settings.CSVIMAPPort
 		request.CSVIMAPUser = settings.CSVIMAPUser
 		request.CSVIMAPPassword = settings.CSVIMAPPassword
+		request.CSVMailPool = settings.CSVMailPool
+		request.CSVProxyPool = settings.CSVProxyPool
+		request.CSVIMAPProxyPool = settings.CSVIMAPProxyPool
 		// Delivery policy belongs to the task: changing global settings must not
 		// silently turn an email-only audit into an automatic/direct run.
 		request.CSVDeliveryMode = normalizeCSVDeliveryMode(request.CSVDeliveryMode)

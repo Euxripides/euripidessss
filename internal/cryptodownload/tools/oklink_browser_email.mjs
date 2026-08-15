@@ -44,6 +44,10 @@ try {
   cdp = await connectCDP(target.webSocketDebuggerUrl);
   await cdp.send("Page.enable");
   await cdp.send("Runtime.enable");
+  const stealth = decodeStealth();
+  if (stealth) {
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: stealth });
+  }
   await cdp.send("Page.navigate", { url: input.pageUrl });
   await waitForPage(cdp);
 
@@ -70,6 +74,18 @@ function proxyFlags() {
   const raw = process.env.OKLINK_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "";
   if (!raw) return [];
   return [`--proxy-server=${raw}`];
+}
+
+// decodeStealth returns the base64-encoded stealth injection script supplied
+// by the Go host (browserstealth package), or "" when absent.
+function decodeStealth() {
+  const raw = process.env.OKLINK_STEALTH_SCRIPT || "";
+  if (!raw) return "";
+  try {
+    return Buffer.from(raw, "base64").toString("utf8");
+  } catch {
+    return "";
+  }
 }
 
 async function readStdin() {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,27 @@ import (
 
 var evmAddressCheck = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 
+// normalizeGraphDirection 在 API 边界把前端方向值统一为 graphcache 规范值，
+// 缓存键与 Builder 内部只使用规范值（ALL/IN/OUT）。
+//
+//	"" / all / both        → ALL（双向）
+//	upstream               → IN（进入根地址）
+//	downstream             → OUT（从根地址发出）
+//	ALL/IN/OUT（任意大小写）→ 对应规范值
+//	其他值                 → error（不得静默降级）
+func normalizeGraphDirection(value string) (graphcache.Direction, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "all", "both":
+		return graphcache.DirectionAll, nil
+	case "in", "upstream":
+		return graphcache.DirectionIn, nil
+	case "out", "downstream":
+		return graphcache.DirectionOut, nil
+	default:
+		return "", fmt.Errorf("非法方向 %q（支持 all/both/upstream/downstream/IN/OUT）", value)
+	}
+}
+
 // coverageQueryAdapter 将 smartdownload Coverage Index 适配为 graphcache.CoverageQuerier。
 type coverageQueryAdapter struct {
 	svc *smartdownload.Service
@@ -40,13 +62,16 @@ func setupInvestigationCacheV2(svc *smartdownload.Service) {
 	if svc == nil {
 		return
 	}
-	var analyticsSvc *analyticsapi.Service
+	var flowSource graphcache.FlowSource
 	if h, ok := analyticsAPI.(*analyticsapi.Handler); ok && h != nil {
-		analyticsSvc = h.Service()
+		flowSource = h.Service()
+	}
+	if cfg != nil && cfg.Analytics.DataSource != "duckdb" && clickHouseInvestigation != nil {
+		flowSource = clickHouseInvestigation
 	}
 	dataRoot := filepath.Join(cfg.RootDir, "backend", "data")
 	graphStore := graphcache.NewStore(filepath.Join(dataRoot, "investigation", "graphcache"), 114_000_000)
-	builder := graphcache.NewBuilder(analyticsSvc, &coverageQueryAdapter{svc: svc})
+	builder := graphcache.NewBuilder(flowSource, &coverageQueryAdapter{svc: svc})
 	graphCache = graphcache.NewCache(graphStore, builder)
 	investigationCacheStore = invcache.NewStore(filepath.Join(dataRoot, "investigation", "cache"))
 
@@ -157,6 +182,11 @@ func HandleGraphExpand(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
+	direction, err := normalizeGraphDirection(body.Direction)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
 	if graphCache == nil || prefetchManager == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "图扩展缓存未装配"})
 		return
@@ -179,19 +209,15 @@ func HandleGraphExpand(c *gin.Context) {
 			snap.Goal = cached.Context.Goal
 		}
 	}
-	direction := strings.ToUpper(strings.TrimSpace(body.Direction))
-	if direction == "" {
-		direction = string(graphcache.DirectionAll)
-	}
 	depth := body.Depth
 	if depth <= 0 {
 		depth = 1
 	}
 	key := graphcache.Key{
-		ChainID: network.ID, Address: body.Address, Direction: direction,
+		ChainID: network.ID, Address: body.Address, Direction: string(direction),
 		DatasetSet: prefetch.GraphBundle(), TokenFilter: body.Token,
 		FromBlock: snap.FromBlock, ToBlock: snap.ToBlock,
-		Depth: depth, AggregationVersion: 1,
+		Depth: depth, AggregationVersion: 2,
 	}
 	res, hit, err := graphCache.GetOrBuild(c.Request.Context(), key)
 	if err != nil {

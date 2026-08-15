@@ -17,14 +17,24 @@ import (
 
 // Handler 智能下载统一 API（挂载于 /api/smart-download/*）。
 type Handler struct {
-	svc        *Service
-	bridge     *LegacyPlanBridge
-	planLookup func(planID string) *downloadscheduler.Plan
+	svc                  *Service
+	bridge               *LegacyPlanBridge
+	planLookup           func(planID string) *downloadscheduler.Plan
+	addressAssetImporter AddressAssetImporter
 }
 
+// AddressAssetImporter persists imported addresses in the shared control
+// plane. It is injected by the API assembly layer to avoid coupling the Smart
+// Download package to a concrete database implementation.
+type AddressAssetImporter func(ctx context.Context, chainKey, sourceName string, addresses []string) (int, error)
+
 // NewHandler 创建 API handler。
-func NewHandler(svc *Service, planLookup func(planID string) *downloadscheduler.Plan) *Handler {
-	return &Handler{svc: svc, bridge: NewLegacyPlanBridge(svc), planLookup: planLookup}
+func NewHandler(svc *Service, planLookup func(planID string) *downloadscheduler.Plan, importers ...AddressAssetImporter) *Handler {
+	h := &Handler{svc: svc, bridge: NewLegacyPlanBridge(svc), planLookup: planLookup}
+	if len(importers) > 0 {
+		h.addressAssetImporter = importers[0]
+	}
+	return h
 }
 
 // ServeHTTP 路由（路径已由 http.StripPrefix 去掉 /api/smart-download）。
@@ -319,6 +329,23 @@ func (h *Handler) importFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
 		return
+	}
+	chainKey := strings.ToLower(strings.TrimSpace(r.FormValue("chain_key")))
+	if chainKey == "" {
+		chainKey = "bsc"
+	}
+	if _, err := chain.Resolve(chainKey); err != nil {
+		writeSmartJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	result.ChainKey = chainKey
+	if h.addressAssetImporter != nil && len(result.FinalAddresses) > 0 {
+		persisted, persistErr := h.addressAssetImporter(r.Context(), chainKey, header.Filename, result.FinalAddresses)
+		if persistErr != nil {
+			writeSmartJSON(w, http.StatusInternalServerError, map[string]any{"detail": "地址已识别但持久化失败: " + persistErr.Error()})
+			return
+		}
+		result.Persisted = persisted
 	}
 	writeSmartJSON(w, http.StatusOK, result)
 }

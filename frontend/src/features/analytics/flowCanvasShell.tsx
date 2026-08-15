@@ -7,7 +7,6 @@
 
 import { AimOutlined, CloseOutlined } from "@ant-design/icons";
 import {
-  Background,
   BaseEdge,
   Controls,
   EdgeLabelRenderer,
@@ -240,7 +239,6 @@ export default function FlowCanvasShell({
           nodesConnectable={false}
           proOptions={{ hideAttribution: true }}
         >
-          <Background color="#17324a" gap={22} size={1} />
           <Controls showInteractive={false} />
         </ReactFlow>
       )}

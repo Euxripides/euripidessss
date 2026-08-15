@@ -13,7 +13,7 @@ type csvMailWaitProgress func(elapsed time.Duration, lastErr error)
 
 func (c *CSVExportClient) prepareCSVEmailRequest(ctx context.Context, watcher **csvMailWatcher) (time.Time, error) {
 	if *watcher == nil {
-		*watcher = c.newMailWatcher(c.mail)
+		*watcher = c.newMailWatcher(c.activeMail())
 	}
 	if err := (*watcher).CaptureBaselines(ctx); err != nil {
 		return time.Time{}, fmt.Errorf("capture IMAP UID baseline: %w", err)

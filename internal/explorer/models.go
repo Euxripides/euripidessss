@@ -1,6 +1,9 @@
 package explorer
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ActivityKind is a closed set of explorer activity views. Values are API-safe
 // and deliberately do not expose ClickHouse table or column names.
@@ -17,6 +20,7 @@ const (
 type AddressSummary struct {
 	ChainID                  uint32    `json:"chain_id"`
 	Address                  string    `json:"address"`
+	DataStatus               string    `json:"data_status,omitempty"`
 	AddressType              string    `json:"address_type"`
 	FirstSeenTime            time.Time `json:"first_seen_time"`
 	LastSeenTime             time.Time `json:"last_seen_time"`
@@ -43,6 +47,21 @@ type AddressSummary struct {
 	BridgeInteractionCount   uint64    `json:"bridge_interaction_count"`
 	RiskScore                float64   `json:"risk_score"`
 	UpdatedAt                time.Time `json:"updated_at"`
+}
+
+// DataStatusNoData 表示地址合法但当前无任何链上活动数据。
+const DataStatusNoData = "NO_DATA"
+
+// NoDataSummary 返回合法的空 summary（200 语义），避免把“查询成功、结果为空”
+// 与资源不存在混为一谈（404 会触发浏览器资源加载错误）。
+func NoDataSummary(chainID uint32, address string) AddressSummary {
+	return AddressSummary{
+		ChainID:          chainID,
+		Address:          strings.ToLower(address),
+		DataStatus:       DataStatusNoData,
+		TransactionCount: 0,
+		ActiveDays:       0,
+	}
 }
 
 type AddressProfile struct {

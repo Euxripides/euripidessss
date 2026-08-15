@@ -1,14 +1,15 @@
 import {
   ApartmentOutlined,
   CalendarOutlined,
-  SearchOutlined,
   SafetyCertificateOutlined,
   SwapOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Descriptions, Empty, Input, Progress, Tag } from "antd";
+import { Alert, Button, Descriptions, Empty, Progress, Tag } from "antd";
 import { useEffect, useState } from "react";
 import { DetailPanel, MetricCard, PageHeader } from "../../design-system/DesignSystem";
+import AddressLibraryInput from "../address-library/AddressLibraryInput";
+import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
 import {
   fetchDashboard,
   fetchProfile,
@@ -20,6 +21,7 @@ import { formatNumber } from "./format";
 import "./risk-detail.css";
 
 export default function RiskAnalysisPage() {
+  const { state: analysisState } = useAnalysisContext();
   const [input, setInput] = useState("");
   const [address, setAddress] = useState("");
   const [risk, setRisk] = useState<RiskResult | null>(null);
@@ -69,12 +71,12 @@ export default function RiskAnalysisPage() {
         />
         <DetailPanel className="analytics-query-panel">
           <div className="analytics-query-row">
-            <Input
-              allowClear
-              prefix={<SearchOutlined />}
+            <AddressLibraryInput
               placeholder="输入 0x 地址进行风险评分"
               value={input}
-              onChange={(event) => setInput(event.target.value)}
+              chainKey={analysisState.chain}
+              onChange={setInput}
+              onSelect={(value) => { setInput(value); void load(value); }}
               onPressEnter={() => void load(input)}
             />
             <Button type="primary" loading={loading} onClick={() => void load(input)}>查询风险</Button>
@@ -90,27 +92,39 @@ export default function RiskAnalysisPage() {
             <DetailPanel
               title="地址风险评分"
               description="规则引擎综合评分"
-              extra={<Tag color={riskTagColor(risk.risk_level)}>{risk.risk_level}风险</Tag>}
+              extra={<Tag color={riskTagColor(risk.risk_level)}>{riskLevelLabel(risk.risk_level)}</Tag>}
             >
-              <div className="risk-score-hero">
-                <div>
-                  <strong className={`risk-score-${riskTone(risk.risk_level)}`}>{risk.risk_score.toFixed(1)}</strong>
-                  <span>/ 100</span>
-                </div>
-                <code>{address}</code>
-              </div>
-              <Progress
-                percent={risk.risk_score}
-                showInfo={false}
-                strokeColor={riskStroke(risk.risk_level)}
-                trailColor="#edf1f6"
-              />
-              <p className="risk-reason">{risk.risk_reason || "当前规则未返回风险说明"}</p>
-              <div className="risk-signal-grid">
-                <span><small>交易频率</small><strong>{formatNumber(risk.transaction_frequency)}</strong><em>笔 / 活跃天</em></span>
-                <span><small>Top10 接收占比</small><strong>{(risk.top_holder_ratio * 100).toFixed(1)}%</strong><em>资金集中度</em></span>
-                <span><small>共同对手关联度</small><strong>{risk.shared_counterparty_score.toFixed(3)}</strong><em>关系网络信号</em></span>
-              </div>
+              {risk.data_sufficient === false || risk.risk_level === "insufficient_data" ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="数据不足"
+                  description="当前地址没有足够的活动数据，无法完成风险筛查。该结论不代表低风险，也不代表链上无活动。"
+                  style={{ marginBottom: 12 }}
+                />
+              ) : (
+                <>
+                  <div className="risk-score-hero">
+                    <div>
+                      <strong className={`risk-score-${riskTone(risk.risk_level)}`}>{typeof risk.risk_score === "number" ? risk.risk_score.toFixed(1) : "—"}</strong>
+                      <span>/ 100</span>
+                    </div>
+                    <code>{address}</code>
+                  </div>
+                  <Progress
+                    percent={typeof risk.risk_score === "number" ? risk.risk_score : 0}
+                    showInfo={false}
+                    strokeColor={riskStroke(risk.risk_level)}
+                    trailColor="#edf1f6"
+                  />
+                  <p className="risk-reason">{risk.risk_reason || "当前规则未返回风险说明"}</p>
+                  <div className="risk-signal-grid">
+                    <span><small>交易频率</small><strong>{formatNumber(risk.transaction_frequency)}</strong><em>笔 / 活跃天</em></span>
+                    <span><small>Top10 接收占比</small><strong>{(risk.top_holder_ratio * 100).toFixed(1)}%</strong><em>资金集中度</em></span>
+                    <span><small>共同对手关联度</small><strong>{risk.shared_counterparty_score.toFixed(3)}</strong><em>关系网络信号</em></span>
+                  </div>
+                </>
+              )}
             </DetailPanel>
 
             <DetailPanel title="地址行为画像" description="与风险评分对应的链上活动数据">
@@ -154,14 +168,33 @@ export default function RiskAnalysisPage() {
   );
 }
 
+function riskLevelLabel(level: string) {
+  switch (level) {
+    case "high": return "高风险";
+    case "medium": return "中风险";
+    case "low": return "低风险";
+    case "insufficient_data": return "数据不足";
+    default: return `${level}风险`;
+  }
+}
+
 function riskTagColor(level: string) {
+  if (level === "high") return "red";
+  if (level === "medium") return "orange";
+  if (level === "insufficient_data") return "default";
   return level === "高" ? "red" : level === "中" ? "orange" : "green";
 }
 
 function riskTone(level: string) {
+  if (level === "high") return "red";
+  if (level === "medium") return "amber";
+  if (level === "insufficient_data") return "gray";
   return level === "高" ? "red" : level === "中" ? "amber" : "green";
 }
 
 function riskStroke(level: string) {
+  if (level === "high") return "#e5484d";
+  if (level === "medium") return "#d97706";
+  if (level === "insufficient_data") return "#9ca3af";
   return level === "高" ? "#e5484d" : level === "中" ? "#d97706" : "#0f9f6e";
 }
