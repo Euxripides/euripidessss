@@ -29,6 +29,20 @@ type ProbeResult struct {
 	ProbeProvider    string  `json:"probe_provider,omitempty"`
 }
 
+// exactRangeProber marks adapters whose Probe result is an exact count for the
+// requested block interval. Adapters that do not implement it retain the
+// historical exact-window behavior. This is intentionally separate from
+// Confidence: a high-confidence all-time estimate is still not suitable for a
+// narrow-window validation cross-check.
+type exactRangeProber interface {
+	ExactRangeProbe() bool
+}
+
+func supportsExactRangeProbe(a ProviderAdapter) bool {
+	p, ok := a.(exactRangeProber)
+	return !ok || p.ExactRangeProbe()
+}
+
 // probeSampleBlocks 采样区块数（低成本）。
 const probeSampleBlocks = 200
 

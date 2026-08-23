@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Col, Descriptions, Form, Input, InputNumber, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, message } from "antd";
+import { Button, Card, Col, Descriptions, Form, Input, InputNumber, Row, Select, Space, Statistic, Switch, Table, Tabs, Tag, Typography, message } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import "./price-engine.css";
 
@@ -102,7 +102,11 @@ export default function PriceEnginePage() {
   return <div className="price-engine-page">
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <div><h2 style={{ margin: 0 }}>历史价格</h2><div style={{ color: "#667085", marginTop: 4 }}>BSC 分钟级价格、覆盖回填与可审计来源</div></div>
-      {health?.status === "degraded" && <Alert type="warning" showIcon message="价格服务降级" description="ClickHouse 暂不可用；外部数据源故障不会被伪装为价格 0。" />}
+      {health?.status === "degraded" && (
+        <Typography.Paragraph type="warning" style={{ margin: 0 }}>
+          <strong>价格服务降级：</strong>ClickHouse 暂不可用；外部数据源故障不会被伪装为价格 0。
+        </Typography.Paragraph>
+      )}
       <Row gutter={[12, 12]} className="price-engine-health">
         <Col xs={12} sm={6}><Card size="small"><Statistic title="服务" value={health?.status || "检查中"} /></Card></Col>
         <Col xs={12} sm={6}><Card size="small"><Statistic title="ClickHouse" value={health?.clickhouse || "检查中"} /></Card></Col>

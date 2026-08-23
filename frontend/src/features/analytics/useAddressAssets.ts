@@ -17,6 +17,7 @@ export interface UseAddressAssetsOptions {
 export interface AddressAssetsView {
   assets: AddressAssets | null;
   state: "idle" | "loading" | "ready" | "failed";
+  error: string | null;
   queriedAt: string | null;
   refresh: () => void;
 }
@@ -25,13 +26,19 @@ export function useAddressAssets(options: UseAddressAssetsOptions): AddressAsset
   const { chain, chainId, address, tokens, autoLoad = true } = options;
   const [assets, setAssets] = useState<AddressAssets | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "ready" | "failed">("idle");
+  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const requestSeq = useRef(0);
+  // 依赖 Token 内容而不是数组引用。调用方传递 `tokens: []` 时，React 每次
+  // 渲染都会得到新数组；若直接依赖该引用，会形成 setState → render → fetch
+  // 的 RPC 请求风暴。
+  const tokenKey = JSON.stringify(tokens ?? []);
 
   const load = useCallback(() => {
     if (!address) {
       setAssets(null);
       setState("idle");
+      setError(null);
       return;
     }
     // 取消旧请求（设计 §26：旧请求使用 AbortController 取消）
@@ -41,18 +48,21 @@ export function useAddressAssets(options: UseAddressAssetsOptions): AddressAsset
     const seq = ++requestSeq.current;
 
     setState("loading");
-    fetchAddressAssets({ chain, chain_id: chainId, address, tokens, force_refresh: false })
+    setError(null);
+    const requestTokens = JSON.parse(tokenKey) as string[];
+    fetchAddressAssets({ chain, chain_id: chainId, address, tokens: requestTokens.length ? requestTokens : undefined, force_refresh: false }, controller.signal)
       .then((next) => {
         if (seq !== requestSeq.current || controller.signal.aborted) return; // 旧请求不覆盖新地址
         setAssets(next);
         setState(next ? "ready" : "failed");
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
         if (seq !== requestSeq.current || controller.signal.aborted) return;
         setAssets(null);
         setState("failed");
+        setError(reason instanceof Error ? reason.message : "实时资产查询失败");
       });
-  }, [chain, chainId, address, tokens]);
+  }, [chain, chainId, address, tokenKey]);
 
   const refresh = useCallback(() => {
     if (!address) return;
@@ -61,17 +71,20 @@ export function useAddressAssets(options: UseAddressAssetsOptions): AddressAsset
     abortRef.current = controller;
     const seq = ++requestSeq.current;
     setState("loading");
-    fetchAddressAssets({ chain, chain_id: chainId, address, tokens, force_refresh: true })
+    setError(null);
+    const requestTokens = JSON.parse(tokenKey) as string[];
+    fetchAddressAssets({ chain, chain_id: chainId, address, tokens: requestTokens.length ? requestTokens : undefined, force_refresh: true }, controller.signal)
       .then((next) => {
         if (seq !== requestSeq.current || controller.signal.aborted) return;
         setAssets(next);
         setState(next ? "ready" : "failed");
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
         if (seq !== requestSeq.current || controller.signal.aborted) return;
         setState("failed");
+        setError(reason instanceof Error ? reason.message : "实时资产查询失败");
       });
-  }, [chain, chainId, address, tokens]);
+  }, [chain, chainId, address, tokenKey]);
 
   useEffect(() => {
     if (autoLoad) load();
@@ -83,6 +96,7 @@ export function useAddressAssets(options: UseAddressAssetsOptions): AddressAsset
   return {
     assets,
     state,
+    error,
     queriedAt: assets?.queried_at ?? null,
     refresh,
   };

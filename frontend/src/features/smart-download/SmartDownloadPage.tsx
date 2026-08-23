@@ -1,7 +1,6 @@
 // 智能下载统一入口（Phase 4）：创建下载 / 任务中心 / 结果数据。
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   Button,
   Card,
   Checkbox,
@@ -39,6 +38,7 @@ import {
 } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { UploadFile } from "antd";
+import { TxHashLink } from "../transaction/TxHashLink";
 import type { Dayjs } from "dayjs";
 import { listAddressLibrary, type AddressLibraryItem } from "../address-library/addressLibraryApi";
 import {
@@ -68,7 +68,6 @@ import {
   listRegistry,
   listTaskTemplates,
   pinPrefetch,
-  planBatch,
   previewPlannerV2,
   preflightBatch,
   queryResults,
@@ -105,6 +104,8 @@ import {
 import "./smart-download.css";
 
 interface SmartDownloadPageProps {
+  initialAddress?: string;
+  initialChain?: string;
   onOpenAddress: (address: string) => void;
   onNavigate: (page: string) => void;
 }
@@ -754,22 +755,26 @@ function copyText(v: string) {
   void navigator.clipboard?.writeText(v).then(() => message.success("已复制"));
 }
 
-export default function SmartDownloadPage({ onOpenAddress, onNavigate }: SmartDownloadPageProps) {
+export default function SmartDownloadPage({ initialAddress, initialChain, onOpenAddress, onNavigate }: SmartDownloadPageProps) {
   const [tab, setTab] = useState("create");
   const [refreshKey, setRefreshKey] = useState(0);
   const refreshTimer = useRef<number | null>(null);
+  const lastRefreshAt = useRef(0);
 
   useEffect(() => {
     const es = new EventSource("/api/smart-download/events");
     es.onmessage = (e) => {
-      if (e.data && e.data.includes("resync_required")) {
-        // 事件缓冲过期：重新拉取快照（设计 §32）
-        setRefreshKey((k) => k + 1);
-        return;
-      }
       if (tab === "create") return;
-      if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
-      refreshTimer.current = window.setTimeout(() => setRefreshKey((k) => k + 1), 400);
+      // Range events can arrive continuously. Coalesce them into one bounded
+      // refresh instead of issuing a full task-center request fan-out per event.
+      if (refreshTimer.current !== null) return;
+      const minInterval = e.data?.includes("resync_required") ? 0 : 2000;
+      const delay = Math.max(0, minInterval - (Date.now() - lastRefreshAt.current));
+      refreshTimer.current = window.setTimeout(() => {
+        refreshTimer.current = null;
+        lastRefreshAt.current = Date.now();
+        setRefreshKey((k) => k + 1);
+      }, delay);
     };
     es.onerror = () => {
       /* EventSource 自动重连 */
@@ -802,7 +807,11 @@ export default function SmartDownloadPage({ onOpenAddress, onNavigate }: SmartDo
         activeKey={tab}
         onChange={setTab}
         items={[
-          { key: "create", label: "创建下载", children: <CreateTab onCreated={onBatchCreated} /> },
+          {
+            key: "create",
+            label: "创建下载",
+            children: <CreateTab initialAddress={initialAddress} initialChain={initialChain} onCreated={onBatchCreated} />,
+          },
           { key: "tasks", label: "任务中心", children: <TasksTab refreshKey={refreshKey} /> },
           { key: "prefetch", label: "智能预取", children: <PrefetchTab refreshKey={refreshKey} /> },
           {
@@ -997,7 +1006,15 @@ function PrefetchTab({ refreshKey }: { refreshKey: number }) {
 
 // ── 创建下载 ──
 
-function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
+function CreateTab({
+  initialAddress,
+  initialChain,
+  onCreated,
+}: {
+  initialAddress?: string;
+  initialChain?: string;
+  onCreated: (batchId: string) => void;
+}) {
   const [form] = Form.useForm();
   const selectedChain = (Form.useWatch("chain_key", form) as string | undefined) ?? "bsc";
   const selectedMode = (Form.useWatch("mode", form) as DownloadMode | undefined) ?? "AUTO";
@@ -1016,6 +1033,9 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
   const [availableDatasets, setAvailableDatasets] = useState<string[] | null>(null);
   const capabilityRequestSequence = useRef(0);
   const importRequestSequence = useRef(0);
+
+  const prefilledAddress = initialAddress?.trim() ?? "";
+  const prefilledChain = initialChain && CHAIN_KEYS.has(initialChain) ? initialChain : "bsc";
 
   const capabilityDatasetOptions = useMemo(() => {
     const available = availableDatasets ? new Set(availableDatasets) : null;
@@ -1162,6 +1182,23 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
       void message.warning("请输入地址或上传地址文件");
       return;
     }
+    // FIX-006：提交前校验手工输入的地址格式，定位无效行（文件导入已由导入器过滤）
+    const EVM_RE = /^0x[0-9a-fA-F]{40}$/;
+    const invalidManual: string[] = [];
+    (values.addresses ?? "").split(/\r?\n/).forEach((line, idx) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const m = trimmed.match(/^(0x[0-9a-fA-F]{40})(?:\s+[A-Za-z0-9_]+)?$/);
+      if (!m || !EVM_RE.test(m[1])) {
+        invalidManual.push(`第 ${idx + 1} 行「${trimmed.slice(0, 20)}${trimmed.length > 20 ? "…" : ""}」`);
+      }
+    });
+    if (invalidManual.length > 0) {
+      void message.error(
+        `存在 ${invalidManual.length} 个无效地址：${invalidManual.slice(0, 3).join("；")}${invalidManual.length > 3 ? ` 等共 ${invalidManual.length} 行` : ""}。请修正后重新提交（文件导入的地址已过滤无效行）。`,
+      );
+      return;
+    }
     if (!values.datasets || values.datasets.length === 0) {
       void message.warning("请至少选择一类数据");
       return;
@@ -1248,18 +1285,22 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         void message.error("创建失败");
         return;
       }
-      // Discovery 反馈：先分析数据规模，再自动进入任务中心（不要求用户确认）
-      message.loading({ key: analyzingKey, content: "正在分析数据规模…", duration: 0 });
-      const plan = await planBatch(res.batch.id);
-      const plannedDatasets = plan?.datasets ?? [];
+      // Production preflight already measured and routed every dataset. Reuse
+      // that result instead of synchronously probing the new task a second time.
+      message.loading({ key: analyzingKey, content: "正在启动已预检的下载任务…", duration: 0 });
+      const plannedDatasets = preflight.dataset_estimates;
       if (plannedDatasets.length > 0) {
         const buckets: Record<string, number> = { S: 0, M: 0, L: 0, XL: 0 };
+		const providers: Record<string, number> = {};
         let rows = 0;
         let bytes = 0;
         for (const d of plannedDatasets) {
           rows += d.estimated_rows || 0;
           bytes += d.estimated_bytes || 0;
-          buckets[d.size_class] = (buckets[d.size_class] ?? 0) + 1;
+		  const sizeClass = d.estimated_rows <= 10_000 ? "S" : d.estimated_rows <= 500_000 ? "M" : d.estimated_rows <= 5_000_000 ? "L" : "XL";
+		  buckets[sizeClass] = (buckets[sizeClass] ?? 0) + 1;
+		  const provider = d.preferred_provider ?? "待调度";
+		  providers[provider] = (providers[provider] ?? 0) + 1;
         }
         const hits = res.local_full_hits ?? 0;
         const partial = res.local_partial_hits ?? 0;
@@ -1267,12 +1308,12 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         const reused = res.reused_ranges ?? 0;
         message.loading({
           key: analyzingKey,
-          content: `地址 ${addresses.length} 个 · 预计 ${Math.round(rows).toLocaleString()} 行 · ≈ ${(
+		  content: `地址 ${addresses.length} 个 · 预计 ${Math.round(rows).toLocaleString()} 行 · ≈ ${(
             bytes /
             (1 << 30)
           ).toFixed(1)} GB · 小型 ${buckets.S} / 中型 ${buckets.M} / 大型 ${buckets.L} / 超大型 ${
             buckets.XL
-          } · 完全命中 ${hits} / 部分命中 ${partial} / 需下载 ${misses} · 复用 ${reused} 个区间 · 系统将自动选择最合适的数据源`,
+		  } · CSV ${providers.csv ?? 0} / SQD ${providers.sqd ?? 0} · 完全命中 ${hits} / 部分命中 ${partial} / 需下载 ${misses} · 复用 ${reused} 个区间`,
           duration: 0,
         });
       }
@@ -1386,7 +1427,8 @@ function CreateTab({ onCreated }: { onCreated: (batchId: string) => void }) {
         onFinish={onCreate}
         onValuesChange={() => { setPreflight(null); setPlannerPreview(null); setPreflightRequest(null); }}
 		initialValues={{
-          chain_key: "bsc",
+          addresses: prefilledAddress,
+          chain_key: prefilledChain,
           mode: "AUTO",
           resource_profile: "STANDARD",
           priority: "NORMAL",
@@ -1757,7 +1799,6 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [compareResult, setCompareResult] = useState<CompareRunsResult | null>(null);
   const [comparableBatchIds, setComparableBatchIds] = useState<Set<string>>(() => new Set());
-  const [compareError, setCompareError] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
   const [switchingMode, setSwitchingMode] = useState(false);
   const batchListRequestSequence = useRef(0);
@@ -1767,32 +1808,15 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
 
   const load = () => {
     const sequence = ++batchListRequestSequence.current;
-    void listBatches().then(async (items) => {
-      const reports = await Promise.all(items.map((batch) =>
-        ["COMPLETED", "PARTIAL", "FAILED", "CANCELED"].includes(batch.status)
-          ? getBatchReport(batch.id)
-          : Promise.resolve(null),
-      ));
+    void listBatches().then((items) => {
       if (sequence !== batchListRequestSequence.current) return;
       const nextComparableIds = new Set(
-        items.filter((_, index) => reports[index] !== null).map((batch) => batch.id),
+        items.filter((batch) => ["COMPLETED", "PARTIAL", "FAILED", "CANCELED"].includes(batch.status)).map((batch) => batch.id),
       );
-      setBatches(items.map((batch, index) => {
-        const report = reports[index];
-        return report ? {
-          ...batch,
-          resource_profile: report.resource_profile ?? batch.resource_profile,
-          rows: report.rows,
-          duration_seconds: report.total_duration_seconds,
-          ttfa_seconds: report.ttfa_seconds,
-          average_throughput_rows_per_sec: report.average_throughput_rows_per_sec,
-          result: report.certification ?? report.result ?? batch.status,
-        } : batch;
-      }));
+      setBatches(items);
       setComparableBatchIds(nextComparableIds);
       setCompareIds((current) => current.filter((id) => nextComparableIds.has(id)));
       setCompareResult(null);
-      setCompareError(null);
     });
   };
 
@@ -1875,18 +1899,17 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
       return;
     }
     if (compareIds.some((id) => !comparableBatchIds.has(id))) {
-      setCompareError("所选批次尚未生成终态报告，不能进行性能对比");
+      void message.warning("所选批次尚未生成终态报告，不能进行性能对比");
       return;
     }
     setComparing(true);
-    setCompareError(null);
     try {
       const result = await compareBatchRuns(compareIds[0], compareIds[1]);
       if (!result || result.runs.length !== 2) throw new Error("后端未返回两个完整的运行报告");
       setCompareResult(result);
     } catch (error) {
       setCompareResult(null);
-      setCompareError(smartDownloadErrorMessage(error, "任务对比失败"));
+      void message.error(`运行对比失败：${smartDownloadErrorMessage(error, "任务对比失败")}`);
     } finally {
       setComparing(false);
     }
@@ -2173,7 +2196,6 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
             onChange={(ids) => {
               setCompareIds(ids.slice(-2));
               setCompareResult(null);
-              setCompareError(null);
             }}
           />
           <Button disabled={compareIds.length !== 2} loading={comparing} onClick={() => void runCompare()}>对比运行</Button>
@@ -2183,24 +2205,9 @@ function TasksTab({ refreshKey }: { refreshKey: number }) {
           {excludedComparisonCount > 0 ? `；已排除 ${excludedComparisonCount} 个不可比较批次` : ""}
         </Typography.Text>
         {compareOptions.length < 2 ? (
-          <Alert
-            className="sd-inline-feedback"
-            type="info"
-            showIcon
-            message="暂无足够的可比较批次"
-            description="至少需要两个已结束并成功生成运行报告的批次。"
-          />
-        ) : null}
-        {compareError ? (
-          <Alert
-            className="sd-inline-feedback"
-            type="error"
-            showIcon
-            closable
-            message="运行对比失败"
-            description={compareError}
-            onClose={() => setCompareError(null)}
-          />
+          <Typography.Paragraph className="sd-inline-feedback" type="secondary">
+            暂无足够的可比较批次。至少需要两个已结束并成功生成运行报告的批次。
+          </Typography.Paragraph>
         ) : null}
         {compareResult ? (
           <Table
@@ -2505,7 +2512,6 @@ function ResultsTab({
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(false);
-  const [resultsError, setResultsError] = useState<string | null>(null);
   const registryRequestSequence = useRef(0);
   const resultRequestSequence = useRef(0);
 
@@ -2541,11 +2547,9 @@ function ResultsTab({
       setRows([]);
       setTotal(0);
       setLoading(false);
-      setResultsError(null);
       return;
     }
     setLoading(true);
-    setResultsError(null);
     void Promise.all([
       resultSummary(selected).catch(() => null),
       queryResults(selected, page, 50, "", filter),
@@ -2563,7 +2567,7 @@ function ResultsTab({
       if (sequence !== resultRequestSequence.current) return;
       setRows([]);
       setTotal(0);
-      setResultsError(smartDownloadErrorMessage(error, "查询结果失败"));
+      void message.error(`结果加载失败：${smartDownloadErrorMessage(error, "查询结果失败")}`);
     }).finally(() => {
       if (sequence === resultRequestSequence.current) setLoading(false);
     });
@@ -2639,7 +2643,7 @@ function ResultsTab({
     const common: ColumnsType<Record<string, unknown>> = [
       { title: "时间", key: "time", render: (_, r) => fmtTime(r.block_time) },
       { title: "区块", dataIndex: "block_number", width: 90, render: (v) => String(v ?? "") },
-      { title: "Tx Hash", key: "tx", render: (_, r) => hashRender(r.transaction_hash) },
+      { title: "Tx Hash", key: "tx", render: (_, r) => <TxHashLink chainId={entry?.chain_key ?? "bsc"} hash={String(r.transaction_hash ?? "")} /> },
     ];
     const addr = (key: string): NonNullable<ColumnsType<Record<string, unknown>>[number]> => ({
       title: key === "from_address" ? "From" : key === "to_address" ? "To" : key,
@@ -2853,17 +2857,6 @@ function ResultsTab({
             </Space>
           }
         >
-          {resultsError ? (
-            <Alert
-              className="sd-inline-feedback"
-              type="error"
-              showIcon
-              closable
-              message="结果加载失败"
-              description={resultsError}
-              onClose={() => setResultsError(null)}
-            />
-          ) : null}
           <Table
             rowKey={(r) =>
               (r.transaction_hash

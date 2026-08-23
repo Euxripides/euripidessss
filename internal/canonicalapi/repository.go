@@ -309,22 +309,23 @@ FROM onchain.method_registry FINAL WHERE method_id='%s' ORDER BY is_verified DES
 }
 
 func (r *Repository) tokenTransfers(ctx context.Context, chainID uint32, txHash string) ([]CanonicalTokenTransfer, error) {
-	rows, err := r.query(ctx, fmt.Sprintf(`SELECT x.log_index,x.from_address,x.to_address,x.token_address AS token_address,x.raw_value,
+	rows, err := r.query(ctx, fmt.Sprintf(`SELECT x.log_index,x.batch_index,x.from_address,x.to_address,x.token_address AS token_address,x.raw_value,
 toString(x.value_decimal) AS value_decimal,x.token_standard,x.source_provider,x.ingest_job_id,x.source_range_id,
 x.parser_version,x.normalizer_version,x.schema_version,x.ingested_at,
 	x.token_name AS fact_token_name,x.token_symbol AS fact_token_symbol,x.token_decimals AS fact_token_decimals,
 	t.name AS token_name,t.symbol AS token_symbol,t.decimals AS token_decimals,t.token_standard AS registry_standard,
 t.logo_uri,t.logo_hash,t.logo_source,t.is_verified,t.is_spam,t.official_website,t.metadata_source,
 t.metadata_confidence,t.metadata_updated_at,
-toString(coalesce(x.usd_value,CAST(x.value_decimal*coalesce(x.usd_price,p.price_usd) AS Nullable(Decimal(38,18))))) AS usd_value,
-toString(coalesce(x.usd_price,p.price_usd)) AS price_usd,coalesce(x.price_time,p.timestamp_bucket) AS price_time,
-if(x.price_source!='',x.price_source,p.source) AS price_source,
-if(x.price_confidence!='',x.price_confidence,p.confidence) AS price_confidence
+toString(coalesce(x.usd_value,CAST(x.value_decimal*coalesce(x.usd_price,if(p.token_address!='',toNullable(p.price_usd),CAST(NULL AS Nullable(Decimal(38,18))))) AS Nullable(Decimal(38,18))))) AS usd_value,
+toString(coalesce(x.usd_price,if(p.token_address!='',toNullable(p.price_usd),CAST(NULL AS Nullable(Decimal(38,18)))))) AS price_usd,
+coalesce(x.price_time,if(p.token_address!='',toNullable(p.timestamp_bucket),CAST(NULL AS Nullable(DateTime64(3,'UTC'))))) AS price_time,
+if(x.price_source!='',x.price_source,if(p.token_address!='',p.source,'')) AS price_source,
+if(x.price_confidence!='',x.price_confidence,if(p.token_address!='',p.confidence,'')) AS price_confidence
 FROM onchain.token_transfers AS x FINAL
 LEFT JOIN onchain.token_metadata_registry AS t FINAL ON x.chain_id=t.chain_id AND x.token_address=t.contract_address
 ASOF LEFT JOIN (SELECT * FROM onchain.token_prices FINAL ORDER BY chain_id,token_address,timestamp_bucket) AS p
 ON x.chain_id=p.chain_id AND x.token_address=p.token_address AND x.block_time>=p.timestamp_bucket
-WHERE x.chain_id=%d AND x.tx_hash='%s' ORDER BY x.log_index,x.token_address`, chainID, txHash))
+WHERE x.chain_id=%d AND x.tx_hash='%s' ORDER BY x.log_index,x.batch_index`, chainID, txHash))
 	if err != nil {
 		return nil, err
 	}

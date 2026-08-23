@@ -130,9 +130,6 @@ func setupCanonicalV2() {
 	semanticQualityV2 = semanticquality.NewRepository(clickHouseClient)
 	semanticAnalyticsV2 = semanticanalytics.NewRepository(clickHouseClient)
 	contractIntelV2 = contractintelligence.NewRepository(clickHouseClient)
-	if err := seedCanonicalV2(context.Background()); err != nil {
-		log.Warn().Err(err).Msg("canonical_v2_seed_failed")
-	}
 	log.Info().Msg("canonical_v2_read_plane_ready")
 }
 
@@ -299,6 +296,9 @@ func chainIDFromKey(value string) (uint32, bool) {
 
 func registerCanonicalV2Routes(api *gin.RouterGroup) {
 	api.GET("/v2/explorer/:chain/tx/:tx_hash", handleCanonicalTransaction)
+	api.GET("/v2/explorer/:chain/tx/:tx_hash/token-transfers", handleCanonicalTokenTransfersByTx)
+	api.GET("/v2/explorer/:chain/tx/:tx_hash/internal-transactions", handleCanonicalInternalTransactionsByTx)
+	api.GET("/v2/explorer/:chain/tx/:tx_hash/logs", handleCanonicalRawLogsByTx)
 	api.GET("/v2/explorer/:chain/address/:address/activity", handleCanonicalActivity)
 	api.GET("/v2/explorer/:chain/token/:address", handleCanonicalToken)
 	api.GET("/v2/methods/:method_id", handleCanonicalMethod)
@@ -360,6 +360,72 @@ func handleCanonicalTransaction(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, item)
+}
+
+func canonicalTxCollectionQuery(c *gin.Context) (canonicalapi.TxCollectionQuery, bool) {
+	id, ok := canonicalScope(c)
+	if !ok {
+		return canonicalapi.TxCollectionQuery{}, false
+	}
+	limit := 0
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid limit"})
+			return canonicalapi.TxCollectionQuery{}, false
+		}
+		limit = value
+	}
+	return canonicalapi.TxCollectionQuery{ChainID: id, TxHash: c.Param("tx_hash"), Limit: limit, Cursor: c.Query("cursor")}, true
+}
+
+func handleCanonicalTokenTransfersByTx(c *gin.Context) {
+	query, ok := canonicalTxCollectionQuery(c)
+	if !ok {
+		return
+	}
+	page, err := canonicalV2.ListTokenTransfersByTx(c.Request.Context(), query)
+	if err != nil {
+		writeCanonicalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, page)
+}
+
+func handleCanonicalInternalTransactionsByTx(c *gin.Context) {
+	query, ok := canonicalTxCollectionQuery(c)
+	if !ok {
+		return
+	}
+	page, err := canonicalV2.ListInternalTransactionsByTx(c.Request.Context(), query)
+	if err != nil {
+		writeCanonicalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, page)
+}
+
+func handleCanonicalRawLogsByTx(c *gin.Context) {
+	query, ok := canonicalTxCollectionQuery(c)
+	if !ok {
+		return
+	}
+	page, err := canonicalV2.ListRawLogsByTx(c.Request.Context(), query)
+	if err != nil {
+		writeCanonicalError(c, err)
+		return
+	}
+	if page.TotalCount == 0 && query.Cursor == "" && rpcManager != nil {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Second)
+		defer cancel()
+		fallback, fallbackErr := rawLogsFromRPCReceipt(ctx, rpcManager, strings.ToLower(c.Param("chain")), query.ChainID, strings.ToLower(query.TxHash), query.Limit)
+		if fallbackErr != nil {
+			log.Warn().Err(fallbackErr).Str("tx_hash", query.TxHash).Msg("canonical_raw_logs_rpc_fallback_failed")
+		} else if fallback.TotalCount > 0 {
+			page = fallback
+		}
+	}
+	c.JSON(http.StatusOK, page)
 }
 
 func handleCanonicalActivity(c *gin.Context) {

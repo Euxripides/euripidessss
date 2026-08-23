@@ -51,6 +51,34 @@ func TestCSVAdapterProductionAvailabilityIsFailClosed(t *testing.T) {
 	}
 }
 
+func TestCSVAdapterProbeUsesOKLinkCountAndCachesResult(t *testing.T) {
+	p := configuredCSVAdapter(cryptodownload.ExportData{})
+	calls := 0
+	p.countRows = func(_ context.Context, cfg cryptodownload.Config, chainKey, dataset string) (int64, error) {
+		calls++
+		if cfg.Address != "0x1111111111111111111111111111111111111111" || chainKey != "bsc" || dataset != DatasetTransactions {
+			t.Fatalf("unexpected count request: address=%s chain=%s dataset=%s", cfg.Address, chainKey, dataset)
+		}
+		return 9_999, nil
+	}
+	req := ProbeRequest{Address: "0x1111111111111111111111111111111111111111", ChainKey: "bsc",
+		Dataset: DatasetTransactions, FromBlock: 0, ToBlock: 1_000}
+	first, err := p.Probe(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.Probe(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EstimatedRows != 9_999 || first.Confidence != 0.98 || second.EstimatedRows != first.EstimatedRows {
+		t.Fatalf("unexpected OKLink probe results: first=%+v second=%+v", first, second)
+	}
+	if calls != 1 {
+		t.Fatalf("OKLink count calls=%d, want one cached request", calls)
+	}
+}
+
 func TestCSVAdapterExecutesTransactionRangeAndFiltersExactBlocks(t *testing.T) {
 	address := "0x1111111111111111111111111111111111111111"
 	data := cryptodownload.ExportData{

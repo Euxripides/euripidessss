@@ -152,12 +152,18 @@ func (w *csvMailWatcher) connect(ctx context.Context) error {
 	}
 	cli.Timeout = csvIMAPCommandTimeout
 	w.client = cli
-	if err := w.command(ctx, func() error { return cli.Login(w.config.Username, w.config.Password) }); err != nil {
+	// Login gets a much longer deadline than ordinary commands: Gmail's
+	// authentication round trips can take 30-50s under VPN/proxied networks,
+	// where a 20s command timeout would falsely report "connection closed".
+	cli.Timeout = csvIMAPLoginTimeout
+	loginErr := w.command(ctx, func() error { return cli.Login(w.config.Username, w.config.Password) })
+	cli.Timeout = csvIMAPCommandTimeout
+	if loginErr != nil {
 		w.disconnect()
-		if csvIMAPLoginErrorIsTransient(err) {
-			return &csvMailError{Status: csvMailReconnecting, Op: "login", Err: err}
+		if csvIMAPLoginErrorIsTransient(loginErr) {
+			return &csvMailError{Status: csvMailReconnecting, Op: "login", Err: loginErr}
 		}
-		return &csvMailError{Status: csvMailLoginConfigFailure, Op: "login", Err: err}
+		return &csvMailError{Status: csvMailLoginConfigFailure, Op: "login", Err: loginErr}
 	}
 	return nil
 }

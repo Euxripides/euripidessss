@@ -9,6 +9,7 @@ import {
   DownOutlined,
   DownloadOutlined,
   EllipsisOutlined,
+	FilterFilled,
   FilterOutlined,
   FolderAddOutlined,
   LineChartOutlined,
@@ -28,6 +29,7 @@ import {
   Button,
   Card,
   Checkbox,
+	ConfigProvider,
   DatePicker,
   Descriptions,
   Drawer,
@@ -48,16 +50,22 @@ import {
   Typography,
   message,
 } from "antd";
+import type { ThemeConfig } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { ClickHouseActivity } from "../analytics/ClickHouseExplorerTypes";
+import type { ClickHouseActivity, ClickHouseActivityStats } from "../analytics/ClickHouseExplorerTypes";
 import { listAddressLibrary } from "../address-library/addressLibraryApi";
 import { useAnalysisContext, type AnalysisDirection, type AnalysisWindow, type ExplorerChainKey } from "./analysisContext";
 import { HistoricalPriceCell } from "./HistoricalPriceCell";
 import { TokenIdentity } from "./TokenIdentity";
+import { TxHashLink } from "../transaction/TxHashLink";
+import { useAddressAssets } from "../analytics/useAddressAssets";
+import type { AssetBalance } from "../analytics/flowAssetApi";
+import { buildTransactionURL, isTransactionHash } from "./appRoute";
 import {
   loadActivity,
+	loadActivityStats,
   loadBlock,
   loadContract,
   loadCounterparties,
@@ -74,6 +82,7 @@ import {
   type ExplorerHome,
   type FinancialSummary,
   type SearchItem,
+	type ActivityFilterParams,
 } from "./explorerApi";
 import "./explorer-intelligence.css";
 
@@ -94,9 +103,30 @@ interface ColumnLayout { order: string[]; visible: string[]; pins: Record<string
 interface SavedExplorerView { id: string; name: string; state: ReturnType<typeof useAnalysisContext>["state"]; columnLayouts: Record<string, ColumnLayout>; savedAt: string }
 
 const ACTIVITY_CACHE = new Map<string, { expires: number; value: Awaited<ReturnType<typeof loadActivity>> }>();
+const FILTER_OPTION_CACHE = new Map<string, { expires: number; rows: ClickHouseActivity[] }>();
 const CACHE_TTL_MS = 60_000;
+const FILTER_OPTION_PAGE_SIZE = 200;
+const FILTER_OPTION_ROW_LIMIT = 5_000;
 const SAVED_VIEWS_KEY = "explorer-saved-views-v2";
 const COLUMN_LAYOUT_KEY = "explorer-column-layouts-v2";
+const ACTIVITY_SORT_OPTIONS = [
+  { value: "time_desc", label: "时间：新→旧" }, { value: "time_asc", label: "时间：旧→新" },
+  { value: "tx_asc", label: "交易哈希：升序" }, { value: "tx_desc", label: "交易哈希：降序" },
+  { value: "method_asc", label: "方法：升序" }, { value: "method_desc", label: "方法：降序" },
+  { value: "from_asc", label: "发送方：升序" }, { value: "from_desc", label: "发送方：降序" },
+  { value: "direction_asc", label: "方向：升序" }, { value: "direction_desc", label: "方向：降序" },
+  { value: "to_asc", label: "接收方：升序" }, { value: "to_desc", label: "接收方：降序" },
+  { value: "token_asc", label: "Token：升序" }, { value: "token_desc", label: "Token：降序" },
+  { value: "usd_asc", label: "USD：低→高" }, { value: "usd_desc", label: "USD：高→低" },
+  { value: "status_asc", label: "状态：升序" }, { value: "status_desc", label: "状态：降序" },
+];
+const EXPLORER_FONT_FAMILY = '"Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", Arial, sans-serif';
+const EXPLORER_THEME: ThemeConfig = {
+  token: {
+    fontFamily: EXPLORER_FONT_FAMILY,
+    fontSize: 15,
+  },
+};
 
 interface Props { onNavigate: (page: string, address?: string) => void }
 
@@ -131,12 +161,14 @@ function AddressIdentity({ value, label, onOpen }: { value: unknown; label?: str
   return <button type="button" className="xi-identity" onClick={onOpen} title={address}><span className="xi-identicon">{address.slice(2, 4).toUpperCase()}</span><span><b>{label || short(address)}</b>{label ? <small>{short(address)}</small> : null}</span></button>;
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: "in" | "out" }) {
-  return <div className={`xi-metric ${tone ? `xi-metric-${tone}` : ""}`}><span>{label}</span><strong>{value}</strong></div>;
+function Metric({ label, value, tone, title }: { label: string; value: string; tone?: "in" | "out"; title?: string }) {
+  return <div className={`xi-metric ${tone ? `xi-metric-${tone}` : ""}`} title={title}><span>{label}</span><strong>{value}</strong></div>;
 }
 
 export default function ExplorerPage({ onNavigate }: Props) {
   const { state, update, reset } = useAnalysisContext();
+  const chainId = state.chain === "bsc" ? 56 : state.chain === "eth" ? 1 : state.chain === "base" ? 8453 : 42161;
+  const addressAssets = useAddressAssets({ chain: state.chain, chainId, address: state.rootAddress || null });
   const [query, setQuery] = useState(state.pendingQuery || "");
   const [options, setOptions] = useState<Array<{ value: string; label: ReactNode; item: SearchItem }>>([]);
   const [searching, setSearching] = useState(false);
@@ -161,6 +193,11 @@ export default function ExplorerPage({ onNavigate }: Props) {
 
   const openDetail = useCallback(async (kind: SearchItem["kind"], value: string) => {
     if (kind === "ADDRESS" || kind === "LABEL") return openAddress(value);
+    if (kind === "TRANSACTION" && isTransactionHash(value)) {
+      window.history.pushState(null, "", buildTransactionURL(state.chain, value));
+      window.dispatchEvent(new PopStateEvent("popstate"));
+      return;
+    }
     setDetail({ kind, value, loading: true });
     try {
       let data: Record<string, unknown>;
@@ -251,8 +288,13 @@ export default function ExplorerPage({ onNavigate }: Props) {
   }, [state.chain, state.from, state.rootAddress, state.to, state.window]);
 
   const submitSearch = () => { const item = options[0]?.item; if (item) void openDetail(item.kind, item.value); };
+  const portfolio = useMemo(() => {
+    const items = addressAssets.assets?.assets ?? [];
+    if (!items.length || items.some((item) => item.status !== "success")) return "--";
+    return items.every((item) => Number(item.balance || 0) === 0) ? "$0.00" : "--";
+  }, [addressAssets.assets]);
 
-  return <div className="xi-page xi-page-v11">
+  return <ConfigProvider theme={EXPLORER_THEME}><div className="xi-page xi-page-v11">
     <section className="xi-searchbar xi-searchbar-v11">
       <Select value={state.chain} onChange={(chain) => update({ chain, rootAddress: "", tab: "overview" })} options={CHAINS} className="xi-chain-select" />
       <AutoComplete value={query} options={options} onSearch={setQuery} onChange={setQuery} onSelect={(_, option) => { setQuery(""); void openDetail(option.item.kind, option.item.value); }} className="xi-search">
@@ -261,10 +303,10 @@ export default function ExplorerPage({ onNavigate }: Props) {
       <Button type="primary" icon={<SearchOutlined />} onClick={submitSearch}>搜索</Button>
     </section>
     <nav className="xi-breadcrumb"><button type="button" onClick={() => { reset(); setHeader(null); }}>链上查询</button>{state.rootAddress ? <><span>/</span><Text>地址</Text></> : null}</nav>
-    {state.rootAddress ? <AddressWorkspace header={header} financial={financial} counterparties={counterparties} daily={daily} loading={loading} errors={errors} onOpenAddress={openAddress} onOpenDetail={openDetail} onOpenActivity={openActivityDetail} onNavigate={onNavigate} onFilter={() => setFilterOpen(true)} /> : <ExplorerHomeView home={home} loading={loading} error={errors.home} onOpenDetail={openDetail} />}
+    {state.rootAddress ? <AddressWorkspace header={header} financial={financial} counterparties={counterparties} daily={daily} liveAssets={addressAssets.assets?.assets ?? []} assetState={addressAssets.state} assetError={addressAssets.error} assetQueriedAt={addressAssets.queriedAt} portfolio={portfolio} loading={loading} errors={errors} onOpenAddress={openAddress} onOpenDetail={openDetail} onOpenActivity={openActivityDetail} onNavigate={onNavigate} onFilter={() => setFilterOpen(true)} /> : <ExplorerHomeView home={home} loading={loading} error={errors.home} onOpenDetail={openDetail} />}
     <FilterDrawer open={filterOpen} onClose={() => setFilterOpen(false)} />
     <DetailDrawer detail={detail} onClose={() => setDetail(null)} onOpenAddress={openAddress} onNavigate={onNavigate} />
-  </div>;
+  </div></ConfigProvider>;
 }
 
 function ExplorerHomeView({ home, loading, error, onOpenDetail }: { home: ExplorerHome | null; loading: boolean; error?: string; onOpenDetail: (kind: SearchItem["kind"], value: string) => void }) {
@@ -272,7 +314,7 @@ function ExplorerHomeView({ home, loading, error, onOpenDetail }: { home: Explor
   return <section className="xi-home-v11"><div className="xi-page-heading"><div><Text className="xi-eyebrow">ON-CHAIN EXPLORER</Text><Title level={2}>链上数据查询</Title><Text type="secondary">搜索地址、交易、区块、Token 或已验证实体</Text></div></div><div className="xi-home-strip"><Metric label="最新区块" value={number(home?.latest_block)} /><Metric label="交易" value={number(home?.transaction_count)} /><Metric label="代币转账" value={number(home?.token_transfer_count)} /><Metric label="完整覆盖区间" value={number(home?.coverage_ranges)} /></div><div className="xi-home-lists"><Section title="最近交易" error={error}><CompactObjectList rows={home?.latest_transactions ?? []} onOpen={(row) => onOpenDetail("TRANSACTION", String(row.tx_hash || ""))} /></Section><Section title="大额活动"><CompactObjectList rows={home?.large_transfers ?? []} onOpen={(row) => onOpenDetail("TRANSACTION", String(row.tx_hash || ""))} /></Section></div></section>;
 }
 
-function AddressWorkspace(props: { header: ExplorerHeader | null; financial: FinancialSummary | null; counterparties: CounterpartyFinancial[]; daily: Array<Record<string, unknown>>; loading: boolean; errors: Record<string, string>; onOpenAddress: (address: string) => void; onOpenDetail: (kind: SearchItem["kind"], value: string) => void; onOpenActivity: (row: ClickHouseActivity, tokenMode: boolean) => void; onNavigate: (page: string, address?: string) => void; onFilter: () => void }) {
+function AddressWorkspace(props: { header: ExplorerHeader | null; financial: FinancialSummary | null; counterparties: CounterpartyFinancial[]; daily: Array<Record<string, unknown>>; liveAssets: AssetBalance[]; assetState: "idle" | "loading" | "ready" | "failed"; assetError: string | null; assetQueriedAt: string | null; portfolio: string; loading: boolean; errors: Record<string, string>; onOpenAddress: (address: string) => void; onOpenDetail: (kind: SearchItem["kind"], value: string) => void; onOpenActivity: (row: ClickHouseActivity, tokenMode: boolean) => void; onNavigate: (page: string, address?: string) => void; onFilter: () => void }) {
   const { state, update } = useAnalysisContext();
   const header = props.header;
   const coverage = header?.coverage.status ?? "NO_DATA";
@@ -284,6 +326,8 @@ function AddressWorkspace(props: { header: ExplorerHeader | null; financial: Fin
   const title = system ? short(state.rootAddress, 10, 8) : label || short(state.rootAddress, 10, 8);
   const subtitle = system ? label : label ? state.rootAddress : "无已验证标签";
   const summary = header?.summary;
+  const nativeSymbol = state.chain === "bsc" ? "BNB" : "ETH";
+  const stableSymbol = state.chain === "base" || state.chain === "arbitrum" ? "USDC" : "USDT";
   const activeTab = state.tab.startsWith("analysis:") ? "analysis" : state.tab;
   const analysisMode = state.tab.startsWith("analysis:") ? state.tab.split(":")[1] : "funds";
   const exportURL = buildContextExportURL(state);
@@ -301,7 +345,7 @@ function AddressWorkspace(props: { header: ExplorerHeader | null; financial: Fin
     { key: "transactions", label: "交易", children: <ActivityTable kind="transactions" coverage={coverage} onOpenAddress={props.onOpenAddress} onOpenActivity={props.onOpenActivity} onNavigate={props.onNavigate} onFilter={props.onFilter} /> },
     { key: "token-transfers", label: "代币转账", children: <ActivityTable kind="token-transfers" coverage={coverage} tokenMode onOpenAddress={props.onOpenAddress} onOpenActivity={props.onOpenActivity} onNavigate={props.onNavigate} onFilter={props.onFilter} /> },
     { key: "internal-transactions", label: "内部交易", children: <ActivityTable kind="internal-transactions" coverage={coverage} onOpenAddress={props.onOpenAddress} onOpenActivity={props.onOpenActivity} onNavigate={props.onNavigate} onFilter={props.onFilter} /> },
-    { key: "assets", label: "资产", children: <AssetsView header={header} /> },
+    { key: "assets", label: "资产", children: <AssetsView header={header} liveAssets={props.liveAssets} state={props.assetState} error={props.assetError} queriedAt={props.assetQueriedAt} /> },
     { key: "contracts", label: "合约", children: <ActivityTable kind="contract-creations" coverage={coverage} onOpenAddress={props.onOpenAddress} onOpenActivity={props.onOpenActivity} onNavigate={props.onNavigate} onFilter={props.onFilter} /> },
     { key: "analysis", label: <Dropdown menu={{ items: analysisItems, onClick: ({ key }) => update({ tab: `analysis:${key}` }) }} trigger={["click"]}><span className="xi-analysis-tab">分析 <DownOutlined /></span></Dropdown>, children: <AnalysisView mode={analysisMode} financial={props.financial} daily={props.daily} counterparties={props.counterparties} errors={props.errors} onOpenAddress={props.onOpenAddress} /> },
   ];
@@ -313,9 +357,9 @@ function AddressWorkspace(props: { header: ExplorerHeader | null; financial: Fin
         <div className="xi-address-identity"><div className="xi-title-line"><Title level={3}>{title}</Title><Tag color={system ? "blue" : undefined}>{header?.identity.address_type || "EOA"}</Tag>{verified ? <CheckCircleFilled className="xi-verified" /> : null}</div><div className="xi-address-subtitle"><Text code>{subtitle}</Text>{label && !system ? <Text type="secondary">{verified ? `${confidence || "HIGH"} confidence` : "未验证"}</Text> : null}<Button type="text" size="small" icon={<CopyOutlined />} onClick={copy} /><Popover content={<QRCode value={state.rootAddress} size={160} />} trigger="click"><Button type="text" size="small" icon={<QrcodeOutlined />} /></Popover></div></div>
       </div>
       <div className="xi-header-meta">
-        <InlineMeta label="BNB" value={balanceValue(header, "BNB")} />
-        <InlineMeta label="USDT" value={balanceValue(header, "USDT")} />
-        <InlineMeta label="Portfolio" value={usd(header?.balances.estimated_portfolio_usd, header?.balances.available)} />
+        <InlineMeta label={nativeSymbol} value={balanceValue(props.liveAssets, nativeSymbol)} />
+        <InlineMeta label={stableSymbol} value={balanceValue(props.liveAssets, stableSymbol)} />
+        <InlineMeta label="Portfolio" value={props.portfolio !== "--" ? props.portfolio : usd(header?.balances.estimated_portfolio_usd, header?.balances.available)} />
         <InlineMeta label="首次活动" value={date(summary?.first_seen_time)} />
         <InlineMeta label="最后活动" value={date(summary?.last_seen_time)} />
         <Popover title="数据覆盖" content={<div className="xi-coverage-detail"><p>状态：{coverageLabel(coverage)}</p><p>覆盖区间：{number(coverageDetail?.ranges, coverage !== "NO_DATA")}</p><Button type="link" onClick={() => props.onNavigate("data-quality")}>查看数据质量</Button></div>}><button type="button" className="xi-coverage"><span>Coverage</span><strong className={`status-${coverage.toLowerCase()}`}>{coverageLabel(coverage)}</strong></button></Popover>
@@ -323,17 +367,16 @@ function AddressWorkspace(props: { header: ExplorerHeader | null; financial: Fin
       <div className="xi-primary-actions"><Button type="primary" icon={<NodeIndexOutlined />} onClick={() => props.onNavigate("analytics-graph", state.rootAddress)}>资金追踪</Button><Button icon={<SafetyCertificateOutlined />} onClick={() => props.onNavigate("intelligence", state.rootAddress)}>调查工作台</Button><Button icon={<DownloadOutlined />} href={exportURL}>导出</Button><Dropdown menu={{ items: moreItems, onClick: moreClick }}><Button icon={<EllipsisOutlined />} aria-label="更多操作" /></Dropdown></div>
     </section>
     <div className="xi-context-strip"><Segmented options={WINDOWS} value={state.window} onChange={(window) => update({ window: window as AnalysisWindow })} />{state.window === "CUSTOM" ? <DatePicker.RangePicker showTime onChange={(range) => update({ from: range?.[0]?.toISOString(), to: range?.[1]?.toISOString() })} /> : null}<Text type="secondary">交易对手 {number(summary?.unique_counterparty_count, !noData)} · 活动天数 {number(summary?.active_days, !noData)}</Text></div>
-    <div className="xi-core-metrics"><Metric label="估算资产" value={usd(header?.balances.estimated_portfolio_usd, header?.balances.available)} /><Metric label="总流入" value={usd(props.financial?.flow.total_in_usd, !noData)} tone={noData ? undefined : "in"} /><Metric label="总流出" value={usd(props.financial?.flow.total_out_usd, !noData)} tone={noData ? undefined : "out"} /><Metric label="净流量" value={usd(props.financial?.flow.netflow_usd, !noData)} /></div>
+    <div className="xi-core-metrics"><Metric label="估算资产" value={props.portfolio !== "--" ? props.portfolio : usd(header?.balances.estimated_portfolio_usd, header?.balances.available)} /><Metric label="已定价总流入" value={usd(props.financial?.flow.total_in_usd, !noData)} tone={noData ? undefined : "in"} title="仅汇总具备历史美元价格的活动；未定价代币不计入" /><Metric label="已定价总流出" value={usd(props.financial?.flow.total_out_usd, !noData)} tone={noData ? undefined : "out"} title="仅汇总具备历史美元价格的活动；未定价代币不计入" /><Metric label="已定价净流量" value={usd(props.financial?.flow.netflow_usd, !noData)} title="已定价总流入减已定价总流出，不代表全部代币余额变化" /></div>
     <Tabs className="xi-tabs xi-tabs-v11" activeKey={activeTab} onChange={(tab) => update({ tab })} items={tabs} destroyInactiveTabPane={false} />
   </>;
 }
 
 function InlineMeta({ label, value }: { label: string; value: string }) { return <div className="xi-inline-meta"><span>{label}</span><strong>{value}</strong></div>; }
 
-function balanceValue(header: ExplorerHeader | null, symbol: string): string {
-  if (!header?.balances.available) return "--";
-  const item = (header.balances.items as Array<Record<string, unknown>>).find((row) => String(row.symbol || row.token_symbol).toUpperCase() === symbol);
-  return item ? number(item.balance ?? item.amount) : "--";
+function balanceValue(items: AssetBalance[], symbol: string): string {
+  const item = items.find((row) => String(row.symbol || "").toUpperCase() === symbol);
+  return item ? number(item.balance) : "--";
 }
 
 function coverageLabel(status: ExplorerHeader["coverage"]["status"]): string { return status === "COMPLETE" ? "完整" : status === "PARTIAL" ? "部分" : "未覆盖"; }
@@ -341,7 +384,7 @@ function coverageLabel(status: ExplorerHeader["coverage"]["status"]): string { r
 function Overview(props: { header: ExplorerHeader | null; financial: FinancialSummary | null; daily: Array<Record<string, unknown>>; counterparties: CounterpartyFinancial[]; errors: Record<string, string>; onOpenAddress: (address: string) => void; onOpenDetail: (kind: SearchItem["kind"], value: string) => void }) {
   const max = Math.max(1, ...props.daily.map((row) => Math.abs(Number(row.usd_netflow || 0))));
   return <div className="xi-overview-v11">
-    <div className="xi-overview-top"><Section title="资金概览" error={props.errors.financial}><div className="xi-financial-inline"><span>总流入<strong className="positive">{usd(props.financial?.flow.total_in_usd)}</strong></span><span>总流出<strong className="negative">{usd(props.financial?.flow.total_out_usd)}</strong></span><span>最大单笔流入<strong>{usd(props.financial?.largest_in_usd)}</strong></span><span>最大单笔流出<strong>{usd(props.financial?.largest_out_usd)}</strong></span></div></Section><Section title="活动趋势" error={props.errors.daily}>{props.daily.length ? <div className="xi-trend">{props.daily.slice(-45).map((row, index) => { const value = Number(row.usd_netflow || 0); return <Tooltip key={`${String(row.date)}-${index}`} title={`${date(row.date)} · ${usd(value)}`}><i className={value >= 0 ? "positive" : "negative"} style={{ height: `${Math.max(5, Math.abs(value) / max * 62)}px` }} /></Tooltip>; })}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无趋势数据" />}</Section></div>
+    <div className="xi-overview-top"><Section title="资金概览（已定价活动）" error={props.errors.financial}><div className="xi-financial-inline"><span>总流入<strong className="positive">{usd(props.financial?.flow.total_in_usd)}</strong></span><span>总流出<strong className="negative">{usd(props.financial?.flow.total_out_usd)}</strong></span><span>最大单笔流入<strong>{usd(props.financial?.largest_in_usd)}</strong></span><span>最大单笔流出<strong>{usd(props.financial?.largest_out_usd)}</strong></span></div></Section><Section title="活动趋势" error={props.errors.daily}>{props.daily.length ? <div className="xi-trend">{props.daily.slice(-45).map((row, index) => { const value = Number(row.usd_netflow || 0); return <Tooltip key={`${String(row.date)}-${index}`} title={`${date(row.date)} · ${usd(value)}`}><i className={value >= 0 ? "positive" : "negative"} style={{ height: `${Math.max(5, Math.abs(value) / max * 62)}px` }} /></Tooltip>; })}</div> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无趋势数据" />}</Section></div>
     <div className="xi-overview-top"><Section title="主要资金来源" error={props.errors.counterparties}><RankedCounterparties rows={[...props.counterparties].sort((a, b) => Number(b.in_usd || 0) - Number(a.in_usd || 0)).slice(0, 5)} valueKey="in_usd" onOpen={props.onOpenAddress} /></Section><Section title="主要资金去向" error={props.errors.counterparties}><RankedCounterparties rows={[...props.counterparties].sort((a, b) => Number(b.out_usd || 0) - Number(a.out_usd || 0)).slice(0, 5)} valueKey="out_usd" onOpen={props.onOpenAddress} /></Section></div>
     <RecentActivity onOpenAddress={props.onOpenAddress} onOpenDetail={props.onOpenDetail} />
   </div>;
@@ -359,9 +402,152 @@ function RecentActivity({ onOpenAddress, onOpenDetail }: { onOpenAddress: (addre
   return <Section title="Recent Activity" action={<Button type="link" onClick={() => state && location.assign(`${location.pathname}?tab=transactions`)}>查看全部交易</Button>}><Table className="xi-activity-table" rowKey={(row) => `${row.transaction_hash}:${row.event_index}`} columns={activityColumns(false, state.rootAddress, onOpenAddress, (row) => onOpenDetail("TRANSACTION", row.transaction_hash), () => [])} dataSource={rows} loading={loading} pagination={false} size="small" scroll={{ x: 1280 }} locale={{ emptyText: "暂无最近活动" }} /></Section>;
 }
 
+type ActivityFilterControls = {
+  state: ReturnType<typeof useAnalysisContext>["state"];
+  update: ReturnType<typeof useAnalysisContext>["update"];
+	rows: ClickHouseActivity[];
+	openFilter?: string;
+	setOpenFilter: (key?: string) => void;
+};
+
+function ColumnFilterTitle({ label, active, content, open, onOpenChange }: { label: string; active: boolean; content: ReactNode; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const triggerRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target || triggerRef.current?.contains(target) || (target as Element).closest?.(".ant-popover")) return;
+      onOpenChange(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onOpenChange(false); };
+    document.addEventListener("pointerdown", closeOnOutside, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => { document.removeEventListener("pointerdown", closeOnOutside, true); document.removeEventListener("keydown", closeOnEscape, true); };
+  }, [onOpenChange, open]);
+  return <span ref={triggerRef} className={`xi-column-filter-title${active ? " is-active" : ""}`}><span>{label}</span><Popover content={content} trigger={[]} placement="bottomLeft" open={open} classNames={{ root: "xi-excel-filter-overlay" }}><Button type="text" size="small" aria-label={`筛选${label}`} icon={active ? <FilterFilled /> : <FilterOutlined />} onClick={(event) => { event.stopPropagation(); onOpenChange(!open); }} /></Popover></span>;
+}
+
+type ExcelFilterOption = { label: string; value: string };
+
+function ExcelFilterFrame({ label, sort, sortAsc, sortDesc, onSort, onReset, onApply, children }: { label: string; sort: string; sortAsc: string; sortDesc: string; onSort: (sort: string) => void; onReset: () => void; onApply: () => void; children: ReactNode }) {
+  return <div className="xi-column-filter-popover xi-excel-filter-menu">
+    <div className="xi-excel-filter-caption">筛选字段：<strong>{label}</strong></div>
+    <div className="xi-excel-filter-sort">
+      <button type="button" className={sort === sortAsc ? "is-active" : ""} onClick={() => onSort(sortAsc)}><CaretUpOutlined /> 升序排列</button>
+      <button type="button" className={sort === sortDesc ? "is-active" : ""} onClick={() => onSort(sortDesc)}><CaretDownOutlined /> 降序排列</button>
+    </div>
+    <div className="xi-excel-filter-divider" />
+    {children}
+    <div className="xi-excel-filter-actions"><Button size="small" onClick={onReset}>清除筛选</Button><Button size="small" type="primary" onClick={onApply}>确定</Button></div>
+  </div>;
+}
+
+function ExcelChecklistColumnFilter({ label, values, options, placeholder, multiple = true, allowCustom = false, sort, sortAsc, sortDesc, onSort, onApply }: { label: string; values: string[]; options: ExcelFilterOption[]; placeholder: string; multiple?: boolean; allowCustom?: boolean; sort: string; sortAsc: string; sortDesc: string; onSort: (sort: string) => void; onApply: (values: string[]) => void }) {
+  const defaultDraft = useCallback(() => values.length || !multiple ? values : options.map((option) => option.value), [multiple, options, values]);
+  const [draft, setDraft] = useState(defaultDraft);
+  const [query, setQuery] = useState("");
+  useEffect(() => setDraft(defaultDraft()), [defaultDraft]);
+  const normalizedQuery = query.trim();
+  const mergedOptions = useMemo(() => {
+    const result = [...options];
+    values.forEach((value) => { if (value && !result.some((option) => option.value === value)) result.push({ label: value, value }); });
+    if (allowCustom && normalizedQuery && !result.some((option) => option.value.toLowerCase() === normalizedQuery.toLowerCase())) result.unshift({ label: `使用“${normalizedQuery}”`, value: normalizedQuery });
+    return result;
+  }, [allowCustom, normalizedQuery, options, values]);
+  const visible = mergedOptions.filter((option) => `${option.label} ${option.value}`.toLowerCase().includes(normalizedQuery.toLowerCase())).slice(0, 100);
+  const allVisibleSelected = !multiple && !draft.length ? true : Boolean(visible.length) && visible.every((option) => draft.includes(option.value));
+  const partiallySelected = visible.some((option) => draft.includes(option.value)) && !allVisibleSelected;
+  const toggleAll = (checked: boolean) => setDraft(!multiple ? [] : checked ? [...new Set([...draft, ...visible.map((option) => option.value)])].slice(0, 20) : draft.filter((value) => !visible.some((option) => option.value === value)));
+  const toggle = (value: string, checked: boolean) => setDraft(multiple ? checked ? [...new Set([...draft, value])].slice(0, 20) : draft.filter((item) => item !== value) : checked ? [value] : []);
+  const reset = () => { setDraft(multiple ? options.map((option) => option.value) : []); setQuery(""); onApply([]); };
+  const apply = () => {
+    if (!draft.length && multiple) return void message.warning("请至少选择一个筛选值");
+    const baseValues = options.map((option) => option.value);
+    const allBaseSelected = Boolean(baseValues.length) && baseValues.every((value) => draft.includes(value)) && draft.every((value) => baseValues.includes(value));
+		setQuery("");
+    onApply(allBaseSelected ? [] : draft);
+  };
+  return <ExcelFilterFrame label={label} sort={sort} sortAsc={sortAsc} sortDesc={sortDesc} onSort={onSort} onReset={reset} onApply={apply}>
+    <Input allowClear prefix={<SearchOutlined />} value={query} placeholder={placeholder} onChange={(event) => { const next = event.target.value; if (!query && next.trim() && !values.length && multiple) setDraft([]); setQuery(next); }} />
+    <div className="xi-excel-filter-list">
+      <label className="xi-excel-filter-select-all"><Checkbox checked={allVisibleSelected} indeterminate={partiallySelected} onChange={(event) => toggleAll(event.target.checked)} /> <span>全选{normalizedQuery ? "（搜索结果）" : ""}</span></label>
+      {visible.length ? visible.map((option) => <label key={option.value} className="xi-excel-filter-option" title={option.value}><Checkbox checked={draft.includes(option.value)} onChange={(event) => toggle(option.value, event.target.checked)} /> <span>{option.label}</span></label>) : <div className="xi-excel-filter-empty">没有匹配项</div>}
+    </div>
+    <div className="xi-excel-filter-count">{draft.length ? `已选择 ${draft.length} 项` : "当前为全部值"}</div>
+  </ExcelFilterFrame>;
+}
+
+function TimeColumnFilter({ controls }: { controls: ActivityFilterControls }) {
+  const { state, update } = controls;
+  const [window, setWindow] = useState<AnalysisWindow>(state.window);
+  const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | undefined>(state.from && state.to ? [dayjs(state.from), dayjs(state.to)] : undefined);
+  useEffect(() => { setWindow(state.window); setRange(state.from && state.to ? [dayjs(state.from), dayjs(state.to)] : undefined); }, [state.from, state.to, state.window]);
+  const reset = () => { setWindow("ALL"); setRange(undefined); update({ window: "ALL", from: undefined, to: undefined }); };
+  return <ExcelFilterFrame label="时间" sort={state.sort} sortAsc="time_asc" sortDesc="time_desc" onSort={(sort) => { update({ sort }); controls.setOpenFilter(undefined); }} onReset={() => { reset(); controls.setOpenFilter(undefined); }} onApply={() => { update({ window, from: window === "CUSTOM" ? range?.[0].toISOString() : undefined, to: window === "CUSTOM" ? range?.[1].toISOString() : undefined }); controls.setOpenFilter(undefined); }}>
+    <Segmented block value={window} options={WINDOWS} onChange={(value) => setWindow(value as AnalysisWindow)} />
+    {window === "CUSTOM" ? <DatePicker.RangePicker showTime value={range} onChange={(value) => setRange(value?.[0] && value?.[1] ? [value[0], value[1]] : undefined)} /> : null}
+  </ExcelFilterFrame>;
+}
+
+function USDColumnFilter({ controls }: { controls: ActivityFilterControls }) {
+  const { state, update } = controls;
+  const [minimum, setMinimum] = useState<string | undefined>(state.minUSD);
+  const [maximum, setMaximum] = useState<string | undefined>(state.maxUSD);
+  useEffect(() => { setMinimum(state.minUSD); setMaximum(state.maxUSD); }, [state.maxUSD, state.minUSD]);
+  const [valuations, setValuations] = useState(state.valuationStatuses);
+  useEffect(() => setValuations(state.valuationStatuses), [state.valuationStatuses]);
+  const reset = () => { setMinimum(undefined); setMaximum(undefined); setValuations([]); update({ minUSD: undefined, maxUSD: undefined, valuationStatuses: [] }); };
+  return <ExcelFilterFrame label="当时价值" sort={state.sort} sortAsc="usd_asc" sortDesc="usd_desc" onSort={(sort) => { update({ sort }); controls.setOpenFilter(undefined); }} onReset={() => { reset(); controls.setOpenFilter(undefined); }} onApply={() => { update({ minUSD: minimum, maxUSD: maximum, valuationStatuses: valuations }); controls.setOpenFilter(undefined); }}>
+    <div className="xi-filter-pair"><InputNumber stringMode min="0" value={minimum} placeholder="最小 USDT" onChange={(value) => setMinimum(value ?? undefined)} /><InputNumber stringMode min="0" value={maximum} placeholder="最大 USDT" onChange={(value) => setMaximum(value ?? undefined)} /></div>
+    <div className="xi-excel-filter-list xi-excel-filter-list-compact">{["VALUED", "LOW_CONFIDENCE", "NO_PRICE"].map((value) => <label key={value} className="xi-excel-filter-option"><Checkbox checked={valuations.includes(value)} onChange={(event) => setValuations(event.target.checked ? [...valuations, value] : valuations.filter((item) => item !== value))} /> <span>{value}</span></label>)}</div>
+  </ExcelFilterFrame>;
+}
+
+function TokenColumnFilter({ controls }: { controls: ActivityFilterControls }) {
+  const { state, update } = controls;
+  const [symbol, setSymbol] = useState(state.tokenSymbol || "");
+  const [contract, setContract] = useState(state.tokens[0] || "");
+  useEffect(() => { setSymbol(state.tokenSymbol || ""); setContract(state.tokens[0] || ""); }, [state.tokenSymbol, state.tokens]);
+  const apply = () => {
+    const normalized = contract.trim().toLowerCase();
+    if (normalized && !/^0x[0-9a-f]{40}$/.test(normalized)) { void message.warning("Token 合约地址格式不正确"); return false; }
+    update({ tokenSymbol: symbol.trim() || undefined, tokens: normalized ? [normalized] : [] });
+		return true;
+  };
+  const symbolOptions = uniqueFilterOptions(controls.rows.map((row) => row.token_symbol), state.tokenSymbol ? [state.tokenSymbol] : []);
+  const reset = () => { setSymbol(""); setContract(""); update({ tokenSymbol: undefined, tokens: [] }); };
+  return <ExcelFilterFrame label="Token" sort={state.sort} sortAsc="token_asc" sortDesc="token_desc" onSort={(sort) => { update({ sort }); controls.setOpenFilter(undefined); }} onReset={() => { reset(); controls.setOpenFilter(undefined); }} onApply={() => { if (apply()) controls.setOpenFilter(undefined); }}>
+    <Input allowClear prefix={<SearchOutlined />} value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="搜索或输入 Token Symbol" />
+    <div className="xi-excel-filter-list xi-excel-filter-list-compact">{symbolOptions.filter((option) => !symbol || option.value.toLowerCase().includes(symbol.toLowerCase())).map((option) => <label key={option.value} className="xi-excel-filter-option"><Checkbox checked={symbol === option.value} onChange={(event) => setSymbol(event.target.checked ? option.value : "")} /> <span>{option.label}</span></label>)}</div>
+    <Input allowClear value={contract} onChange={(event) => setContract(event.target.value)} onPressEnter={apply} placeholder="Token 合约地址（可选）" />
+  </ExcelFilterFrame>;
+}
+
+function uniqueFilterOptions(values: Array<unknown>, selected: string[] = []): ExcelFilterOption[] {
+  const unique = new Set<string>();
+  [...selected, ...values.map((value) => String(value || "").trim())].forEach((value) => { if (value && value !== "--") unique.add(value); });
+  return [...unique].sort((left, right) => left.localeCompare(right, "zh-CN", { numeric: true })).slice(0, 20).map((value) => ({ label: value, value }));
+}
+
+function TransferStatsBar({ stats, loading, error, tokenMode }: { stats: ClickHouseActivityStats | null; loading: boolean; error: string; tokenMode: boolean }) {
+  const ratio = stats?.activity_count ? `${number((stats.priced_count / stats.activity_count) * 100)}%` : "--";
+  const items = [
+    [tokenMode ? "转账记录" : "活动记录", number(stats?.activity_count)], ["唯一交易", number(stats?.transaction_count)],
+    ["转入 / 转出", `${number(stats?.incoming_count)} / ${number(stats?.outgoing_count)}`], ["唯一对手", number(stats?.unique_counterparties)],
+    ["已定价流入", usd(stats?.incoming_usd)], ["已定价流出", usd(stats?.outgoing_usd)],
+    ["已定价净额", usd(stats?.netflow_usd)], ["估值覆盖", ratio],
+  ];
+  if (error) return <div className="xi-transfer-stats-error">统计加载失败：{error}</div>;
+  return <div className={`xi-transfer-stats${loading ? " is-loading" : ""}`}>{items.map(([label, value]) => <div key={label}><span>{label}</span><strong className={label === "已定价流入" ? "positive" : label === "已定价流出" ? "negative" : ""}>{loading && !stats ? "…" : value}</strong></div>)}</div>;
+}
+
 function ActivityTable({ kind, coverage, tokenMode = false, onOpenAddress, onOpenActivity, onNavigate, onFilter }: { kind: string; coverage: string; tokenMode?: boolean; onOpenAddress: (address: string) => void; onOpenActivity: (row: ClickHouseActivity, tokenMode: boolean) => void; onNavigate: (page: string, address?: string) => void; onFilter: () => void }) {
   const { state, update, clearFilters } = useAnalysisContext();
   const [page, setPage] = useState<{ items: ClickHouseActivity[]; next_cursor?: string; has_more: boolean }>({ items: [], has_more: false });
+	const [pageScope, setPageScope] = useState("");
+	const [stats, setStats] = useState<ClickHouseActivityStats | null>(null);
+	const [statsLoading, setStatsLoading] = useState(false);
+	const [statsError, setStatsError] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [cursor, setCursor] = useState<string | undefined>();
@@ -370,36 +556,47 @@ function ActivityTable({ kind, coverage, tokenMode = false, onOpenAddress, onOpe
   const [quick, setQuick] = useState<QuickFilter>(() => quickFromState(state));
   const [contextRow, setContextRow] = useState<ClickHouseActivity | null>(null);
   const [layout, setLayout] = useState<ColumnLayout>(() => loadColumnLayout(kind, tokenMode));
+	const [openColumnFilter, setOpenColumnFilter] = useState<string>();
+	const filterOptionScope = `${state.chain}:${state.rootAddress}:${kind}`;
+	const [filterOptionSnapshot, setFilterOptionSnapshot] = useState<{ scope: string; rows: ClickHouseActivity[] }>({ scope: "", rows: [] });
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
 
-  const filterSignature = useMemo(() => JSON.stringify([state.direction, state.tokens, state.tokenSymbol, state.minUSD, state.maxUSD, state.entityFilters, state.entity, state.entityRole, state.protocolFilters, state.methodFilters, state.statusFilters, state.counterparty, state.fromAddress, state.toAddress, state.window, state.from, state.to, state.sort]), [state.counterparty, state.direction, state.entity, state.entityFilters, state.entityRole, state.from, state.fromAddress, state.maxUSD, state.methodFilters, state.minUSD, state.protocolFilters, state.sort, state.statusFilters, state.to, state.toAddress, state.tokenSymbol, state.tokens, state.window]);
-  const cacheKey = useMemo(() => JSON.stringify([state.chain, state.rootAddress, kind, filterSignature, state.pageSize, cursor]), [cursor, filterSignature, kind, state.chain, state.pageSize, state.rootAddress]);
+  const filterSignature = useMemo(() => JSON.stringify([state.transactionHash, state.direction, state.tokens, state.tokenSymbol, state.minUSD, state.maxUSD, state.entityFilters, state.entity, state.entityRole, state.protocolFilters, state.methodFilters, state.statusFilters, state.valuationStatuses, state.counterparty, state.fromAddress, state.toAddress, state.window, state.from, state.to]), [state.counterparty, state.direction, state.entity, state.entityFilters, state.entityRole, state.from, state.fromAddress, state.maxUSD, state.methodFilters, state.minUSD, state.protocolFilters, state.statusFilters, state.to, state.toAddress, state.tokenSymbol, state.tokens, state.transactionHash, state.valuationStatuses, state.window]);
+	const requestFilters = useMemo(() => activityRequestFilters(state), [filterSignature]);
+	const queryCursor = pageScope === filterSignature ? cursor : undefined;
+  const cacheKey = useMemo(() => JSON.stringify([state.chain, state.rootAddress, kind, filterSignature, state.pageSize, queryCursor]), [filterSignature, kind, queryCursor, state.chain, state.pageSize, state.rootAddress]);
   const load = useCallback(async (next?: string, background = false) => {
     const key = JSON.stringify([state.chain, state.rootAddress, kind, filterSignature, state.pageSize, next]);
     const cached = ACTIVITY_CACHE.get(key);
-    if (cached && cached.expires > Date.now()) { setPage(cached.value); return cached.value; }
+    if (cached && cached.expires > Date.now()) { setPage(cached.value); setPageScope(filterSignature); return cached.value; }
     if (!background) setLoading(true);
     setError("");
     try {
-      const value = await loadActivity(state.chain, state.rootAddress, kind, state.pageSize, next);
+      const value = await loadActivity(state.chain, state.rootAddress, kind, state.pageSize, next, requestFilters);
       ACTIVITY_CACHE.set(key, { expires: Date.now() + CACHE_TTL_MS, value });
-      if (!background) setPage(value);
+      if (!background) { setPage(value); setPageScope(filterSignature); }
       return value;
     } catch (reason) {
       if (!background) setError(reason instanceof Error ? reason.message : "活动加载失败");
       return undefined;
     } finally { if (!background) setLoading(false); }
-  }, [filterSignature, kind, state.chain, state.pageSize, state.rootAddress]);
+  }, [filterSignature, kind, requestFilters, state.chain, state.pageSize, state.rootAddress]);
 
-  useEffect(() => { void load(cursor); }, [cacheKey, cursor, load]);
+  useEffect(() => { void load(queryCursor); }, [cacheKey, load, queryCursor]);
   useEffect(() => {
-    if (!page.has_more || !page.next_cursor) return;
+    if (pageScope !== filterSignature || !page.has_more || !page.next_cursor) return;
     const timer = window.setTimeout(() => { void load(page.next_cursor, true); }, 300);
     return () => window.clearTimeout(timer);
-  }, [load, page.has_more, page.next_cursor]);
+  }, [filterSignature, load, page.has_more, page.next_cursor, pageScope]);
   useEffect(() => { saveColumnLayout(kind, layout); }, [kind, layout]);
-  useEffect(() => { setCursor(undefined); setHistory([]); setPageNumber(1); }, [kind, state.chain, state.rootAddress, state.pageSize]);
+  useEffect(() => { setCursor(undefined); setHistory([]); setPageNumber(1); }, [filterSignature, kind, state.chain, state.rootAddress, state.pageSize]);
   useEffect(() => { setQuick(quickFromState(state)); }, [filterSignature]);
+	useEffect(() => {
+		let active = true;
+		setStatsLoading(true); setStatsError("");
+		void loadActivityStats(state.chain, state.rootAddress, kind, requestFilters).then((value) => { if (active) setStats(value); }).catch((reason) => { if (active) setStatsError(reason instanceof Error ? reason.message : "统计加载失败"); }).finally(() => { if (active) setStatsLoading(false); });
+		return () => { active = false; };
+	}, [filterSignature, kind, requestFilters, state.chain, state.rootAddress]);
 
   const applyQuick = (value: QuickFilter) => {
     setQuick(value);
@@ -411,8 +608,42 @@ function ActivityTable({ kind, coverage, tokenMode = false, onOpenAddress, onOpe
     else if (value === "bridge") update({ protocolFilters: ["BRIDGE"] });
     else if (value === "usdt") update({ tokenSymbol: "USDT" });
   };
-  const rows = useMemo(() => filterActivityRows(page.items, state), [page.items, state]);
-  const allColumns = useMemo(() => activityColumns(tokenMode, state.rootAddress, onOpenAddress, onOpenActivity, (row) => rowActions(row, tokenMode, state.rootAddress, onOpenAddress, onOpenActivity, onNavigate, update)), [onNavigate, onOpenActivity, onOpenAddress, state.rootAddress, tokenMode, update]);
+	const rows = useMemo(() => sortActivityRows(page.items, state.sort), [page.items, state.sort]);
+	useEffect(() => {
+		let active = true;
+		const cached = FILTER_OPTION_CACHE.get(filterOptionScope);
+		if (cached && cached.expires > Date.now()) {
+			setFilterOptionSnapshot({ scope: filterOptionScope, rows: cached.rows });
+			return () => { active = false; };
+		}
+		void (async () => {
+			const collected: ClickHouseActivity[] = [];
+			let nextCursor: string | undefined;
+			do {
+				const result = await loadActivity(state.chain, state.rootAddress, kind, FILTER_OPTION_PAGE_SIZE, nextCursor);
+				collected.push(...result.items);
+				nextCursor = result.has_more ? result.next_cursor : undefined;
+			} while (nextCursor && collected.length < FILTER_OPTION_ROW_LIMIT);
+			if (!active) return;
+			const optionRows = collected.slice(0, FILTER_OPTION_ROW_LIMIT);
+			FILTER_OPTION_CACHE.set(filterOptionScope, { expires: Date.now() + CACHE_TTL_MS, rows: optionRows });
+			setFilterOptionSnapshot({ scope: filterOptionScope, rows: optionRows });
+		})().catch(() => { /* The visible table remains the fallback option source. */ });
+		return () => { active = false; };
+	}, [filterOptionScope, kind, state.chain, state.rootAddress]);
+	useEffect(() => {
+		if (openColumnFilter) return;
+		setFilterOptionSnapshot((current) => {
+			const merged = new Map<string, ClickHouseActivity>();
+			if (current.scope === filterOptionScope) current.rows.forEach((row) => merged.set(activityKey(row), row));
+			rows.forEach((row) => merged.set(activityKey(row), row));
+			return { scope: filterOptionScope, rows: [...merged.values()] };
+		});
+	}, [filterOptionScope, openColumnFilter, rows]);
+	useEffect(() => { setOpenColumnFilter(undefined); }, [kind, state.chain, state.rootAddress]);
+	const filterOptionRows = filterOptionSnapshot.scope === filterOptionScope ? filterOptionSnapshot.rows : [];
+	const filterControls = useMemo<ActivityFilterControls>(() => ({ state, update, rows: filterOptionRows, openFilter: openColumnFilter, setOpenFilter: setOpenColumnFilter }), [filterOptionRows, openColumnFilter, state, update]);
+  const allColumns = useMemo(() => activityColumns(tokenMode, state.rootAddress, onOpenAddress, onOpenActivity, (row) => rowActions(row, tokenMode, state.rootAddress, onOpenAddress, onOpenActivity, onNavigate, update), filterControls), [filterControls, onNavigate, onOpenActivity, onOpenAddress, state.rootAddress, tokenMode, update]);
   const columns = useMemo(() => layout.order.map((key) => allColumns.find((column) => String(column.key) === key)).filter((column): column is NonNullable<typeof column> => Boolean(column) && layout.visible.includes(String(column?.key))).map((column) => { const pin = layout.pins[String(column.key)]; return { ...column, fixed: pin === "left" ? "left" as const : pin === "right" ? "right" as const : undefined }; }), [allColumns, layout]);
   const selectedKeys = state.selectedRows.filter((key) => rows.some((row) => activityKey(row) === key));
   const selected = rows.filter((row) => selectedKeys.includes(activityKey(row)));
@@ -435,8 +666,9 @@ function ActivityTable({ kind, coverage, tokenMode = false, onOpenAddress, onOpe
     else saveAddressTags(selected, state.rootAddress);
   };
   return <Section title={tokenMode ? "代币转账" : "交易活动"} error={error} action={<Space><SavedViewsControl currentLayout={layout} onApplyLayout={setLayout} /><Popover content={<ColumnManager columns={allColumns} layout={layout} onChange={setLayout} tokenMode={tokenMode} />} trigger="click" placement="bottomRight"><Button icon={<SettingOutlined />}>列</Button></Popover><Button icon={<ReloadOutlined />} onClick={() => { ACTIVITY_CACHE.delete(cacheKey); void load(cursor); }}>刷新</Button></Space>}>
+	<TransferStatsBar stats={stats} loading={statsLoading} error={statsError} tokenMode={tokenMode} />
     <div className="xi-table-sticky" ref={tableScrollRef}>
-      <div className="xi-table-toolbar"><Segmented value={quick} onChange={(value) => applyQuick(value as QuickFilter)} options={[{ value: "all", label: "全部" }, { value: "in", label: "转入" }, { value: "out", label: "转出" }, { value: "large", label: "大额" }, { value: "cex", label: "CEX" }, { value: "dex", label: "DEX" }, { value: "bridge", label: "Bridge" }, { value: "usdt", label: "USDT" }]} /><Space><Select className="xi-sort-select" value={state.sort} onChange={(sort) => update({ sort })} options={[{ value: "time_desc", label: "时间：新→旧" }, { value: "time_asc", label: "时间：旧→新" }, { value: "usd_desc", label: "USD：高→低" }]} /><Button icon={<FilterOutlined />} onClick={onFilter}>高级筛选</Button></Space></div>
+      <div className="xi-table-toolbar"><Segmented value={quick} onChange={(value) => applyQuick(value as QuickFilter)} options={[{ value: "all", label: "全部" }, { value: "in", label: "转入" }, { value: "out", label: "转出" }, { value: "large", label: "大额" }, { value: "cex", label: "CEX" }, { value: "dex", label: "DEX" }, { value: "bridge", label: "Bridge" }, { value: "usdt", label: "USDT" }]} /><Space><Select className="xi-sort-select" value={state.sort} onChange={(sort) => update({ sort })} options={ACTIVITY_SORT_OPTIONS} /><Button icon={<FilterOutlined />} onClick={onFilter}>高级筛选</Button></Space></div>
       <FilterChips onClear={clearFilters} />
       {selected.length ? <div className="xi-bulk-bar"><Text strong>已选择 {selected.length} 项</Text><Space>{bulkMenu.map((item) => <Button key={item.key} size="small" icon={item.icon} onClick={() => runBulk(item.key)}>{item.label}</Button>)}</Space></div> : null}
     </div>
@@ -445,23 +677,29 @@ function ActivityTable({ kind, coverage, tokenMode = false, onOpenAddress, onOpe
   </Section>;
 }
 
-function activityColumns(tokenMode: boolean, rootAddress: string, onOpenAddress: (address: string) => void, onOpenActivity: (row: ClickHouseActivity, tokenMode: boolean) => void, actions: (row: ClickHouseActivity) => Array<{ key: string; label: string; icon?: ReactNode; onClick?: () => void }>): ColumnsType<ClickHouseActivity> {
+function activityColumns(tokenMode: boolean, rootAddress: string, onOpenAddress: (address: string) => void, _onOpenActivity: (row: ClickHouseActivity, tokenMode: boolean) => void, actions: (row: ClickHouseActivity) => Array<{ key: string; label: string; icon?: ReactNode; onClick?: () => void }>, controls?: ActivityFilterControls): ColumnsType<ClickHouseActivity> {
   const fromAddress = (row: ClickHouseActivity) => row.direction === "IN" ? row.counterparty_address : row.address || rootAddress;
   const toAddress = (row: ClickHouseActivity) => row.direction === "IN" ? row.address || rootAddress : row.counterparty_address;
   const entity = (address: string, row: ClickHouseActivity) => address === row.counterparty_address ? row.counterparty_label : "";
+	const title = (key: string, label: string, active: boolean, content: ReactNode) => controls ? <ColumnFilterTitle label={label} active={active} content={content} open={controls.openFilter === key} onOpenChange={(open) => controls.setOpenFilter(open ? key : undefined)} /> : label;
+	const filterState = controls?.state;
+	const filterRows = controls?.rows || [];
+	const txOptions = uniqueFilterOptions(filterRows.map((row) => row.transaction_hash), filterState?.transactionHash ? [filterState.transactionHash] : []).map((option) => ({ ...option, label: short(option.value, 12, 10) }));
+	const methodOptions = uniqueFilterOptions(filterRows.map((row) => row.method_name || row.method_id), filterState?.methodFilters);
+	const fromOptions = uniqueFilterOptions(filterRows.map(fromAddress), filterState?.fromAddress ? [filterState.fromAddress] : []).map((option) => ({ ...option, label: short(option.value, 12, 10) }));
+	const toOptions = uniqueFilterOptions(filterRows.map(toAddress), filterState?.toAddress ? [filterState.toAddress] : []).map((option) => ({ ...option, label: short(option.value, 12, 10) }));
   return [
-    { key: "tx", title: "交易哈希", dataIndex: "transaction_hash", width: 136, fixed: "left", render: (value, row) => <Button type="link" className="xi-link" onClick={() => onOpenActivity(row, tokenMode)}>{short(value)}</Button> },
-    { key: "method", title: "方法", width: 112, render: (_, row) => row.method_name || row.method_id || "--" },
-    { key: "block", title: "区块", dataIndex: "block_number", width: 94, render: (value) => number(value) },
-    { key: "time", title: "时间", dataIndex: "block_time", width: 154, render: (value) => date(value) },
-    { key: "from", title: "发送方", width: 176, render: (_, row) => { const address = fromAddress(row); return <AddressIdentity value={address} label={entity(address, row)} onOpen={() => onOpenAddress(address)} />; } },
-    { key: "direction", title: "方向", width: 82, render: (_, row) => <span className={`xi-direction xi-direction-${row.direction.toLowerCase()}`}>{row.direction === "IN" ? <><ArrowLeftOutlined /> 转入</> : row.direction === "OUT" ? <>转出 <ArrowRightOutlined /></> : "自转"}</span> },
-    { key: "to", title: "接收方", width: 176, render: (_, row) => { const address = toAddress(row); return <AddressIdentity value={address} label={entity(address, row)} onOpen={() => onOpenAddress(address)} />; } },
+    { key: "tx", title: title("tx", "交易哈希", Boolean(filterState?.transactionHash), <ExcelChecklistColumnFilter label="交易哈希" values={filterState?.transactionHash ? [filterState.transactionHash] : []} options={txOptions} placeholder="搜索或输入完整交易哈希" multiple={false} allowCustom sort={filterState?.sort || "time_desc"} sortAsc="tx_asc" sortDesc="tx_desc" onSort={(sort) => { controls?.update({ sort }); controls?.setOpenFilter(undefined); }} onApply={(values) => { controls?.update({ transactionHash: values[0] || undefined }); controls?.setOpenFilter(undefined); }} />), dataIndex: "transaction_hash", width: 156, fixed: "left", render: (value, row) => <TxHashLink chainId={row.chain_id} hash={String(value)} /> },
+    { key: "method", title: title("method", "方法", Boolean(filterState?.methodFilters.length), <ExcelChecklistColumnFilter label="方法" values={filterState?.methodFilters || []} options={methodOptions} placeholder="搜索或输入方法名" allowCustom sort={filterState?.sort || "time_desc"} sortAsc="method_asc" sortDesc="method_desc" onSort={(sort) => { controls?.update({ sort }); controls?.setOpenFilter(undefined); }} onApply={(methodFilters) => { controls?.update({ methodFilters }); controls?.setOpenFilter(undefined); }} />), width: 112, render: (_, row) => row.method_name || row.method_id || "--" },
+    { key: "time", title: title("time", "时间", Boolean(filterState && (filterState.window !== "ALL" || filterState.from || filterState.to)), controls ? <TimeColumnFilter controls={controls} /> : null), dataIndex: "block_time", width: 154, render: (value) => date(value) },
+    { key: "from", title: title("from", "发送方", Boolean(filterState?.fromAddress), <ExcelChecklistColumnFilter label="发送方" values={filterState?.fromAddress ? [filterState.fromAddress] : []} options={fromOptions} placeholder="搜索或输入发送方地址" multiple={false} allowCustom sort={filterState?.sort || "time_desc"} sortAsc="from_asc" sortDesc="from_desc" onSort={(sort) => { controls?.update({ sort }); controls?.setOpenFilter(undefined); }} onApply={(values) => { controls?.update({ fromAddress: values[0]?.toLowerCase() || undefined }); controls?.setOpenFilter(undefined); }} />), width: 176, render: (_, row) => { const address = fromAddress(row); return <AddressIdentity value={address} label={entity(address, row)} onOpen={() => onOpenAddress(address)} />; } },
+    { key: "direction", title: title("direction", "方向", Boolean(filterState && filterState.direction !== "all"), <ExcelChecklistColumnFilter label="方向" values={filterState && filterState.direction !== "all" ? [filterState.direction] : []} options={[{ label: "转入", value: "in" }, { label: "转出", value: "out" }, { label: "自转", value: "self" }]} placeholder="搜索方向" multiple={false} sort={filterState?.sort || "time_desc"} sortAsc="direction_asc" sortDesc="direction_desc" onSort={(sort) => { controls?.update({ sort }); controls?.setOpenFilter(undefined); }} onApply={(values) => { controls?.update({ direction: (values[0] || "all") as AnalysisDirection }); controls?.setOpenFilter(undefined); }} />), width: 82, render: (_, row) => <span className={`xi-direction xi-direction-${row.direction.toLowerCase()}`}>{row.direction === "IN" ? <><ArrowLeftOutlined /> 转入</> : row.direction === "OUT" ? <>转出 <ArrowRightOutlined /></> : "自转"}</span> },
+    { key: "to", title: title("to", "接收方", Boolean(filterState?.toAddress), <ExcelChecklistColumnFilter label="接收方" values={filterState?.toAddress ? [filterState.toAddress] : []} options={toOptions} placeholder="搜索或输入接收方地址" multiple={false} allowCustom sort={filterState?.sort || "time_desc"} sortAsc="to_asc" sortDesc="to_desc" onSort={(sort) => { controls?.update({ sort }); controls?.setOpenFilter(undefined); }} onApply={(values) => { controls?.update({ toAddress: values[0]?.toLowerCase() || undefined }); controls?.setOpenFilter(undefined); }} />), width: 176, render: (_, row) => { const address = toAddress(row); return <AddressIdentity value={address} label={entity(address, row)} onOpen={() => onOpenAddress(address)} />; } },
     { key: "value", title: tokenMode ? "数量" : "价值", dataIndex: "amount", align: "right", width: 112, render: (value) => number(value) },
-    ...(tokenMode ? [{ key: "token", title: "Token", width: 220, render: (_: unknown, row: ClickHouseActivity) => <TokenIdentity chainId={row.chain_id} symbol={row.token_symbol} name={row.token_name} address={row.token_address} logoURI={row.token_logo_uri} verified={row.token_verified} spam={row.token_spam} /> }] : []),
-    { key: "usd", title: "当时价值", align: "right", width: 180, render: (_, row) => <HistoricalPriceCell priceUSD={row.historical_price_usdt ?? row.price_usd} usdValue={row.historical_value_usdt ?? row.usd_value} priceTime={row.price_timestamp ?? row.price_time} source={row.price_source} confidence={row.price_confidence} symbol={row.token_symbol || "BNB"} route={row.price_route} priceType={row.price_type} ageSeconds={row.price_age_seconds} valuationStatus={row.valuation_status} /> },
+    ...(tokenMode ? [{ key: "token", title: title("token", "Token", Boolean(filterState && (filterState.tokens.length || filterState.tokenSymbol)), controls ? <TokenColumnFilter controls={controls} /> : null), width: 220, render: (_: unknown, row: ClickHouseActivity) => <TokenIdentity chainId={row.chain_id} symbol={row.token_symbol} name={row.token_name} address={row.token_address} logoURI={row.token_logo_uri} verified={row.token_verified} spam={row.token_spam} /> }] : []),
+    { key: "usd", title: title("usd", "当时价值", Boolean(filterState && (filterState.minUSD || filterState.maxUSD || filterState.valuationStatuses.length)), controls ? <USDColumnFilter controls={controls} /> : null), align: "right", width: 180, render: (_, row) => <HistoricalPriceCell priceUSD={row.historical_price_usdt ?? row.price_usd} usdValue={row.historical_value_usdt ?? row.usd_value} priceTime={row.price_timestamp ?? row.price_time} source={row.price_source} confidence={row.price_confidence} symbol={row.token_symbol || "BNB"} route={row.price_route} priceType={row.price_type} ageSeconds={row.price_age_seconds} valuationStatus={row.valuation_status} /> },
     ...(!tokenMode ? [{ key: "fee", title: "手续费", align: "right" as const, width: 92, render: () => "--" }] : []),
-    { key: "status", title: "状态", dataIndex: "status", width: 82, render: (value) => value === "SUCCESS" ? <Tag color="success">成功</Tag> : value === "FAILED" ? <Tag color="error">失败</Tag> : <Tag>未知</Tag> },
+    { key: "status", title: title("status", "状态", Boolean(filterState?.statusFilters.length), <ExcelChecklistColumnFilter label="状态" values={filterState?.statusFilters || []} options={["SUCCESS", "FAILED", "UNKNOWN"].map((value) => ({ label: value === "SUCCESS" ? "成功" : value === "FAILED" ? "失败" : "未知", value }))} placeholder="搜索状态" sort={filterState?.sort || "time_desc"} sortAsc="status_asc" sortDesc="status_desc" onSort={(sort) => { controls?.update({ sort }); controls?.setOpenFilter(undefined); }} onApply={(statusFilters) => { controls?.update({ statusFilters }); controls?.setOpenFilter(undefined); }} />), dataIndex: "status", width: 82, render: (value) => value === "SUCCESS" ? <Tag color="success">成功</Tag> : value === "FAILED" ? <Tag color="error">失败</Tag> : <Tag>未知</Tag> },
     { key: "from_entity", title: "From Entity", width: 130, render: (_, row) => row.direction === "OUT" ? "--" : row.counterparty_label || row.counterparty_entity_type || "--" },
     { key: "to_entity", title: "To Entity", width: 130, render: (_, row) => row.direction === "IN" ? "--" : row.counterparty_label || row.counterparty_entity_type || "--" },
     { key: "protocol", title: "协议", width: 110, render: (_, row) => activityProtocol(row) || "--" },
@@ -477,26 +715,39 @@ function historicalUSDT(row: ClickHouseActivity): number { return Number(row.his
 function activityProtocol(row: ClickHouseActivity): string { const text = `${row.activity_type} ${row.method_name}`.toUpperCase(); return text.includes("BRIDGE") ? "BRIDGE" : ["SWAP", "DEX", "PAIR", "LIQUIDITY"].some((item) => text.includes(item)) ? "DEX" : ""; }
 function quickFromState(state: ReturnType<typeof useAnalysisContext>["state"]): QuickFilter { if (state.tokenSymbol === "USDT") return "usdt"; if (state.entityFilters.includes("CEX")) return "cex"; if (state.protocolFilters.includes("DEX")) return "dex"; if (state.protocolFilters.includes("BRIDGE")) return "bridge"; if (state.minUSD === "100000") return "large"; return state.direction === "in" || state.direction === "out" ? state.direction : "all"; }
 
-function filterActivityRows(rows: ClickHouseActivity[], state: ReturnType<typeof useAnalysisContext>["state"]): ClickHouseActivity[] {
+function activityRequestFilters(state: ReturnType<typeof useAnalysisContext>["state"]): ActivityFilterParams {
   const cutoffDays: Record<string, number> = { "24H": 1, "7D": 7, "30D": 30, "90D": 90, "1Y": 365 };
-  const cutoff = cutoffDays[state.window] ? dayjs().subtract(cutoffDays[state.window], "day") : undefined;
-  const filtered = rows.filter((row) => state.direction === "all" || row.direction.toLowerCase() === state.direction)
-    .filter((row) => !state.minUSD || historicalUSDT(row) >= Number(state.minUSD))
-    .filter((row) => !state.maxUSD || historicalUSDT(row) <= Number(state.maxUSD))
-    .filter((row) => !state.tokens.length || state.tokens.includes(row.token_address.toLowerCase()))
-    .filter((row) => !state.tokenSymbol || row.token_symbol.toUpperCase() === state.tokenSymbol.toUpperCase())
-    .filter((row) => !state.entityFilters.length || state.entityFilters.includes(row.counterparty_entity_type.toUpperCase()))
-    .filter((row) => !state.entity || `${row.counterparty_label} ${row.counterparty_address}`.toLowerCase().includes(state.entity.toLowerCase()))
-    .filter((row) => !state.protocolFilters.length || state.protocolFilters.includes(activityProtocol(row)))
-    .filter((row) => !state.methodFilters.length || state.methodFilters.some((method) => `${row.method_id} ${row.method_name}`.toLowerCase().includes(method.toLowerCase())))
-    .filter((row) => !state.statusFilters.length || state.statusFilters.includes(row.status.toUpperCase()))
-    .filter((row) => !state.counterparty || row.counterparty_address.toLowerCase() === state.counterparty.toLowerCase())
-    .filter((row) => !state.fromAddress || (row.direction === "IN" ? row.counterparty_address : row.address).toLowerCase() === state.fromAddress.toLowerCase())
-    .filter((row) => !state.toAddress || (row.direction === "IN" ? row.address : row.counterparty_address).toLowerCase() === state.toAddress.toLowerCase())
-    .filter((row) => !cutoff || dayjs(row.block_time).isAfter(cutoff))
-    .filter((row) => !state.from || dayjs(row.block_time).isAfter(dayjs(state.from)))
-    .filter((row) => !state.to || dayjs(row.block_time).isBefore(dayjs(state.to)));
-  return [...filtered].sort((a, b) => state.sort === "time_asc" ? dayjs(a.block_time).valueOf() - dayjs(b.block_time).valueOf() : state.sort === "usd_desc" ? (historicalUSDT(b) || 0) - (historicalUSDT(a) || 0) : dayjs(b.block_time).valueOf() - dayjs(a.block_time).valueOf());
+	const derivedFrom = cutoffDays[state.window] ? dayjs().subtract(cutoffDays[state.window], "day").toISOString() : undefined;
+	return {
+		transactionHash: state.transactionHash, direction: state.direction === "all" ? undefined : state.direction,
+		counterparty: state.counterparty, fromAddress: state.fromAddress, toAddress: state.toAddress,
+		tokens: state.tokens, tokenSymbol: state.tokenSymbol, minUSD: state.minUSD, maxUSD: state.maxUSD,
+		methods: state.methodFilters, statuses: state.statusFilters, entityTypes: state.entityFilters, entity: state.entity,
+		protocols: state.protocolFilters, valuationStatuses: state.valuationStatuses,
+		from: state.window === "CUSTOM" ? state.from : derivedFrom, to: state.window === "CUSTOM" ? state.to : undefined,
+	};
+}
+
+function sortActivityRows(rows: ClickHouseActivity[], sort: string): ClickHouseActivity[] {
+	const descending = sort.endsWith("_desc");
+	const field = sort.replace(/_(asc|desc)$/, "");
+	const value = (row: ClickHouseActivity): string | number => {
+		if (field === "time") return dayjs(row.block_time).valueOf();
+		if (field === "usd") return historicalUSDT(row) || 0;
+		if (field === "tx") return row.transaction_hash || "";
+		if (field === "method") return row.method_name || row.method_id || "";
+		if (field === "from") return row.direction === "IN" ? row.counterparty_address : row.address;
+		if (field === "to") return row.direction === "IN" ? row.address : row.counterparty_address;
+		if (field === "direction") return row.direction || "";
+		if (field === "token") return row.token_symbol || row.token_address || "";
+		if (field === "status") return row.status || "";
+		return dayjs(row.block_time).valueOf();
+	};
+	return [...rows].sort((left, right) => {
+		const a = value(left); const b = value(right);
+		const result = typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), "zh-CN", { numeric: true });
+		return descending ? -result : result;
+	});
 }
 
 function rowActions(row: ClickHouseActivity, tokenMode: boolean, rootAddress: string, onOpenAddress: (address: string) => void, onOpenActivity: (row: ClickHouseActivity, tokenMode: boolean) => void, onNavigate: (page: string, address?: string) => void, update: ReturnType<typeof useAnalysisContext>["update"]) {
@@ -519,7 +770,10 @@ function rowActions(row: ClickHouseActivity, tokenMode: boolean, rootAddress: st
 function FilterChips({ onClear }: { onClear: () => void }) {
   const { state, update } = useAnalysisContext();
   const chips: Array<{ key: string; label: string; clear: () => void }> = [];
+	if (state.transactionHash) chips.push({ key: "transaction-hash", label: `Tx: ${short(state.transactionHash)}`, clear: () => update({ transactionHash: undefined }) });
   if (state.direction !== "all") chips.push({ key: "direction", label: state.direction.toUpperCase(), clear: () => update({ direction: "all" }) });
+	if (state.fromAddress) chips.push({ key: "from-address", label: `From: ${short(state.fromAddress)}`, clear: () => update({ fromAddress: undefined }) });
+	if (state.toAddress) chips.push({ key: "to-address", label: `To: ${short(state.toAddress)}`, clear: () => update({ toAddress: undefined }) });
   if (state.tokenSymbol) chips.push({ key: "token-symbol", label: state.tokenSymbol, clear: () => update({ tokenSymbol: undefined }) });
   state.tokens.forEach((token) => chips.push({ key: `token-${token}`, label: `Token: ${short(token)}`, clear: () => update({ tokens: state.tokens.filter((item) => item !== token) }) }));
   if (state.minUSD) chips.push({ key: "min", label: `≥ ${usd(state.minUSD)}`, clear: () => update({ minUSD: undefined }) });
@@ -528,6 +782,7 @@ function FilterChips({ onClear }: { onClear: () => void }) {
   state.protocolFilters.forEach((protocol) => chips.push({ key: `protocol-${protocol}`, label: `Protocol: ${protocol}`, clear: () => update({ protocolFilters: state.protocolFilters.filter((item) => item !== protocol) }) }));
   state.methodFilters.forEach((method) => chips.push({ key: `method-${method}`, label: `Method: ${method}`, clear: () => update({ methodFilters: state.methodFilters.filter((item) => item !== method) }) }));
   state.statusFilters.forEach((status) => chips.push({ key: `status-${status}`, label: `Status: ${status}`, clear: () => update({ statusFilters: state.statusFilters.filter((item) => item !== status) }) }));
+	state.valuationStatuses.forEach((status) => chips.push({ key: `valuation-${status}`, label: `估值: ${status}`, clear: () => update({ valuationStatuses: state.valuationStatuses.filter((item) => item !== status) }) }));
   if (state.window !== "ALL") chips.push({ key: "window", label: state.window, clear: () => update({ window: "ALL", from: undefined, to: undefined }) });
   if (!chips.length) return null;
   return <div className="xi-active-chips">{chips.map((chip) => <Tag closable key={chip.key} onClose={chip.clear}>{chip.label}</Tag>)}<Button type="link" size="small" onClick={onClear}>Clear All</Button></div>;
@@ -538,7 +793,7 @@ function ColumnManager({ columns, layout, onChange, tokenMode }: { columns: Colu
     默认: defaultVisibleColumns(tokenMode),
     调查: ["tx", "time", "from", "from_entity", "direction", "to", "to_entity", "usd", "method", "status", "actions"],
     资金: ["tx", "time", "from", "direction", "to", "value", ...(tokenMode ? ["token"] : []), "usd", "fee", "actions"],
-    合约: ["tx", "method", "block", "from", "to", "contract", "protocol", "status", "actions"],
+    合约: ["tx", "method", "from", "to", "contract", "protocol", "status", "actions"],
     紧凑: ["tx", "time", "direction", "value", ...(tokenMode ? ["token"] : []), "usd", "actions"],
   };
   const move = (key: string, delta: number) => {
@@ -565,8 +820,8 @@ function SavedViewsControl({ currentLayout, onApplyLayout }: { currentLayout: Co
   return <Popover title="Saved Views" content={content} trigger="click" placement="bottomRight"><Button icon={<SaveOutlined />}>视图</Button></Popover>;
 }
 
-function defaultVisibleColumns(tokenMode: boolean): string[] { return ["tx", "method", "block", "time", "from", "direction", "to", "value", ...(tokenMode ? ["token"] : []), "usd", ...(tokenMode ? [] : ["fee"]), "status", "actions"]; }
-function defaultColumnLayout(tokenMode: boolean): ColumnLayout { const order = ["tx", "method", "block", "time", "from", "direction", "to", "value", "token", "usd", "fee", "status", "from_entity", "to_entity", "protocol", "contract", "gas_used", "gas_price", "actions"]; return { order, visible: defaultVisibleColumns(tokenMode), pins: { tx: "left", actions: "right" } }; }
+function defaultVisibleColumns(tokenMode: boolean): string[] { return ["tx", "method", "time", "from", "direction", "to", "value", ...(tokenMode ? ["token"] : []), "usd", ...(tokenMode ? [] : ["fee"]), "status", "actions"]; }
+function defaultColumnLayout(tokenMode: boolean): ColumnLayout { const order = ["tx", "method", "time", "from", "direction", "to", "value", "token", "usd", "fee", "status", "from_entity", "to_entity", "protocol", "contract", "gas_used", "gas_price", "actions"]; return { order, visible: defaultVisibleColumns(tokenMode), pins: { tx: "left", actions: "right" } }; }
 function readColumnLayouts(): Record<string, ColumnLayout> { try { return JSON.parse(localStorage.getItem(COLUMN_LAYOUT_KEY) || "{}") as Record<string, ColumnLayout>; } catch { return {}; } }
 function loadColumnLayout(kind: string, tokenMode: boolean): ColumnLayout { const value = readColumnLayouts()[kind]; return value?.order?.length ? value : defaultColumnLayout(tokenMode); }
 function saveColumnLayout(kind: string, layout: ColumnLayout) { const all = readColumnLayouts(); all[kind] = layout; localStorage.setItem(COLUMN_LAYOUT_KEY, JSON.stringify(all)); }
@@ -645,11 +900,26 @@ function coveragePercent(financial: FinancialSummary | null): string {
   return `${value <= 1 ? value * 100 : value}%`;
 }
 
-function AssetsView({ header }: { header: ExplorerHeader | null }) {
-  if (!header?.balances.available) return <Unavailable title="资产余额暂不可用" detail="当前没有 Canonical 余额快照，未知余额不会显示为 0。" />;
-  const rows = header.balances.items as Array<Record<string, unknown>>;
-  const columns: ColumnsType<Record<string, unknown>> = [{ title: "资产", render: (_, row) => <TokenIdentity chainId={header.identity.chain_id} symbol={row.symbol || row.token_symbol} name={row.name || row.token_name} address={row.token_address} logoURI={row.logo_uri} verified={Boolean(row.verified || row.is_verified)} spam={Boolean(row.spam || row.is_spam)} /> }, { title: "余额", dataIndex: "balance", align: "right", render: (value) => number(value) }, { title: "估值", dataIndex: "usd_value", align: "right", render: (value) => usd(value) }];
-  return <Section title="资产"><Table dataSource={rows} rowKey={(row) => String(row.token_address || row.symbol)} pagination={false} columns={columns} /></Section>;
+function AssetsView({ header, liveAssets, state, error, queriedAt }: { header: ExplorerHeader | null; liveAssets: AssetBalance[]; state: "idle" | "loading" | "ready" | "failed"; error: string | null; queriedAt: string | null }) {
+  const rows = liveAssets;
+  if (state === "loading" && !rows.length) return <Section title="资产"><Skeleton active paragraph={{ rows: 3 }} /></Section>;
+  if (state === "failed") return <Unavailable title="资产余额查询失败" detail={error || "RPC 不可用或当前链尚未配置资产查询。"} tone="error" />;
+  if (!rows.length) return <Unavailable title="资产余额暂不可用" detail="实时余额查询尚未返回，未知余额不会显示为 0。" tone="info" />;
+  const columns: ColumnsType<AssetBalance> = [
+    { title: "资产", render: (_, row) => <TokenIdentity chainId={header?.identity.chain_id ?? 56} symbol={row.symbol} address={row.token_address} /> },
+    { title: "余额", dataIndex: "balance", align: "right", render: (value, row) => row.status === "success" ? number(value) : "—" },
+    { title: "查询状态", dataIndex: "status", width: 130, render: (value, row) => value === "success" ? <Tag color="success">已查询</Tag> : <Tooltip title={row.error || "RPC 不可用或当前链未配置节点"}><Tag color="error">查询失败</Tag></Tooltip> },
+  ];
+  const successful = rows.filter((row) => row.status === "success");
+  const failed = rows.filter((row) => row.status !== "success");
+  const failureDetails = [...new Set(failed.map((row) => row.error).filter(Boolean))].join("；");
+  const allZero = failed.length === 0 && successful.length > 0 && successful.every((row) => Number(row.balance || 0) === 0);
+  return <Section title="资产">
+    {failed.length ? <InlineNotice tone="error">{failed.length === rows.length ? "资产查询失败" : "部分资产查询失败"}：{failureDetails || "当前链 RPC 未配置或不可用；未知余额不会显示为 0。"}</InlineNotice> : null}
+    {allZero ? <InlineNotice tone="info">当前已查询资产的链上余额均为 0，余额以本次 RPC 查询时点为准。</InlineNotice> : null}
+    {queriedAt ? <Text type="secondary">查询时间：{date(queriedAt)}</Text> : null}
+    <Table dataSource={rows} rowKey={(row) => String(row.token_address || row.symbol)} pagination={false} columns={columns} />
+  </Section>;
 }
 
 function CounterpartyTable({ rows, onOpenAddress, error }: { rows: CounterpartyFinancial[]; onOpenAddress: (address: string) => void; error?: string }) {
@@ -676,8 +946,8 @@ function FilterDrawer({ open, onClose }: { open: boolean; onClose: () => void })
     <fieldset><legend>时间</legend><Segmented block value={state.window} onChange={(window) => update({ window: window as AnalysisWindow })} options={WINDOWS} />{state.window === "CUSTOM" ? <DatePicker.RangePicker showTime value={state.from && state.to ? [dayjs(state.from), dayjs(state.to)] : undefined} onChange={(range) => update({ from: range?.[0]?.toISOString(), to: range?.[1]?.toISOString() })} /> : null}</fieldset>
     <fieldset><legend>地址</legend><label>From<Input allowClear value={state.fromAddress} onChange={(event) => update({ fromAddress: event.target.value.trim().toLowerCase() || undefined })} placeholder="0x…" /></label><label>To<Input allowClear value={state.toAddress} onChange={(event) => update({ toAddress: event.target.value.trim().toLowerCase() || undefined })} placeholder="0x…" /></label><label>Counterparty<Input allowClear value={state.counterparty} onChange={(event) => update({ counterparty: event.target.value.trim().toLowerCase() || undefined })} placeholder="0x…" /></label></fieldset>
     <fieldset><legend>Token</legend><label>Token Symbol<Input allowClear value={state.tokenSymbol} onChange={(event) => update({ tokenSymbol: event.target.value.trim().toUpperCase() || undefined })} placeholder="USDT" /></label><label>Token Contract<Input value={token} onChange={(event) => setToken(event.target.value)} onPressEnter={() => { const value = token.trim().toLowerCase(); if (/^0x[0-9a-f]{40}$/.test(value) && !state.tokens.includes(value)) update({ tokens: [...state.tokens, value] }); else if (value) void message.warning("Token 合约地址格式不正确"); setToken(""); }} placeholder="输入合约地址后回车" /></label><div>{state.tokens.map((item) => <Tag closable key={item} onClose={() => update({ tokens: state.tokens.filter((value) => value !== item) })}>{short(item)}</Tag>)}</div></fieldset>
-    <fieldset><legend>金额</legend><div className="xi-filter-pair"><label>USD Min<InputNumber stringMode min="0" value={state.minUSD} onChange={(value) => update({ minUSD: value ?? undefined })} /></label><label>USD Max<InputNumber stringMode min="0" value={state.maxUSD} onChange={(value) => update({ maxUSD: value ?? undefined })} /></label></div></fieldset>
-    <fieldset><legend>交易</legend><label>方向<Select value={state.direction} onChange={(direction: AnalysisDirection) => update({ direction })} options={[{ value: "all", label: "全部" }, { value: "in", label: "转入" }, { value: "out", label: "转出" }, { value: "self", label: "自转" }]} /></label><label>Method<Select mode="tags" value={state.methodFilters} onChange={(methodFilters) => update({ methodFilters: methodFilters.slice(0, 10) })} tokenSeparators={[","]} placeholder="方法名或 Method ID" /></label><label>Status<Select mode="multiple" value={state.statusFilters} onChange={(statusFilters) => update({ statusFilters })} options={["SUCCESS", "FAILED", "UNKNOWN"].map((value) => ({ value, label: value }))} /></label></fieldset>
+    <fieldset><legend>金额</legend><div className="xi-filter-pair"><label>USD Min<InputNumber stringMode min="0" value={state.minUSD} onChange={(value) => update({ minUSD: value ?? undefined })} /></label><label>USD Max<InputNumber stringMode min="0" value={state.maxUSD} onChange={(value) => update({ maxUSD: value ?? undefined })} /></label></div><label>估值状态<Select mode="multiple" value={state.valuationStatuses} onChange={(valuationStatuses) => update({ valuationStatuses })} options={["VALUED", "LOW_CONFIDENCE", "NO_PRICE"].map((value) => ({ value, label: value }))} /></label></fieldset>
+    <fieldset><legend>交易</legend><label>交易哈希<Input allowClear value={state.transactionHash} onChange={(event) => update({ transactionHash: event.target.value.trim().toLowerCase() || undefined })} placeholder="0x…" /></label><label>方向<Select value={state.direction} onChange={(direction: AnalysisDirection) => update({ direction })} options={[{ value: "all", label: "全部" }, { value: "in", label: "转入" }, { value: "out", label: "转出" }, { value: "self", label: "自转" }]} /></label><label>Method<Select mode="tags" value={state.methodFilters} onChange={(methodFilters) => update({ methodFilters: methodFilters.slice(0, 10) })} tokenSeparators={[","]} placeholder="方法名或 Method ID" /></label><label>Status<Select mode="multiple" value={state.statusFilters} onChange={(statusFilters) => update({ statusFilters })} options={["SUCCESS", "FAILED", "UNKNOWN"].map((value) => ({ value, label: value }))} /></label></fieldset>
     <fieldset><legend>实体</legend><label>Entity Type<Select mode="multiple" value={state.entityFilters} onChange={(entityFilters) => update({ entityFilters })} options={["CEX", "DEX", "BRIDGE", "PROTOCOL", "CONTRACT", "EOA"].map((value) => ({ value, label: value }))} /></label><label>Entity<Input allowClear value={state.entity} onChange={(event) => update({ entity: event.target.value || undefined })} /></label><label>Role<Input allowClear value={state.entityRole} onChange={(event) => update({ entityRole: event.target.value || undefined })} /></label></fieldset>
     <fieldset><legend>协议</legend><Select mode="multiple" value={state.protocolFilters} onChange={(protocolFilters) => update({ protocolFilters })} options={[{ value: "DEX", label: "DEX" }, { value: "BRIDGE", label: "Bridge" }]} /></fieldset>
   </div></Drawer>;
@@ -715,8 +985,12 @@ function DetailDrawer({ detail, onClose, onOpenAddress, onNavigate }: { detail: 
   ] : Object.entries(data).filter(([, value]) => typeof value !== "object").slice(0, 36).map(([key, value]) => ({ key, label: key, children: /address$/.test(key) && /^0x[0-9a-fA-F]{40}$/.test(String(value)) ? <AddressIdentity value={value} onOpen={() => { onClose(); onOpenAddress(String(value)); }} /> : key.includes("time") ? date(value) : String(value ?? "--") }));
   const action = (page: string) => { if (row) update({ selectedRows: [activityKey(row)] }); onClose(); onNavigate(page, state.rootAddress); };
   const exportRow = () => { if (row) downloadActivityCSV([row], `${row.transaction_hash}.csv`); };
-  const fullURL = detail?.kind === "TRANSACTION" ? `/api/v2/explorer/${state.chain}/tx/${encodeURIComponent(detail.value)}` : undefined;
+  const fullURL = detail?.kind === "TRANSACTION" && isTransactionHash(detail.value) ? buildTransactionURL(state.chain, detail.value) : undefined;
   return <Drawer className="xi-detail-drawer" title={detail?.tokenMode ? "Token Transfer" : `${detail?.kind || ""} 详情`} width={640} open={!!detail} onClose={onClose} extra={row ? <Space><Button href={fullURL} target="_blank">完整详情</Button><Button type="primary" icon={<NodeIndexOutlined />} onClick={() => action("analytics-graph")}>资金追踪</Button><Button icon={<SafetyCertificateOutlined />} onClick={() => action("intelligence")}>调查工作台</Button><Button icon={<DownloadOutlined />} onClick={exportRow}>导出</Button></Space> : null}>{detail?.loading && !row ? <Skeleton active /> : <><div className="xi-detail-title"><Tag>{detail?.tokenMode ? "TOKEN TRANSFER" : detail?.kind}</Tag><Text code copyable>{detail?.value}</Text></div>{detail?.error ? <div className="xi-inline-error">完整 Canonical 详情暂不可用，以下为活动索引记录：{detail.error}</div> : null}<Descriptions bordered size="small" column={1} items={structured} /><Text type="secondary">历史 USD 使用事件发生时价格；UNKNOWN 与缺失值不会被推断补齐。</Text></>}</Drawer>;
 }
 
-function Unavailable({ title, detail }: { title: string; detail: string }) { return <div className="xi-unavailable"><SwapOutlined /><Title level={4}>{title}</Title><Text type="secondary">{detail}</Text></div>; }
+function Unavailable({ title, detail, tone }: { title: string; detail: string; tone?: "info" | "error" }) { return <div className={`xi-unavailable xi-unavailable-${tone || "info"}`}><SwapOutlined /><Title level={5}>{title}</Title><Text type="secondary">{detail}</Text></div>; }
+
+function InlineNotice({ tone, children }: { tone: "info" | "error"; children: ReactNode }) {
+  return <div className={`xi-inline-notice xi-inline-notice-${tone}`}><Text>{children}</Text></div>;
+}

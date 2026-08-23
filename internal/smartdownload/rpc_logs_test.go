@@ -56,7 +56,7 @@ func (priceRPCFake) Call(_ context.Context, _, method string, _ any) (json.RawMe
 	if method == "eth_getBlockByNumber" {
 		return json.RawMessage(`{"timestamp":"0x65920080"}`), "fake", nil
 	}
-	return json.RawMessage(`[{"address":"0x1111111111111111111111111111111111111111","topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x01","blockNumber":"0x64","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","logIndex":"0x1"}]`), "fake", nil
+	return json.RawMessage(`[{"address":"0x1111111111111111111111111111111111111111","topics":["0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"],"data":"0x01","blockHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","blockNumber":"0x64","transactionHash":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","transactionIndex":"0x2","logIndex":"0x1","removed":true}]`), "fake", nil
 }
 
 func TestRPCAdapterSupportsRawLogsWithBlockTime(t *testing.T) {
@@ -74,6 +74,9 @@ func TestRPCAdapterSupportsRawLogsWithBlockTime(t *testing.T) {
 	record := result.Records[0]
 	if record.BlockTime == 0 || record.Dataset != DatasetLogs || record.Payload["contract_address"] != "0x1111111111111111111111111111111111111111" {
 		t.Fatalf("unexpected record: %+v", record)
+	}
+	if record.Payload["transaction_index"] != uint64(2) || record.Payload["removed"] != true || record.Payload["block_hash"] == "" {
+		t.Fatalf("raw log provenance was lost: %+v", record.Payload)
 	}
 }
 
@@ -141,6 +144,8 @@ func (f *groupLogsRPCFake) Call(_ context.Context, _, method string, params any)
 	switch method {
 	case "eth_getBlockByNumber":
 		return json.RawMessage(`{"timestamp":"0x65920080"}`), "fake", nil
+	case "eth_call":
+		return json.RawMessage(`"0x12"`), "fake", nil
 	case "eth_getLogs":
 		f.logCalls++
 		filter := params.([]any)[0].(map[string]any)
@@ -160,6 +165,15 @@ func (f *groupLogsRPCFake) Call(_ context.Context, _, method string, params any)
 		]`), "fake", nil
 	default:
 		return nil, "fake", fmt.Errorf("unexpected method %s", method)
+	}
+}
+
+func TestFormatTokenAmountPreservesExactDecimals(t *testing.T) {
+	if got := formatTokenAmount("21266298259610000000000", 18); got != "21266.29825961" {
+		t.Fatalf("formatTokenAmount=%s", got)
+	}
+	if got := formatTokenAmount("123", 6); got != "0.000123" {
+		t.Fatalf("small formatTokenAmount=%s", got)
 	}
 }
 
@@ -194,6 +208,10 @@ func TestRPCGroupedLogScanUsesAddressArrayOnceAndFansOutDatasets(t *testing.T) {
 	if first[DatasetTokenTransfers].Records[0].Address != "0x1111111111111111111111111111111111111111" ||
 		second[DatasetLogs].Records[0].Address != "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
 		t.Fatal("records were not assigned using dataset-specific address semantics")
+	}
+	if first[DatasetTokenTransfers].Records[0].BlockTime == 0 ||
+		second[DatasetTokenTransfers].Records[0].BlockTime == 0 {
+		t.Fatal("grouped RPC token transfers must carry their block timestamp")
 	}
 }
 

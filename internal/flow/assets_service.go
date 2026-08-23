@@ -37,7 +37,9 @@ type ChainAssets struct {
 	MulticallAddress string `json:"multicall_address,omitempty"`
 }
 
-// DefaultChainAssets 返回内置链配置（BSC/ETH；USDT/USDC 主网地址与小数位）。
+// DefaultChainAssets 返回 Explorer 支持链的内置资产配置。
+// Base/Arbitrum 默认使用 Circle 官方原生 USDC；没有权威默认 USDT 地址的链
+// 不添加 USDT，避免把桥接或同名 Token 当成官方资产。
 func DefaultChainAssets() []ChainAssets {
 	return []ChainAssets{
 		{
@@ -54,6 +56,18 @@ func DefaultChainAssets() []ChainAssets {
 			USDTDecimals:     6, // ETH 主网 USDT 为 6 位小数
 			USDCAddress:      "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
 			USDCDecimals:     6, // ETH 主网 USDC 为 6 位小数
+			MulticallAddress: "0xcA11bde05977b3631167028862bE2a173976CA11",
+		},
+		{
+			ChainKey: "base", ChainID: 8453, NativeSymbol: "ETH",
+			USDCAddress:      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+			USDCDecimals:     6,
+			MulticallAddress: "0xcA11bde05977b3631167028862bE2a173976CA11",
+		},
+		{
+			ChainKey: "arbitrum", ChainID: 42161, NativeSymbol: "ETH",
+			USDCAddress:      "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+			USDCDecimals:     6,
 			MulticallAddress: "0xcA11bde05977b3631167028862bE2a173976CA11",
 		},
 	}
@@ -398,22 +412,24 @@ func resolveTokenSpecs(cfg ChainAssets, tokens []string) []tokenSpec {
 		if t == "" || t == "native" {
 			continue
 		}
-		switch t {
-		case cfg.USDTAddress, "usdt":
-			add(cfg.USDTAddress, "USDT", decimalsOf(cfg.USDTDecimals, 18))
-		case cfg.USDCAddress, "usdc":
-			add(cfg.USDCAddress, "USDC", decimalsOf(cfg.USDCDecimals, 18))
-		default:
-			if strings.HasPrefix(t, "0x") && len(t) == 42 {
-				// 自定义 Token decimals 未知，默认 18（可通过 Token Metadata 后续精确化）
-				add(t, "TOKEN", 18)
+		switch {
+		case t == "usdt" || (cfg.USDTAddress != "" && t == strings.ToLower(cfg.USDTAddress)):
+			if cfg.USDTAddress != "" {
+				add(cfg.USDTAddress, "USDT", decimalsOf(cfg.USDTDecimals, 18))
 			}
+		case t == "usdc" || (cfg.USDCAddress != "" && t == strings.ToLower(cfg.USDCAddress)):
+			if cfg.USDCAddress != "" {
+				add(cfg.USDCAddress, "USDC", decimalsOf(cfg.USDCDecimals, 18))
+			}
+		case strings.HasPrefix(t, "0x") && len(t) == 42:
+			// 自定义 Token decimals 未知，默认 18（可通过 Token Metadata 后续精确化）
+			add(t, "TOKEN", 18)
 		}
 	}
-	if !seen[strings.ToLower(cfg.USDTAddress)] {
+	if cfg.USDTAddress != "" && !seen[strings.ToLower(cfg.USDTAddress)] {
 		add(cfg.USDTAddress, "USDT", decimalsOf(cfg.USDTDecimals, 18))
 	}
-	if !seen[strings.ToLower(cfg.USDCAddress)] {
+	if cfg.USDCAddress != "" && !seen[strings.ToLower(cfg.USDCAddress)] {
 		add(cfg.USDCAddress, "USDC", decimalsOf(cfg.USDCDecimals, 18))
 	}
 	return specs

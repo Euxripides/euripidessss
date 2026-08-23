@@ -76,6 +76,7 @@ type ProvenanceDTO struct {
 
 type CanonicalTokenTransfer struct {
 	LogIndex   uint32        `json:"log_index"`
+	BatchIndex uint32        `json:"batch_index"`
 	From       AddressDTO    `json:"from"`
 	To         AddressDTO    `json:"to"`
 	Token      TokenDTO      `json:"token"`
@@ -83,6 +84,75 @@ type CanonicalTokenTransfer struct {
 	USD        *USDDTO       `json:"usd,omitempty"`
 	Standard   string        `json:"standard"`
 	Provenance ProvenanceDTO `json:"provenance"`
+}
+
+type TxCollectionQuery struct {
+	ChainID uint32
+	TxHash  string
+	Limit   int
+	Cursor  string
+}
+
+// TxTokenTransfer is the transaction-subresource representation. Unlike the
+// legacy aggregate shape, usd is always present so unavailable historical
+// pricing is represented as JSON null instead of being mistaken for zero.
+type TxTokenTransfer struct {
+	LogIndex   uint32        `json:"log_index"`
+	BatchIndex uint32        `json:"batch_index"`
+	From       AddressDTO    `json:"from"`
+	To         AddressDTO    `json:"to"`
+	Token      TokenDTO      `json:"token"`
+	Amount     AmountDTO     `json:"amount"`
+	USD        *USDDTO       `json:"usd"`
+	Standard   string        `json:"standard"`
+	Provenance ProvenanceDTO `json:"provenance"`
+}
+
+type TokenTransferPage struct {
+	ChainID         uint32            `json:"chain_id"`
+	TransactionHash string            `json:"transaction_hash"`
+	Count           int               `json:"count"`
+	TotalCount      uint64            `json:"total_count"`
+	Items           []TxTokenTransfer `json:"items"`
+	NextCursor      string            `json:"next_cursor,omitempty"`
+}
+
+type InternalTransactionPage struct {
+	ChainID         uint32                         `json:"chain_id"`
+	TransactionHash string                         `json:"transaction_hash"`
+	Count           int                            `json:"count"`
+	TotalCount      uint64                         `json:"total_count"`
+	Items           []CanonicalInternalTransaction `json:"items"`
+	NextCursor      string                         `json:"next_cursor,omitempty"`
+}
+
+// CanonicalRawLog preserves the complete EVM log payload. Decoded is either a
+// JSON object produced by parsed_events or null; it is never a JSON string.
+type CanonicalRawLog struct {
+	BlockNumber      uint64          `json:"block_number"`
+	BlockTime        time.Time       `json:"block_time"`
+	TransactionIndex uint32          `json:"transaction_index"`
+	LogIndex         uint32          `json:"log_index"`
+	Contract         AddressDTO      `json:"contract"`
+	Topic0           *string         `json:"topic0"`
+	Topic1           *string         `json:"topic1"`
+	Topic2           *string         `json:"topic2"`
+	Topic3           *string         `json:"topic3"`
+	Data             string          `json:"data"`
+	Removed          bool            `json:"removed"`
+	EventName        string          `json:"event_name,omitempty"`
+	EventSignature   string          `json:"event_signature,omitempty"`
+	Decoded          json.RawMessage `json:"decoded"`
+	Provenance       ProvenanceDTO   `json:"provenance"`
+}
+
+type RawLogPage struct {
+	ChainID         uint32            `json:"chain_id"`
+	TransactionHash string            `json:"transaction_hash"`
+	Count           int               `json:"count"`
+	TotalCount      uint64            `json:"total_count"`
+	Items           []CanonicalRawLog `json:"items"`
+	NextCursor      string            `json:"next_cursor,omitempty"`
 }
 
 type CanonicalInternalTransaction struct {

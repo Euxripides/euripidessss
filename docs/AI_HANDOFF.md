@@ -1,3 +1,481 @@
+## 2026-08-23 — 修复 Excel 式筛选候选值被当前筛选收缩
+
+### 本次完成
+
+- 修复字段筛选后候选列表只剩当前命中值的问题：候选值不再被筛选响应覆盖。
+- 同一链、地址和页签维护独立候选池；当前页数据只做增量合并，切换作用域时自动隔离，避免跨地址串值。
+- 后台按未筛选条件分页收集候选源（每页 200 行，最多 5000 行，缓存 60 秒），因此直接从带筛选 URL 进入时也能恢复完整候选集合。
+- 应用筛选后自动清空候选搜索词；重新打开筛选框即可看到全部候选，当前选中项仍保持勾选。
+
+### 修改文件
+
+- `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+
+### 接口与数据库
+
+- 无接口、请求契约或数据库结构变更，复用既有分页活动查询。
+
+### 已验证
+
+- `cd frontend && npm run build`：通过。
+- Playwright 真实地址 Token 转账页：筛选前方法候选为 `buy / takeOutErrorTransfer / withdraw`；应用 `withdraw` 后重新打开仍为相同三项，且只有 `withdraw` 保持勾选。
+- 方向与方法组合筛选、统计请求、URL 排序同步正常；桌面端和移动端均无控制台错误、页面错误或失败响应，移动端无横向溢出。
+
+### 未完成事项与注意事项
+
+- 无本功能未完成事项。
+- 为避免极端活跃地址产生无界后台分页，候选源单作用域最多收集 5000 条活动记录。
+- 构建仍有既存的主 chunk 超过 500kB 警告，与本次修复无关。
+
+## 2026-08-23 — Explorer 字段筛选升级为 Excel 式筛选框
+
+### 本次完成
+
+- 链上查询交易表各字段表头筛选统一升级为 Excel 式菜单：升序/降序、值搜索、全选、逐值勾选、清除筛选、确认应用。
+- 交易哈希、方法、发送方、方向、接收方、状态使用值清单筛选；时间、Token、当时价值保留各自的区间/合约/估值条件，同时统一使用 Excel 菜单外观和操作区。
+- 支持跨字段组合筛选；确认后仍更新共享 `AnalysisContext`，由后端查询完整结果并同步刷新上方统计，不局限于当前页前端过滤。
+- 值清单取自当前已加载结果，并保留完整哈希、地址、方法名和 Token 的手工输入能力；选项最多展示 20 项，避免组合查询参数无界增长。
+- 表头排序同步全局排序选择器和 URL；字段弹层打开时冻结候选值快照，避免异步数据刷新导致菜单关闭或勾选状态丢失。
+- 移动端筛选框自适应视口宽度，隐藏箭头并消除页面级横向溢出。
+
+### 修改文件
+
+- `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+- `frontend/src/features/explorer-intelligence/explorer-intelligence.css`
+
+### 接口与数据库
+
+- 无接口路径、请求契约或数据库结构变更。
+- 新增的列排序继续使用既有查询状态；当前页渲染按所选字段排序，筛选与统计仍由后端完成。
+
+### 已验证
+
+- `cd frontend && npm run build`：通过。
+- Playwright 桌面端：验证方向筛选、方法搜索和勾选、跨字段组合、单字段清除、表头排序与 URL/全局排序同步；后端统计请求包含对应筛选参数。
+- Playwright 移动端 `390×844`：交易哈希筛选框完整位于视口内，页面无横向溢出。
+- 桌面端和移动端均无控制台错误、页面错误或失败响应；截图为 `explorer-excel-filter-desktop.png`、`explorer-excel-filter-mobile.png`。
+
+### 未完成事项与注意事项
+
+- 无本功能未完成事项。
+- 候选值清单基于当前已加载结果，不等同于整库唯一值枚举；不在清单中的精确值可直接手工输入。
+- 构建仍有既存的主 chunk 超过 500kB 警告，与本次修改无关。
+
+## 2026-08-23 — Explorer 字体改为微软雅黑
+
+### 本次完成
+
+- Explorer 字体由宋体调整为常用网页无衬线字体栈：`Microsoft YaHei / 微软雅黑 / PingFang SC / Noto Sans SC / Arial / sans-serif`。
+- 保留上一版加大后的字号：正文、控件、表格、页签、筛选和导航 15px；辅助文字 13px；统计值/区块标题 17px；地址标题 19px；页面标题 25px。
+- 桌面侧边栏、移动导航、页面内容及 Portal 筛选弹层全部同步；仅 Explorer 激活时生效。
+
+### 修改文件
+
+- `frontend/src/App.tsx`
+- `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+- `frontend/src/features/explorer-intelligence/explorer-intelligence.css`
+
+### 接口与数据库
+
+- 无接口变更。
+- 无数据库结构变更。
+
+### 已验证
+
+- `cd frontend && npm run build`：通过。
+- Playwright 桌面端 `1764×980` 与移动端 `390×844`：侧边栏、品牌标题、页签、统计、表头、表格正文和筛选标签计算字体均为 Microsoft YaHei/微软雅黑字体栈；主字号 15px、统计值 17px。
+- 两种视口均无页面级横向溢出，无控制台错误、页面错误、失败响应或错误遮罩。
+- 验证截图：`explorer-microsoft-yahei-desktop.png`、`explorer-microsoft-yahei-mobile.png`。
+
+### 未完成事项与注意事项
+
+- 无本功能未完成事项。
+- 本条变更取代下方同日宋体/仿宋记录的最终字体选择，历史记录保留不删除。
+- 构建仍有既存的主 chunk 超过 500kB 警告，与本次排版修改无关。
+
+## 2026-08-23 — Explorer 改为宋体并整体加大一号
+
+### 本次完成
+
+- 上一版 Explorer 仿宋字体栈调整为宋体：`宋体 / SimSun / Songti SC / serif`。
+- 全套字号在上一版基础上增加 1px：正文、控件、表格、页签、筛选和侧边导航由 14px 调整为 15px；辅助文字由 12px 调整为 13px；统计值/区块标题由 16px 调整为 17px；地址标题 19px；页面标题 25px。
+- 页面级 Ant Design 主题、桌面侧边栏、移动导航、Portal 弹层继续使用同一字体和字号规则，仅在 Explorer 页面激活时生效。
+
+### 修改文件
+
+- `frontend/src/App.tsx`
+- `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+- `frontend/src/features/explorer-intelligence/explorer-intelligence.css`
+
+### 接口与数据库
+
+- 无接口变更。
+- 无数据库结构变更。
+
+### 已验证
+
+- `cd frontend && npm run build`：通过。
+- Playwright 桌面端 `1764×980` 与移动端 `390×844`：侧边栏、品牌标题、页签、统计、表头、表格正文和筛选标签计算字体均为 `宋体, SimSun, Songti SC, serif`；主字号 15px、统计值 17px。
+- 两种视口均无页面级横向溢出，无控制台错误、页面错误、失败响应或错误遮罩。
+- 验证截图：`explorer-simsun-larger-desktop.png`、`explorer-simsun-larger-mobile.png`。
+
+### 未完成事项与注意事项
+
+- 无本功能未完成事项。
+- 本条变更取代下方同日“Explorer 页面仿宋字体与字号体系统一”的最终字体选择；历史记录保留不删除。
+- 构建仍有既存的主 chunk 超过 500kB 警告，与本次排版修改无关。
+
+## 2026-08-23 — Explorer 页面仿宋字体与字号体系统一
+
+### 本次完成
+
+- 链上查询页使用独立 Ant Design 主题作用域，字体统一为 `FangSong / 仿宋 / STFangsong / Songti SC / serif`，不会改变其他业务页面。
+- Explorer 激活时同步切换桌面侧边栏和移动导航字体；离开页面后恢复平台默认字体。
+- 收敛页面历史遗留的 8–28px 离散字号：正文、控件、页签、表格、筛选标签和统计标签以 14px 为基准，辅助文字 12px，关键统计值 16px，页面标题 24px、地址标题 18px。
+- 表格列头、行内容、地址、Token、方法、方向、历史价值以及筛选弹层均显式继承同一仿宋字体。
+
+### 修改文件
+
+- `frontend/src/App.tsx`
+- `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+- `frontend/src/features/explorer-intelligence/explorer-intelligence.css`
+
+### 接口与数据库
+
+- 无接口变更。
+- 无数据库结构变更。
+
+### 已验证
+
+- `cd frontend && npm run build`：通过。
+- Playwright 桌面端 `1764×980`：侧边栏、页签、统计、表头、表格和筛选标签计算字体均为 FangSong/仿宋；主字号 14px；无控制台错误、页面错误、失败响应或错误遮罩。
+- Playwright 移动端 `390×844`：同一字体与字号规则生效；`body/root scrollWidth = 390`，无页面横向溢出；无控制台错误、页面错误、失败响应或错误遮罩。
+- 验证截图：`explorer-fangsong-desktop.png`、`explorer-fangsong-mobile.png`。
+
+### 未完成事项与注意事项
+
+- 无本功能未完成事项。
+- 仿宋仅在 Explorer 页面激活时生效，其他模块继续使用原设计系统字体。
+- 构建仍有既存的主 chunk 超过 500kB 警告，与本次排版修改无关。
+
+## 2026-08-23 — Explorer 列头组合筛选与全量转账统计
+
+### 需求与数据口径
+
+- Explorer 交易/代币转账表的筛选入口改为直接位于字段名旁；交易哈希、方法、时间、发送方、方向、接收方、Token、当时价值和状态可组合筛选。
+- 既有筛选原先只作用于当前分页，无法支撑可靠统计；本次改为后端筛选，列表分页和统计查询复用同一组白名单条件。
+- 上方统计为“当前全部筛选结果”，不是当前 100 行；不同 Token 的原始数量不相加，金额只汇总具有历史价格证据的 USDT 估值。
+
+### 实现内容
+
+- 新增 `ActivityFilters`、`ActivityStatsQuery`、`ActivityStats`，支持交易哈希、方向、对手/From/To 地址、Token 合约/符号、USDT 区间、方法、状态、实体、协议、估值状态和时间范围。
+- 所有动态条件经地址/哈希/枚举/数值/时间/长度白名单校验；游标升级为 v2 并绑定筛选哈希，禁止跨筛选条件复用。
+- 新增每种活动视图的 `/stats` 子资源；返回活动记录数、唯一交易数、转入/转出/自转数、已定价记录数、已定价流入/流出/净额及唯一交易对手。
+- 前端列头筛选与高级筛选共享 AnalysisContext，并同步 URL；筛选变化时列表与统计并发刷新。修复旧页预取游标在筛选切换瞬间请求新条件导致 400 的竞态。
+- 统计区采用 8 项紧凑卡片，桌面 8/4 列、移动端 2 列响应式布局。
+
+### 修改文件
+
+- `internal/explorer/activity_filters.go`（新增）
+- `internal/explorer/models.go`
+- `internal/explorer/repository.go`
+- `internal/explorer/repository_test.go`
+- `internal/api/clickhouse_handlers.go`
+- `frontend/src/features/analytics/ClickHouseExplorerTypes.ts`
+- `frontend/src/features/explorer-intelligence/analysisContext.tsx`
+- `frontend/src/features/explorer-intelligence/explorerApi.ts`
+- `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+- `frontend/src/features/explorer-intelligence/explorer-intelligence.css`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口 / 数据库变化
+
+- 新增：`GET /api/v1/explorer/:chain/address/:address/{activity|transactions|token-transfers|internal-transactions|contract-creations}/stats`。
+- 既有活动列表路径兼容新增筛选参数：`transaction_hash`、`direction`、`counterparty`、`from_address`、`to_address`、`token`、`token_symbol`、`min_usd`、`max_usd`、`method`、`status`、`entity_type`、`entity`、`protocol`、`valuation_status`、`from`、`to`。
+- 无 ClickHouse Schema、持久化格式或导入流程变化。
+
+### 已验证
+
+- `go test ./internal/explorer ./internal/api -count=1`、`go vet ./...`、`frontend npm run build` 通过；仅有既有大 chunk 警告。
+- 全包短测试中 Smart Download 两个无关并发/性能时序用例失败；`TestPackCreation10K` 隔离复跑通过，`TestIndexedWriterFailureIsRetryableWithoutDownload` 在当前脏工作区仍失败，未修改无关模块。
+- SQL 注入、输入校验、XSS 三项限定目录安全扫描均为 0 issue；恶意 `method=withdraw' OR 1=1--` 实际返回 JSON 400。
+- 已执行 `.\run.ps1 -ForceRestart`，服务 5.1 秒就绪，PID 42788，health=`ok`。
+- 真实地址 `0x4c040e…39d3ab`：无筛选统计 784 条记录、251 笔唯一交易、转入/转出 183/601、唯一对手 153、已定价 592、流入/流出各 136480.177177 USDT、净额 0。
+- 组合 `direction=out + token_symbol=USDT + method=withdraw + min_usd=1000`：统计与完整分页均为 2 条/2 笔/2 个对手，列表金额合计与统计流出均为 3255 USDT，净额 -3255；方法、方向、Token 均符合条件。
+- `FIST + NO_PRICE` 为 180 条、90 笔交易、已定价 0，三个金额字段保持 `null`，未把缺价误报为 0。
+- Browser 插件不可用，回退 Playwright：1764×980 实际操作 4 个列头组合筛选并清空，统计从 784 变 2 再恢复 784；390×844 无 body/root 横向溢出；两端均无 console/page error、失败响应或框架错误层。
+
+### 未完成 / 注意事项
+
+- 本次功能无遗留项。
+- `time_asc` / `usd_desc` 仍沿用既有“当前页排序”语义；本次只修正筛选和统计的全量口径，没有扩大到全局排序重构。
+
+## 2026-08-23 — Explorer 代币转账方法回填修复
+
+### 问题与根因
+
+- Explorer 代币转账活动行在写入 `address_activity` 时没有方法字段，而对应主交易在 `chain_transactions` 中已经保存 `method_id/method_name`。
+- 活动查询只读取 `address_activity` 自身方法字段，未关联主交易，因此前端按既有 `method_name || method_id || "--"` 逻辑统一显示 `--`。
+
+### 修复内容
+
+- `ListActivity` 查询新增按 `chain_id + tx_hash` 关联 `chain_transactions FINAL`。
+- 优先保留活动行自身方法；仅在其为空时分别回填主交易 `method_id` 和 `method_name`。
+- 主交易也不存在时继续返回空方法，前端保持 `--`，不推测或伪造 ABI 方法。
+- 新增查询形状回归断言，锁定关联键、活动值优先级和回填表达式。
+
+### 修改文件
+
+- `internal/explorer/repository.go`
+- `internal/explorer/repository_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口 / 数据 / 页面变化
+
+- API 路径与响应结构不变：`GET /api/v1/explorer/:chain/address/:address/token-transfers`。
+- 无数据库 Schema、持久化格式或前端组件变化；历史数据和新数据均在查询时获得主交易方法回填。
+
+### 已验证
+
+- `go test ./internal/explorer -count=1`、`go vet ./...`、`frontend npm run build` 通过；前端仅有既有大 chunk 警告。
+- 全包 `go test ./internal/... -short -count=1 -timeout=15m` 除一个无关异步恢复时序用例首次仍为 `RUNNING` 外其余包通过；该用例单独连续复跑 3 次通过。
+- SQL 注入专项安全扫描限定在 `internal/explorer`，0 issue；扫描临时文件已清理。
+- 已执行 `.\run.ps1 -ForceRestart`，服务 8.7 秒就绪，PID 34668，health HTTP 200。
+- 真实地址 `0x4c040e…39d3ab` 全量 784 条代币活动：771 条有方法，13 条仍为空；空方法对应 11 个唯一交易哈希，11 个均无主交易记录。回填结果为 `buy` 621 行、`withdraw` 149 行、`takeOutErrorTransfer` 1 行；4 页热查询耗时 266–400ms。
+- Browser 插件不可用，按前端调试技能回退 Playwright：实际从“概览”点击“代币转账”，100 行可见，首屏显示 `takeOutErrorTransfer`、`withdraw`、`buy`；无 console/page error、失败响应或框架错误层。
+
+### 未完成 / 注意事项
+
+- 无本次修复遗留项。
+- 剩余 13 条不能回填的活动缺少对应主交易证据，应继续显示未知，除非后续补齐主交易数据。
+
+## 2026-08-22 — 链上查询导出空文件与时间窗口修复
+
+### 问题与根因
+
+- Explorer 地址页点击“导出”时，`/api/v2/financial-export/:chain/address/:address.csv` 的 Gin 参数名实际被解析为 `address.csv`，处理器读取 `address` 得到空值，合法地址被判为非法。
+- 处理器在导出失败后只记录日志，不返回错误；响应仍为 HTTP 200、CSV 附件头和 0 字节正文。
+- 页面默认时间窗口为 `ALL`，导出处理器却在没有显式 `from` 时固定回退 30 天，页面与文件口径不一致。
+
+### 修复内容
+
+- 路由改为使用完整末段参数，处理器在 API 边界精确剥离 `.csv` 后再执行既有 EVM 地址校验；对外 URL 保持不变。
+- 导出窗口支持 `24H/7D/30D/90D/1Y/ALL/CUSTOM`；`ALL` 从 Unix epoch 开始，`CUSTOM` 强制要求 `from/to`。
+- 查询在写出正文前失败时，清除 CSV/附件响应头并走统一金融错误响应；非法参数返回 JSON 400，查询不可用返回 JSON 503，不再伪装为空白成功文件。
+- 新增 API 回归测试，覆盖 `.csv` 后缀、`ALL` 全历史范围、非空 CSV 和查询失败响应语义。
+
+### 修改文件
+
+- `internal/api/financial_v1_handlers.go`
+- `internal/api/financial_export_handlers_test.go`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口 / 数据 / 页面变化
+
+- 外部 API 路径不变：`GET /api/v2/financial-export/{chain}/address/{address}.csv`。
+- 行为修正：窗口参数现在生效；非法窗口/地址不再返回 200 空附件。
+- 无数据库 Schema、持久化格式或前端组件变化；页面仍使用既有“导出”按钮。
+- 导出保持“历史已定价活动”既有口径；未定价活动不在该文件中，本次没有擅自扩大数据语义。
+
+### 已验证
+
+- 定向回归：`go test ./internal/api -run FinancialExport -count=1`、`go test ./internal/financialintegration -count=1` 通过。
+- `go vet ./...`、`frontend npm run build` 通过；仅有既有大 chunk 警告。
+- 全包 `go test ./internal/... -short -count=1 -timeout=15m` 中 3 个无关 Windows/并发性能时序用例首次失败；三个失败用例隔离重跑全部通过，其余包通过。
+- 安全扫描：精确限定 `internal/api` 与 `internal/financialintegration` 后均为 0 issue；EVM 地址、时间、limit、dataset、token、min_usd 继续经过白名单/格式校验。
+- 已执行 `.\run.ps1 -ForceRestart`，服务 8.1 秒就绪，PID 12960，health=`ok`。
+- 真实地址 `0x4c040e…39d3ab`：API 与 Playwright 点击均下载 `financial_export.csv`，211,652 字节、592 条已定价活动、241 个唯一交易哈希，时间 2026-03-18 至 2026-07-26，21 列齐全。
+- Playwright 1440×960：页面身份正确、无空白/框架错误层、无 console/page error；实际点击“导出”并核验下载文件。
+- 真实错误响应：非法窗口与非法地址均为 JSON 400，且无 `Content-Disposition: attachment`。
+
+### 未完成 / 注意事项
+
+- 无本次修复遗留项。
+- 592 行是现有“历史已定价活动”导出口径，不等同于地址全部链上活动行数。
+
+## 2026-08-20 — Smart Download 运行批次实时监控
+
+### 监控对象与结论
+
+- 批次：`288aca8e-b89b-4b72-b65e-79f15c81bd13`，BSC 单地址 FULL，5 个数据集、9353 个 Range，状态 `RUNNING`。
+- 2026-08-20 01:11:42—01:14:25 连续 6 次采样：完成 Range `248 → 351`，覆盖率 `2.6415% → 3.7430%`，待处理 `9102 → 8998`，运行中保持 3—4，失败始终为 0，后台 `updated_at` 每次刷新。
+- 当前 `rows_current=1` 是因为任务正在扫描早期空区块；Range 和区块覆盖持续增长，不能把页面 `0 rows/s` 单独判定为卡死。
+- 01:08 左右曾发生一次网络 Range 重排队和一次 Parser Worker 重启；自恢复记录稳定在 2 条，之后未继续增加，`stall.detected=false`。
+- 按采样期真实 Range 覆盖速度外推，剩余时间约 4 小时；以历史行数估算的 ETA V2 约 40 小时当前偏保守。
+
+### 持续监控
+
+- 已建立当前任务心跳监控“监控智能下载批次 288aca8e”，每 10 分钟核查 detail、turbo、hardening、snapshot/summary、日志和实际结果增长。
+- 异常判定包括：运行状态下 10 分钟以上更新时间/覆盖/完成 Range 不增长、运行 Range 归零、失败增长、重复自恢复或输出停止增长。
+- 监控只读，不会自动暂停、取消、重启或修改下载任务；终态会核验结果文件、注册表和数据可查询性。
+
+### 接口 / 数据 / 代码变化
+
+- 无代码、API、数据库或持久化格式变更。
+- 本次仅执行只读诊断并创建 Codex 任务心跳，无需重启 Go 服务。
+
+## 2026-08-20 — Explorer“补齐数据”跳转智能下载自动填充
+
+### 问题与修复
+
+- 根因：Explorer 的“开始补齐数据”已经把地址交给 `App`，但 `App` 只更新分析上下文并切页，`SmartDownloadPage` 的创建表单没有接收地址或链参数。
+- `App` 新增专用的智能下载预填状态；从 Explorer 补齐入口跳转时，同时保存当前地址与链，并改用统一 `navigateTo` 进入 `/smart-download`。
+- `SmartDownloadPage` / `CreateTab` 新增可选的初始地址与初始链参数，创建表单首次渲染时自动填入地址，并选择来源链。
+- 从左侧菜单普通进入“下载任务”时清空专用预填状态，避免上一次补齐地址污染新任务。
+
+### 修改文件
+
+- `frontend/src/App.tsx`
+- `frontend/src/features/smart-download/SmartDownloadPage.tsx`
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口 / 数据 / 页面变化
+
+- API、数据库结构及持久化格式：无变更。
+- 页面：Explorer 无数据状态的“开始补齐数据”现在会把地址与当前链自动带入智能下载创建表单。
+
+### 已验证
+
+- `npm run build`：TypeScript 与 Vite 生产构建通过，仅保留既有大 chunk 警告。
+- Playwright 真实点击 Base、BSC 两个无本地数据地址：均从 Explorer 点击“开始补齐数据”进入 `/smart-download`，地址完全一致，网络分别为 Base、BNB Smart Chain，控制台无错误。
+- Playwright 回归：补齐跳转后离开页面，再从左侧菜单进入“下载任务”，地址输入框为空，不残留旧地址。
+- 本次仅修改前端与文档，无后端代码，因此不需要重启 Go 服务；当前 `/api/health` 返回 `status=ok`。
+
+### 未完成 / 注意事项
+
+- 无未完成事项。
+
+## 2026-08-19 — 全前端嵌入式提示框清理
+
+### 目标与统一规则
+
+- 用户要求删除所有嵌入页面内容区的提示框。全前端不再渲染 Ant Design `Alert`，也不保留 `.ant-alert` 专用样式。
+- 操作型成功/失败/警告改为顶部居中 `message`；长期状态、数据边界、安全说明改为无背景、无边框的 `Typography` 文字；无数据场景使用 `Empty`。
+- 删除纯说明型大色块，但保留清理确认、数据库写入、RPC 密钥、历史价格缺失等必要安全/证据语义。
+
+### 修改文件
+
+- 分析与 Explorer：
+  - `frontend/src/features/analytics/SmartFillPanel.tsx`
+  - `frontend/src/features/analytics/RiskAnalysisPage.tsx`
+  - `frontend/src/features/analytics/AddressPage.tsx`
+  - `frontend/src/features/analytics/GraphPage.tsx`
+  - `frontend/src/features/analytics/analytics-shell.css`
+  - `frontend/src/features/analytics/smart-fill.css`
+  - `frontend/src/features/analytics/graph-page-light.css`
+  - `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+  - `frontend/src/features/explorer-intelligence/explorer-intelligence.css`
+- 质量、价格、实体与资金：
+  - `frontend/src/features/price-engine/PriceEnginePage.tsx`
+  - `frontend/src/features/financial-quality/FinancialQualityPage.tsx`
+  - `frontend/src/features/quality/DataQualityPage.tsx`
+  - `frontend/src/features/quality/data-quality.css`
+  - `frontend/src/features/fundflow/FundFlowPage.tsx`
+  - `frontend/src/features/entity/EntityPage.tsx`
+  - `frontend/src/features/reports/ReportPage.tsx`
+- 下载、数据源与 RPC：
+  - `frontend/src/features/crypto/CryptoDownloadPanel.tsx`
+  - `frontend/src/features/crypto/AddressAnalyticsPanel.tsx`
+  - `frontend/src/features/crypto/CryptoParquetPanel.tsx`
+  - `frontend/src/features/crypto/datasource/components/SourceConfigDialog.tsx`
+  - `frontend/src/features/download/DuneBatchReg.tsx`
+  - `frontend/src/features/download/DuneAuthModal.tsx`
+  - `frontend/src/features/rpc/RpcBatchDialog.tsx`
+  - `frontend/src/features/crypto/datasource/datasource.css`
+  - `frontend/src/features/crypto/crypto-parquet.css`
+  - `frontend/src/features/crypto/address-analytics.css`
+- 数据导入、智能下载与系统：
+  - `frontend/src/features/clean/DBExportModal.tsx`
+  - `frontend/src/features/flow/DBImportModal.tsx`
+  - `frontend/src/features/flow/FlowInspectorPanel.tsx`
+  - `frontend/src/features/flow/flow-panels.css`
+  - `frontend/src/features/smart-download/SmartDownloadPage.tsx`
+  - `frontend/src/features/smart-download/smart-download.css`
+  - `frontend/src/features/system/SystemSettingsPage.tsx`
+- 公共与既有自定义提示外观：
+  - `frontend/src/design-system/animations.css`
+  - `frontend/src/styles/layout.css`
+  - `frontend/src/features/clean/clean.css`
+  - `frontend/src/features/transaction/transaction-detail.css`
+- 文档：`docs/AI_HANDOFF.md`、`docs/CHANGELOG_AI.md`。
+
+### 接口 / 数据 / 页面变化
+
+- API：无新增或变更。
+- 数据库与持久化格式：无变更。
+- 页面：删除全部 Ant Design 内嵌提示框；图谱假设验证、图谱 Diff 与任务错误改顶部消息；Explorer、质量、资产、系统设置、下载及数据库弹窗中的持久提示改无框文字或空状态。
+
+### 已验证
+
+- `rg` 全量检查 `frontend/src`：`Alert` / `<Alert>` 为 0，`.ant-alert` CSS 为 0。
+- `npm run build`：TypeScript 与 Vite 生产构建通过，仅保留既有大 chunk 警告。
+- `git diff --check -- frontend/src docs/AI_HANDOFF.md docs/CHANGELOG_AI.md`：通过，仅行尾格式提示。
+- Playwright 桌面 1440×960：链上查询、资金追踪、调查工作台、数据资产、案件、数据源、系统设置、6 个更多分析页、下载任务、3 个高级下载页、3 个数据质量页，共 20 个页面均 `alerts=0`、无 JavaScript page error。
+- Playwright 移动端 390×844：系统设置 `alerts=0`、无横向溢出、无控制台/page error。
+- Explorer BSC/Base 资产页：每页资产请求 1 次、无控制台错误；零余额与 RPC 未配置信息均为单行无框文字，逐资产状态表正常。
+
+### 未完成 / 注意事项
+
+- 首轮跨页巡检中，未配置的可选后端服务返回 5 次 HTTP 503，但页面未崩溃且不再生成嵌入提示框；属于运行环境可用性，不是本次 UI 回归。
+- “浏览器下载”桌面页存在既有页面级横向溢出；其 Alert 已清空，但响应式宽度问题不属于本次提示框清理范围，可单独整改。
+- 本次仅修改前端与文档，没有后端代码，因此不需要重启 Go 服务；Vite 构建后的静态资源已由当前服务直接提供。
+
+## 2026-08-19 — 链上查询资产空白 / 多链资产状态修复
+
+### 问题与根因
+
+1. Explorer 向 `useAddressAssets` 传入内联 `tokens: []`，数组引用每次渲染都变化，造成 effect 持续重跑；实测资产页 5 秒内发出 300 次 `POST /api/flow/address-assets`。
+2. 资产 API 客户端未检查 HTTP 非 2xx；后端对 Base/Arbitrum 返回 400 时，前端仍把错误 JSON 当资产响应，最终表现为“空”。
+3. Explorer 支持 BSC/ETH/Base/Arbitrum，但资产 API 只允许 BSC/ETH；多链支持不一致。
+4. BSC 样本地址当前 BNB/USDT/USDC 余额确实均为 0，但旧界面没有区分“已查询且为 0”和“未查到/查询失败”。
+
+### 本次实现
+
+- `useAddressAssets` 以 token 内容而非数组引用作为依赖，并将 `AbortSignal` 传到真实 fetch，避免重复请求及过期响应写回。
+- `flowAssetApi` 统一检查 `response.ok`，优先抛出后端 `detail`；批量查询和余额快照沿用同一错误语义。
+- `POST /api/flow/address-assets`、`/batch`、`/api/flow/balance-snapshot` 的链参数校验扩展为 `bsc/eth/base/arbitrum`，接口路径与 JSON 结构未变。
+- Base/Arbitrum 默认资产改为原生 ETH + 官方 USDC 合约；不把没有权威统一默认地址的 USDT 强行加入。
+- Explorer 资产页新增加载、请求失败、部分失败、零余额说明、查询时间和逐资产查询状态；页头资产符号按链显示（BSC: BNB/USDT，ETH: ETH/USDT，Base/Arbitrum: ETH/USDC）。
+- 当前 RPC 管理器仅配置 BSC/ETH 节点，因此 Base/Arbitrum 会明确显示“该链未配置可用 RPC 节点”和未知余额 `—`，不再显示为空或伪装为 0。
+
+### 修改文件
+
+- `frontend/src/features/analytics/flowAssetApi.ts`
+- `frontend/src/features/analytics/useAddressAssets.ts`
+- `frontend/src/features/analytics/FlowAddressAssets.tsx`
+- `frontend/src/features/explorer-intelligence/ExplorerPage.tsx`
+- `internal/flow/assets_service.go`
+- `internal/flow/assets_service_test.go`
+- `internal/api/flow_assets_handlers.go`
+- `internal/api/flow_assets_handlers_test.go`（新增）
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口 / 数据 / 页面变更
+
+- API：无新增或改名端点；资产查询相关端点新增 Base/Arbitrum 链值支持，并保持非法链/路径型输入拒绝。
+- 数据库：无数据库结构或文件格式变更。
+- 前端：Explorer 资产页新增明确的成功、零余额、部分失败和全失败状态；多链页头不再固定显示 BNB/USDT。
+
+### 已验证
+
+- 聚焦测试：`go test ./internal/flow ./internal/api -run 'TestResolveTokenSpecs|TestValidChainKey' -count=1` 通过。
+- `go vet ./...` 通过；`npm run build` 通过（仅保留既有大 chunk 警告）。
+- 安全检查：分别扫描 `internal/api`、`frontend/src/features/analytics`、`frontend/src/features/explorer-intelligence` 均为 0 issue；触及文件凭据模式扫描无命中。
+- 服务已用 `.\run.ps1 -ForceRestart` 重建并重启，PID 20176；健康检查和首页均正常。
+- 浏览器实测同一 BSC 地址：5 秒资产请求由修复前 300 次降为 1 次，HTTP 200，无控制台错误；明确显示 BNB/USDT/USDC 余额 0 及“历史转账不等于当前持仓”说明。
+- ETH 桌面实测：单次请求、ETH/USDT/USDC 均显示已查询；Base 桌面与 Arbitrum 390px 移动端实测：单次请求、ETH/USDC 显示查询失败与未配置 RPC 原因，不显示空白或 0。
+- 完整 `go test ./internal/... -count=1` 除 `internal/downloadengine/TestSQDTransactionsToParquet` 外均通过；该外网 SQD 集成用例运行 180 秒后收到截断 NDJSON（`unexpected end of JSON input`），与本次资产链路无关。
+
+### 未完成 / 注意事项
+
+- Base/Arbitrum 余额要返回真实数值，仍需在“系统设置 → RPC”配置并启用对应链的健康节点；本次未擅自新增外部 RPC 凭据或节点。
+- Base/Arbitrum USDC 地址依据 Circle 官方合约地址文档：https://developers.circle.com/stablecoins/usdc-contract-addresses 。
+
 ## 2026-08-11 — 智能下载生产预检修复：按地址差异化估算（完成）
 
 ### 2026-08-11 追加：预检终点取链头 + 任务中心分页 + 移除蓝色 Alert
@@ -30,6 +508,89 @@
 
 - TIME 模式的“起止时间 → 区块”映射仍未实现，当前 TIME 视同 0..链头（预检与实际一致，但日期语义未生效），后续需要时单独做时间-区块映射。
 - 本次提示框替换范围是智能下载页；系统设置/价格引擎/加密面板等其他页面仍有个别嵌入 Alert，可按同一规则后续统一清理。
+
+## 2026-08-15 — OKLink API key 可配置（OKLINK_API_KEY 覆盖）
+
+### 背景
+
+- CSV 下载链路的 x-apiKey 原为硬编码公共 key（`a2c903cc-…`），所有部署共享——"账户级静默限流"的实体就是这个 key（用户无自有账户/API key）。
+- 配置方式：设置 `OKLINK_API_KEY` 环境变量（≥8 字符）→ 重启服务（run.ps1）→ CSV 申请请求的 x-apiKey 使用自定义 key，与默认 key 隔离限流。浏览器引擎逃生门（oklink_browser_email.mjs）同样支持。
+- 注意：CSV 下载申请是网页端公共 key 机制（非标准 API key 鉴权），自定义 key 的隔离效果需实测；`-api-key`/`OKLINK_API_KEY` 此前仅作用于普通 API 路径。
+- 修改：`browser_scraper.go`（browserXAPIKey 读 env）、`oklink_browser_email.mjs`（go:embed 同步）、新增 `browser_api_key_test.go`（3 测试）；全量测试/vet/node --check 通过，服务已重启（PID 14948）。
+
+## 2026-08-15 — OKLink API key 服务已下线（api-management 404）
+
+### 核查结论（2026-08-15 实测）
+
+- `/api-management` 及 `/api`、`/api-docs`、`/account`、`/console`、`/open-api` 全部 404——OKLink 已下线 API key 服务，无法注册自有 key（用户证实）。
+- CSV 下载不依赖 key（网页公共 key + 签名器），19:23 / 00:00 真实验证可用；`OKLINK_API_KEY` 覆盖能力保留（有历史 key 可配，无 key 用默认）。
+- 无 key 限流规避（现有，已验证）：链级 3 分钟冷却；token 10 分钟快速失败+换身份重试；代理池 20 IP 分散；transactions 独立通道。
+- 文档修正：此前"获取 key：oklink.com/api-management"指引作废。
+
+## 2026-08-15 — token_transfers 短超时自动换身份重试（完成）
+
+### 需求与实测
+
+- 用户需求："token_transfers 也要做分邮箱独立并发请求"。
+- 实测结论：分邮箱独立请求代码已存在（每请求独立邮箱+deviceID+代理）；OKLink 对 token 导出存在账户级静默限流（换邮箱/窗口/地址均失败），但 45 分钟等待超时过长，限流解除后无法及时恢复。
+- 用户决策：实现短超时自动换身份重试。
+
+### 实现与验证（job a4318b2ed271f886）
+
+- token 首轮等待 10 分钟（`csvTokenEmailFastFailTimeout`）→ 超时自动切换新邮箱/新 deviceID/新代理（`advanceMailOnFailure`）→ backoff（3/6/10 分钟）→ 重新申请；最多 3 次重试（`csvTokenMaxSegmentRetries`），逐级放宽 10/15/20/45 分钟，transactions 保持原 15 分钟单轮。
+- 真实验证：transactions 9 行正常 → token 10 分钟快速失败 → 换身份重申请 → **收到邮件，token 12/12 完成**，产出 9+12 行。
+- 测试：`TestCSVEmailWaitTimeoutForAttempt` / `TestCSVSegmentRetriesForKind` 新增，全量测试与 vet 通过。
+- 修改文件：`csv_scraper.go`、`csv_mail_identity_test.go`、文档 2 份；探测程序已清理。
+
+### 并发测试结论（2026-08-15 22:00，4 client 并发，同地址）
+
+- **并发下每邮箱独立收信正常**：4 个并发任务 transactions 4/4 成功（各 9 行），IMAP 收件箱实证每任务独立 `okl_*@aurore.online` 邮箱均收到 OKLink "下载完毕" 邮件。身份池（估算/生成/代理绑定/deviceID）在并发下无覆盖问题（每地址独立 client + mailPoolMu）。
+- **同地址并发 token 导出被 OKLink 限流**：4 个同地址 token 申请 API 均返回成功但 20+ 分钟未发邮件（单任务 4 分钟到达）；非本系统问题，真实场景应多地址并发。
+- 测试程序（tmp/concurrent_csv、tmp/imap_inbox）已删除，未遗留任何文件。
+
+### 背景
+
+- **身份池机制全链路真实验证通过**：BSC 0x57136ea9b2be6cd4ad74c3ca5b24172f87c9cb8d，08-10~08-13 窗口，强制 email 模式。日志确认：估算生成 2 个邮箱（transactions count 接口失败按 1 段保守计 + token count 12 行 1 段）→ 代理池 20 取模绑定 → 每邮箱独立 deviceID → API（签名器）申请 → aurore.online 转发收信（Gmail IMAP）→ 下载 transactions 9 行 + token_transfers 12/12，`下载情况.xlsx` 完成 100%。
+- **首跑失败根因（已修复）**：VPN 网络下 Gmail IMAP 登录实测 26-48s，超过 watcher 的 20s 命令超时 → `imap: connection closed` 误判。新增 `csvIMAPLoginTimeout=90s` 仅对 Login 放宽（登录后恢复 20s），重跑成功。独立探测程序（tmp/imap_probe，已删）确认凭据/网络本身正常。
+- **配置说明**：磁盘 gui-settings.json 原 `csvMailPool` 为空（用户所称"邮箱池已配置"实为转发域名环境变量 OKLINK_CSV_FORWARD_DOMAINS=aurore.online）；已按 AI_HANDOFF 推荐用法写入池条目 `okl_test@aurore.online|imap.gmail.com|993|<gmail用户>|<应用密码>`（密码取自磁盘主配置，不回显）。后续任务直接用该条目。
+- **已知遗留**：OKLink total 接口（fetchCSVListTotal）真实环境返回 `unexpected end of JSON input`（transactions/token 都失败），估算容错与 window count 兜底已生效，但直链超限判断依赖它，建议后续排查响应格式。
+
+### 背景
+
+- 用户已配置邮箱池（aurore.online 转发域名条目，`OKLINK_CSV_FORWARD_DOMAINS=aurore.online` 用户级环境变量已存在）；原链路每次申请随机生成 `okl<seq8>@aurore.online` 前缀，但签名 deviceID 进程级全局、代理按 IP 亲和窗口轮换，OKLink 可跨邮箱关联同一指纹。
+- 需求：按数据量生成需要的邮箱数量，每个邮箱绑定不同指纹，调用 API（签名器）进行邮箱下载。
+
+### 本次实现（决策经用户确认：按分段数估算 / 全维度指纹绑定 / 强制 API）
+
+1. **邮箱身份池**（`csv_mail_identity.go` 新增）：
+   - `estimateCSVMailIdentityCount`：链×协议组合调 count/total（token 用窗口 countCSV，transaction 用 all-time fetchCSVListTotal），`csvMailIdentityCountForRows` 按 `ceil(行数/20000)` 估算分段数，累加并截断 [1,300]，count 失败按 1 段计。
+   - `buildCSVMailIdentities`：转发域名生成固定 `okl_<8hex>@domain`（每身份唯一），Gmail `+oklN`，其他域名原样；`ProxyIdx = i % proxyCount`；每身份独立 UUID deviceID。
+   - `nextMailIdentity`/`currentMailIdentity`/`requestPin`：round-robin 消费 + 当前身份查询 + 代理 pin。
+2. **请求绑定闭环**（`csv_scraper.go`）：
+   - `CollectAddress` 开头 `sync.Once` 惰性构建（`direct` 模式跳过）；
+   - `emailExportAlias` 优先消费身份池（无池回退旧 alias 轮换）；
+   - `requestCSV` 用 `requestPin()`（身份代理 index）→ UA/客户端提示随 IP（`setCSVUserAgentHeaders`）→ context index → per-proxy utls 客户端（TLS 指纹随 IP）。
+3. **签名 deviceID**（`csv_dynamic_signer.go`）：`applyWithDeviceID` 支持显式 deviceID；`applyCSVDownloadSignatureWithVersion` 优先用当前身份 deviceID，回退进程级。
+4. **强制 API**：`NewCSVExportClient` 默认不创建浏览器申请器；逃生门 `OKLINK_CSV_EMAIL_BROWSER=1`。
+5. **失败轮换**（`csv_mail_pool.go`）：`advanceMailOnFailure` 先推进身份（新邮箱+新代理+新 deviceID），再轮换 IMAP 池。
+
+### 修改文件
+
+- 新增：`internal/cryptodownload/csv_mail_identity.go`、`csv_mail_identity_test.go`
+- 修改：`csv_scraper.go`、`csv_mail_pool.go`、`csv_dynamic_signer.go`、`csv_proxy_pool.go`（+`csvHTTPProxyCount`）
+- 文档：`docs/CHANGELOG_AI.md`
+
+### 已验证
+
+- 8 个新测试 PASS（估算边界/邮箱格式/代理绑定/deviceID 唯一/轮换/回退/失败推进）；
+- `go test ./internal/cryptodownload/ -count=1`、`go test ./internal/smartdownload/ -short`、`go test ./internal/... -short` 全绿；`go vet` 零告警。
+- 全仓回归中 smartdownload 1 个既有测试偶发失败（时序敏感，重跑 3 次通过），与本次改动无关。
+
+### 未完成 / 注意事项
+
+- 真实任务验证待做：用户邮箱池已配置，需跑真实 CSV 邮箱任务确认估算日志（"CSV 邮箱身份池：按数据量估算生成 N 个邮箱"）、转发域名收信、每身份 deviceID/代理绑定生效。
+- 估算在任务首个 CollectAddress 时发 count 请求（每组合 1-2 个），direct 模式不触发。
+- 代理池绑定为任务开始时快照（`i % poolSize`）；运行中改池不影响已生成身份，请求时越界自动回退全局 pin/无代理。
 
 ### 背景
 
@@ -10532,3 +11093,304 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 - UJ-04 暂停：请求链路 PASS（pause_requested=True，异步等待当前 range 完成）；PAUSED 状态级验证受大任务下载时长限制，按文档记 PARTIAL；解除条件=可控制时长的任务窗口重测。
 - 测试副作用：BSC 地址库 13 条（+0x8894e0a0/0x9f8f72aa），既有地址 import_count 增长（0xf43ba0b5=45）；创建批次 8 个（1 COMPLETED + 7 CANCELED 已清理）；导出文件保留在证据目录。
 - 证据：tmp/qa-evidence-20260815-UAT-01/（SUMMARY-UAT.md、各旅程断言/网络/console JSON、截图、导出 XLSX、verify-* 核证）。
+## 2026-08-15 UAT-01 整改及修复方案（交接）
+
+- 新增 `docs/ADDRESS_LIBRARY_UAT_REMEDIATION_AND_FIX_PLAN.md`，针对用户级真实 UAT `20260815-UAT-01` 的报告与产品缺口形成可执行整改方案。
+- 纠正建议口径：产品验收 FAIL、测试覆盖 PARTIAL；主旅程 114 PASS / 10 FAIL，只读核证 11 PASS，全部落盘断言 125 PASS / 10 FAIL；共享断言文件不得重复计数。
+- 产品修复范围包括浏览器后退白屏、Explorer 深链接刷新错位、跨链同地址回归、应用内错误反馈；任务部分先诊断调度条件，再完成真实暂停/恢复/取消和本轮非零结果闭环。
+- 文档明确 `ea594cfb` 零行本轮任务与历史 `41a067d0` 99 行导出不能拼接为同一闭环，并定义 batch、dataset job、Parquet、ClickHouse、页面和导出的强制关联证据。
+- 本轮只新增 Markdown 方案并更新交接文档，无业务代码、API、数据库结构或前端组件变更，不需要重启项目；所有整改项仍待实现和复测。
+
+## 2026-08-15 UAT 整改复测（交接，RUN_ID 20260815-UAT-R01）
+
+- UAT-BUG-01 已修复（appRoute.ts + App.tsx 导航/深链），复测 13/13；FIX-006 非法地址定位已修复（9/9）；FIX-003/005/008 定向复测通过。
+- **R01-BUG-01（P1，未修复）**：含 transactions 的多数据集任务在 transactions 完成后停滞（3585cb40 卡 VALIDATING、c57285af 后续 dataset PENDING；无 transactions 的 fca54b14 2 分钟正常完成）。与暂停/恢复无关（对照同样停滞）。建议排查 internal/smartdownload runBatchWorker/claimNext 对多 dataset 认领与 provider 选择；修复前包含 transactions 的批次无法完成终态。
+- 暂停/恢复/取消状态闭环已验证（RUNNING→PAUSED→刷新保持→恢复；独立任务 CANCELED+刷新保持）。
+- 非零闭环证据：fca54b14 token_transfers 1145 行（VALIDATED score=100 → WRITTEN → 导出 1145 行 XLSX 实际解析）。
+- 后续：修复 R01-BUG-01 后在同一固定构建重跑 UJ-01..12 完整回归；资金图快照/调查写路径与 78 条边界用例未执行。
+- 证据：tmp/qa-evidence-20260815-UAT-R01/（SUMMARY-UAT-RETEST.md、断言 JSON、截图、导出文件、duckdb 查询输出）。
+
+## 2026-08-15 R01-BUG-01 多数据集共享调度修复（交接）
+
+- 根因位于 `internal/smartdownload/v33.go`：相同指纹批次可在 SharedWork `RUNNING` 期间加入，但 `executeSharedWork` 使用领取时的旧引用快照。迟到 range 没有获得结果，且因 `SharedWorkID` 非空被普通 `claimNext` 永久跳过，表现为 transactions 完成后其他数据集长期 PENDING。
+- 修复为 `completeSharedWork` 原子收尾：持 `Service.mu` + `v33.mu` 封存共享工作，读取包括运行中迟到加入者在内的最新 Refs，并在结果扇出前清空相应 range 的 `SharedWorkID`。迟到引用可正常闭环；本地 Part 写入若失败，也能回到普通 range 重试链。
+- 新增 `TestV33LateJoinWhileSharedWorkRunningIsFannedOut`，使用阻塞 Group Provider 精确模拟“第一批正在 I/O，第二批加入”，断言第二批全部 range 终态且不残留共享所有权。原有跨批次扇出与单数据集优选 Provider 回归保持通过。
+- 真实浏览器复测（Browser 插件不可用，使用 Playwright core + 系统 Chrome）：页面创建批次 `e61dbf28-4557-49bc-a49e-73c40f9eaeef`，BSC 地址 `0xf43b...3906`，范围 114453000-114453500，数据集 transactions/balances/token_transfers。约 45 秒到 COMPLETED，分别 51/1/99 行，均 VALIDATED、DATASET_CERTIFIED、range COMPLETED，且 `shared_work_id` 为空；7/7 业务断言通过，console/page error=0。
+- 验证：定向新测试 PASS；`go test ./internal/smartdownload -count=1` PASS；`go test ./internal/... -count=1` PASS；`go vet ./...` PASS；`npm run build` PASS（仅既有大 chunk 告警）；`run.ps1` 重启成功，PID 39424；`/api/health` status=ok。
+- 修改：`internal/smartdownload/v33.go`、`internal/smartdownload/v33_test.go`；报告与证据更新在 `tmp/qa-evidence-20260815-UAT-R01/`。无 API、数据库结构或前端契约变更。
+- 边界：本次已经关闭 R01-BUG-01，但未在修复后的同一构建重跑完整 UJ-01..12，整轮测试覆盖仍为 PARTIAL；旧已取消批次不会被改写为成功。
+
+## 2026-08-15 完整项目架构、技术与算法 Word 说明书（交接）
+
+- 新增 `docs/资金数据智能分析平台_完整架构技术与算法说明书.docx`，共 27 页，面向研发、测试、运维和调查分析人员，描述当前工作树的真实架构基线。
+- 文档覆盖：系统分层、Go/React 技术栈、83 个 Go 包与关键模块职责、前后端架构、Parquet/ClickHouse/DuckDB/SQLite/JSONL 存储边界、传统 ETL/链上智能下载/调查报告三条端到端链路、API 与集成边界、安全审计、并发一致性、性能、测试发布和演进风险。
+- 算法章节覆盖文件识别/标准化/复合键去重、资金流图聚合、覆盖区间、自适应分片、Provider 评分与退避、Checkpoint V3/Range Ledger、多级认证、BFS/DFS、PageRank、Union-Find、有界资金路径评分、big.Rat FIFO、留存/穿透、DEX 解码、OHLC/VWAP、智能调查决策与 EvidenceGuard；明确前端最短路径当前为无权 BFS，不写成 Dijkstra。
+- 文档含 4 张自绘架构图、关键状态机、算法复杂度、配置与运维命令、术语附录；明确当前并非“纯文件系统”，而是控制面、资产面和分析面分工。
+- 生成脚本：`tmp/doc-architecture-20260815/build_architecture_doc.py`。验证：DOCX ZIP 完整；Heading 1=21、Heading 2=37；4 张图片尺寸合规；单一 Letter/portrait section、1 英寸页边距；无障碍审计 0 high/0 medium/0 low；Microsoft Word 导出 27 页 PDF 后逐页 PNG 检查通过。
+- 本轮无业务代码、API、数据库结构或前端组件变更，不需要执行 `run.ps1`；渲染中间件仅保存在 `tmp/doc-architecture-20260815/`。
+
+## 2026-08-15 架构说明书统一纯黑仿宋小四（交接）
+
+- 按用户要求重排 `docs/资金数据智能分析平台_完整架构技术与算法说明书.docx`：正文、标题、表格、列表、图注、页眉页脚全部统一为仿宋、小四（12pt）、纯黑；不再使用蓝色、灰色文字或彩色填充。
+- 4 张架构图同步改为白底、黑色文字、黑色线框和箭头；表头、交替行与提示框均改为白底黑框，封面装饰线已移除。
+- 增加 `tmp/doc-architecture-20260815/audit_monochrome_fangsong.py`，逐个检查可见文本 Run、使用样式、字号、颜色、填充和内嵌图片像素。审计结果：683 个可见文本 Run、4 张图片全部通过，图片无彩色像素。
+- 最终版因统一 12pt 后为 28 页；Microsoft Word 导出 PDF 并逐页渲染检查，无表格表头孤行、文字截断、内容溢出或异常空白页。DOCX 完整性与无障碍审计继续通过。
+- 本轮只修改 Word 生成规则、最终 DOCX 和交接记录；无业务代码、API、数据库结构或前端组件变更，不需要执行 `run.ps1`。
+## 2026-08-16 — 智能下载前置 Provider 10 分钟切换与高频失败冷却（完成）
+
+### 任务
+
+- 修复大数据量地址卡在前置下载通道时等待过久的问题：每个前置 Provider 的单次执行/重试墙钟时间不得超过 10 分钟；短时间高频失败时跳过该 Provider；尽量先轮完常规通道，最后才使用 SQD Cloud 兜底。
+
+### 新增功能
+
+1. `Options.ProviderAttemptTimeout`：默认 10 分钟，构造服务时对任何大于 10 分钟的值强制钳制为 10 分钟；CSV/SQD/RPC 等非 Cloud Provider 的普通 Range 与 V3.3 SharedWork 都使用该预算。
+2. 超时切换：前置 Provider 到达预算后通过 context 取消，错误明确记录“达到上限，自动切换下一下载模式”；`sqd_cloud` 作为最终兜底保留 30 分钟执行窗口。
+3. 高频失败判断：同一 Provider 在滚动 2 分钟窗口内失败 2 次，进入 10 分钟全局冷却；单次完整超时、401/403、鉴权/风控类硬失败立即进入 10 分钟冷却。后续地址与 `PreferredProvider` 都必须遵守冷却，不再重复踩故障通道。
+4. SharedWork 失败不再按 30 分钟窗口重复占用同一大组：一次有界失败后释放共享所有权，回到普通 Range 调度；普通单地址失败、超时/硬失败和高频失败立即标记当前 Provider，下一次领取选择后续通道。
+5. Cloud 最后兜底：调度器常规选择阶段显式排除 `sqd_cloud`，只在常规 Provider 全部失败/冷却后选择；Range 尝试预算现在保证每个尚未尝试的常规 Provider 至少获得一次机会，即使超过原 `RetryLimit`，之后才允许 Cloud。
+6. `GET /api/smart-download/status` 新增 `provider_attempt_timeout_seconds`，生产默认应为 `600`。
+
+### 修改文件
+
+- `internal/smartdownload/service.go`
+- `internal/smartdownload/scheduler.go`
+- `internal/smartdownload/v33.go`
+- `internal/smartdownload/api.go`
+- `internal/smartdownload/provider_failover_policy_test.go`（新增）
+- `docs/AI_HANDOFF.md`
+- `docs/CHANGELOG_AI.md`
+
+### 接口、数据库、前端变化
+
+- API 路径不变；`GET /api/smart-download/status` 响应新增 `provider_attempt_timeout_seconds`。
+- 无数据库结构变化；Range/Provider 失败继续写现有文件状态与 Range Ledger。
+- 无前端页面或组件变化。
+
+### 已验证
+
+- 新增回归：前置 Provider 阻塞后按测试预算切换到 SQD；连续失败 Provider 只处理前两个地址，第三个地址直接跳过；`RetryLimit=0` 时 CSV→SQD→RPC 都先执行，最后才进入 SQD Cloud；45 分钟配置被钳制为 10 分钟；滚动失败窗口和单次超时立即冷却均通过。
+- `go test ./internal/smartdownload/... -count=1 -timeout=10m` — 通过；首次运行出现既有 Windows `TempDir RemoveAll` 目录非空抖动，聚焦 `TestRetryOnTransientFailure -count=5` 全部通过，随后全包重跑通过。
+- `go test ./internal/... -short -count=1 -timeout=15m` — 全部通过。
+- `go vet ./...` — 通过。
+- `cd frontend && npm run build` — 通过（仅既有大 chunk 提示）。
+- `./run.ps1` — 后端编译成功并替换旧进程；脚本因固定 15 秒等待先报未就绪，但进程继续安全初始化，约 4 分 49 秒后监听 8000（PID 27288）。
+- `GET /api/health` — `status=ok`；`GET /api/smart-download/status` — `provider_attempt_timeout_seconds=600`、`retry_limit=2`、`workers=4`、Adapters=`csv,rpc,sqd,sqd_cloud`。
+
+### 未完成与注意事项
+
+- 10 分钟是前置 Provider 单次墙钟硬上限，不是预计总任务耗时；一个地址可依次经历多个常规 Provider，但每个故障通道不会无限等待。
+- 已在确定性测试中覆盖取消、切换顺序与冷却；本轮不发起真实大地址下载，避免消耗外部 Provider 配额和触发 OKLink/SQD 风控。生产状态接口已核对 `provider_attempt_timeout_seconds=600`。
+- 当前 `backend/data/smart_download/ranges` 约有 34,220 个 Range JSON；`NewStore` 会在监听端口前同步逐文件加载，导致本次冷启动约 4 分 49 秒，超过 `run.ps1` 固定 15 秒等待。这是既有启动可用性问题，本轮未删除历史任务或扩展到无关启动重构。
+
+## 2026-08-16 Smart Download 启动加速（交接）
+
+- 已关闭上一条记录中的启动可用性遗留。根因是 `internal/smartdownload/store.go` 在监听端口前串行读取、反序列化 34,220 个 Range JSON；原实测进程启动到健康约 288 秒，其中下载调度器就绪到 Smart Download 就绪约 277 秒。
+- 状态恢复改为有上限的并行加载：按 `GOMAXPROCS*2` 分配 worker、最少 4、最多 32；磁盘读取和 JSON 解析并行，最终仍按 `os.ReadDir` 稳定顺序合并，因此保留 Packs 先加载、独立 JSON 后覆盖以及重复 ID 后文件覆盖的原语义。坏文件仍与原实现一致地跳过，不阻断其余任务恢复。
+- `run.ps1` 默认启动等待从固定 15 秒改为可配置 `-StartupTimeoutSeconds`（默认 180 秒），会检测子进程提前退出并每 10 秒输出进度；代码未变化时自动复用较新的 `bin/etl-server.exe`，Go 源码、嵌入资源、`go.mod` 或 `go.sum` 较新时仍会自动重建，可用 `-ForceBuild` 强制重建、`-SkipBuild` 明确跳过构建。
+- 真实历史状态冷启动验证：首次新二进制启动健康检查 45.3 秒（含状态恢复；整段脚本含构建 87.5 秒），Smart Download 恢复阶段约 27 秒；相对原进程启动约 288 秒提速约 6.4 倍，相对原状态恢复 277 秒提速约 10.3 倍。随后代码未变化、Windows 文件缓存已热时，完整 `run.ps1` 总耗时 14.8 秒、健康检查 10.1 秒。
+- 恢复正确性：重启后 `/api/health` 为 `status=ok`；`/api/smart-download/status` 为 107 个批次，状态计数 CANCELED=23、COMPLETED=39、PARTIAL=45，`provider_attempt_timeout_seconds=600`，Adapters 为 csv/rpc/sqd/sqd_cloud。未删除、迁移或改写历史任务文件。
+- 新增测试覆盖 1,500 个 Range JSON 全量并行恢复、跨四类 Job 恢复、坏 JSON/非 JSON 跳过及重复 ID 稳定覆盖。`go test ./internal/... -short -count=1`、`go vet ./...`、前端 `npm run build` 均通过（仅既有大 chunk 警告）；PowerShell 语法解析、增量构建判断和两次真实重启均通过。
+- 修改文件：`internal/smartdownload/store.go`、`internal/smartdownload/store_test.go`、`run.ps1`、`docs/AI_HANDOFF.md`、`docs/CHANGELOG_AI.md`。无 API 契约、数据库结构、任务状态结构或前端组件变化；服务当前已运行（PID 21556）。
+- 后续边界：大量小 JSON 的首次冷缓存恢复仍约 45 秒。如需进一步压到秒级，应单独设计可校验快照/索引或历史状态压实机制，并保留崩溃恢复与增量失效语义；本次没有用跳过历史任务换取表面速度。
+
+## 2026-08-16 Smart Download 二次启动加速至 4 秒级（交接）
+
+- 用户反馈 45 秒仍慢后继续优化，未以“热缓存 10 秒”作为完成。新增 `internal/smartdownload/store_snapshot.go`：把当前 107 个批次、110 个地址、155 个数据集、34,220 个 Range 的内存索引写成约 22.4 MB 单文件快照，日常启动不再打开 34,000 个小文件。
+- 快照安全边界：Packs/四类状态目录的存在性与目录 mtime、快照长度、SHA-256、四类数量、map key 与 Job ID 全部一致才加载；任何 Store/Pack 保存都会在写权威 JSON 前使 manifest 失效。快照损坏、过期、并发写入或版本不符均回退原 Packs + JSON，并自动重建，不以漏任务换速度。
+- 快照在首次权威加载后建立；批次进入 COMPLETED/PARTIAL/FAILED/CANCELED 终态时刷新。保存增加 revision + activeWrites 窗口，manifest 提交与变更登记使用同一互斥边界，覆盖“状态文件已变化但快照仍被误判有效”的崩溃竞态。
+- 第二个启动瓶颈来自 `setupClickHouse`：此前 Ping、Lineage、Semantic、Financial/PnL/Price DDL 共用一个 5 秒 context，后段迁移常因总预算耗尽而阻塞启动并失败。现在 ClickHouse 连通后立即装配只读仓库和服务，幂等迁移及 Canonical seed 使用独立后台 context；相关数据面在迁移完成前仍通过既有错误路径失败，不伪造查询结果。本次两次真实重启中 `clickhouse_schema_migrations_ready` 均在 `server_start` 同秒成功。
+- `run.ps1` 新增 `-ForceRestart`：二进制较新且现有服务 `/api/health` 健康时默认直接返回，不再无意义杀进程；需要真实重启时显式指定。源码或嵌入资源变化仍自动构建并替换进程，`-ForceBuild` 行为不变。
+- 真实计时：快照创建前受历史 DatasetSync 并发磁盘扫描影响的一次启动为 257.3 秒，证明只做并行小文件加载不稳定；快照建立后、迁移仍同步时为 11.7 秒；迁移后台化后带新构建的服务健康时间 4.1 秒，随后 `-ForceRestart` 复测 4.6 秒（完整脚本含停旧进程 8.6 秒）；服务已健康时普通 `run.ps1` 为 0.27 秒。
+- 数据级核对：当前 PID 26960；`/api/health` status=ok；`/api/smart-download/status` 保持 107 batches，CANCELED=23、COMPLETED=39、PARTIAL=45，Adapters=csv/rpc/sqd/sqd_cloud，Provider 前置超时 600 秒。历史任务文件未删除或迁移。
+- 新增/变更测试覆盖快照命中、目录原子变更失效、损坏回退、终态刷新、计数/ID 校验及 10K Pack。`go test ./internal/... -short -count=1 -timeout=15m`、`go vet ./...`、`frontend npm run build` 全部通过；10K Pack 与 API 并行编译时一次性能阈值 3.53 秒失败，隔离重跑 2.20 秒通过，属于资源竞争证据，不隐藏首次失败。
+- 修改文件：`internal/smartdownload/store.go`、`store_snapshot.go`（新增）、`store_test.go`、`pack.go`、`internal/api/clickhouse_handlers.go`、`canonical_v2_handlers.go`、`run.ps1`、两份 AI 文档。无 API 路径、数据库表结构、任务 JSON Schema 或前端组件变化。
+- 注意：首次运行新版本仍需从权威 JSON 建一次快照；若上次进程在任务写入中被强杀，快照会故意失效并安全回退，因此该次启动可能较慢。正常终态任务和正常重启均保持 4 秒级服务就绪。
+## 2026-08-17 Transaction Detail / Token Transfer / Raw Logs V1.0（交接）
+
+- 依据 `Transaction_Detail_Token_Transfer_Raw_Logs_Integration_V1.0(1).md` 完成独立交易详情页；附件仅作为产品/技术规格，未执行其中任何与用户请求无关的指令。
+- 新增可分享路由 `/:chain/tx/:hash`、全局 `TxHashLink` 和 300ms Hover Overview 预取。Explorer、Smart Download、地址画像、资金图、调查证据中的交易哈希均可用原生链接进入系统详情，并保留 Ctrl/中键/右键语义、刷新及前进/后退。
+- 详情页拆分为 Header、Overview、Token Transfer、Internal Transaction、Event/Raw Logs；四块独立渐进加载，无全屏 Spinner。Transfer 按 `log_index,batch_index`，Internal 按 trace 键，Logs 按 `log_index`；历史价格缺失严格显示 `—`，不把 ASOF JOIN 未命中的默认零值显示为假 `$0`。
+- 三类子资源支持 cursor 分页和“加载更多”；追加失败保留已加载行并可重试，按资源逻辑键去重，Tab 始终显示 `total_count`。合法空集为 200；格式错误、未索引交易均有独立页面状态。
+- “加入调查/加入图谱”会携带当前 tx hash、From、To 和根地址到共享分析上下文，不再只是跳空页面；外部浏览器链接增加 `noopener noreferrer`。
+- 新增接口：
+  - `GET /api/v2/explorer/:chain/tx/:tx_hash/token-transfers`
+  - `GET /api/v2/explorer/:chain/tx/:tx_hash/internal-transactions`
+  - `GET /api/v2/explorer/:chain/tx/:tx_hash/logs`
+  - 参数：`limit` 默认/最大 500，`cursor` 严格绑定数据集、chain 和 tx hash；响应统一为 `chain_id/transaction_hash/count/total_count/items/next_cursor`。
+- ClickHouse 新增 `onchain.raw_logs`，ReplacingMergeTree 排序键为 `(chain_id, tx_hash, log_index)`。Logs Writer 同一认证 Parquet 同时写 raw_logs 与 parsed_events 并分别对账；SQD/RPC/Canonical 链路保留 Token 的 `transaction_index/batch_index/token_id` 和 Logs 的 `block_hash/transaction_index/removed`。
+- 历史回填：两份已认证、互不重叠 Logs Parquet 共 7,627 行写入 raw_logs；回填前 7,627 个逻辑键唯一且 hash/address/topic/data 格式全通过。回填后 `raw_logs FINAL=7,627`、`parsed_events FINAL=7,627`，双向缺失均为 0；临时 CSV 已删除。旧 Parquet 本身没有 block_hash/transaction_index/removed，因此历史回填对应字段为空/0/false，新下载链路会保留真实值。
+- 真实数据验收：交易 `0x5138...fb01` 的 Token Transfer 通过 5 页 cursor 全量得到 182/182，逻辑键唯一 182、顺序正确、缺价 `usd:null`；Raw Logs 交易 `0x6eb1...68c1` 通过 3 页得到 20/20，逻辑键唯一 20，decoded 为 JSON 对象。非法 hash/chain/limit/cursor 均返回 400。
+- 性能（本机 ClickHouse 热数据、各 20 次）：Overview P50/P95=83.8/87.4ms；Token Transfer P50/P95=142.2/147.6ms，满足规格 <150ms / <200ms 目标。
+- UI 实测（Browser 插件不可用，使用 bundled playwright-core + 本机 Chrome）：1440x960、1024x768、390x844 全部无横向滚动、无 console/page error；生产 182 行全部渲染且无假 `$0`；受控数据验证 Overview 先显示、三 Tab 独立 Loading、分页追加去重、503 保留旧数据并重试、Raw 默认折叠/可展开。证据位于 `C:/Users/Euripides/.codex/visualizations/2026/08/17/01a00dab-4342-7720-b180-2dc99742f282/`。ImageGen 概念图因网络错误未生成，视觉实现按附件线框、现有设计系统和实际截图迭代。
+- 验证：`go test ./internal/... -count=1` 全绿；定向 `go vet` 全绿；前端 `npm run build` 通过（仅既有主 chunk 体积警告）；路由/排序/分页纯函数 16/16；`git diff --check` 无空白错误；`.\\run.ps1 -ForceRestart` 构建并重启成功，健康等待 4.1 秒，当前服务 health=ok。
+- 主要文件：`internal/canonicalapi/{models.go,decode.go,repository.go,tx_collections.go,*_test.go}`、`internal/api/canonical_v2_handlers*.go`、`internal/datawarehouse/writer*.go`、`internal/smartdownload/{canonical.go,sqd_adapter.go,rpc_adapter.go,*_test.go}`、`deploy/clickhouse/{schema.sql,v2_semantic_schema.sql}`、`frontend/src/features/transaction/*`、`frontend/src/features/analytics/{ClickHouseExplorerApi.ts,ClickHouseExplorerTypes.ts,AddressPage.tsx,flowInspector.tsx}`、`frontend/src/features/{explorer-intelligence/ExplorerPage.tsx,smart-download/SmartDownloadPage.tsx,intelligence/investigationEvidenceViewer.tsx}`、`frontend/src/{App.tsx,features/explorer-intelligence/appRoute.ts}`。
+## 2026-08-17 — 智能下载 OKLink 数量优先路由与卡死修复（完成）
+
+### 当前行为
+
+- 生产预检优先调用 OKLink CSV `/download/count` 取得地址×数据集真实数量；`transactions` 和 `token_transfers` 均支持。计数失败才回退列表/Discovery。
+- `<= 10,000` 行直接首选 CSV，`> 10,000` 行由调度器首选 SQD；预检响应通过新增 `dataset_estimates` 告知前端数量、来源、置信度与路由。
+- 创建任务复用预检缓存。CSV FULL 任务只保留一个完整 Range，禁止后续自适应区块切片覆盖；预计 Range 很大时使用 Batch Pack，避免创建海量小文件。
+- 新任务已保存 `preferred_provider` 时，启动不再重复规划。前端创建后也不再同步 POST `/plan`。
+- 任务中心 SSE 最多每 2 秒合并刷新一次；列表只取批次，不再并发获取所有历史终态任务报告，报告仅在选中任务详情时读取。
+
+### 关键修改
+
+- 后端：`internal/cryptodownload/csv_scraper.go`；`internal/smartdownload/{csv_adapter.go,scheduler.go,v32.go,service.go,v33.go}`；`internal/smartdownload/discovery/discovery.go`。
+- 测试：`internal/smartdownload/csv_adapter_test.go`、`internal/smartdownload/preflight_oklink_routing_test.go`。
+- 前端：`frontend/src/features/smart-download/SmartDownloadPage.tsx`、`smartDownloadApi.ts`。
+- 无数据库结构变化；API 仅兼容性新增预检 `dataset_estimates`。
+
+### 生产证据
+
+- 地址 `0xf43ba0b50028b8873fd4d6daac4bb7c4d5523906`：OKLink 实数 `transactions=4,410`、`token_transfers=8,903`，来源 `oklink_count`、置信度 0.98，均路由 CSV。
+- 批次 `96ba5334-1f77-4a4d-9471-94f1e9559a71`：预检 5.8 秒、创建 1.2 秒、1 个 Range、启动 9ms；18.8 秒完成 4,410 行。Validation：预期=实际=唯一键=4,410，覆盖率=1，重复=0，Cross Check=PASS，Dataset `DATASET_CERTIFIED`，批次 `BATCH_CERTIFIED`。
+- 产物：`backend/data/smart_download/smart_download/parts/17953d00-f0ae-4800-bd2e-7153e86ef9f4/part-000000000000-000116468574-c752df62.parquet`，231,971 bytes。
+- 浏览器：1440×1000 创建页/任务中心完成渲染、无 Runtime 异常；任务中心 12 秒内批次列表请求 1 次、历史 `/report` 请求 0 次，111 个任务正常显示。
+
+### 已验证命令
+
+- `go test ./internal/... -short -count=1 -timeout=15m`
+- `go vet ./...`
+- `cd frontend; npm run build`
+- `npx @claude-flow/cli security scan -t <三个变更目录> -d deep --type code -o json`（均 0 项）
+- `run.ps1 -ForceRestart`；最终健康检查 `ok`，PID 37960。
+
+### 后续注意
+
+- 冷预检仍依赖 OKLink 网络与签名器，当前双数据集冷实测约 8.7 秒；计数缓存 2 分钟，可避免创建阶段重复探测。
+- 小数据 CSV 阈值集中为 10,000 行。如需调整，应同时更新调度策略及回归测试，不要重新引入按区块切分 CSV FULL 任务。
+- 旧问题复现批次 `1b661f5f-71a4-43d1-a45a-9c18b001308a` 已正常取消，保留历史便于审计。
+## 2026-08-17 — 交易详情数据表改用系统字体（完成）
+
+### 修改
+
+- `frontend/src/features/transaction/transaction-detail.css`：代币转账、内部交易、事件日志三个数据表容器显式使用 `var(--ds-font-ui)`。
+- 表格可见的地址、行号、事件序号和解码值取消 Consolas/SFMono 局部覆盖，统一使用系统 UI 字体栈。
+- 顶部交易哈希及 Raw 原始数据仍保留等宽字体，便于核对哈希和原始证据。
+- 无接口、数据库结构或组件逻辑变化。
+
+### 验证
+
+- `cd frontend; npm run build` 通过（仅保留既有大 chunk 警告）。
+- Chrome 1440×960 打开 BSC 交易 `0x70209d…543690`，代币转账 2 行正常渲染。
+- 计算样式：表容器、地址和行号均为 `Microsoft YaHei, PingFang SC, Segoe UI, system-ui, sans-serif`；顶部交易哈希仍为 SFMono/Consolas。
+- 页面无横向溢出、无 Runtime 异常。截图：`transaction-table-system-font.png`。
+
+### 未完成/注意事项
+
+- 本次仅调整交易详情数据表字体，不修改全局字体策略和其他页面。
+## 2026-08-17 — Explorer 地址数据缺失与 Smart Download 认证/入库修复
+
+### 修复内容
+
+1. Explorer 地址页默认时间窗口由 `30D` 改为 `ALL`，清除筛选也回到 `ALL`；会话缓存升级到 `explorer-analysis-context-v3`，避免旧的 30D 状态继续把历史交易过滤为空。
+2. Smart Download L6 交叉校验新增“精确区块窗口探针”能力门。OKLink CSV Probe 是全量计数，只用于预检估算和 CSV/SQD 路由，不再拿全量数量与 100 区块抽样窗口比较。
+3. `RepairDatasetGaps` 统一重新进入 VALIDATING 状态机：重验通过后继续 Merge、Dataset Certification、ClickHouse 写入；重验失败返回错误；补洞重试次数耗尽且没有可创建 Range 时保持 PARTIAL，避免无任务却卡在 RUNNING。
+4. Token activity 的 ERC20/ERC721（batch=0）事件键统一为 `log:<log_index>`，仅 ERC1155 多项事件保留 `:batch:<index>`，与旧 Provider 的逻辑键一致。
+5. 新增 `POST /api/smart-download/datasets/{id}/reindex`，只允许 COMPLETED + DATASET_CERTIFIED + VALIDATED 的结果重新写入分析数仓，不重新下载 Range。
+6. RPC token transfer 下载现在按区块缓存调用 `eth_getBlockByNumber`，为单地址与分组扫描的每条记录写入真实 `block_time`；此前 `eth_getLogs` 本身不返回时间，导致新入库 token 时间为 epoch、页面显示 `--`。
+7. `reindex` 改为直接读取 Registry 中已有的认证 Parquet，不再从 Provider parts 重新 Merge 并覆盖认证产物；回归测试会删除 parts 后再执行 reindex，确保它是纯数仓重建。
+
+### 生产数据修复
+
+- 地址 `0x4c040ec7388b0484303ab5f7f1607a146b39d3ab`：
+  - 原 token dataset `d7cd6f01-9281-4f98-ad7d-6b0959406634` 已有 784 行，但被 OKLink 全量计数误用于窗口交叉校验而停在 PARTIAL；重验后为 VALIDATED 100 分、784/784、coverage=100%、0 duplicate，最终 DATASET_CERTIFIED / WRITTEN。
+  - 精确删除该地址旧任务 `pangu-ledger-20260810` 派生的 181 条 token activity（180 条重复 + 1 条旧 CSV 合成 `log:1000000`），认证 Parquet 与新 784 行保留；重建汇总后 API/summary 均为 784。
+  - OKLink 预检普通交易返回 246（confidence=0.98，source=oklink_count，preferred_provider=csv）；新批次 `667803d7-edab-4ab1-bd70-ab798305e2fa` 单 Range 完成 246/246，VALIDATED / DATASET_CERTIFIED / WRITTEN。旧 SQD 创世扫描 transactions 子任务已暂停。
+  - 原 784 行 RPC token Parquet 的 `block_time` 全为 0。已向 BSC RPC 精确补齐 251 个不同区块的时间，修复后 Parquet 为 784 行、zero_times=0；原零时间产物保留为 `.blocktime-zero.bak`，首次错误 remerge 的副本保留为 `.blocktime-zero-remerged.bak`，均可恢复。
+  - 清理该 dataset 旧的 epoch ClickHouse 行后按认证产物重建：第一次清理 address_activity 3136 / token_transfers 784，发现旧 reindex 会重合并后修复实现；最终再次清理 1568 / 784 并完成 WRITTEN。最终 first_seen=`2026-03-18T03:43:56Z`、last_seen=`2026-07-26T18:51:02Z`。
+
+### 修改文件与接口
+
+- 前端：`frontend/src/features/explorer-intelligence/analysisContext.tsx`。
+- 后端：`internal/smartdownload/{discovery.go,csv_adapter.go,validation.go,service.go,api.go,rpc_adapter.go}`、`internal/datawarehouse/writer.go`。
+- 测试：`internal/smartdownload/{phase3_test.go,indexed_writer_test.go,rpc_logs_test.go}`、`internal/datawarehouse/writer_test.go`。
+- API：新增 `POST /api/smart-download/datasets/{id}/reindex`；无数据库 Schema 变更。
+
+### 已验证
+
+- 定向测试：`go test ./internal/smartdownload`、`go test ./internal/datawarehouse` 全通过。最终 `go test ./internal/... -count=1` 中本次相关包及其余功能包通过，仅无关的 `intelligence/TestResumeExecutesRecoveredTasks` 出现一次恢复状态时序失败；该用例单独 `-count=1` 重跑通过。
+- 静态检查：`go vet ./internal/smartdownload ./internal/datawarehouse`；前端 `npm run build`。
+- `run.ps1` 自动重启成功，最终 PID 10920。
+- 真实游标分页 API（page_size=100）：transactions=246（3 页、246 unique），token-transfers=784（8 页、784 unique），summary 同步为 246/784；认证 Parquet 784 行且 zero_times=0。
+- Playwright Chromium 1536×960：默认选中 ALL；交易与代币转账标签首屏均为 100 行；代币首行显示 `2026-07-27 02:51:02`（北京时间），不再是 `--`；console/page errors=0。
+
+### 未完成/注意事项
+
+- 当前数据没有历史价格，美元估值仍按契约显示 `--`，不是交易/转账缺失。
+- 原大批次的 transactions 与 internal_transactions SQD 创世扫描子任务当前均为 PAUSED；transactions 已由新 CSV 批次完整替代，internal_transactions 未在本次地址页交易/代币问题范围内补扫。
+
+## 2026-08-17 — Explorer 地址页资产与表格样式修复
+
+- 地址页顶部 `BNB / USDT / Portfolio` 接入现成实时资产查询，不再依赖 `header.balances.available=false` 的空占位；当前地址可展示 BNB/USDT 余额，Portfolio 在资产存在时显示数值。
+- 交易活动/代币转账/内部交易表移除 `区块` 列，和 OKLink 地址页的信息架构保持一致。
+- 交易活动表强制使用系统 UI 字体栈，移除该表中的旧版局部字体覆盖。
+- 无接口、数据库结构或后端契约变化。
+- 修改文件：`frontend/src/features/explorer-intelligence/ExplorerPage.tsx`、`frontend/src/features/explorer-intelligence/explorer-intelligence.css`。
+- 验证：已用本地 `GET /api/v1/explorer/bsc/address/0x4c040ec7388b0484303ab5f7f1607a146b39d3ab/summary` 确认 transactions=246、token_transfers=784；`POST /api/flow/address-assets` 确认该地址 BNB/USDT/USDC 均为 0 且接口可用。待运行 `npm run build` 与浏览器复测后补最终结果。
+
+### 最终补充：真实金额、统计与浏览器验收
+
+- `internal/smartdownload/rpc_adapter.go`：RPC Token Transfer 下载按合约缓存调用 `decimals()`，精确生成 `token_decimals` 与 `value_decimal`，不再把 ERC-20 原始整数直接作为页面数量。
+- `internal/datawarehouse/writer.go`：BSC/ETH 受信稳定币合约在缺少外部价格时写入 `STABLECOIN_PEG` 估值，地址页资金统计可以基于真实 Token 数量计算；新增对应 RPC 精度与数仓映射测试。
+- 现有认证 Token Parquet 已保留 `.raw-amount.bak` 后修复：784/784 行具有精确金额，USDT 样本 `21266298259605752082521` 转换为 `21266.298259605752082521`，FIST 按 6 位小数处理；Dataset 重新索引后为 `COMPLETED / WRITTEN`。
+- 最终真实 API：transactions=246、token_transfers=784、counterparties=154、active_days=59；ALL 窗口稳定币流入/流出均为 `136480.177177`，价格覆盖 592/784；实时资产返回 BNB/USDT/USDC 三项成功余额，当前均为 0。
+- Playwright 1920×1080 验收：表格计算字体为 `Microsoft YaHei, PingFang SC, Segoe UI, system-ui, sans-serif`；列头无“区块”；首行数量 `21,266.3`、当时价值约 `21.27K USDT`；顶部估算资产 `$0.00`、总流入/总流出 `$136,480`；资产页真实渲染 BNB/USDT/USDC 三行。
+- 验证：`go test ./internal/... -count=1` 全部通过；`go build -o bin\\etl-server.exe .\\cmd\\server\\`、`cd frontend; npm run build` 通过；`.\\run.ps1 -ForceRestart` 后 health=ok，PID 38884。
+- 无 API 路径或数据库 Schema 变化；新增的是 RPC 记录字段填充与既有数仓列的真实值。
+
+## 2026-08-18 — 交易回执/事件日志缺口兜底与资金口径澄清
+
+### 修复内容
+
+- Explorer 交易详情在本地 CSV 基础交易缺少 `input`、`gas_limit`、`gas_used`、`block_hash`、交易序号和执行状态时，按交易哈希从已配置 RPC 读取交易与 receipt，并只补齐详情响应，不伪造历史价格或内部调用。
+- v2 事件日志接口在本地 `raw_logs` 为 0 时读取同一 receipt，保留完整 topic/data、区块时间、交易/日志序号，并通过现有 `eventdecoder` 解码标准事件；来源标记为 `RPC_RECEIPT_LOG`。
+- 地址页金额卡片改为“已定价总流入 / 已定价总流出 / 已定价净流量”，并提示未定价代币不计入，避免把价格覆盖范围内的美元净额误解为全部代币余额变化。
+
+### 当前交易与金额证据
+
+- 交易 `0xc0ba1b9f…94547fe` 的 BSC receipt：成功，gas used=52,841，gas limit=5,000,000，transaction index=18，input selector=`0xc6d716f2`，事件日志 1 条。
+- 该日志为 USDT `Transfer`：from=`0x4c040e…39d3ab`，to=`0xbefa86…f5b15d`，log index=107；本地旧响应的 Event Logs=0 是下载/索引缺口。
+- 地址认证 Token 数据共 784 条；已定价活动 592 条，其中 USDT 流入 91 条、流出 501 条，金额恰好均为 `136480.177177`。因此已定价净流量为 0 是真实汇总结果；其余 192 条未定价 Token 不参与美元口径。
+- 历史内部调用数据仍未补齐；公共 BSC 节点对该历史交易的 `debug_traceTransaction` 返回 `missing trie node`，页面不能据此把内部调用 0 声称为链上完整结果。
+
+### 修改文件与接口
+
+- 新增：`internal/api/explorer_rpc_enrichment.go`、`internal/api/explorer_rpc_enrichment_test.go`。
+- 修改：`internal/api/clickhouse_handlers.go`、`internal/api/canonical_v2_handlers.go`、`frontend/src/features/explorer-intelligence/ExplorerPage.tsx`。
+- 既有 API 路径不变；无数据库 Schema 变更。RPC receipt 只在本地字段/日志缺失时作为读取兜底。
+
+### 验证
+
+- 定向 API 测试通过：RPC 交易字段补齐、Transfer 日志解码与 provenance 均有断言。
+- `cd frontend; npm run build` 通过（仅既有大 chunk 警告）。
+- 全包测试仅出现两个与本次代码无关的既有时序用例单次失败；两个失败用例分别单独重跑均通过。
+- `npx @claude-flow/cli security scan -t internal/api -d deep --type code -o json`：0 项。
+
+### 最终验收
+
+- `run.ps1 -ForceRestart` 成功，health=`ok`，PID 14848。
+- 真实 API 返回：status=SUCCESS、gas used=52,841、gas limit=5,000,000、tx index=18、selector=`0xc6d716f2`、input length=202、Event Logs=1。
+- 日志 API 返回 Transfer、log index=107、正确 from/to/value，source type=`RPC_RECEIPT_LOG`。
+- Playwright Chromium 1600×1050：交易详情和事件日志页均正常，Transfer 解码字段可见，console/page errors=0；截图 `tx-detail-receipt-fixed.png`。
+
+## 2026-08-19 — Explorer 嵌入页提示框去除
+
+- 目标：移除 Explorer 嵌入页里资产查询区域的页面级提示框，改成更轻的 inline 文本，避免页面上出现突兀的 Alert 盒子。
+- 修改文件：`frontend/src/features/explorer-intelligence/ExplorerPage.tsx`、`frontend/src/features/explorer-intelligence/explorer-intelligence.css`。
+- 变更内容：资产查询失败、部分资产失败、全部余额为 0、以及不可用态由 `Alert`/大块提示盒改为轻量 inline notice 或更紧凑的 unavailable 文本块。
+- 接口/数据结构：无新增接口、无数据库 Schema 变化。
+- 验证：`cd frontend && npm run build` 通过；`frontend/src/features/explorer-intelligence` 内已无 `<Alert>` 残留。
+- 注意事项：本次仅处理 Explorer 嵌入页的提示框，未改全局 toast / message / notification。
+
+## 2026-08-22 — 0x4c040e…39d3ab 代币、方法与 Receipt 数据补齐
+
+- 数据操作：OKLink 实时总量核验为 transactions=246、token_transfers=784（confidence=0.98），与 ClickHouse 全分页唯一行完全一致；写入两条地址级 `data_coverage` COMPLETE 记录，认证区间为区块 87,237,727–117,433,322，证据摘要 SHA256=`1aa22dfbbd6a7479d228aa68ee27d4d684e83790fa7012e8a40875f5f84fa5fd`。
+- RPC 补齐：从 BSC 权威 JSON-RPC 批量回读 246 笔 transaction/receipt，完整写回 input、selector、gas、手续费、状态、交易序号与合约创建字段；245 笔为合约调用，方法分布 withdraw=152、buy=92、takeOutErrorTransfer=1；首笔部署交易已纠正为 Contract Creation，不再把 `0x60a06040` 字节码前缀当作方法。
+- 方法注册：向现有 `method_registry` 写入 3 条 FOURBYTE_DIRECTORY/MEDIUM/未验证签名；这是社区 selector 解析，不是目标合约 ABI 验证。
+- Token Metadata：RPC `eth_call` 补齐 3 个原缺失合约：U5DТ、ՍƧƊ⊤、ETHE；地址 Token Transfer 784/784 均已有 symbol，唯一键 784/784。
+- Smart Download：创建的精准任务 `f15db4d7-2bf9-4ff3-ac75-8f4742f61e24` 用于补洞验证；发现 transactions/token_transfers 已由 OKLink 证明无缺行，internal_transactions 的 SQD Part 写入持续失败后已取消，避免无效重复扫描。内部交易仍保持 0/未完成独立认证，不据此宣称不存在。
+- 修改范围：无源代码、API 路径或数据库 Schema 变更；仅新增 ClickHouse 数据版本、覆盖记录和方法/Token 元数据。
+- 验证：`/api/health`=ok；summary=246 transactions/784 token transfers；全分页交易唯一 246、代币唯一 784；方法 245；Receipt 246/246、gas_used 零值 0；创建交易 gas_used=1,752,081、created_contract 地址正确。

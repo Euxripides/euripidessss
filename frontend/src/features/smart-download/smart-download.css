@@ -764,10 +764,7 @@
 
 .sd-hardening-note {
   margin-top: 12px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: #fff8e6;
-  color: #92600a;
+  color: #64748b;
   font-size: 13px;
   display: flex;
   flex-direction: column;
@@ -775,15 +772,11 @@
 }
 
 .sd-hardening-note.sd-hardening-error {
-  background: #fff1f0;
   color: #c73737;
 }
 
 .sd-validation-note {
   margin-top: 12px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: #f7fafc;
   color: #475569;
   font-size: 12px;
 }

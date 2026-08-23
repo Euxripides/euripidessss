@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DatabaseOutlined, PlusOutlined, SettingOutlined, StopOutlined } from '@ant-design/icons';
 import {
-  Alert,
   Button,
   Descriptions,
   Form,
@@ -15,6 +14,7 @@ import {
   Space,
   Switch,
   Tag,
+  Typography,
 } from 'antd';
 import {
   cancelDBExportTask,
@@ -237,13 +237,11 @@ export function DBExportModal({
           <Button key="start" type="primary" loading={loading} disabled={taskActive} onClick={startExport}>开始导入</Button>,
         ]}
       >
-        <Alert
-          type="info"
-          showIcon
-          message={`将清洗任务 ${jobId} 的统一结果（${rowCount.toLocaleString('zh-CN')} 行）流式写入 PostgreSQL 或 MySQL。`}
-          description="默认使用英文 snake_case 字段和行指纹去重；再次导入同一批数据不会重复写入。源 CSV 和清洗阶段产物不会被修改。"
-          style={{ marginBottom: 16 }}
-        />
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+          <Typography.Text strong>{`将清洗任务 ${jobId} 的统一结果（${rowCount.toLocaleString('zh-CN')} 行）流式写入 PostgreSQL 或 MySQL。`}</Typography.Text>
+          <br />
+          默认使用英文 snake_case 字段和行指纹去重；再次导入同一批数据不会重复写入。源 CSV 和清洗阶段产物不会被修改。
+        </Typography.Paragraph>
         <Form form={form} layout="vertical">
           <Form.Item label="数据库连接" required>
             <Space.Compact block>
@@ -316,7 +314,7 @@ export function DBExportModal({
               <Descriptions.Item label="已用">{formatDuration(task.progress.elapsedSeconds)}</Descriptions.Item>
               <Descriptions.Item label="预计剩余">{formatDuration(task.progress.etaSeconds)}</Descriptions.Item>
             </Descriptions>
-            {task.error && <Alert type="error" showIcon message={task.error} />}
+            {task.error && <Typography.Text type="danger">{task.error}</Typography.Text>}
           </div>
         )}
       </Modal>

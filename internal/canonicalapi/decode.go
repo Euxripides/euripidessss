@@ -104,6 +104,11 @@ func decodeTokenTransfer(chainID uint32, row map[string]any) (CanonicalTokenTran
 	} else {
 		out.LogIndex = uint32(value)
 	}
+	if value, e := uint64Value(row, "batch_index"); e != nil || value > uint64(^uint32(0)) {
+		return out, fmt.Errorf("batch index: %w", ErrInvalidData)
+	} else {
+		out.BatchIndex = uint32(value)
+	}
 	from := strings.ToLower(textValue(row, "from_address"))
 	to := strings.ToLower(textValue(row, "to_address"))
 	if !evmAddressRE.MatchString(from) || !evmAddressRE.MatchString(to) {

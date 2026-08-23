@@ -13,8 +13,8 @@ func TestCSVEmailTimeoutBackoff(t *testing.T) {
 	}{
 		{"first timeout", 0, 3 * time.Minute},
 		{"second consecutive", 1, 6 * time.Minute},
-		{"third consecutive", 2, 10 * time.Minute},
-		{"many consecutive", 9, 10 * time.Minute},
+		{"third consecutive", 2, 12 * time.Minute},
+		{"many consecutive", 9, 30 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

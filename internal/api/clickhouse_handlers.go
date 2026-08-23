@@ -80,6 +80,27 @@ func setupClickHouse(c *config.Config) {
 		log.Warn().Err(err).Msg("clickhouse_data_plane_unavailable")
 		return
 	}
+	// Repository/handler 装配只依赖已连通的客户端，不应被幂等 DDL 阻塞。
+	// Schema 迁移转入后台；迁移完成前相关查询会按既有错误路径明确失败，
+	// 但健康检查、文件 ETL、Smart Download 和其他模块可立即启动。
+	setupClickHouseExport()
+	setupClickHouseInvestigation()
+	setupClickHouseGraph()
+	setupClickHouseAnalytics()
+	setupCanonicalV2()
+	setupFinancialV1()
+	setupPriceEngine(c)
+	log.Info().Str("database", c.ClickHouse.Database).Msg("clickhouse_data_plane_ready")
+	go migrateClickHouseSchemas(c, client)
+}
+
+func migrateClickHouseSchemas(c *config.Config, client *clickhouse.Client) {
+	timeout := c.ClickHouse.RequestTimeout
+	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	if err := ensureClickHouseLineage(ctx, client); err != nil {
 		log.Warn().Err(err).Msg("clickhouse_lineage_migration_failed")
 		return
@@ -92,14 +113,11 @@ func setupClickHouse(c *config.Config) {
 		log.Warn().Err(err).Msg("clickhouse_financial_migration_failed")
 		return
 	}
-	log.Info().Str("database", c.ClickHouse.Database).Msg("clickhouse_data_plane_ready")
-	setupClickHouseExport()
-	setupClickHouseInvestigation()
-	setupClickHouseGraph()
-	setupClickHouseAnalytics()
-	setupCanonicalV2()
-	setupFinancialV1()
-	setupPriceEngine(c)
+	if err := seedCanonicalV2(ctx); err != nil {
+		log.Warn().Err(err).Msg("canonical_v2_seed_failed")
+		return
+	}
+	log.Info().Msg("clickhouse_schema_migrations_ready")
 }
 
 func ensureClickHouseFinancialSchema(ctx context.Context, client *clickhouse.Client, root string) error {
@@ -183,10 +201,15 @@ func registerClickHouseRoutes(api *gin.RouterGroup) {
 	base := "/v1/explorer/:chain/address/:address"
 	api.GET(base+"/summary", handleExplorerSummary)
 	api.GET(base+"/activity", handleExplorerActivity(explorer.ActivityAll))
+	api.GET(base+"/activity/stats", handleExplorerActivityStats(explorer.ActivityAll))
 	api.GET(base+"/transactions", handleExplorerActivity(explorer.ActivityTransactions))
+	api.GET(base+"/transactions/stats", handleExplorerActivityStats(explorer.ActivityTransactions))
 	api.GET(base+"/token-transfers", handleExplorerActivity(explorer.ActivityTokenTransfers))
+	api.GET(base+"/token-transfers/stats", handleExplorerActivityStats(explorer.ActivityTokenTransfers))
 	api.GET(base+"/internal-transactions", handleExplorerActivity(explorer.ActivityInternal))
+	api.GET(base+"/internal-transactions/stats", handleExplorerActivityStats(explorer.ActivityInternal))
 	api.GET(base+"/contract-creations", handleExplorerActivity(explorer.ActivityContractCreation))
+	api.GET(base+"/contract-creations/stats", handleExplorerActivityStats(explorer.ActivityContractCreation))
 	api.GET(base+"/counterparties", handleExplorerCounterparties)
 	api.GET(base+"/daily-stats", handleExplorerDailyStats)
 	api.GET("/v1/explorer/:chain/tx/:tx_hash", handleExplorerTransactionDetail)
@@ -259,6 +282,13 @@ func handleExplorerTransactionDetail(c *gin.Context) {
 	if err != nil {
 		writeExplorerError(c, err)
 		return
+	}
+	if rpcManager != nil && (item.GasUsed == 0 || item.GasLimit == 0 || item.Input == "" || item.BlockHash == "") {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 6*time.Second)
+		defer cancel()
+		if enrichErr := enrichExplorerTransactionFromRPC(ctx, rpcManager, strings.ToLower(c.Param("chain")), &item); enrichErr != nil {
+			log.Warn().Err(enrichErr).Str("tx_hash", item.TransactionHash).Msg("explorer_transaction_rpc_enrichment_failed")
+		}
 	}
 	c.JSON(http.StatusOK, item)
 }
@@ -362,7 +392,7 @@ func handleExplorerActivity(kind explorer.ActivityKind) gin.HandlerFunc {
 		}
 		result, err := clickHouseExplorer.ListActivity(c.Request.Context(), explorer.ActivityQuery{
 			ChainID: chainID, Address: c.Param("address"), Activity: kind,
-			PageSize: pageSize, Cursor: c.Query("cursor"),
+			PageSize: pageSize, Cursor: c.Query("cursor"), Filters: explorerActivityFilters(c),
 		})
 		if err != nil {
 			writeExplorerError(c, err)
@@ -370,6 +400,41 @@ func handleExplorerActivity(kind explorer.ActivityKind) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, result)
 	}
+}
+
+func handleExplorerActivityStats(kind explorer.ActivityKind) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		chainID, ok := explorerScope(c)
+		if !ok {
+			return
+		}
+		result, err := clickHouseExplorer.GetActivityStats(c.Request.Context(), explorer.ActivityStatsQuery{
+			ChainID: chainID, Address: c.Param("address"), Activity: kind, Filters: explorerActivityFilters(c),
+		})
+		if err != nil {
+			writeExplorerError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+func explorerActivityFilters(c *gin.Context) explorer.ActivityFilters {
+	return explorer.ActivityFilters{
+		TransactionHash: c.Query("transaction_hash"), Direction: c.Query("direction"), Counterparty: c.Query("counterparty"),
+		FromAddress: c.Query("from_address"), ToAddress: c.Query("to_address"), TokenAddresses: explorerFilterList(c.Query("token")),
+		TokenSymbol: c.Query("token_symbol"), MinUSD: c.Query("min_usd"), MaxUSD: c.Query("max_usd"),
+		Methods: explorerFilterList(c.Query("method")), Statuses: explorerFilterList(c.Query("status")),
+		EntityTypes: explorerFilterList(c.Query("entity_type")), Entity: c.Query("entity"), Protocols: explorerFilterList(c.Query("protocol")),
+		ValuationStatuses: explorerFilterList(c.Query("valuation_status")), From: c.Query("from"), To: c.Query("to"),
+	}
+}
+
+func explorerFilterList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
 }
 
 func explorerScope(c *gin.Context) (uint32, bool) {

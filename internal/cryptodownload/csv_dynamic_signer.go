@@ -100,6 +100,12 @@ func (c *CSVExportClient) applyCSVDownloadSignatureWithVersion(ctx context.Conte
 	if c == nil || c.downloadSigner == nil {
 		return csvSignerVersion{}, nil
 	}
+	// A per-task mailbox identity carries its own signer device ID so OKLink
+	// sees one device per generated mailbox; without one the process-level
+	// identity is used.
+	if identity, ok := c.currentMailIdentity(); ok && identity.DeviceID != "" {
+		return c.downloadSigner.applyWithDeviceID(ctx, req, body, chain, address, identity.DeviceID)
+	}
 	return c.downloadSigner.ApplyWithVersion(ctx, req, body, chain, address)
 }
 
@@ -109,6 +115,14 @@ func (s *csvDownloadSigner) Apply(ctx context.Context, req *http.Request, body [
 }
 
 func (s *csvDownloadSigner) ApplyWithVersion(ctx context.Context, req *http.Request, body []byte, chain, address string) (csvSignerVersion, error) {
+	return s.applyWithDeviceID(ctx, req, body, chain, address, s.deviceID)
+}
+
+// applyWithDeviceID signs the request with an explicit OKLink device
+// identity.  Per-task mailbox identities pass their own device ID so every
+// generated mailbox presents a distinct device; the zero value falls back
+// to the process-level identity.
+func (s *csvDownloadSigner) applyWithDeviceID(ctx context.Context, req *http.Request, body []byte, chain, address, deviceID string) (csvSignerVersion, error) {
 	if s == nil {
 		return csvSignerVersion{}, nil
 	}
@@ -117,6 +131,9 @@ func (s *csvDownloadSigner) ApplyWithVersion(ctx context.Context, req *http.Requ
 	}
 	if s.deviceIDErr != nil {
 		return csvSignerVersion{}, s.deviceIDErr
+	}
+	if deviceID == "" {
+		deviceID = s.deviceID
 	}
 	// Budget one sign request generously: a fresh signer process must discover
 	// the OKLink asset graph, boot its worker sandbox and probe the encrypt
@@ -129,7 +146,7 @@ func (s *csvDownloadSigner) ApplyWithVersion(ctx context.Context, req *http.Requ
 		Body:     string(body),
 		Chain:    strings.ToLower(strings.TrimSpace(chain)),
 		Address:  strings.TrimSpace(address),
-		DeviceID: s.deviceID,
+		DeviceID: deviceID,
 	}
 	process := s.process
 	var response csvSignerResponse

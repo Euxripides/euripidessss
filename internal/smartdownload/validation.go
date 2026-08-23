@@ -632,7 +632,7 @@ func (v *Validator) crossCheck(ctx context.Context, ds *DatasetJob, cp *Checkpoi
 			continue
 		}
 		a, ok := v.svc.AdapterByName(c.Name)
-		if ok {
+		if ok && supportsExactRangeProbe(a) {
 			second = a
 			break
 		}

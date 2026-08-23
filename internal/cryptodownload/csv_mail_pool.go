@@ -90,20 +90,28 @@ func (c *CSVExportClient) activeMail() CSVMailConfig {
 
 // advanceMailOnFailure rotates to the next pool mailbox when err indicates a
 // mailbox-level failure (IMAP login/config failure or email timeout with no
-// link).  Failures are remembered per mailbox: after csvMailFailureThreshold
-// accumulated failures a mailbox is cooled down for
-// csvMailCooldownAfterFailures and skipped by rotation until the cooldown
-// elapses (the counter resets when the cooldown is triggered).  It reports
-// whether the mailbox was rotated.  With an empty pool or an unrelated error
-// it does nothing and returns false.
+// link).  With a built identity pool the failure first advances the identity
+// (new generated mailbox + new proxy binding + new signer device ID), so a
+// re-request presents a completely fresh user.  Failures are remembered per
+// mailbox: after csvMailFailureThreshold accumulated failures a mailbox is
+// cooled down for csvMailCooldownAfterFailures and skipped by rotation until
+// the cooldown elapses (the counter resets when the cooldown is triggered).
+// It reports whether anything was rotated.  With an empty pool and an
+// unrelated error it does nothing and returns false.
 func (c *CSVExportClient) advanceMailOnFailure(err error) bool {
 	if !csvMailFailureNeedsRotation(err) {
 		return false
 	}
 	c.mailPoolMu.Lock()
 	defer c.mailPoolMu.Unlock()
+	rotated := false
+	if len(c.mailIdentities) > 0 {
+		c.identityIdx = (c.identityIdx + 1) % len(c.mailIdentities)
+		c.identityActive = c.mailIdentities[c.identityIdx]
+		rotated = true
+	}
 	if len(c.mailPool) == 0 {
-		return false
+		return rotated
 	}
 	if c.mailFailures == nil {
 		c.mailFailures = map[int]int{}

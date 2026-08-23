@@ -150,7 +150,11 @@ func (e *Engine) Discover(ctx context.Context, in Input) (*DiscoveryResult, erro
 	if len(segments) == 0 {
 		// 采样不可用：零置信度，由调用方回退固定 Range
 		res.Confidence = 0
-		e.saveCache(keyFor(in), res, in)
+		// A network-free create/preflight lookup has no evidence and must not
+		// poison the cache used by a later real adaptive probe.
+		if e.sample != nil {
+			e.saveCache(keyFor(in), res, in)
+		}
 		return res, nil
 	}
 	e.finalize(res, in, segments)

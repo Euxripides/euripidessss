@@ -2,6 +2,7 @@ package canonicalapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -141,5 +142,150 @@ func TestTokenIdentityNeverUsesSymbolAsJoinKey(t *testing.T) {
 	}
 	if !strings.Contains(query, "a.block_time>=p.timestamp_bucket") {
 		t.Fatalf("historical price boundary missing: %s", query)
+	}
+}
+
+func TestListTokenTransfersByTxOrdersByLogAndBatchAndKeepsMissingPriceNull(t *testing.T) {
+	stub := &queryStub{fn: func(query string) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(query, "FROM onchain.token_transfers"):
+			return []map[string]any{{
+				"total_count": 2, "log_index": 7, "batch_index": 1,
+				"from_address": testFrom, "to_address": testTo,
+				"token_address": "0x3333333333333333333333333333333333333333",
+				"raw_value":     "1000000", "value_decimal": "1", "token_standard": "BEP20",
+				"token_symbol": "USDT", "token_name": "Tether USD", "token_decimals": 6,
+				"metadata_source": "LOCAL", "metadata_confidence": "HIGH",
+				"source_provider": "sqd", "parser_version": "v2", "normalizer_version": "v2",
+				"schema_version": 2, "ingested_at": "2026-08-09 01:03:03.000",
+			}}, nil
+		case strings.Contains(query, "FROM onchain.address_labels"):
+			return []map[string]any{{"address": testTo, "label_name": "Router", "label_type": "dex", "confidence": "HIGH"}}, nil
+		default:
+			return nil, errors.New("unexpected query")
+		}
+	}}
+	page, err := NewRepository(stub).ListTokenTransfersByTx(context.Background(), TxCollectionQuery{
+		ChainID: 56, TxHash: strings.ToUpper(testTx), Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Count != 1 || page.TotalCount != 2 || len(page.Items) != 1 {
+		t.Fatalf("page=%+v", page)
+	}
+	if page.Items[0].BatchIndex != 1 || page.Items[0].To.Label != "Router" || page.Items[0].USD != nil {
+		t.Fatalf("transfer=%+v", page.Items[0])
+	}
+	payload, err := json.Marshal(page)
+	if err != nil || !strings.Contains(string(payload), `"usd":null`) {
+		t.Fatalf("missing price must serialize as null: %s err=%v", payload, err)
+	}
+	query := stub.queries[0]
+	for _, required := range []string{"x.token_address AS token_address", "x.log_index AS log_index", "p.token_address!=''", "ORDER BY x.log_index ASC,x.batch_index ASC", "LIMIT 2", "(SELECT count() FROM onchain.token_transfers FINAL"} {
+		if !strings.Contains(query, required) {
+			t.Errorf("missing token transfer SQL contract %q: %s", required, query)
+		}
+	}
+}
+
+func TestListRawLogsByTxReturnsTopicsAndDecodedJSONObject(t *testing.T) {
+	stub := &queryStub{fn: func(query string) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(query, "FROM onchain.raw_logs"):
+			return []map[string]any{{
+				"total_count": 1, "log_index": 9, "contract_address": testFrom,
+				"topic0": "0x" + strings.Repeat("a", 64), "topic1": "0x" + strings.Repeat("b", 64),
+				"topic2": "", "topic3": "", "data": "0x01", "removed": false,
+				"event_name": "Transfer", "event_signature": "Transfer(address,address,uint256)",
+				"decoded_fields":  `{"from":"0x1","value":"1"}`,
+				"source_provider": "rpc", "parser_version": "v2", "normalizer_version": "v2",
+				"schema_version": 2, "ingested_at": "2026-08-09 01:03:03.000",
+			}}, nil
+		case strings.Contains(query, "FROM onchain.address_labels"):
+			return []map[string]any{}, nil
+		default:
+			return nil, errors.New("unexpected query")
+		}
+	}}
+	page, err := NewRepository(stub).ListRawLogsByTx(context.Background(), TxCollectionQuery{ChainID: 56, TxHash: testTx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Count != 1 || page.TotalCount != 1 || len(page.Items) != 1 {
+		t.Fatalf("page=%+v", page)
+	}
+	item := page.Items[0]
+	if item.Topic1 == nil || *item.Topic1 == "" || item.Topic2 != nil || item.Topic3 != nil || !json.Valid(item.Decoded) {
+		t.Fatalf("raw log=%+v", item)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(item.Decoded, &decoded); err != nil || decoded["value"] != "1" {
+		t.Fatalf("decoded=%s err=%v", item.Decoded, err)
+	}
+	payload, err := json.Marshal(page)
+	if err != nil || !strings.Contains(string(payload), `"decoded":{"from":"0x1","value":"1"}`) {
+		t.Fatalf("decoded must be a JSON object: %s err=%v", payload, err)
+	}
+	query := stub.queries[0]
+	for _, required := range []string{"r.topic0 AS topic0", "r.topic1 AS topic1", "r.topic2 AS topic2", "r.topic3 AS topic3", "r.data AS data", "ORDER BY r.log_index ASC", "LIMIT 501"} {
+		if !strings.Contains(query, required) {
+			t.Errorf("missing raw log SQL contract %q: %s", required, query)
+		}
+	}
+}
+
+func TestListInternalTransactionsByTxUsesStableTraceOrdering(t *testing.T) {
+	stub := &queryStub{fn: func(query string) ([]map[string]any, error) {
+		switch {
+		case strings.Contains(query, "FROM onchain.internal_transactions"):
+			return []map[string]any{{
+				"total_count": 1, "trace_address": "0,1", "trace_index": 2, "call_type": "CALL", "depth": 1,
+				"from_address": testFrom, "to_address": testTo, "value_raw": "10", "value_decimal": "10",
+				"gas": 100, "gas_used": 90, "success": true, "source_provider": "sqd", "parser_version": "v2",
+				"schema_version": 2, "ingested_at": "2026-08-09 01:03:03.000",
+			}}, nil
+		case strings.Contains(query, "FROM onchain.address_labels"):
+			return []map[string]any{}, nil
+		default:
+			return nil, errors.New("unexpected query")
+		}
+	}}
+	page, err := NewRepository(stub).ListInternalTransactionsByTx(context.Background(), TxCollectionQuery{ChainID: 56, TxHash: testTx})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Count != 1 || page.TotalCount != 1 || page.Items[0].TraceAddress != "0,1" {
+		t.Fatalf("page=%+v", page)
+	}
+	for _, required := range []string{"ORDER BY trace_index ASC,trace_address ASC", "LIMIT 501"} {
+		if !strings.Contains(stub.queries[0], required) {
+			t.Errorf("missing internal SQL contract %q: %s", required, stub.queries[0])
+		}
+	}
+}
+
+func TestTransactionCollectionCursorIsStrictlyScoped(t *testing.T) {
+	cursor, err := encodeTxCursor(txCursor{Version: 1, Kind: txCursorTokenTransfers, ChainID: 56, TxHash: testTx, Primary: 7, Secondary: "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, query := range map[string]TxCollectionQuery{
+		"chain": {ChainID: 1, TxHash: testTx, Cursor: cursor},
+		"hash":  {ChainID: 56, TxHash: "0x" + strings.Repeat("b", 64), Cursor: cursor},
+		"kind":  {ChainID: 56, TxHash: testTx, Cursor: cursor},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kind := txCursorTokenTransfers
+			if name == "kind" {
+				kind = txCursorRawLogs
+			}
+			if _, err := normalizeTxCollectionQuery(query, kind); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+	if _, err := normalizeTxCollectionQuery(TxCollectionQuery{ChainID: 56, TxHash: testTx, Limit: maxTxCollectionLimit + 1}, txCursorRawLogs); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("limit error=%v", err)
 	}
 }

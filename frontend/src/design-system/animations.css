@@ -216,13 +216,10 @@
 .ant-table-tbody > tr:nth-child(8) { animation-delay: 168ms; }
 .ant-table-tbody > tr:nth-child(n + 9) { animation-delay: 190ms; }
 
-/* ---------- Tags & alerts entrance ---------- */
+/* ---------- Tags entrance ---------- */
 
 .ant-tag {
   animation: ds-tag-in 320ms var(--ds-ease-pop) backwards;
-}
-.ant-alert {
-  animation: ds-rise-in 340ms var(--ds-ease-out) backwards;
 }
 
 /* ---------- Tabs content ---------- */
@@ -430,7 +427,6 @@
   .ds-metric-card,
   .ant-table-tbody > tr,
   .ant-tag,
-  .ant-alert,
   .ant-tabs-tabpane-active,
   .ant-btn,
   .ant-menu-item,

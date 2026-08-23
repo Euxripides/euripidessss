@@ -25,10 +25,6 @@
   flex: 1;
 }
 
-.analytics-page-alert {
-  margin-bottom: var(--ds-space-3);
-}
-
 .analytics-page > h4.ant-typography {
   margin: 0 0 20px;
   color: var(--ds-color-text);

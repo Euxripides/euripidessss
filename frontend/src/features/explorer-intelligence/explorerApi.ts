@@ -1,6 +1,26 @@
 import { getJson } from "../../api/client";
 import type { AnalysisWindow, ExplorerChainKey } from "./analysisContext";
-import type { ClickHouseActivityPage, ClickHouseAddressSummary } from "../analytics/ClickHouseExplorerTypes";
+import type { ClickHouseActivityPage, ClickHouseActivityStats, ClickHouseAddressSummary } from "../analytics/ClickHouseExplorerTypes";
+
+export interface ActivityFilterParams {
+  transactionHash?: string;
+  direction?: string;
+  counterparty?: string;
+  fromAddress?: string;
+  toAddress?: string;
+  tokens?: string[];
+  tokenSymbol?: string;
+  minUSD?: string;
+  maxUSD?: string;
+  methods?: string[];
+  statuses?: string[];
+  entityTypes?: string[];
+  entity?: string;
+  protocols?: string[];
+  valuationStatuses?: string[];
+  from?: string;
+  to?: string;
+}
 
 export interface SearchItem {
   kind: "ADDRESS" | "TRANSACTION" | "BLOCK" | "TOKEN" | "CONTRACT" | "ENTITY" | "LABEL";
@@ -91,12 +111,31 @@ export function loadExplorerHeader(chain: ExplorerChainKey, address: string) {
   return request<ExplorerHeader>(`/api/v2/explorer/${chain}/address/${address}/header`);
 }
 
-export function loadActivity(chain: ExplorerChainKey, address: string, kind: string, pageSize: number, cursor?: string) {
-  const params = new URLSearchParams({ page_size: String(pageSize) });
+function activityFilterSearchParams(filters?: ActivityFilterParams) {
+  const params = new URLSearchParams();
+  const set = (key: string, value?: string) => { if (value) params.set(key, value); };
+  const list = (key: string, values?: string[]) => { if (values?.length) params.set(key, values.join(",")); };
+  set("transaction_hash", filters?.transactionHash); set("direction", filters?.direction); set("counterparty", filters?.counterparty);
+  set("from_address", filters?.fromAddress); set("to_address", filters?.toAddress); list("token", filters?.tokens);
+  set("token_symbol", filters?.tokenSymbol); set("min_usd", filters?.minUSD); set("max_usd", filters?.maxUSD);
+  list("method", filters?.methods); list("status", filters?.statuses); list("entity_type", filters?.entityTypes);
+  set("entity", filters?.entity); list("protocol", filters?.protocols); list("valuation_status", filters?.valuationStatuses);
+  set("from", filters?.from); set("to", filters?.to);
+  return params;
+}
+
+export function loadActivity(chain: ExplorerChainKey, address: string, kind: string, pageSize: number, cursor?: string, filters?: ActivityFilterParams) {
+  const params = activityFilterSearchParams(filters);
+	params.set("page_size", String(pageSize));
   if (cursor) params.set("cursor", cursor);
   return request<ClickHouseActivityPage>(
     `/api/v1/explorer/${chain}/address/${address}/${kind}?${params.toString()}`,
   );
+}
+
+export function loadActivityStats(chain: ExplorerChainKey, address: string, kind: string, filters?: ActivityFilterParams) {
+  const params = activityFilterSearchParams(filters);
+  return request<ClickHouseActivityStats>(`/api/v1/explorer/${chain}/address/${address}/${kind}/stats?${params.toString()}`);
 }
 
 export function loadDailyStats(chain: ExplorerChainKey, address: string, from?: string, to?: string) {

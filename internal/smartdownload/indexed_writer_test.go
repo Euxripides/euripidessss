@@ -2,7 +2,9 @@ package smartdownload
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -105,6 +107,37 @@ func TestIndexedWriterSuccessCompletesAndFiresCallback(t *testing.T) {
 	entries := svc.results.List()
 	if len(entries) != 1 || entries[0].Certification != "CERTIFIED" || entries[0].Writer == nil {
 		t.Fatalf("registry = %+v", entries)
+	}
+}
+
+func TestCompletedCertifiedDatasetCanBeReindexedWithoutDownload(t *testing.T) {
+	writer := &fakeIndexedWriter{result: IndexedWriteResult{InputRows: 2, InsertedRows: 2, ActivityRows: 4}}
+	svc, dsID := indexedFixture(t, writer)
+	svc.indexDataset(dsID)
+	artifact := filepath.Join(t.TempDir(), "certified.parquet")
+	if err := os.WriteFile(artifact, []byte("immutable certified artifact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries := svc.results.List()
+	entries[0].MergedParquet = artifact
+	payload, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(svc.results.path, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(svc.PartsDir(), dsID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ReindexCompletedDataset(dsID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, "completed dataset reindex", func() bool {
+		return svc.store.GetDataset(dsID).Status == DatasetCompleted && writer.calls == 2
+	})
+	if ranges := svc.store.ListRangesByDataset(dsID); len(ranges) != 0 {
+		t.Fatalf("reindex created download ranges: %d", len(ranges))
 	}
 }
 

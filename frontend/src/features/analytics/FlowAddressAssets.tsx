@@ -23,7 +23,6 @@ export default function FlowAddressAssets(props: FlowAddressAssetsProps) {
     chain: props.chain,
     chainId: props.chainId,
     address: props.address,
-    tokens: [], // 默认资产（native + USDT + USDC）
   });
   const [saving, setSaving] = useState(false);
   const [snapshotDiff, setSnapshotDiff] = useState<SnapshotDiff[] | null>(null);

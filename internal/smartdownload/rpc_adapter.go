@@ -233,7 +233,10 @@ func (p *RPCTransferAdapter) executeLogs(ctx context.Context, network chain.EVM,
 				}
 				times[block] = blockTime
 			}
-			record := Record{ChainID: network.ID, BlockNumber: block, BlockTime: blockTime, TransactionHash: strings.ToLower(item.TransactionHash), LogIndex: index, Dataset: DatasetLogs, Address: strings.ToLower(item.Address), Payload: map[string]any{"contract_address": strings.ToLower(item.Address), "topics": item.Topics, "data": item.Data}}
+			transactionIndex, _ := hexToUint64(item.TransactionIndex)
+			record := Record{ChainID: network.ID, BlockNumber: block, BlockTime: blockTime, TransactionHash: strings.ToLower(item.TransactionHash), LogIndex: index, Dataset: DatasetLogs, Address: strings.ToLower(item.Address),
+				Payload: map[string]any{"block_hash": strings.ToLower(item.BlockHash), "transaction_index": transactionIndex,
+					"contract_address": strings.ToLower(item.Address), "topics": item.Topics, "data": item.Data, "removed": item.Removed}}
 			key := record.UniqueKey()
 			if seen[key] {
 				continue
@@ -306,12 +309,15 @@ const (
 )
 
 type rpcLog struct {
-	Address         string   `json:"address"`
-	Topics          []string `json:"topics"`
-	Data            string   `json:"data"`
-	BlockNumber     string   `json:"blockNumber"`
-	TransactionHash string   `json:"transactionHash"`
-	LogIndex        string   `json:"logIndex"`
+	Address          string   `json:"address"`
+	Topics           []string `json:"topics"`
+	Data             string   `json:"data"`
+	BlockHash        string   `json:"blockHash"`
+	BlockNumber      string   `json:"blockNumber"`
+	TransactionHash  string   `json:"transactionHash"`
+	TransactionIndex string   `json:"transactionIndex"`
+	LogIndex         string   `json:"logIndex"`
+	Removed          bool     `json:"removed"`
 }
 
 // executeGroupedLogScan keeps the two address meanings separate: token
@@ -347,6 +353,7 @@ func (p *RPCTransferAdapter) executeGroupedLogScan(ctx context.Context, network 
 	seenTransfers := make(map[string]map[string]struct{}, len(addresses))
 	seenLogs := make(map[string]map[string]struct{}, len(addresses))
 	times := make(map[uint64]int64)
+	decimals := make(map[string]uint8)
 
 	for chunkFrom := fromBlock; chunkFrom <= toBlock; {
 		chunkTo := toBlock
@@ -363,6 +370,18 @@ func (p *RPCTransferAdapter) executeGroupedLogScan(ctx context.Context, network 
 				if !ok {
 					continue
 				}
+				if err := p.enrichTransferAmount(ctx, network.Key, &transfer, decimals); err != nil {
+					return nil, err
+				}
+				blockTime, cached := times[transfer.BlockNumber]
+				if !cached {
+					blockTime, err = p.blockTimestamp(ctx, network.Key, transfer.BlockNumber)
+					if err != nil {
+						return nil, err
+					}
+					times[transfer.BlockNumber] = blockTime
+				}
+				transfer.BlockTime = blockTime
 				fromAddress, _ := transfer.Payload["from_address"].(string)
 				toAddress, _ := transfer.Payload["to_address"].(string)
 				for _, participant := range []string{fromAddress, toAddress} {
@@ -449,11 +468,13 @@ func (p *RPCTransferAdapter) parseRawLogRecord(ctx context.Context, network chai
 		times[block] = blockTime
 	}
 	address := strings.ToLower(item.Address)
+	transactionIndex, _ := hexToUint64(item.TransactionIndex)
 	return Record{
 		ChainID: network.ID, BlockNumber: block, BlockTime: blockTime,
 		TransactionHash: strings.ToLower(item.TransactionHash), LogIndex: index,
 		Dataset: DatasetLogs, Address: address,
-		Payload: map[string]any{"contract_address": address, "topics": item.Topics, "data": item.Data},
+		Payload: map[string]any{"block_hash": strings.ToLower(item.BlockHash), "transaction_index": transactionIndex,
+			"contract_address": address, "topics": item.Topics, "data": item.Data, "removed": item.Removed},
 	}, true, nil
 }
 
@@ -475,6 +496,8 @@ func appendGroupedRecord(result *ProviderResult, record Record, seenByAddress ma
 func (p *RPCTransferAdapter) executeTransfers(ctx context.Context, network chain.EVM, req RangeRequest) (*ProviderResult, error) {
 	var records []Record
 	seen := map[string]bool{}
+	times := map[uint64]int64{}
+	decimals := map[string]uint8{}
 	for from := req.FromBlock; from <= req.ToBlock; from += rpcLogChunkBlocks + 1 {
 		to := from + rpcLogChunkBlocks
 		if to > req.ToBlock {
@@ -489,6 +512,18 @@ func (p *RPCTransferAdapter) executeTransfers(ctx context.Context, network chain
 			if !ok {
 				continue
 			}
+			if err := p.enrichTransferAmount(ctx, network.Key, &t, decimals); err != nil {
+				return nil, err
+			}
+			blockTime, cached := times[t.BlockNumber]
+			if !cached {
+				blockTime, err = p.blockTimestamp(ctx, network.Key, t.BlockNumber)
+				if err != nil {
+					return nil, err
+				}
+				times[t.BlockNumber] = blockTime
+			}
+			t.BlockTime = blockTime
 			key := t.UniqueKey()
 			if seen[key] {
 				continue
@@ -737,6 +772,53 @@ func (p *RPCTransferAdapter) call(ctx context.Context, chainKey, method string, 
 	return p.client.Call(ctx, chainKey, method, params)
 }
 
+func (p *RPCTransferAdapter) enrichTransferAmount(ctx context.Context, chainKey string, record *Record, cache map[string]uint8) error {
+	token, _ := record.Payload["token_address"].(string)
+	raw, _ := record.Payload["value_raw"].(string)
+	decimals, ok := cache[token]
+	if !ok {
+		response, _, err := p.call(ctx, chainKey, "eth_call", []any{map[string]string{"to": token, "data": "0x313ce567"}, "latest"})
+		if err != nil {
+			return fmt.Errorf("RPC token decimals %s: %w", token, err)
+		}
+		var encoded string
+		if err := json.Unmarshal(response, &encoded); err != nil {
+			return fmt.Errorf("RPC token decimals %s 响应无效: %w", token, err)
+		}
+		value := new(big.Int)
+		if _, ok := value.SetString(strings.TrimPrefix(encoded, "0x"), 16); !ok || !value.IsUint64() || value.Uint64() > 255 {
+			return fmt.Errorf("RPC token decimals %s 返回非法值", token)
+		}
+		decimals = uint8(value.Uint64())
+		cache[token] = decimals
+	}
+	record.Payload["token_decimals"] = decimals
+	record.Payload["value_decimal"] = formatTokenAmount(raw, decimals)
+	return nil
+}
+
+func formatTokenAmount(raw string, decimals uint8) string {
+	value := new(big.Int)
+	if _, ok := value.SetString(strings.TrimSpace(raw), 10); !ok {
+		return "0"
+	}
+	if decimals == 0 {
+		return value.String()
+	}
+	negative := value.Sign() < 0
+	digits := new(big.Int).Abs(value).String()
+	for len(digits) <= int(decimals) {
+		digits = "0" + digits
+	}
+	point := len(digits) - int(decimals)
+	result := digits[:point] + "." + strings.TrimRight(digits[point:], "0")
+	result = strings.TrimSuffix(result, ".")
+	if negative && result != "0" {
+		result = "-" + result
+	}
+	return result
+}
+
 // parseTransferLog 解析 Transfer(address,address,uint256)。
 func parseTransferLog(network chain.EVM, item rpcLog) (Record, bool) {
 	if len(item.Topics) != 3 || !strings.EqualFold(item.Topics[0], transferTopic) {
@@ -769,6 +851,7 @@ func parseTransferLog(network chain.EVM, item rpcLog) (Record, bool) {
 	if network.Key == "bsc" {
 		standard = "BEP20"
 	}
+	transactionIndex, _ := hexToUint64(item.TransactionIndex)
 	return Record{
 		ChainID:         network.ID,
 		BlockNumber:     blockNumber,
@@ -777,11 +860,13 @@ func parseTransferLog(network chain.EVM, item rpcLog) (Record, bool) {
 		Dataset:         DatasetTokenTransfers,
 		Address:         strings.ToLower(item.Address),
 		Payload: map[string]any{
-			"token_address": strings.ToLower(item.Address),
-			"from_address":  from,
-			"to_address":    to,
-			"value_raw":     value,
-			"standard":      standard,
+			"transaction_index": transactionIndex,
+			"batch_index":       uint64(0),
+			"token_address":     strings.ToLower(item.Address),
+			"from_address":      from,
+			"to_address":        to,
+			"value_raw":         value,
+			"standard":          standard,
 		},
 	}, true
 }

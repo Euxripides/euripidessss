@@ -114,11 +114,6 @@
   place-content: center;
 }
 
-.address-analytics-rpc-alert {
-  margin-bottom: 12px;
-  border-radius: 11px;
-}
-
 .address-analytics-identity {
   display: flex;
   align-items: center;

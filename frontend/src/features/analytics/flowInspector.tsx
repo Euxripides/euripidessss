@@ -24,6 +24,8 @@ import type { EnhancedNodeData, FocusDirection } from "./graphUpgrade";
 import type { FlowEdge } from "./analyticsApi";
 import { shortAddr } from "./format";
 import { CONFIDENCE_TIER_LABELS, ENTITY_TYPE_LABELS, type EntityResolution } from "../entity/entityApi";
+import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
+import { TxHashLink } from "../transaction/TxHashLink";
 
 export interface NeighborInfo {
   address: string;
@@ -84,7 +86,7 @@ function NeighborRow({ item, onSelect }: { item: NeighborInfo; onSelect: (addres
   );
 }
 
-function TxRow({ tx }: { tx: FlowEdge }) {
+function TxRow({ tx, chain }: { tx: FlowEdge; chain: string }) {
   const incoming = tx.direction === "incoming";
   return (
     <div className="flow-tx-item">
@@ -92,7 +94,7 @@ function TxRow({ tx }: { tx: FlowEdge }) {
         {incoming ? <ArrowLeftOutlined /> : <ArrowRightOutlined />}
       </span>
       <span className="flow-tx-main">
-        <span className="flow-tx-hash" title={tx.tx_hash}>{shortAddr(tx.tx_hash, 10, 8)}</span>
+        <TxHashLink className="flow-tx-hash" chainId={chain} hash={tx.tx_hash} />
         <span className="flow-tx-meta">
           {tx.block ? `区块 ${shortAddr(tx.block, 6, 4)} · ` : ""}{incoming ? "流入" : "流出"} {tx.token}
         </span>
@@ -125,6 +127,7 @@ export default function FlowInspector({
   onClose,
   onCollapse,
 }: FlowInspectorProps) {
+  const { state: analysisState } = useAnalysisContext();
   const [activeTab, setActiveTab] = useState("neighbors");
   const status = assetStateLabel(assets?.status);
 
@@ -299,7 +302,7 @@ export default function FlowInspector({
                 ) : (
                   <div className="flow-tx-list">
                     {transactions.slice(0, 80).map((tx, index) => (
-                      <TxRow key={`${tx.tx_hash}-${index}`} tx={tx} />
+                      <TxRow key={`${tx.tx_hash}-${index}`} tx={tx} chain={analysisState.chain} />
                     ))}
                   </div>
                 ),

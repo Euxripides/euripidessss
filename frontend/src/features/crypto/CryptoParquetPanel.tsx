@@ -13,7 +13,6 @@ import {
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
 import {
-  Alert,
   Button,
   Checkbox,
   Collapse,
@@ -526,7 +525,9 @@ export function CryptoParquetPanel() {
                 )}
               </Descriptions>
               {preview.total_bytes > 20 * 1024 ** 3 && (
-                <Alert type="warning" showIcon message="本次源数据较大；任务会按分片流水线处理并及时清理 staging。" />
+                <Typography.Text type="secondary">
+                  本次源数据较大；任务会按分片流水线处理并及时清理 staging。
+                </Typography.Text>
               )}
             </div>
           )}
@@ -693,11 +694,9 @@ export function CryptoParquetPanel() {
         okText="保存设置"
         width={720}
       >
-        <Alert
-          type="info"
-          showIcon
-          message="V1.1 业务目录固定为 E:\codex\bsc_analytics；程序不会回退到 C 盘、用户目录或系统临时目录。"
-        />
+        <Typography.Paragraph type="secondary">
+          V1.1 业务目录固定为 E:\codex\bsc_analytics；程序不会回退到 C 盘、用户目录或系统临时目录。
+        </Typography.Paragraph>
         <Form<ParquetSettings> form={settingsForm} layout="vertical" className="crypto-parquet-settings-form">
           <Form.Item
             name="data_root"

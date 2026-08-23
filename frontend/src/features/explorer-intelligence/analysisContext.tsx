@@ -13,6 +13,7 @@ export interface AnalysisState {
   fromAddress?: string;
   toAddress?: string;
   counterparty?: string;
+	transactionHash?: string;
   tokens: string[];
   tokenSymbol?: string;
   direction: AnalysisDirection;
@@ -24,6 +25,7 @@ export interface AnalysisState {
   protocolFilters: string[];
   methodFilters: string[];
   statusFilters: string[];
+	valuationStatuses: string[];
   selectedRows: string[];
   caseID?: string;
   tab: string;
@@ -39,17 +41,20 @@ interface AnalysisContextValue {
   clearFilters: () => void;
 }
 
-const STORAGE_KEY = "explorer-analysis-context-v2";
+// v3 resets the historical default window. The previous v2 state persisted
+// 30D across addresses, which made valid older activity look like missing data.
+const STORAGE_KEY = "explorer-analysis-context-v3";
 export const DEFAULT_ANALYSIS_STATE: AnalysisState = {
   chain: "bsc",
   rootAddress: "",
-  window: "30D",
+  window: "ALL",
   tokens: [],
   direction: "all",
   entityFilters: [],
   protocolFilters: [],
   methodFilters: [],
   statusFilters: [],
+	valuationStatuses: [],
   selectedRows: [],
   tab: "overview",
   pageSize: 100,
@@ -57,12 +62,13 @@ export const DEFAULT_ANALYSIS_STATE: AnalysisState = {
 };
 
 const FILTER_RESET: Partial<AnalysisState> = {
-  window: "30D",
+  window: "ALL",
   from: undefined,
   to: undefined,
   fromAddress: undefined,
   toAddress: undefined,
   counterparty: undefined,
+	transactionHash: undefined,
   tokens: [],
   tokenSymbol: undefined,
   direction: "all",
@@ -74,6 +80,7 @@ const FILTER_RESET: Partial<AnalysisState> = {
   protocolFilters: [],
   methodFilters: [],
   statusFilters: [],
+	valuationStatuses: [],
   selectedRows: [],
 };
 
@@ -92,7 +99,7 @@ function stringList(params: URLSearchParams, key: string, fallback: string[] = [
 function validWindow(value: unknown): AnalysisWindow {
   return ["24H", "7D", "30D", "90D", "1Y", "ALL", "CUSTOM"].includes(String(value).toUpperCase())
     ? String(value).toUpperCase() as AnalysisWindow
-    : "30D";
+    : "ALL";
 }
 
 function validDirection(value: unknown): AnalysisDirection {
@@ -118,6 +125,7 @@ function readInitialState(): AnalysisState {
     fromAddress: params.get("from_address") ?? saved.fromAddress,
     toAddress: params.get("to_address") ?? saved.toAddress,
     counterparty: params.get("counterparty") ?? saved.counterparty,
+	transactionHash: params.get("transaction_hash") ?? saved.transactionHash,
     tokens: stringList(params, "token", saved.tokens),
     tokenSymbol: params.get("token_symbol") ?? saved.tokenSymbol,
     direction: validDirection(params.get("direction") ?? saved.direction),
@@ -129,6 +137,7 @@ function readInitialState(): AnalysisState {
     protocolFilters: stringList(params, "protocol", saved.protocolFilters),
     methodFilters: stringList(params, "method", saved.methodFilters),
     statusFilters: stringList(params, "status", saved.statusFilters),
+	valuationStatuses: stringList(params, "valuation_status", saved.valuationStatuses),
     selectedRows: [],
     caseID: params.get("case_id") ?? saved.caseID,
     tab: params.get("tab") ?? saved.tab ?? DEFAULT_ANALYSIS_STATE.tab,
@@ -146,13 +155,14 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     const params = new URLSearchParams();
-    if (state.window !== "30D") params.set("range", state.window.toLowerCase());
+    if (state.window !== "ALL") params.set("range", state.window.toLowerCase());
     if (state.tab !== "overview") params.set("tab", state.tab);
     if (state.from) params.set("from", state.from);
     if (state.to) params.set("to", state.to);
     if (state.fromAddress) params.set("from_address", state.fromAddress);
     if (state.toAddress) params.set("to_address", state.toAddress);
     if (state.counterparty) params.set("counterparty", state.counterparty);
+	if (state.transactionHash) params.set("transaction_hash", state.transactionHash);
     if (state.tokens.length) params.set("token", state.tokens.join(","));
     if (state.tokenSymbol) params.set("token_symbol", state.tokenSymbol);
     if (state.direction !== "all") params.set("direction", state.direction);
@@ -164,6 +174,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     if (state.protocolFilters.length) params.set("protocol", state.protocolFilters.join(","));
     if (state.methodFilters.length) params.set("method", state.methodFilters.join(","));
     if (state.statusFilters.length) params.set("status", state.statusFilters.join(","));
+	if (state.valuationStatuses.length) params.set("valuation_status", state.valuationStatuses.join(","));
     if (state.pageSize !== 100) params.set("page_size", String(state.pageSize));
     if (state.sort !== "time_desc") params.set("sort", state.sort);
     if (state.caseID) params.set("case_id", state.caseID);

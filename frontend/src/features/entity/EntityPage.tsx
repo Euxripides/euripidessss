@@ -1,7 +1,6 @@
 // 实体智能（Entity Intelligence Layer V1）：地址标签解析 / 实体映射 / 证据溯源 / 调查线索。
 import { useEffect, useState } from "react";
 import {
-  Alert,
   Button,
   Card,
   Descriptions,
@@ -240,12 +239,13 @@ export default function EntityPage() {
               ))}
             </ul>
             {(resolution.conflicts?.length ?? 0) > 0 && (
-              <Alert
-                type="warning"
-                showIcon
-                message="标签冲突（未静默覆盖）"
-                description={resolution.conflicts?.map((c) => `${c.entity_a} vs ${c.entity_b}`).join("；")}
-              />
+              <div>
+                <Typography.Text type="warning" strong>标签冲突（未静默覆盖）</Typography.Text>
+                <br />
+                <Typography.Text type="secondary">
+                  {resolution.conflicts?.map((c) => `${c.entity_a} vs ${c.entity_b}`).join("；")}
+                </Typography.Text>
+              </div>
             )}
           </Card>
         )}

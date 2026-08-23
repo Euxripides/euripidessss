@@ -25,25 +25,53 @@ import (
 )
 
 const (
-	csvMaxRowsPerExport             = 20000
-	defaultCSVStartTime       int64 = 1262304000
-	csvEmailWaitTimeout             = 15 * time.Minute
-	csvTokenEmailWaitTimeout        = 45 * time.Minute
-	csvEmailWaitProgressEvery       = 15 * time.Second
-	csvEmailRequestCooldown         = 3 * time.Minute
-	csvEmailTimeoutBackoffBase      = 3 * time.Minute
-	csvIMAPCommandTimeout           = 20 * time.Second
+	csvMaxRowsPerExport            = 20000
+	defaultCSVStartTime      int64 = 1262304000
+	csvEmailWaitTimeout            = 15 * time.Minute
+	csvTokenEmailWaitTimeout       = 45 * time.Minute
+	// csvTokenEmailFastFailTimeout is the first token email wait window:
+	// OKLink token exports can be silently dropped under account-level rate
+	// limiting (observed 2026-08-15: every mailbox/address/window failed
+	// after a burst of concurrent requests), so the first timeout is short
+	// and the identity rotates onto a fresh mailbox/device/proxy quickly.
+	// Later attempts widen progressively up to csvTokenEmailWaitTimeout.
+	csvTokenEmailFastFailTimeout = 10 * time.Minute
+	csvTokenMaxSegmentRetries    = 3
+	csvEmailWaitProgressEvery    = 15 * time.Second
+	csvEmailRequestCooldown      = 3 * time.Minute
+	// csvTokenAddressWindow / csvTokenAddressMax pace token export requests
+	// per address with a sliding window: at most csvTokenAddressMax requests
+	// within csvTokenAddressWindow keep single-address downloads fast (the
+	// mail wait between segments already spaces requests out) while
+	// preventing the burst that triggered OKLink's silent token-export block
+	// (observed 2026-08-15: 4 concurrent token requests for one address in
+	// ~10 minutes caused a ~2 hour account-level block; transactions were
+	// unaffected).  Override via OKLINK_CSV_TOKEN_ADDRESS_WINDOW (seconds)
+	// and OKLINK_CSV_TOKEN_ADDRESS_MAX.
+	csvTokenAddressWindow      = 10 * time.Minute
+	csvTokenAddressMax         = 2
+	csvEmailTimeoutBackoffBase = 3 * time.Minute
+	csvIMAPCommandTimeout      = 20 * time.Second
+	// csvIMAPLoginTimeout is deliberately longer than the command timeout:
+	// under VPN/proxied networks a Gmail IMAP login can take 30-50s (TLS +
+	// XOAUTH-style round trips), and a 20s deadline turns a healthy login
+	// into "connection closed" (observed 2026-08-15 real test).
+	csvIMAPLoginTimeout             = 90 * time.Second
 	csvMailTimestampTolerance       = 5 * time.Second
 	csvDirectDownloadAttempts       = 3
 	csvDirectSegmentAttempts        = 2
 	csvMaxSegmentRetries            = 1
 	csvCompletenessTolerance  int64 = 100
-	csvTokenWindowSeconds      = int64(0)
+	csvTokenWindowSeconds           = int64(0)
 )
 
 var (
 	csvTokenSegmentCooldownMin    = 5 * time.Second
 	csvTokenSegmentCooldownJitter = 10 * time.Second
+	// csvTokenAddressWindowVar / csvTokenAddressMaxVar back the token
+	// address pacing so environment variables can override them.
+	csvTokenAddressWindowVar = csvTokenAddressWindow
+	csvTokenAddressMaxVar    = csvTokenAddressMax
 	// csvForwardDomains holds lower-cased custom domains that route inbound
 	// mail to the configured IMAP mailbox (e.g. Cloudflare Email Routing,
 	// which requires a catch-all rule for arbitrary prefixes).
@@ -53,6 +81,19 @@ var (
 )
 
 func init() {
+	// OKLINK_CSV_TOKEN_ADDRESS_WINDOW (seconds) / OKLINK_CSV_TOKEN_ADDRESS_MAX
+	// override the per-address token export sliding window; a zero window
+	// disables the pacing.
+	if raw := strings.TrimSpace(os.Getenv("OKLINK_CSV_TOKEN_ADDRESS_WINDOW")); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds >= 0 {
+			csvTokenAddressWindowVar = time.Duration(seconds) * time.Second
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("OKLINK_CSV_TOKEN_ADDRESS_MAX")); raw != "" {
+		if count, err := strconv.Atoi(raw); err == nil && count >= 1 {
+			csvTokenAddressMaxVar = count
+		}
+	}
 	// OKLINK_CSV_TOKEN_COOLDOWN (seconds) sets the base Token segment
 	// cooldown; jitter equals the base (so delay is base..2×base).
 	if raw := strings.TrimSpace(os.Getenv("OKLINK_CSV_TOKEN_COOLDOWN")); raw != "" {
@@ -85,7 +126,12 @@ var (
 	errCSVEmailTimeout = errors.New("timeout waiting for csv download email")
 	csvEmailChainMu    sync.Mutex
 	csvEmailChainLast  = make(map[string]time.Time)
-	csvEmailAliasSeq   atomic.Uint64
+	// csvTokenAddressTimes keeps the recent token export request timestamps
+	// per address (sliding window) so concurrent tasks on the same address
+	// cannot burst past OKLink's silent token-export limit.  Guarded by
+	// csvEmailChainMu.
+	csvTokenAddressTimes = make(map[string][]time.Time)
+	csvEmailAliasSeq     atomic.Uint64
 )
 
 type CSVExportClient struct {
@@ -108,6 +154,13 @@ type CSVExportClient struct {
 	signedRequest         *csvSignedRequestTemplate
 	signedRequestErr      error
 	durableRename         func(string, string) error
+	// mailIdentities is the per-task mailbox identity pool (fixed mailbox +
+	// proxy pin + signer device ID), built once from the estimated data
+	// volume.  Guarded by mailPoolMu.
+	mailIdentities      []csvMailIdentity
+	identityIdx         int
+	identityActive      csvMailIdentity
+	buildIdentitiesOnce sync.Once
 }
 
 type CSVMailConfig struct {
@@ -129,6 +182,33 @@ type csvExportKind struct {
 var csvExportKinds = []csvExportKind{
 	{Name: "transactions", Endpoint: "normalTransaction", Sheet: "transaction", TimeRange: true},
 	{Name: "token_transfers", Endpoint: "tokenTransfer", Sheet: "token", TimeRange: true},
+}
+
+// CountAddressRows returns OKLink's address-level row total without submitting
+// a CSV export job. Smart Download uses this lightweight endpoint during
+// preflight to choose CSV for small datasets and SQD for larger datasets.
+func (c *CSVExportClient) CountAddressRows(ctx context.Context, cfg Config, chain, dataset string) (int64, error) {
+	if c == nil {
+		return 0, errors.New("nil CSV export client")
+	}
+	for _, kind := range csvExportKinds {
+		if kind.Name == strings.ToLower(strings.TrimSpace(dataset)) {
+			start := cfg.CSVStartTime
+			if start <= 0 {
+				start = defaultCSVStartTime
+			}
+			end := cfg.CSVEndTime
+			if end <= 0 {
+				end = time.Now().Unix()
+			}
+			total, err := c.countCSV(ctx, cfg, strings.ToLower(strings.TrimSpace(chain)), kind, start, end)
+			if err == nil {
+				return int64(total), nil
+			}
+			return c.fetchCSVListTotal(ctx, cfg, chain, kind)
+		}
+	}
+	return 0, fmt.Errorf("OKLink count 不支持数据集 %q", dataset)
 }
 
 type csvAsyncResponse struct {
@@ -264,6 +344,14 @@ func NewCSVExportClient(cfg Config) *CSVExportClient {
 			pinErr = fmt.Errorf("IP 锁定 %d 超出代理池数量（当前 %d 个）：请检查代理池或选择自动轮换", cfg.CSVProxyPin+1, len(entries))
 		}
 	}
+	// Browser-based email requests are disabled by default (project policy
+	// 2026-08-15: mail download goes through the signed HTTP API with one
+	// identity per generated mailbox).  Set OKLINK_CSV_EMAIL_BROWSER=1 to
+	// restore the legacy browser-engine path as an escape hatch.
+	var browserEmailRequester csvBrowserEmailRequester
+	if strings.TrimSpace(os.Getenv("OKLINK_CSV_EMAIL_BROWSER")) != "" {
+		browserEmailRequester = newCSVBrowserEmailRequester(baseURL)
+	}
 	return &CSVExportClient{
 		baseURL:    baseURL,
 		httpClient: newSharedHTTPClient(cfg.Timeout),
@@ -278,11 +366,12 @@ func NewCSVExportClient(cfg Config) *CSVExportClient {
 		mailPool:              mailPool,
 		mailFailures:          map[int]int{},
 		mailCooldownUntil:     map[int]time.Time{},
+		identityIdx:           -1,
 		proxyPin:              cfg.CSVProxyPin,
 		rawDir:                raw,
 		seenPath:              seenPath,
 		downloadSigner:        newCSVDownloadSigner(baseURL),
-		browserEmailRequester: newCSVBrowserEmailRequester(baseURL),
+		browserEmailRequester: browserEmailRequester,
 		newMailWatcher:        newCSVMailWatcher,
 		signedRequest:         signedRequest,
 		signedRequestErr:      signedRequestErr,
@@ -311,6 +400,15 @@ func (c *CSVExportClient) CollectAddress(ctx context.Context, cfg Config, chain 
 	if c.poolErr != nil {
 		return ExportData{}, c.poolErr
 	}
+	// Build the mailbox identity pool once per task: estimate the needed
+	// mailbox count from the data volume, then bind every mailbox to its own
+	// proxy/UA/TLS fingerprint and signer device ID.  Direct-link mode never
+	// sends mail, so the estimation round-trips are skipped there.
+	c.buildIdentitiesOnce.Do(func() {
+		if cfg.CSVDeliveryMode != "direct" {
+			c.buildMailIdentities(ctx, cfg)
+		}
+	})
 	var data ExportData
 	chainLower := strings.ToLower(chain)
 	data.Summaries = append(data.Summaries, csvSummaryRow(cfg.Address, chain))
@@ -656,12 +754,13 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 				return allMapped, allRaw, allHeaders, check, err
 			}
 			for retry := 0; ; retry++ {
-				if retry > csvMaxSegmentRetries {
+				segmentRetries := csvSegmentRetriesForKind(kind)
+				if retry > segmentRetries {
 					check = finalizeCSVDownloadCheck(check, len(allRaw), strictTotal)
 					return allMapped, allRaw, allHeaders, check, fmt.Errorf("segment %d: too many retries for valid data", segment)
 				}
 				reportProgress(cfg, "CSV纯下载 %s: %s 第 %d 段等待邮件链接", strings.ToUpper(chain), kind.Name, segment)
-				link, err := c.waitForLink(ctx, mailWatcher, requestedAt, seenMu, seenLinks, kind.Name, cfg.Address, csvEmailTimeoutForKind(kind), func(elapsed time.Duration, lastErr error) {
+				link, err := c.waitForLink(ctx, mailWatcher, requestedAt, seenMu, seenLinks, kind.Name, cfg.Address, csvEmailWaitTimeoutForAttempt(kind, retry), func(elapsed time.Duration, lastErr error) {
 					if lastErr != nil {
 						reportProgress(cfg, "CSV纯下载 %s: %s 第 %d 段等待邮件 %s，IMAP：%v", strings.ToUpper(chain), kind.Name, segment, elapsed.Round(time.Second), lastErr)
 						return
@@ -669,7 +768,7 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 					reportProgress(cfg, "CSV纯下载 %s: %s 第 %d 段等待邮件 %s", strings.ToUpper(chain), kind.Name, segment, elapsed.Round(time.Second))
 				})
 				if err != nil {
-					if retry < csvMaxSegmentRetries && isCSVEmailNoLinkTimeout(err) {
+					if retry < segmentRetries && isCSVEmailNoLinkTimeout(err) {
 						if c.advanceMailOnFailure(err) {
 							mailWatcher = nil
 							reportProgress(cfg, "CSV mail pool %s: %s 第 %d 段等待超时，切换邮箱后重新申请", strings.ToUpper(chain), kind.Name, segment)
@@ -692,7 +791,7 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 						}
 						continue
 					}
-					if retry < csvMaxSegmentRetries && c.advanceMailOnFailure(err) {
+					if retry < segmentRetries && c.advanceMailOnFailure(err) {
 						mailWatcher = nil
 						reportProgress(cfg, "CSV mail pool %s: %s 第 %d 段邮箱失败（%v），切换后重新申请", strings.ToUpper(chain), kind.Name, segment, err)
 						requestedAt, err = requestEmailCSV()
@@ -710,7 +809,7 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 					reportProgress(cfg, "CSV纯下载 %s: %s 第 %d 段下载重试 %d，%s，等待 %s", strings.ToUpper(chain), kind.Name, segment, attempt, reason, delay)
 				})
 				if err != nil {
-					if retry < csvMaxSegmentRetries && isRetryableCSVLinkError(err) {
+					if retry < segmentRetries && isRetryableCSVLinkError(err) {
 						reportProgress(cfg, "CSV stale link %s: %s segment %d download failed, requesting a new CSV: %v", strings.ToUpper(chain), kind.Name, segment, err)
 						markCSVLinkSeen(seenMu, seenLinks, link)
 						requestedAt, err = requestEmailCSV()
@@ -731,7 +830,7 @@ func (c *CSVExportClient) collectKind(ctx context.Context, cfg Config, chain str
 					return allMapped, allRaw, allHeaders, check, errors.Join(errs...)
 				}
 				if isNoSuchKeyPayload(csvBytes) {
-					if retry < csvMaxSegmentRetries {
+					if retry < segmentRetries {
 						reportProgress(cfg, "CSV stale link %s: %s segment %d returned NoSuchKey, requesting a new CSV", strings.ToUpper(chain), kind.Name, segment)
 						markCSVLinkSeen(seenMu, seenLinks, link)
 						requestedAt, err = requestEmailCSV()
@@ -952,6 +1051,9 @@ func csvDownloadedDifference(expected int64, downloaded int) int64 {
 	return difference
 }
 
+// csvEmailTimeoutForKind returns the single email wait window for a kind.
+// Token exports get the long window here as the last-resort timeout; the
+// per-attempt schedule is csvEmailWaitTimeoutForAttempt.
 func csvEmailTimeoutForKind(kind csvExportKind) time.Duration {
 	if kind.Sheet == "token" {
 		return csvTokenEmailWaitTimeout
@@ -959,17 +1061,51 @@ func csvEmailTimeoutForKind(kind csvExportKind) time.Duration {
 	return csvEmailWaitTimeout
 }
 
+// csvEmailWaitTimeoutForAttempt returns the email wait window for a given
+// wait round.  Token exports start short (csvTokenEmailFastFailTimeout) so a
+// silently-dropped export rotates to a fresh mailbox/device/proxy early, then
+// widen per retry up to csvTokenEmailWaitTimeout; all other kinds keep the
+// single csvEmailWaitTimeout window on every attempt.
+func csvEmailWaitTimeoutForAttempt(kind csvExportKind, retry int) time.Duration {
+	if kind.Sheet != "token" {
+		return csvEmailWaitTimeout
+	}
+	switch retry {
+	case 0:
+		return csvTokenEmailFastFailTimeout
+	case 1:
+		return 15 * time.Minute
+	case 2:
+		return 20 * time.Minute
+	default:
+		return csvTokenEmailWaitTimeout
+	}
+}
+
+// csvSegmentRetriesForKind returns how many re-request retries a segment may
+// perform after an email wait timeout.  Token exports get more attempts so
+// account-level drops recover by rotating the mailbox identity; other kinds
+// keep the legacy single retry.
+func csvSegmentRetriesForKind(kind csvExportKind) int {
+	if kind.Sheet == "token" {
+		return csvTokenMaxSegmentRetries
+	}
+	return csvMaxSegmentRetries
+}
+
 // csvEmailTimeoutBackoff returns the extra wait applied before re-requesting a
 // CSV export email after consecutive delivery timeouts.  It doubles per
-// consecutive timeout and caps at ten minutes so provider-side mail
-// generation/risk control has time to recover without unbounded stalls.
+// consecutive timeout and caps at thirty minutes: during an OKLink
+// account-level silent block (which lasts hours) repeated requests are
+// counter-productive, so the spacing grows well beyond the legacy ten-minute
+// cap to let the block lapse without hammering the provider.
 func csvEmailTimeoutBackoff(consecutiveTimeouts int) time.Duration {
 	backoff := csvEmailTimeoutBackoffBase
-	for i := 0; i < consecutiveTimeouts && backoff < 10*time.Minute; i++ {
+	for i := 0; i < consecutiveTimeouts && backoff < 30*time.Minute; i++ {
 		backoff *= 2
 	}
-	if backoff > 10*time.Minute {
-		return 10 * time.Minute
+	if backoff > 30*time.Minute {
+		return 30 * time.Minute
 	}
 	return backoff
 }
@@ -1138,8 +1274,11 @@ func parseCSVListTotal(body []byte) (int64, error) {
 	data := struct {
 		Total json.RawMessage `json:"total"`
 	}{}
+	if len(bytes.TrimSpace(resp.Data)) == 0 || bytes.Equal(bytes.TrimSpace(resp.Data), []byte("null")) {
+		return 0, fmt.Errorf("csv total response missing data; response=%s", csvResponseSummary(body))
+	}
 	if err := json.Unmarshal(resp.Data, &data); err != nil {
-		return 0, err
+		return 0, csvInvalidJSONError("csv total data", resp.Data, err)
 	}
 	if len(data.Total) == 0 {
 		return 0, errors.New("csv total response missing data.total")
@@ -1172,11 +1311,7 @@ func parseJSONInt64(raw json.RawMessage) (int64, error) {
 }
 
 func (c *CSVExportClient) countCSV(ctx context.Context, cfg Config, chain string, kind csvExportKind, start, end int64) (int, error) {
-	if kind.Sheet != "token" {
-		return 0, fmt.Errorf("countCSV only supports token sheets")
-	}
-	referer := fmt.Sprintf("%s/zh-hans/%s/address/%s/token-transfer", c.baseURL, chain, cfg.Address)
-	payload := csvTokenRequestPayload(cfg, c.baseURL, chain, start, end, c.emailExportAlias(chain, kind.Name))
+	referer, payload := csvDownloadRequestPayload(cfg, c.baseURL, chain, kind, start, end, c.emailExportAlias(chain, kind.Name))
 	body, _ := json.Marshal(payload)
 	apiURL := fmt.Sprintf("%s/download/explorer/v1/%s/%s/download/count?t=%d", c.baseURL, chain, kind.Endpoint, time.Now().UnixMilli())
 
@@ -1562,7 +1697,10 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 		if err != nil {
 			return err
 		}
-		req = setCSVPostHeaders(req, c.baseURL, referer, "application/json", c.proxyPin)
+		// The identity consumed by emailExportAlias above pins this request
+		// to one proxy pool entry: UA, client hints, TLS fingerprint and the
+		// signer device ID all describe the same generated mailbox.
+		req = setCSVPostHeaders(req, c.baseURL, referer, "application/json", c.requestPin())
 		var signErr error
 		signerVersion, signErr = c.applyCSVDownloadSignatureWithVersion(ctx, req, body, chain, cfg.Address)
 		if signErr != nil {
@@ -1619,10 +1757,15 @@ func (c *CSVExportClient) requestCSV(ctx context.Context, cfg Config, chain stri
 // "local+oklN@domain" alias.  Gmail delivers +tagged mail to the same
 // inbox, so IMAP credentials, UID baselines and mail correlation stay
 // unchanged while OKLink sees a new recipient per request (including
-// retries after timeout/cooldown).  When a mail pool is configured the
-// active pool mailbox is used, falling back to the configured mailbox.
-// Non-Gmail destinations are returned as-is.
+// retries after timeout/cooldown).  When the per-task identity pool is
+// built (2026-08-15: data-volume mailbox generation), it wins: every
+// request consumes one fixed identity mailbox bound to its own proxy/UA/TLS
+// fingerprint and signer device ID.  With no pool the active pool mailbox
+// is used, falling back to the configured mailbox.
 func (c *CSVExportClient) emailExportAlias(chain, kind string) string {
+	if identity, ok := c.nextMailIdentity(); ok {
+		return identity.Email
+	}
 	return rotateCSVEmailAlias(c.activeMail().Email)
 }
 
@@ -1651,25 +1794,60 @@ func (c *CSVExportClient) beginCSVEmailRequest(ctx context.Context, cfg Config, 
 		return func() {}, nil
 	}
 	chainKey := strings.ToLower(strings.TrimSpace(chain))
+	addressKey := strings.ToLower(strings.TrimSpace(cfg.Address))
 	csvEmailChainMu.Lock()
+	wait := time.Duration(0)
 	lastRequest := csvEmailChainLast[chainKey]
 	if !lastRequest.IsZero() {
-		wait := time.Until(lastRequest.Add(csvEmailRequestCooldown + jitterDuration(20*time.Second)))
-		if wait > 0 {
-			reportProgress(cfg, "CSV email cooldown %s: %s wait %s", strings.ToUpper(chain), kind.Name, wait.Round(time.Second))
-			csvEmailChainMu.Unlock()
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(wait):
-				csvEmailChainMu.Lock()
-			}
+		wait = time.Until(lastRequest.Add(csvEmailRequestCooldown + jitterDuration(20*time.Second)))
+	}
+	// Token exports get an extra per-address sliding window: OKLink silently
+	// drops token CSV mails when the same address is requested repeatedly
+	// within a short window, and the chain cooldown alone did not prevent the
+	// burst observed 2026-08-15 (8 requests in ~10 minutes across 4 tasks).
+	if wait <= 0 && kind.Sheet == "token" && addressKey != "" && csvTokenAddressWindowVar > 0 {
+		if windowWait := csvTokenAddressWaitLocked(addressKey, time.Now()); windowWait > 0 {
+			wait = windowWait
+		}
+	}
+	if wait > 0 {
+		reportProgress(cfg, "CSV email cooldown %s: %s wait %s", strings.ToUpper(chain), kind.Name, wait.Round(time.Second))
+		csvEmailChainMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+			csvEmailChainMu.Lock()
 		}
 	}
 	return func() {
 		csvEmailChainLast[chainKey] = time.Now()
+		if kind.Sheet == "token" && addressKey != "" && csvTokenAddressWindowVar > 0 {
+			csvTokenAddressTimes[addressKey] = append(csvTokenAddressTimes[addressKey], time.Now())
+		}
 		csvEmailChainMu.Unlock()
 	}, nil
+}
+
+// csvTokenAddressWaitLocked returns how long the next token request for an
+// address must wait so that at most csvTokenAddressMaxVar requests fall
+// inside csvTokenAddressWindowVar (sliding window).  Stale timestamps are
+// pruned in place.  Caller holds csvEmailChainMu.
+func csvTokenAddressWaitLocked(addressKey string, now time.Time) time.Duration {
+	times := csvTokenAddressTimes[addressKey]
+	cutoff := now.Add(-csvTokenAddressWindowVar)
+	kept := times[:0]
+	for _, ts := range times {
+		if ts.After(cutoff) {
+			kept = append(kept, ts)
+		}
+	}
+	csvTokenAddressTimes[addressKey] = kept
+	if len(kept) < csvTokenAddressMaxVar {
+		return 0
+	}
+	// The oldest in-window request expires first; wait until then.
+	return time.Until(kept[0].Add(csvTokenAddressWindowVar))
 }
 
 func csvRequestRetryDelay(attempt int) time.Duration {

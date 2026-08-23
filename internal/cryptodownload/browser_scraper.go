@@ -1211,8 +1211,18 @@ func browserPageCacheName(offset, limit int) string {
 	return fmt.Sprintf("limit_%03d_offset_%09d", limit, offset)
 }
 
+// browserXAPIKey builds the OKLink x-apiKey header used by the browser/CSV
+// download links.  The default is the public key embedded in OKLink's web
+// bundle (shared by every deployment, so OKLink rate-limits it as one
+// account).  Set OKLINK_API_KEY to your own key to get an isolated limit;
+// the key must be at least 8 characters (the same rotate-and-base64
+// encoding the OKLink frontend uses is applied either way).
 func browserXAPIKey() string {
-	rotated := browserPublicAPIKey[8:] + browserPublicAPIKey[:8]
+	key := browserPublicAPIKey
+	if configured := strings.TrimSpace(os.Getenv("OKLINK_API_KEY")); len(configured) >= 8 {
+		key = configured
+	}
+	rotated := key[8:] + key[:8]
 	encodedTime := fmt.Sprintf("%d%d%d%d", time.Now().UnixMilli()+1111111111111, rand.Intn(10), rand.Intn(10), rand.Intn(10))
 	return base64.StdEncoding.EncodeToString([]byte(rotated + "|" + encodedTime))
 }

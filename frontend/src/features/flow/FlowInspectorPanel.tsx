@@ -374,7 +374,7 @@ export function FlowInspectorPanel(props: FlowInspectorPanelProps) {
 
           {isTruncated && (
 
-            <div className="graph-alert">
+            <div className="graph-truncation-note">
 
               后端已保留金额最高的 {String(edgeLimit ?? 0)} 条聚合关系，适合大数据快速研判；全量明细仍在导出文件中。
             </div>

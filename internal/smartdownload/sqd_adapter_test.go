@@ -29,7 +29,8 @@ func TestSQDAdapterDatasetLogsUsesContractEmitterSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Records) != 1 || result.Records[0].Payload["contract_address"] != pool {
+	if len(result.Records) != 1 || result.Records[0].Payload["contract_address"] != pool ||
+		result.Records[0].Payload["transaction_index"] != uint64(2) || result.Records[0].Payload["removed"] != false {
 		t.Fatalf("unexpected records: %+v", result.Records)
 	}
 	filters, ok := captured["logs"].([]any)

@@ -113,10 +113,22 @@ func (g PreflightGuards) Reason() string {
 }
 
 type PreflightResult struct {
-	Estimate   PreflightEstimate `json:"estimate"`
-	Guards     PreflightGuards   `json:"guards"`
-	Confidence string            `json:"confidence"`
-	Basis      []string          `json:"basis"`
+	Estimate         PreflightEstimate          `json:"estimate"`
+	DatasetEstimates []PreflightDatasetEstimate `json:"dataset_estimates,omitempty"`
+	Guards           PreflightGuards            `json:"guards"`
+	Confidence       string                     `json:"confidence"`
+	Basis            []string                   `json:"basis"`
+}
+
+type PreflightDatasetEstimate struct {
+	Address           string  `json:"address"`
+	ChainKey          string  `json:"chain_key"`
+	Dataset           string  `json:"dataset"`
+	EstimatedRows     uint64  `json:"estimated_rows"`
+	EstimatedBytes    uint64  `json:"estimated_bytes"`
+	Confidence        float64 `json:"confidence"`
+	Source            string  `json:"source"`
+	PreferredProvider string  `json:"preferred_provider,omitempty"`
 }
 
 type PipelineStatus struct {
@@ -415,12 +427,14 @@ type preflightUnit struct {
 	from     uint64
 	to       uint64
 	defRows  uint64 // 未采样/采样失败时按默认密度估算的行数
+	oklink   bool   // 完整未覆盖区间可用 OKLink all-time total 精确估量
 }
 
 type preflightUnitResult struct {
-	rows uint64
-	conf float64
-	ok   bool
+	rows   uint64
+	conf   float64
+	source string
+	ok     bool
 }
 
 func (s *Service) Preflight(ctx context.Context, req CreateBatchRequest) (*PreflightResult, error) {
@@ -503,6 +517,7 @@ func (s *Service) preflight(ctx context.Context, req CreateBatchRequest, probe b
 				units = append(units, preflightUnit{
 					chainKey: addrNetwork.Key, chainID: addrNetwork.ID,
 					address: address, dataset: dataset, from: iv.From, to: iv.To, defRows: defRows,
+					oklink: len(intervals) == 1 && iv.From == r.From && iv.To == r.To && r.From == 0,
 				})
 			}
 		}
@@ -510,19 +525,64 @@ func (s *Service) preflight(ctx context.Context, req CreateBatchRequest, probe b
 	var rows uint64
 	var confSum float64
 	confN, fallbackN := 0, 0
-	for i, res := range s.preflightDiscover(ctx, units, probe) {
+	oklinkN := 0
+	unitResults := s.preflightDiscover(ctx, units, probe)
+	estimateByKey := map[string]*PreflightDatasetEstimate{}
+	for i, res := range unitResults {
+		unitRows, unitConf, source := res.rows, res.conf, res.source
 		if res.ok {
-			rows += res.rows
-			confSum += res.conf
+			rows += unitRows
+			confSum += unitConf
 			confN++
+			if source == "oklink_count" {
+				oklinkN++
+			}
 		} else if units[i].defRows > 0 {
-			rows += units[i].defRows
+			unitRows, unitConf, source = units[i].defRows, 0.35, "default_density"
+			rows += unitRows
 			fallbackN++
 		}
+		if unitRows == 0 && !res.ok {
+			continue
+		}
+		u := units[i]
+		key := u.chainKey + "|" + u.address + "|" + u.dataset
+		estimate := estimateByKey[key]
+		if estimate == nil {
+			estimate = &PreflightDatasetEstimate{Address: u.address, ChainKey: u.chainKey, Dataset: u.dataset, Source: source}
+			estimateByKey[key] = estimate
+		}
+		estimate.EstimatedRows += unitRows
+		estimate.EstimatedBytes += unitRows * 160
+		if unitConf > estimate.Confidence {
+			estimate.Confidence = unitConf
+		}
+		if estimate.Source != source {
+			estimate.Source = "mixed"
+		}
 	}
+	datasetEstimates := make([]PreflightDatasetEstimate, 0, len(estimateByKey))
+	providerByKey := make(map[string]string, len(estimateByKey))
+	for _, estimate := range estimateByKey {
+		if estimate.Source == "oklink_count" && estimate.EstimatedRows <= 10_000 && !isTurboMode(mode) {
+			// The count itself came from the executable CSV adapter, so no second
+			// capability scan is needed for the small-data decision.
+			estimate.PreferredProvider = "csv"
+		} else {
+			estimate.PreferredProvider = s.scheduler.PreferredProviderForEstimate(estimate.Dataset, estimate.ChainKey, mode, estimate.EstimatedRows)
+		}
+		providerByKey[estimate.ChainKey+"|"+estimate.Address+"|"+estimate.Dataset] = estimate.PreferredProvider
+		datasetEstimates = append(datasetEstimates, *estimate)
+	}
+	sort.Slice(datasetEstimates, func(i, j int) bool {
+		if datasetEstimates[i].Address != datasetEstimates[j].Address {
+			return datasetEstimates[i].Address < datasetEstimates[j].Address
+		}
+		return datasetEstimates[i].Dataset < datasetEstimates[j].Dataset
+	})
 	bytes := rows * 144
 	diskGrowth := uint64(float64(bytes) * 1.35)
-	cloudJobs, rpcCalls := s.estimateProviderWorkForUnits(mode, units, cfg)
+	cloudJobs, rpcCalls := s.estimateProviderWorkForUnits(mode, units, cfg, providerByKey)
 	metrics, metricsErr := s.resourceMetrics(ctx, req.ChainKey)
 	eta := estimateETAV2(rows, blocks, profile, metrics, history)
 	est := PreflightEstimate{Blocks: blocks, Addresses: len(addresses), Datasets: len(addresses) * len(datasets),
@@ -534,6 +594,9 @@ func (s *Service) preflight(ctx context.Context, req CreateBatchRequest, probe b
 		confidence = confidenceLabel(confSum / float64(confN))
 	}
 	basis := []string{"requested block ranges", "per-address discovery"}
+	if oklinkN > 0 {
+		basis = append(basis, fmt.Sprintf("%d 个地址×数据集使用 OKLink 数据量计数", oklinkN))
+	}
 	if probe && confN > 0 {
 		basis = append(basis, "L0/L1/L2 sampling")
 	}
@@ -549,13 +612,13 @@ func (s *Service) preflight(ctx context.Context, req CreateBatchRequest, probe b
 	if metricsErr == nil && s.v32Source() != nil {
 		basis = append(basis, "live resource guard metrics")
 	}
-	return &PreflightResult{Estimate: est, Guards: guards, Confidence: confidence, Basis: basis}, nil
+	return &PreflightResult{Estimate: est, DatasetEstimates: datasetEstimates, Guards: guards, Confidence: confidence, Basis: basis}, nil
 }
 
 // estimateProviderWorkForUnits derives Cloud/RPC work from the provider that
 // can actually execute each chain+dataset unit. Resource profile controls lane
 // concurrency only; it must not invent Cloud jobs for unsupported datasets.
-func (s *Service) estimateProviderWorkForUnits(mode DownloadMode, units []preflightUnit, cfg ResourceProfileConfig) (uint64, uint64) {
+func (s *Service) estimateProviderWorkForUnits(mode DownloadMode, units []preflightUnit, cfg ResourceProfileConfig, providerByKey map[string]string) (uint64, uint64) {
 	var cloudJobs, rpcCalls uint64
 	chunkSize := s.opts.RangeChunkSize
 	if chunkSize == 0 {
@@ -576,8 +639,8 @@ func (s *Service) estimateProviderWorkForUnits(mode DownloadMode, units []prefli
 		rpcOK := adapterAvailableForMode(rpc, unit.chainKey, mode) && rpc.Supports(unit.dataset)
 
 		if !isTurboMode(mode) {
-			provider, ok := s.scheduler.SelectProviderFor(unit.dataset, unit.chainKey, mode, nil)
-			if !ok {
+			provider := providerByKey[unit.chainKey+"|"+unit.address+"|"+unit.dataset]
+			if provider == "" {
 				continue
 			}
 			switch provider {
@@ -637,9 +700,31 @@ func (s *Service) preflightDiscover(ctx context.Context, units []preflightUnit, 
 			defer wg.Done()
 			defer func() { <-sem }()
 			u := units[i]
+			if u.oklink {
+				req := ProbeRequest{Address: u.address, Dataset: u.dataset, ChainKey: u.chainKey,
+					ChainID: u.chainID, FromBlock: u.from, ToBlock: u.to}
+				if adapter, ok := s.AdapterByName("csv"); ok && adapter.Supports(u.dataset) {
+					var csvResult ProbeResult
+					var csvOK bool
+					if cached, ok := adapter.(interface {
+						CachedProbe(ProbeRequest) (ProbeResult, bool)
+					}); ok {
+						csvResult, csvOK = cached.CachedProbe(req)
+					}
+					if probe && !csvOK {
+						var probeErr error
+						csvResult, probeErr = ProbeWith(probeCtx, adapter, req)
+						csvOK = probeErr == nil && csvResult.Confidence > 0
+					}
+					if csvOK {
+						results[i] = preflightUnitResult{rows: csvResult.EstimatedRows, conf: csvResult.Confidence, source: "oklink_count", ok: true}
+						return
+					}
+				}
+			}
 			dr, err := s.discover(probeCtx, u.chainID, u.chainKey, u.address, u.dataset, u.from, u.to, int64(u.defRows), probe)
 			if err == nil && dr.Confidence > 0 {
-				results[i] = preflightUnitResult{rows: dr.EstimatedRows, conf: dr.Confidence, ok: true}
+				results[i] = preflightUnitResult{rows: dr.EstimatedRows, conf: dr.Confidence, source: "discovery", ok: true}
 			}
 		}(i)
 	}

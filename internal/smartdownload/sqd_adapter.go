@@ -141,9 +141,11 @@ func (p *SQDAdapter) ExecuteRange(ctx context.Context, req RangeRequest) (*Provi
 					Dataset:         DatasetLogs,
 					Address:         req.Address,
 					Payload: map[string]any{
-						"contract_address": strings.ToLower(l.Address),
-						"topics":           l.Topics,
-						"data":             l.Data,
+						"contract_address":  strings.ToLower(l.Address),
+						"topics":            l.Topics,
+						"data":              l.Data,
+						"transaction_index": l.TransactionIndex,
+						"removed":           false,
 					},
 				})
 			}
@@ -228,11 +230,13 @@ func parseSQDTransfer(network chain.EVM, b sqd.Block, l sqd.Log) (Record, bool) 
 		Dataset:         DatasetTokenTransfers,
 		Address:         strings.ToLower(l.Address),
 		Payload: map[string]any{
-			"token_address": strings.ToLower(l.Address),
-			"from_address":  from,
-			"to_address":    to,
-			"value_raw":     value,
-			"standard":      standard,
+			"transaction_index": l.TransactionIndex,
+			"batch_index":       uint64(0),
+			"token_address":     strings.ToLower(l.Address),
+			"from_address":      from,
+			"to_address":        to,
+			"value_raw":         value,
+			"standard":          standard,
 		},
 	}, true
 }

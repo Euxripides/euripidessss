@@ -9,7 +9,7 @@ import {
   SettingOutlined,
   StopOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Card, Checkbox, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Progress, Radio, Select, Space, Statistic, Table, Tag, Typography, message, notification } from 'antd';
+import { Button, Card, Checkbox, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Progress, Radio, Select, Space, Statistic, Table, Tag, Typography, message, notification } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -766,7 +766,9 @@ export function CryptoDownloadPanel() {
                 <Statistic title="队列等待" value={currentJob?.queueWaiting ?? 0} />
               </div>
               {currentJob?.status !== 'paused' && currentJob?.status !== 'cooling' && (
-                <Alert type={currentJob?.status === 'failed' ? 'error' : 'info'} showIcon message={currentJob?.message || '等待任务'} />
+                <Typography.Text type={currentJob?.status === 'failed' ? 'danger' : 'secondary'}>
+                  {currentJob?.message || '等待任务'}
+                </Typography.Text>
               )}
             </Space>
           </Card>
@@ -882,12 +884,12 @@ export function CryptoDownloadPanel() {
         onOk={() => void confirmHistoryImport()}
         onCancel={() => setPendingHistoryImportIds([])}
       >
-        <Alert
-          type="warning"
-          showIcon
-          message={`即将重新导入 ${pendingHistoryImportIds.length} 条历史任务`}
-          description="只有点击“确认并开始下载”后才会创建新任务。请先核对地址、链和原任务状态。"
-        />
+        <Typography.Paragraph strong style={{ marginBottom: 4 }}>
+          即将重新导入 {pendingHistoryImportIds.length} 条历史任务
+        </Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          只有点击“确认并开始下载”后才会创建新任务。请先核对地址、链和原任务状态。
+        </Typography.Paragraph>
         <div className="crypto-download-history-confirm-list">
           {pendingHistoryImportIds.map((id) => {
             const record = history.find((item) => item.id === id);
@@ -914,13 +916,11 @@ export function CryptoDownloadPanel() {
         onOk={() => void confirmAddressChains()}
         onCancel={closeAddressChainModal}
       >
-        <Alert
-          type="info"
-          showIcon
-          message={pendingStartValuesRef.current
+        <Typography.Paragraph type="secondary">
+          {pendingStartValuesRef.current
             ? '请逐一确认每个地址所属的链；确认后立即开始下载。'
             : '请逐一确认每个地址所属的链；确认后写回地址列表，再点击开始下载。'}
-        />
+        </Typography.Paragraph>
         <Space direction="vertical" size="middle" className="crypto-address-chain-confirm-list">
           {pendingAddressChains.map((item, index) => (
             <div className="crypto-address-chain-confirm-row" key={`${index}-${item.address}`}>

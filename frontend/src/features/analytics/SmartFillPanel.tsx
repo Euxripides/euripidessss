@@ -7,7 +7,7 @@
 //   3) 开始补充 → /api/scheduler/expand → 轮询 status → 任务级进度
 //   4) 终态后「刷新图谱」联动更新地址关系图
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Checkbox, message, Modal, Progress, Tag } from "antd";
+import { Button, Checkbox, message, Modal, Progress, Tag } from "antd";
 import { CheckCircleOutlined, CloudDownloadOutlined, ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import {
   DATASET_LABELS,
@@ -242,13 +242,10 @@ export default function SmartFillPanel({ open, address, chain, onClose, onRefres
               </span>
             </h4>
             {cloudActive && (
-              <Alert
-                className="smart-fill-cloud-alert"
-                type="warning"
-                showIcon
-                message="应急 Cloud 通道已启用"
-                description="常规数据源当前均不可用，系统已自动启用应急 Cloud 数据通道（Tier 100 最后兜底）。"
-              />
+              <div className="smart-fill-task-detail">
+                <strong>应急 Cloud 通道已启用：</strong>
+                常规数据源当前均不可用，系统已自动启用应急 Cloud 数据通道（Tier 100 最后兜底）。
+              </div>
             )}
             {cloudRuntime != null && !cloudRuntime.available && (
               <div className="smart-fill-task-detail">

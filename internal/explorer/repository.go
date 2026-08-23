@@ -127,6 +127,11 @@ func (r *Repository) ListActivity(ctx context.Context, input ActivityQuery) (Act
 	if pageSize < 1 || pageSize > maxPageSize {
 		return ActivityPage{}, fmt.Errorf("%w: page_size must be between 1 and %d", ErrInvalidInput, maxPageSize)
 	}
+	filters, err := normalizeActivityFilters(input.Filters)
+	if err != nil {
+		return ActivityPage{}, err
+	}
+	filterHash := activityFilterHash(filters)
 
 	where := []string{
 		fmt.Sprintf("a.chain_id = %d", input.ChainID),
@@ -136,7 +141,7 @@ func (r *Repository) ListActivity(ctx context.Context, input ActivityQuery) (Act
 		where = append(where, predicate)
 	}
 	if input.Cursor != "" {
-		cursor, err := decodeCursor(input.Cursor, input.ChainID, address, input.Activity)
+		cursor, err := decodeCursor(input.Cursor, input.ChainID, address, input.Activity, filterHash)
 		if err != nil {
 			return ActivityPage{}, err
 		}
@@ -182,12 +187,15 @@ multiIf(a.price_source!='',a.price_source,token_key='0x55d398326f99059ff77548524
 multiIf(q.token_address!='',q.route,token_key='0x55d398326f99059ff775485246999027b3197955','USDT/USDT',token_key IN ('0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),concat(if(t.symbol!='',t.symbol,a.token_symbol),'/USDT'),p.token_address!='',concat(if(t.symbol!='',t.symbol,a.token_symbol),'/USDT'),'') AS resolved_route,
 multiIf(isNotNull(a.price_usd),'TRADED',q.token_address!='' AND q.is_last_known,'LAST_KNOWN',q.token_address!='','TRADED',token_key IN ('0x55d398326f99059ff775485246999027b3197955','0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),'PEG',p.token_address!='' AND dateDiff('second',p.timestamp_bucket,a.block_time)<=86400,'LAST_KNOWN','UNKNOWN') AS resolved_type,
 multiIf(q.token_address!='',q.confidence,a.price_confidence='HIGH',toFloat32(0.95),a.price_confidence='MEDIUM',toFloat32(0.75),a.price_confidence='LOW',toFloat32(0.5),token_key IN ('0x55d398326f99059ff775485246999027b3197955','0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),toFloat32(0.5),p.confidence='HIGH',toFloat32(0.95),p.confidence='MEDIUM',toFloat32(0.75),p.confidence='LOW',toFloat32(0.5),toFloat32(0)) AS resolved_confidence,
-a.method_id AS method_id, a.method_name AS method_name, a.status AS status,
+if(a.method_id!='',a.method_id,tx.method_id) AS method_id,
+if(a.method_name!='',a.method_name,tx.method_name) AS method_name, a.status AS status,
 a.counterparty_entity_type AS counterparty_entity_type, a.counterparty_label AS counterparty_label,
 a.source_provider AS source_provider
 FROM onchain.address_activity AS a FINAL
 LEFT JOIN onchain.token_metadata_registry AS t FINAL
   ON a.chain_id = t.chain_id AND a.token_address = t.contract_address
+LEFT JOIN onchain.chain_transactions AS tx FINAL
+  ON a.chain_id = tx.chain_id AND a.tx_hash = tx.tx_hash
 LEFT JOIN
   (SELECT chain_id,token_address,minute,vwap,close,price_source,confidence,is_last_known,route FROM onchain.token_price_1m FINAL WHERE chain_id = %d) AS q
   ON a.chain_id=q.chain_id
@@ -199,10 +207,10 @@ ASOF LEFT JOIN
   AND if(a.token_address = '', concat('native:', toString(a.chain_id)), a.token_address) = p.token_address
   AND a.block_time >= p.timestamp_bucket
 WHERE %s
-ORDER BY a.block_time DESC, a.block_number DESC, a.tx_hash DESC, a.event_index DESC
-LIMIT %d
 )
-ORDER BY block_time DESC,block_number DESC,tx_hash DESC,event_index DESC`, input.ChainID, input.ChainID, strings.Join(where, " AND "), pageSize+1)
+WHERE %s
+ORDER BY block_time DESC,block_number DESC,tx_hash DESC,event_index DESC
+LIMIT %d`, input.ChainID, input.ChainID, strings.Join(where, " AND "), strings.Join(activityFilterClauses(filters), " AND "), pageSize+1)
 
 	rows, err := r.client.QueryJSON(ctx, query)
 	if err != nil {
@@ -224,7 +232,7 @@ ORDER BY block_time DESC,block_number DESC,tx_hash DESC,event_index DESC`, input
 	if page.HasMore && len(items) != 0 {
 		last := items[len(items)-1]
 		page.NextCursor, err = encodeCursor(activityCursor{
-			Version: 1, ChainID: input.ChainID, Address: address, Activity: input.Activity,
+			Version: 2, ChainID: input.ChainID, Address: address, Activity: input.Activity, FilterHash: filterHash,
 			BlockTime: last.BlockTime, BlockNumber: last.BlockNumber,
 			TxHash: last.TransactionHash, EventIndex: last.EventIndex,
 		})
@@ -233,6 +241,84 @@ ORDER BY block_time DESC,block_number DESC,tx_hash DESC,event_index DESC`, input
 		}
 	}
 	return page, nil
+}
+
+func (r *Repository) GetActivityStats(ctx context.Context, input ActivityStatsQuery) (ActivityStats, error) {
+	address, err := validateScope(input.ChainID, input.Address)
+	if err != nil {
+		return ActivityStats{}, err
+	}
+	predicate, ok := activityPredicates[input.Activity]
+	if !ok {
+		return ActivityStats{}, fmt.Errorf("%w: unsupported activity", ErrInvalidInput)
+	}
+	if r == nil || r.client == nil {
+		return ActivityStats{}, ErrQueryFailed
+	}
+	filters, err := normalizeActivityFilters(input.Filters)
+	if err != nil {
+		return ActivityStats{}, err
+	}
+	where := []string{fmt.Sprintf("a.chain_id = %d", input.ChainID), fmt.Sprintf("a.address = '%s'", address)}
+	if predicate != "" {
+		where = append(where, predicate)
+	}
+	valueExpr := "toFloat64(amount_decimal)*ifNull(resolved_price,0)"
+	validValue := "isNotNull(resolved_price) AND isFinite(" + valueExpr + ") AND abs(" + valueExpr + ")<=1e15"
+	query := fmt.Sprintf(`SELECT
+activity_count,transaction_count,incoming_count,outgoing_count,self_count,priced_count,unique_counterparties,
+if(priced_count=0,CAST(NULL AS Nullable(String)),toString(incoming_usd_num)) AS incoming_usd,
+if(priced_count=0,CAST(NULL AS Nullable(String)),toString(outgoing_usd_num)) AS outgoing_usd,
+if(priced_count=0,CAST(NULL AS Nullable(String)),toString(incoming_usd_num-outgoing_usd_num)) AS netflow_usd
+FROM
+(
+SELECT
+count() AS activity_count,uniqExact(tx_hash) AS transaction_count,
+countIf(direction='IN') AS incoming_count,countIf(direction='OUT') AS outgoing_count,countIf(direction='SELF') AS self_count,
+countIf(%s) AS priced_count,
+sumIf(%s,direction='IN' AND %s) AS incoming_usd_num,
+sumIf(%s,direction='OUT' AND %s) AS outgoing_usd_num,
+uniqExactIf(counterparty_address,counterparty_address!='') AS unique_counterparties
+FROM
+(
+SELECT
+a.address AS address,a.counterparty_address AS counterparty_address,a.direction AS direction,a.activity_type AS activity_type,
+a.block_time AS block_time,a.tx_hash AS tx_hash,a.token_address AS token_address,
+if(t.symbol!='',t.symbol,a.token_symbol) AS token_symbol,a.amount AS amount_decimal,
+multiIf(
+  isNotNull(a.price_usd),toFloat64(a.price_usd),
+  if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)='0x55d398326f99059ff775485246999027b3197955',toFloat64(1),
+  q.token_address!='',toFloat64(if(q.vwap>0,q.vwap,q.close)),
+  p.token_address!='' AND dateDiff('second',p.timestamp_bucket,a.block_time)<=86400,toFloat64(p.price_usd),
+  if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address) IN ('0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),toFloat64(1),
+  CAST(NULL AS Nullable(Float64))) AS resolved_price,
+multiIf(q.token_address!='',q.confidence,a.price_confidence='HIGH',toFloat32(0.95),a.price_confidence='MEDIUM',toFloat32(0.75),a.price_confidence='LOW',toFloat32(0.5),if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address) IN ('0x55d398326f99059ff775485246999027b3197955','0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d','0xe9e7cea3dedca5984780bafc599bd69add087d56','0xc5f0f7b66764f6ec8c8dff7ba683102295e16409'),toFloat32(0.5),p.confidence='HIGH',toFloat32(0.95),p.confidence='MEDIUM',toFloat32(0.75),p.confidence='LOW',toFloat32(0.5),toFloat32(0)) AS resolved_confidence,
+if(a.method_id!='',a.method_id,tx.method_id) AS method_id,
+if(a.method_name!='',a.method_name,tx.method_name) AS method_name,
+a.status AS status,a.counterparty_entity_type AS counterparty_entity_type,a.counterparty_label AS counterparty_label
+FROM onchain.address_activity AS a FINAL
+LEFT JOIN onchain.token_metadata_registry AS t FINAL ON a.chain_id=t.chain_id AND a.token_address=t.contract_address
+LEFT JOIN onchain.chain_transactions AS tx FINAL ON a.chain_id=tx.chain_id AND a.tx_hash=tx.tx_hash
+LEFT JOIN (SELECT chain_id,token_address,minute,vwap,close,confidence FROM onchain.token_price_1m FINAL WHERE chain_id=%d) AS q
+  ON a.chain_id=q.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=q.token_address AND toStartOfMinute(a.block_time)=q.minute
+ASOF LEFT JOIN (SELECT * FROM onchain.token_prices FINAL WHERE chain_id=%d ORDER BY chain_id,token_address,timestamp_bucket) AS p
+  ON a.chain_id=p.chain_id AND if(a.token_address='',concat('native:',toString(a.chain_id)),a.token_address)=p.token_address AND a.block_time>=p.timestamp_bucket
+WHERE %s
+)
+WHERE %s
+)`, validValue, valueExpr, validValue, valueExpr, validValue, input.ChainID, input.ChainID, strings.Join(where, " AND "), strings.Join(activityFilterClauses(filters), " AND "))
+	rows, err := r.client.QueryJSON(ctx, query)
+	if err != nil {
+		return ActivityStats{}, ErrQueryFailed
+	}
+	if len(rows) != 1 {
+		return ActivityStats{}, ErrInvalidData
+	}
+	stats, err := decodeActivityStats(rows[0])
+	if err != nil {
+		return ActivityStats{}, fmt.Errorf("%w: activity stats decode failed: %v", ErrInvalidData, err)
+	}
+	return stats, nil
 }
 
 func validateScope(chainID uint32, address string) (string, error) {
@@ -251,6 +337,7 @@ type activityCursor struct {
 	ChainID     uint32       `json:"c"`
 	Address     string       `json:"a"`
 	Activity    ActivityKind `json:"k"`
+	FilterHash  string       `json:"f,omitempty"`
 	BlockTime   time.Time    `json:"t"`
 	BlockNumber uint64       `json:"b"`
 	TxHash      string       `json:"h"`
@@ -265,7 +352,7 @@ func encodeCursor(cursor activityCursor) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(data), nil
 }
 
-func decodeCursor(encoded string, chainID uint32, address string, activity ActivityKind) (activityCursor, error) {
+func decodeCursor(encoded string, chainID uint32, address string, activity ActivityKind, filterHash string) (activityCursor, error) {
 	if len(encoded) > 2048 {
 		return activityCursor{}, fmt.Errorf("%w: invalid cursor", ErrInvalidInput)
 	}
@@ -282,7 +369,7 @@ func decodeCursor(encoded string, chainID uint32, address string, activity Activ
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return activityCursor{}, fmt.Errorf("%w: invalid cursor", ErrInvalidInput)
 	}
-	if cursor.Version != 1 || cursor.ChainID != chainID || cursor.Address != address || cursor.Activity != activity ||
+	if cursor.Version != 2 || cursor.ChainID != chainID || cursor.Address != address || cursor.Activity != activity || cursor.FilterHash != filterHash ||
 		cursor.BlockTime.IsZero() || !txHashPattern.MatchString(cursor.TxHash) || !eventIndexPattern.MatchString(cursor.EventIndex) {
 		return activityCursor{}, fmt.Errorf("%w: cursor scope or values do not match", ErrInvalidInput)
 	}
@@ -444,6 +531,54 @@ func decodeActivity(row map[string]any) (Activity, error) {
 	out.CounterpartyEntityType, _ = asString(row["counterparty_entity_type"])
 	out.CounterpartyLabel, _ = asString(row["counterparty_label"])
 	out.SourceProvider, _ = asString(row["source_provider"])
+	return out, nil
+}
+
+func decodeActivityStats(row map[string]any) (ActivityStats, error) {
+	var out ActivityStats
+	var err error
+	if out.ActivityCount, err = asUint64(row["activity_count"]); err != nil {
+		return out, err
+	}
+	if out.TransactionCount, err = asUint64(row["transaction_count"]); err != nil {
+		return out, err
+	}
+	if out.IncomingCount, err = asUint64(row["incoming_count"]); err != nil {
+		return out, err
+	}
+	if out.OutgoingCount, err = asUint64(row["outgoing_count"]); err != nil {
+		return out, err
+	}
+	if out.SelfCount, err = asUint64(row["self_count"]); err != nil {
+		return out, err
+	}
+	if out.PricedCount, err = asUint64(row["priced_count"]); err != nil {
+		return out, err
+	}
+	if out.UniqueCounterparties, err = asUint64(row["unique_counterparties"]); err != nil {
+		return out, err
+	}
+	if row["incoming_usd"] != nil {
+		value, valueErr := asString(row["incoming_usd"])
+		if valueErr != nil {
+			return out, valueErr
+		}
+		out.IncomingUSD = &value
+	}
+	if row["outgoing_usd"] != nil {
+		value, valueErr := asString(row["outgoing_usd"])
+		if valueErr != nil {
+			return out, valueErr
+		}
+		out.OutgoingUSD = &value
+	}
+	if row["netflow_usd"] != nil {
+		value, valueErr := asString(row["netflow_usd"])
+		if valueErr != nil {
+			return out, valueErr
+		}
+		out.NetflowUSD = &value
+	}
 	return out, nil
 }
 

@@ -5,12 +5,13 @@ import {
   SwapOutlined,
   WalletOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Descriptions, Empty, Progress, Table, Tag } from "antd";
+import { Button, Descriptions, Empty, message, Progress, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useState } from "react";
 import { DetailPanel, MetricCard, PageHeader } from "../../design-system/DesignSystem";
 import AddressLibraryInput from "../address-library/AddressLibraryInput";
 import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
+import { TxHashLink } from "../transaction/TxHashLink";
 import {
   fetchFlows,
   fetchPaths,
@@ -37,13 +38,11 @@ export default function AddressPage({ initialAddress }: Props) {
   const [flows, setFlows] = useState<FlowEdge[]>([]);
   const [paths, setPaths] = useState<PathItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
 
   const load = useCallback(async (value: string) => {
     const address = value.trim().toLowerCase();
     if (!address) return;
     setAddr(address);
-    setError("");
     setLoading(true);
     const [nextProfile, nextRisk, nextFlows, nextPaths] = await Promise.allSettled([
       fetchProfile(address),
@@ -56,7 +55,7 @@ export default function AddressPage({ initialAddress }: Props) {
     setFlows(nextFlows.status === "fulfilled" ? nextFlows.value : []);
     setPaths(nextPaths.status === "fulfilled" ? nextPaths.value : []);
     if (nextProfile.status === "rejected") {
-      setError(`画像查询失败：${errorMessage(nextProfile.reason)}`);
+      void message.error(`画像查询失败：${errorMessage(nextProfile.reason)}`);
     }
     setLoading(false);
   }, []);
@@ -80,7 +79,7 @@ export default function AddressPage({ initialAddress }: Props) {
     { title: "对手地址", dataIndex: "counterparty", render: (counterparty: string) => <code>{shortAddr(counterparty)}</code> },
     { title: "金额", dataIndex: "amount" },
     { title: "区块", dataIndex: "block" },
-    { title: "交易哈希", dataIndex: "tx_hash", render: (hash: string) => <code>{shortAddr(hash, 10, 8)}</code> },
+    { title: "交易哈希", dataIndex: "tx_hash", render: (hash: string) => <TxHashLink chainId={analysisState.chain} hash={hash} /> },
   ];
 
   const pathColumns: ColumnsType<PathItem> = [
@@ -121,8 +120,6 @@ export default function AddressPage({ initialAddress }: Props) {
           <Button type="primary" loading={loading} onClick={() => void load(input)}>查询地址</Button>
         </div>
       </DetailPanel>
-
-      {error ? <Alert type="error" message={error} showIcon className="analytics-page-alert" /> : null}
 
       {addr ? (
         <>

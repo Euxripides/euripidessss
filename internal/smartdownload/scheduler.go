@@ -2,8 +2,10 @@ package smartdownload
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -57,9 +59,16 @@ type ExecutionPlan struct {
 	Datasets []*DatasetPlan `json:"datasets"`
 }
 
-// ProviderHealthEntry Provider 健康状态（熔断：连续 2 次失败 → 冷却 60s）。
+const (
+	providerFailureWindow = 2 * time.Minute
+	providerCooldown      = 10 * time.Minute
+)
+
+// ProviderHealthEntry Provider 健康状态（2 分钟内连续 2 次失败 → 冷却 10 分钟）。
 type ProviderHealthEntry struct {
 	ConsecutiveFailures int       `json:"consecutive_failures"`
+	FailureWindowStart  time.Time `json:"failure_window_start,omitempty"`
+	LastFailureAt       time.Time `json:"last_failure_at,omitempty"`
 	CooldownUntil       time.Time `json:"cooldown_until,omitempty"`
 	LastError           string    `json:"last_error,omitempty"`
 }
@@ -68,22 +77,29 @@ type ProviderHealthEntry struct {
 type ProviderHealthTracker struct {
 	mu      sync.Mutex
 	entries map[string]*ProviderHealthEntry
+	now     func() time.Time
 }
 
 func NewProviderHealthTracker() *ProviderHealthTracker {
-	return &ProviderHealthTracker{entries: map[string]*ProviderHealthEntry{}}
+	return &ProviderHealthTracker{entries: map[string]*ProviderHealthEntry{}, now: time.Now}
 }
 
 func (t *ProviderHealthTracker) RecordFailure(name string, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e := t.entry(name)
+	now := t.now()
+	if e.FailureWindowStart.IsZero() || now.Sub(e.FailureWindowStart) > providerFailureWindow {
+		e.ConsecutiveFailures = 0
+		e.FailureWindowStart = now
+	}
 	e.ConsecutiveFailures++
+	e.LastFailureAt = now
 	if err != nil {
 		e.LastError = sanitizeText(err.Error())
 	}
-	if e.ConsecutiveFailures >= 2 {
-		e.CooldownUntil = time.Now().Add(60 * time.Second)
+	if e.ConsecutiveFailures >= 2 || hardProviderFailure(err) {
+		e.CooldownUntil = now.Add(providerCooldown)
 	}
 }
 
@@ -92,6 +108,8 @@ func (t *ProviderHealthTracker) RecordSuccess(name string) {
 	defer t.mu.Unlock()
 	e := t.entry(name)
 	e.ConsecutiveFailures = 0
+	e.FailureWindowStart = time.Time{}
+	e.LastFailureAt = time.Time{}
 	e.CooldownUntil = time.Time{}
 	e.LastError = ""
 }
@@ -100,11 +118,14 @@ func (t *ProviderHealthTracker) Exhausted(name string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e := t.entry(name)
-	if !e.CooldownUntil.IsZero() && time.Now().Before(e.CooldownUntil) {
+	now := t.now()
+	if !e.CooldownUntil.IsZero() && now.Before(e.CooldownUntil) {
 		return true
 	}
-	if !e.CooldownUntil.IsZero() && !time.Now().Before(e.CooldownUntil) {
+	if !e.CooldownUntil.IsZero() && !now.Before(e.CooldownUntil) {
 		e.ConsecutiveFailures = 0
+		e.FailureWindowStart = time.Time{}
+		e.LastFailureAt = time.Time{}
 		e.CooldownUntil = time.Time{}
 	}
 	return false
@@ -114,15 +135,34 @@ func (t *ProviderHealthTracker) Snapshot() map[string]ProviderHealthEntry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	out := make(map[string]ProviderHealthEntry, len(t.entries))
+	now := t.now()
 	for name, e := range t.entries {
-		cp := *e
-		if !cp.CooldownUntil.IsZero() && !time.Now().Before(cp.CooldownUntil) {
-			cp.ConsecutiveFailures = 0
-			cp.CooldownUntil = time.Time{}
+		if !e.CooldownUntil.IsZero() && !now.Before(e.CooldownUntil) {
+			e.ConsecutiveFailures = 0
+			e.FailureWindowStart = time.Time{}
+			e.LastFailureAt = time.Time{}
+			e.CooldownUntil = time.Time{}
 		}
+		cp := *e
 		out[name] = cp
 	}
 	return out
+}
+
+func hardProviderFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{" 401", "http 401", "unauthorized", "鉴权", " 403", "http 403", "forbidden", "风控", "risk control"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *ProviderHealthTracker) entry(name string) *ProviderHealthEntry {
@@ -221,6 +261,9 @@ func (s *SmartScheduler) PlanDataset(ctx context.Context, req ProbeRequest) (*Da
 		if c.ManualOnly || !c.Available {
 			continue
 		}
+		if c.Name == "sqd_cloud" {
+			continue
+		}
 		s.mu.Lock()
 		a := s.adapters[c.Name]
 		s.mu.Unlock()
@@ -273,6 +316,29 @@ func (s *SmartScheduler) PlanDataset(ctx context.Context, req ProbeRequest) (*Da
 		PreferredProvider: preferred,
 		Candidates:        scores,
 	}, nil
+}
+
+// PreferredProviderForEstimate applies the same size-aware scoring as the
+// probing planner to an already measured row count. Preflight and task creation
+// use it to preserve the OKLink routing decision without probing twice.
+func (s *SmartScheduler) PreferredProviderForEstimate(dataset, chainKey string, mode DownloadMode, rows uint64) string {
+	cands := s.CandidatesFor(dataset, chainKey, mode)
+	cls := sizeClass(rows)
+	for i := range cands {
+		cands[i].Score = baseScore(cands[i].Name, dataset, rows)
+		cands[i].SizeClass = cls
+		if s.health.Exhausted(cands[i].Name) {
+			cands[i].Score -= 30
+		}
+	}
+	sortProviderScores(cands)
+	for _, cand := range cands {
+		if cand.ManualOnly || !cand.Available || s.health.Exhausted(cand.Name) {
+			continue
+		}
+		return cand.Name
+	}
+	return ""
 }
 
 func sortProviderScores(scores []ProviderScore) {

@@ -5,20 +5,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 )
 
+const maxStoreLoadWorkers = 32
+
 // Store 文件系统状态存储（FS StateStore，实施方案 Phase 1 §5）。
 // 每个 Job 一个原子 JSON 文件（tmp + rename），重启时全量扫描重建索引。
 type Store struct {
-	mu        sync.Mutex
-	root      string
-	batches   map[string]*BatchJob
-	addresses map[string]*AddressJob
-	datasets  map[string]*DatasetJob
-	ranges    map[string]*RangeJob
+	mu                 sync.Mutex
+	snapshotWriteMu    sync.Mutex
+	root               string
+	batches            map[string]*BatchJob
+	addresses          map[string]*AddressJob
+	datasets           map[string]*DatasetJob
+	ranges             map[string]*RangeJob
+	revision           uint64
+	activeWrites       int
+	loadedFromSnapshot bool
 }
 
 // NewStore 创建/加载状态存储。
@@ -42,57 +49,152 @@ func NewStore(root string) (*Store, error) {
 func (s *Store) Root() string { return s.root }
 
 func (s *Store) load() error {
+	if s.loadSnapshot() {
+		s.loadedFromSnapshot = true
+		return nil
+	}
 	if err := s.loadPacks(); err != nil {
 		return err
 	}
 	for _, dir := range []string{"batches", "addresses", "datasets", "ranges"} {
-		full := filepath.Join(s.root, dir)
-		entries, err := os.ReadDir(full)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
+		if err := s.loadDirectory(dir); err != nil {
 			return err
 		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
+	}
+	// 快照只是可重建缓存；写入失败不应阻断权威 JSON 状态恢复。
+	_ = s.writeSnapshot()
+	return nil
+}
+
+// loadDirectory 并行完成独立 JSON 文件的磁盘读取和反序列化，再按 ReadDir
+// 的稳定顺序写入内存索引。这样既能加速大量 Range 状态恢复，也保留原有的
+// 重复 ID 覆盖语义；Store 尚未发布，不需要在合并阶段加锁。
+func (s *Store) loadDirectory(dir string) error {
+	full := filepath.Join(s.root, dir)
+	entries, err := os.ReadDir(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		paths = append(paths, filepath.Join(full, entry.Name()))
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	values := make([]any, len(paths))
+	workerCount := storeLoadWorkerCount(len(paths))
+	jobs := make(chan int, workerCount)
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for worker := 0; worker < workerCount; worker++ {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				payload, readErr := os.ReadFile(paths[index])
+				if readErr != nil {
+					continue
+				}
+				values[index] = decodeStoreValue(dir, payload)
 			}
-			payload, err := os.ReadFile(filepath.Join(full, e.Name()))
-			if err != nil {
-				continue
-			}
-			switch dir {
-			case "batches":
-				var v BatchJob
-				if json.Unmarshal(payload, &v) == nil && v.ID != "" {
-					s.batches[v.ID] = &v
-				}
-			case "addresses":
-				var v AddressJob
-				if json.Unmarshal(payload, &v) == nil && v.ID != "" {
-					s.addresses[v.ID] = &v
-				}
-			case "datasets":
-				var v DatasetJob
-				if json.Unmarshal(payload, &v) == nil && v.ID != "" {
-					s.datasets[v.ID] = &v
-				}
-			case "ranges":
-				var v RangeJob
-				if json.Unmarshal(payload, &v) == nil && v.ID != "" {
-					s.ranges[v.ID] = &v
-				}
-			}
+		}()
+	}
+	for index := range paths {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
+
+	for _, value := range values {
+		s.mergeLoadedValue(dir, value)
+	}
+	return nil
+}
+
+func storeLoadWorkerCount(fileCount int) int {
+	if fileCount <= 0 {
+		return 0
+	}
+	workers := runtime.GOMAXPROCS(0) * 2
+	if workers < 4 {
+		workers = 4
+	}
+	if workers > maxStoreLoadWorkers {
+		workers = maxStoreLoadWorkers
+	}
+	if workers > fileCount {
+		workers = fileCount
+	}
+	return workers
+}
+
+func decodeStoreValue(dir string, payload []byte) any {
+	switch dir {
+	case "batches":
+		var value BatchJob
+		if json.Unmarshal(payload, &value) == nil && value.ID != "" {
+			return &value
+		}
+	case "addresses":
+		var value AddressJob
+		if json.Unmarshal(payload, &value) == nil && value.ID != "" {
+			return &value
+		}
+	case "datasets":
+		var value DatasetJob
+		if json.Unmarshal(payload, &value) == nil && value.ID != "" {
+			return &value
+		}
+	case "ranges":
+		var value RangeJob
+		if json.Unmarshal(payload, &value) == nil && value.ID != "" {
+			return &value
 		}
 	}
 	return nil
 }
 
+func (s *Store) mergeLoadedValue(dir string, value any) {
+	switch typed := value.(type) {
+	case *BatchJob:
+		if dir == "batches" {
+			s.batches[typed.ID] = typed
+		}
+	case *AddressJob:
+		if dir == "addresses" {
+			s.addresses[typed.ID] = typed
+		}
+	case *DatasetJob:
+		if dir == "datasets" {
+			s.datasets[typed.ID] = typed
+		}
+	case *RangeJob:
+		if dir == "ranges" {
+			s.ranges[typed.ID] = typed
+		}
+	}
+}
+
 // ── 保存 ──
 
 func (s *Store) SaveBatch(v *BatchJob) error {
-	return s.save("batches", v.ID, v)
+	if err := s.save("batches", v.ID, v); err != nil {
+		return err
+	}
+	if v.Status.Terminal() {
+		// 终态批次通常代表一轮密集状态写入结束，此时刷新快照，让下次启动
+		// 无需重新扫描数万个 Range 文件。并发写入时 writeSnapshot 会拒绝提交。
+		_ = s.writeSnapshot()
+	}
+	return nil
 }
 
 func (s *Store) SaveAddress(v *AddressJob) error {
@@ -115,6 +217,9 @@ func (s *Store) save(kind, id string, v any) error {
 	if err != nil {
 		return err
 	}
+	s.beginMutation()
+	committed := false
+	defer func() { s.finishMutation(kind, id, v, committed) }()
 	dir := filepath.Join(s.root, kind)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -127,19 +232,28 @@ func (s *Store) save(kind, id string, v any) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
+	committed = true
+	return nil
+}
+
+func (s *Store) beginMutation() {
+	s.mu.Lock()
+	s.revision++
+	s.activeWrites++
+	s.mu.Unlock()
+	// 先移除清单再触碰权威文件；即使进程在写入中崩溃，下次启动也只会
+	// 回退逐文件恢复，不会误用旧快照。
+	_ = os.Remove(filepath.Join(s.root, storeSnapshotManifestName))
+	_ = os.Remove(filepath.Join(s.root, storeSnapshotManifestName+".tmp"))
+}
+
+func (s *Store) finishMutation(kind, id string, v any, committed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	switch kind {
-	case "batches":
-		s.batches[id] = cloneJSON(v).(*BatchJob)
-	case "addresses":
-		s.addresses[id] = cloneJSON(v).(*AddressJob)
-	case "datasets":
-		s.datasets[id] = cloneJSON(v).(*DatasetJob)
-	case "ranges":
-		s.ranges[id] = cloneJSON(v).(*RangeJob)
+	if committed {
+		s.mergeLoadedValue(kind, cloneJSON(v))
 	}
-	return nil
+	s.activeWrites--
 }
 
 // ── 读取（深拷贝，防别名修改）──

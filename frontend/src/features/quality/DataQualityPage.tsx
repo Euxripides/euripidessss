@@ -9,7 +9,7 @@ import {
   SafetyCertificateOutlined,
   TagsOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Empty, Progress, Select, Skeleton, Table, Tag, Tooltip } from "antd";
+import { Button, Empty, message, Progress, Select, Skeleton, Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageHeader, Section } from "../../design-system/DesignSystem";
@@ -107,8 +107,10 @@ export default function DataQualityPage({ initialChain = "bsc" }: DataQualityPag
       })
       .catch((reason: unknown) => {
         if (!active) return;
+        const detail = reason instanceof Error ? reason.message : "数据质量读取失败";
         setData(null);
-        setError(reason instanceof Error ? reason.message : "数据质量读取失败");
+        setError(detail);
+        void message.error(`数据质量加载失败：${detail}`);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -143,17 +145,6 @@ export default function DataQualityPage({ initialChain = "bsc" }: DataQualityPag
           </div>
         )}
       />
-
-      {error ? (
-        <Alert
-          className="data-quality-alert"
-          type="error"
-          showIcon
-          message="数据质量加载失败"
-          description={error}
-          action={<Button size="small" onClick={refresh}>重试</Button>}
-        />
-      ) : null}
 
       {loading && !data ? <QualityPageSkeleton /> : null}
 

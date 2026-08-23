@@ -272,11 +272,9 @@
 .render-limit-picker {
   width: 146px;
 }
-.graph-alert {
-  padding: 10px 14px;
-  border-bottom: 1px solid #f0dfb7;
-  background: #fff7e6;
-  color: #8a5a00;
+.graph-truncation-note {
+  padding: 8px 14px;
+  color: var(--fg-text-dim);
   font-size: 12px;
   line-height: 1.6;
 }

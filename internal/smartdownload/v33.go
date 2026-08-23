@@ -373,6 +373,11 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 	if len(refs) == 0 {
 		return nil
 	}
+	// A single-address FULL task can contain thousands of ranges. Group ownership
+	// provides little benefit there but would rewrite every range during create.
+	if batch.AddressCount < 2 && len(refs) > packThreshold {
+		return nil
+	}
 	byRange := make(map[string][]acceleratorRangeRef)
 	for _, ref := range refs {
 		key := fmt.Sprintf("%s|%d|%d", ref.Address.ChainKey, ref.Range.FromBlock, ref.Range.ToBlock)
@@ -611,7 +616,7 @@ func (a staticResultAdapter) ExecuteRange(context.Context, RangeRequest) (*Provi
 }
 
 func (s *Service) executeSharedWork(claim *claimedSharedWork) {
-	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Minute)
+	ctx, cancel := context.WithTimeout(s.ctx, s.providerAttemptTimeout(claim.adapter.Name()))
 	defer cancel()
 	results := make(map[string]map[string]*ProviderResult)
 	var err error
@@ -640,37 +645,71 @@ func (s *Service) executeSharedWork(claim *claimedSharedWork) {
 		}
 	}
 	if err != nil {
+		err = s.providerExecutionError(claim.adapter.Name(), err)
 		s.failSharedWork(claim, err)
 		return
 	}
-	for _, ref := range claim.work.Refs {
+	// Provider execution can overlap a later identical batch attaching to this
+	// RUNNING work. Refresh the references and close shared ownership atomically;
+	// otherwise the late ranges are absent from claim.work's original snapshot
+	// and remain permanently skipped by the ordinary range scheduler.
+	completedWork := s.completeSharedWork(claim.work.ID)
+	if completedWork == nil {
+		completedWork = claim.work
+	}
+	for _, ref := range completedWork.Refs {
 		if ref.Canceled {
 			continue
 		}
 		byDataset := results[strings.ToLower(ref.Address)]
 		result := byDataset[ref.Dataset]
 		if result == nil {
-			result = &ProviderResult{CompletedTo: claim.work.ToBlock}
+			result = &ProviderResult{CompletedTo: completedWork.ToBlock}
 		}
 		s.executeRange(&claimedRange{
 			rangeID: ref.RangeJobID, datasetJobID: ref.DatasetJobID, addressJobID: ref.AddressJobID,
 			batchID: ref.BatchID, provider: claim.adapter.Name(), adapter: staticResultAdapter{name: claim.adapter.Name(), result: result},
 			req: RangeRequest{DatasetJobID: ref.DatasetJobID, Mode: claim.mode, Address: ref.Address,
-				Dataset: ref.Dataset, ChainKey: claim.work.ChainKey, ChainID: claim.work.ChainID,
-				FromBlock: claim.work.FromBlock, ToBlock: claim.work.ToBlock},
+				Dataset: ref.Dataset, ChainKey: completedWork.ChainKey, ChainID: completedWork.ChainID,
+				FromBlock: completedWork.FromBlock, ToBlock: completedWork.ToBlock},
 		})
 	}
+}
+
+// completeSharedWork seals a successful provider request and returns the latest
+// reference snapshot, including batches that joined while provider I/O was in
+// flight. Ranges are detached from SharedWork before fan-out so a later local
+// write failure can be retried by the ordinary scheduler instead of being
+// stranded behind a terminal shared-work record.
+func (s *Service) completeSharedWork(workID string) *SharedWork {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.v33.mu.Lock()
-	if work := s.v33.works[claim.work.ID]; work != nil {
-		work.Status = sharedWorkCompleted
-		work.OwnerBatchID = ""
-		work.UpdatedAt = time.Now().UTC()
-		_ = s.v33.persistLocked()
+	defer s.v33.mu.Unlock()
+	work := s.v33.works[workID]
+	if work == nil {
+		return nil
 	}
-	s.v33.mu.Unlock()
+	work.Status = sharedWorkCompleted
+	work.OwnerBatchID = ""
+	work.UpdatedAt = time.Now().UTC()
+	for _, ref := range work.Refs {
+		if ref.Canceled {
+			continue
+		}
+		if rj := s.store.GetRange(ref.RangeJobID); rj != nil && rj.SharedWorkID == workID {
+			rj.SharedWorkID = ""
+			rj.UpdatedAt = work.UpdatedAt
+			_ = s.store.SaveRange(rj)
+		}
+	}
+	_ = s.v33.persistLocked()
+	return cloneSharedWork(work)
 }
 
 func (s *Service) failSharedWork(claim *claimedSharedWork, executionErr error) {
+	s.scheduler.Health().RecordFailure(claim.adapter.Name(), executionErr)
+	markProviderFailed := claim.group == nil || hardProviderFailure(executionErr) || s.scheduler.Health().Exhausted(claim.adapter.Name())
 	s.v33.mu.Lock()
 	work := s.v33.works[claim.work.ID]
 	if work == nil {
@@ -680,24 +719,45 @@ func (s *Service) failSharedWork(claim *claimedSharedWork, executionErr error) {
 	work.Attempts++
 	work.OwnerBatchID = ""
 	work.UpdatedAt = time.Now().UTC()
-	if work.Attempts <= s.opts.RetryLimit {
-		work.Status = sharedWorkReady
-		_ = s.v33.persistLocked()
-		s.v33.mu.Unlock()
-		s.resetSharedRanges(work, RangeReady, "")
-		return
-	}
-	if len(work.Addresses) > 1 {
-		s.splitSharedWorkLocked(work)
-		_ = s.v33.persistLocked()
-		s.v33.mu.Unlock()
-		return
-	}
 	work.Status = sharedWorkFailed
 	work.Poison = true
 	_ = s.v33.persistLocked()
+	failed := cloneSharedWork(work)
 	s.v33.mu.Unlock()
-	s.resetSharedRanges(work, RangeFailed, executionErr.Error())
+	s.releaseSharedRangesForFailover(failed, claim.adapter.Name(), executionErr, markProviderFailed)
+}
+
+// releaseSharedRangesForFailover removes failed grouped ownership after one
+// bounded attempt. Ordinary range scheduling can then try the next Provider;
+// a quick first group error may retry the same Provider per-address once, but a
+// timeout/hard/high-frequency failure skips it immediately.
+func (s *Service) releaseSharedRangesForFailover(work *SharedWork, provider string, executionErr error, markProviderFailed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ref := range work.Refs {
+		if ref.Canceled {
+			continue
+		}
+		rj := s.store.GetRange(ref.RangeJobID)
+		if rj == nil || rj.Status.Terminal() {
+			continue
+		}
+		rj.SharedWorkID = ""
+		rj.Status = RangeReady
+		rj.Provider = provider
+		rj.Attempts++
+		rj.Error = executionErr.Error()
+		rj.UpdatedAt = time.Now().UTC()
+		if markProviderFailed && provider != "" && !containsString(rj.FailedProviders, provider) {
+			rj.FailedProviders = append(rj.FailedProviders, provider)
+		}
+		_ = s.store.SaveRange(rj)
+		_ = NewLedger(s.store.Root(), ref.DatasetJobID).Append(LedgerEntry{
+			Event: LedgerProviderFailed, DatasetJobID: ref.DatasetJobID,
+			RangeID:   BlockRange{From: rj.FromBlock, To: rj.ToBlock}.Key(),
+			FromBlock: rj.FromBlock, ToBlock: rj.ToBlock, Provider: provider, Error: executionErr.Error(),
+		})
+	}
 }
 
 func (s *Service) resetSharedRanges(work *SharedWork, status RangeStatus, errorText string) {

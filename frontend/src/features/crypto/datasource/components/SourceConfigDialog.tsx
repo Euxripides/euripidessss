@@ -1,4 +1,4 @@
-import { Alert, Col, Form, Input, InputNumber, Modal, Row, Select, Switch } from 'antd';
+import { Col, Form, Input, InputNumber, Modal, Row, Select, Switch, Typography } from 'antd';
 import { useEffect } from 'react';
 import type { DataSourceConfig } from '../types/datasource';
 
@@ -32,7 +32,9 @@ export function SourceConfigDialog({ open, initial, saving, onCancel, onSave }: 
       onOk={() => void form.validateFields().then(onSave)}
       destroyOnHidden
     >
-      <Alert className="datasource-config-alert" type="info" showIcon message="API Key仅提交到后端加密保存，页面不会回显明文。" />
+      <Typography.Paragraph type="secondary">
+        API Key 仅提交到后端加密保存，页面不会回显明文。
+      </Typography.Paragraph>
       <Form form={form} layout="vertical" initialValues={defaults}>
         <Form.Item name="source_id" hidden><Input /></Form.Item>
         <Row gutter={16}>

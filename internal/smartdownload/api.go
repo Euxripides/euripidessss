@@ -705,6 +705,13 @@ func (h *Handler) routeDataset(w http.ResponseWriter, r *http.Request, rest stri
 			ds, err := h.svc.CancelDataset(id)
 			writeLifecycle(w, ds, err)
 			return
+		case "reindex":
+			if err := h.svc.ReindexCompletedDataset(id); err != nil {
+				writeSmartJSON(w, http.StatusConflict, map[string]any{"detail": err.Error()})
+				return
+			}
+			writeSmartJSON(w, http.StatusAccepted, h.svc.GetDataset(id))
+			return
 		}
 	}
 	if len(parts) == 2 && r.Method == http.MethodGet {
@@ -878,14 +885,15 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		counts[string(b.Status)]++
 	}
 	writeSmartJSON(w, http.StatusOK, map[string]any{
-		"batches":            len(batches),
-		"counts":             counts,
-		"adapters":           h.svc.AdapterNames(),
-		"workers":            h.svc.Options().Workers,
-		"retry_limit":        h.svc.Options().RetryLimit,
-		"chain_key":          chainKey,
-		"mode":               mode,
-		"available_datasets": availableDatasets,
+		"batches":                          len(batches),
+		"counts":                           counts,
+		"adapters":                         h.svc.AdapterNames(),
+		"workers":                          h.svc.Options().Workers,
+		"retry_limit":                      h.svc.Options().RetryLimit,
+		"provider_attempt_timeout_seconds": int64(h.svc.Options().ProviderAttemptTimeout.Seconds()),
+		"chain_key":                        chainKey,
+		"mode":                             mode,
+		"available_datasets":               availableDatasets,
 	})
 }
 

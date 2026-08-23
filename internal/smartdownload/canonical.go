@@ -22,13 +22,13 @@ func canonicalColumns(dataset string) []string {
 			"gas_limit", "gas_price", "max_fee_per_gas", "max_priority_fee_per_gas", "effective_gas_price", "gas_used",
 			"transaction_fee_native", "transaction_fee_usd", "status", "is_contract_creation", "created_contract_address", "error_message")
 	case DatasetTokenTransfers:
-		return append(base, "log_index", "token_address", "from_address", "to_address",
+		return append(base, "transaction_index", "log_index", "batch_index", "token_id", "token_address", "from_address", "to_address",
 			"value_raw", "token_standard")
 	case DatasetInternalTransactions:
 		return append(base, "trace_index", "trace_address", "call_type",
 			"from_address", "to_address", "value_raw", "status")
 	case DatasetLogs:
-		return append(base, "log_index", "contract_address", "topics", "data")
+		return append(base, "block_hash", "transaction_index", "log_index", "contract_address", "topics", "data", "removed")
 	case DatasetBalances:
 		return []string{"chain_id", "address", "balance", "symbol",
 			"source_provider", "source_range_id", "ingested_at"}
@@ -44,13 +44,25 @@ func CanonicalKey(r Record) string {
 		return fmt.Sprintf("%d|%s", r.ChainID, strings.ToLower(r.TransactionHash))
 	case DatasetInternalTransactions:
 		return fmt.Sprintf("%d|%s|%s", r.ChainID, strings.ToLower(r.TransactionHash), traceAddressKey(r))
-	case DatasetTokenTransfers, DatasetLogs:
+	case DatasetTokenTransfers:
+		return fmt.Sprintf("%d|%s|%d|%s", r.ChainID, strings.ToLower(r.TransactionHash), r.LogIndex,
+			firstPayloadNonEmpty(payloadString(r, "batch_index"), payloadString(r, "event_sub_index"), "0"))
+	case DatasetLogs:
 		return fmt.Sprintf("%d|%s|%d", r.ChainID, strings.ToLower(r.TransactionHash), r.LogIndex)
 	case DatasetBalances:
 		return fmt.Sprintf("%d|%s|%s", r.ChainID, strings.ToLower(r.Address), payloadString(r, "symbol"))
 	default:
 		return r.UniqueKey()
 	}
+}
+
+func firstPayloadNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func traceAddressKey(r Record) string {
@@ -90,6 +102,11 @@ func normalizeRecord(r Record, provider, rangeID string) map[string]any {
 			out[k] = v
 		default:
 			out[k] = v
+		}
+	}
+	if _, exists := out["batch_index"]; !exists {
+		if value, ok := r.Payload["event_sub_index"]; ok {
+			out["batch_index"] = value
 		}
 	}
 	out["chain_id"] = r.ChainID
@@ -144,9 +161,9 @@ func canonicalTypedSQL(dataset string) string {
 	cols := canonicalColumns(dataset)
 	casts := map[string]string{
 		"chain_id": "BIGINT", "block_number": "BIGINT", "block_time": "BIGINT",
-		"transaction_index": "BIGINT", "log_index": "BIGINT", "trace_index": "BIGINT",
+		"transaction_index": "BIGINT", "log_index": "BIGINT", "batch_index": "BIGINT", "trace_index": "BIGINT",
 		"nonce": "BIGINT", "gas_limit": "BIGINT",
-		"status": "BIGINT", "gas_used": "VARCHAR", "gas_price": "VARCHAR",
+		"status": "BIGINT", "removed": "BOOLEAN", "gas_used": "VARCHAR", "gas_price": "VARCHAR",
 	}
 	items := make([]string, 0, len(cols))
 	for _, c := range cols {

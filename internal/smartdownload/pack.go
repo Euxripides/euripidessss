@@ -32,6 +32,31 @@ func (s *Store) SaveBatchPack(pack *BatchPack) error {
 	if err != nil {
 		return err
 	}
+	s.beginMutation()
+	committed := false
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if committed {
+			for _, v := range pack.Addresses {
+				if v != nil {
+					s.addresses[v.ID] = cloneJSON(v).(*AddressJob)
+				}
+			}
+			for _, v := range pack.Datasets {
+				if v != nil {
+					s.datasets[v.ID] = cloneJSON(v).(*DatasetJob)
+				}
+			}
+			for _, v := range pack.Ranges {
+				if v != nil {
+					s.ranges[v.ID] = cloneJSON(v).(*RangeJob)
+				}
+			}
+			s.batches[pack.Batch.ID] = cloneJSON(pack.Batch).(*BatchJob)
+		}
+		s.activeWrites--
+	}()
 	dir := filepath.Join(s.root, "packs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -44,24 +69,7 @@ func (s *Store) SaveBatchPack(pack *BatchPack) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range pack.Addresses {
-		if v != nil {
-			s.addresses[v.ID] = cloneJSON(v).(*AddressJob)
-		}
-	}
-	for _, v := range pack.Datasets {
-		if v != nil {
-			s.datasets[v.ID] = cloneJSON(v).(*DatasetJob)
-		}
-	}
-	for _, v := range pack.Ranges {
-		if v != nil {
-			s.ranges[v.ID] = cloneJSON(v).(*RangeJob)
-		}
-	}
-	s.batches[pack.Batch.ID] = cloneJSON(pack.Batch).(*BatchJob)
+	committed = true
 	return nil
 }
 

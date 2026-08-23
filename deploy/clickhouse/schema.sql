@@ -132,6 +132,34 @@ ENGINE = ReplacingMergeTree(ingested_at)
 PARTITION BY (chain_id, toYYYYMM(block_time))
 ORDER BY (chain_id, tx_hash, trace_address);
 
+CREATE TABLE IF NOT EXISTS raw_logs
+(
+    chain_id UInt32,
+    block_number UInt64,
+    block_hash String,
+    block_time DateTime64(3, 'UTC'),
+    tx_hash String,
+    transaction_index UInt32,
+    log_index UInt32,
+    contract_address LowCardinality(String),
+    topic0 String,
+    topic1 Nullable(String),
+    topic2 Nullable(String),
+    topic3 Nullable(String),
+    data String,
+    removed Bool DEFAULT false,
+    source_provider LowCardinality(String) DEFAULT '',
+    ingest_job_id String DEFAULT '',
+    source_range_id String DEFAULT '',
+    parser_version LowCardinality(String) DEFAULT '',
+    normalizer_version LowCardinality(String) DEFAULT '',
+    schema_version UInt16 DEFAULT 1,
+    ingested_at DateTime64(3, 'UTC') DEFAULT now64(3)
+)
+ENGINE = ReplacingMergeTree(ingested_at)
+PARTITION BY (chain_id, toYYYYMM(block_time))
+ORDER BY (chain_id, tx_hash, log_index);
+
 CREATE TABLE IF NOT EXISTS contract_creations
 (
     chain_id UInt32,

@@ -103,7 +103,3 @@
 .db-export-progress .ant-progress {
   margin: 12px 0 8px;
 }
-
-.db-export-progress .ant-alert {
-  margin-top: 12px;
-}

@@ -5,7 +5,7 @@ import {
   SwapOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Descriptions, Empty, Progress, Tag } from "antd";
+import { Button, Descriptions, Empty, message, Progress, Tag, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { DetailPanel, MetricCard, PageHeader } from "../../design-system/DesignSystem";
 import AddressLibraryInput from "../address-library/AddressLibraryInput";
@@ -49,7 +49,9 @@ export default function RiskAnalysisPage() {
     setRisk(nextRisk.status === "fulfilled" ? nextRisk.value : null);
     setProfile(nextProfile.status === "fulfilled" ? nextProfile.value : null);
     if (nextRisk.status === "rejected") {
-      setError(`风险查询失败：${nextRisk.reason instanceof Error ? nextRisk.reason.message : String(nextRisk.reason)}`);
+      const detail = `风险查询失败：${nextRisk.reason instanceof Error ? nextRisk.reason.message : String(nextRisk.reason)}`;
+      setError(detail);
+      void message.error(detail);
     }
     setLoading(false);
   };
@@ -84,8 +86,6 @@ export default function RiskAnalysisPage() {
         </DetailPanel>
       </div>
 
-      {error ? <Alert type="error" message={error} showIcon className="analytics-page-alert" /> : null}
-
       {address && risk ? (
         <>
           <div className="risk-result-grid">
@@ -95,13 +95,12 @@ export default function RiskAnalysisPage() {
               extra={<Tag color={riskTagColor(risk.risk_level)}>{riskLevelLabel(risk.risk_level)}</Tag>}
             >
               {risk.data_sufficient === false || risk.risk_level === "insufficient_data" ? (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="数据不足"
-                  description="当前地址没有足够的活动数据，无法完成风险筛查。该结论不代表低风险，也不代表链上无活动。"
-                  style={{ marginBottom: 12 }}
-                />
+                <div>
+                  <Typography.Text type="warning" strong>数据不足</Typography.Text>
+                  <Typography.Paragraph type="secondary" style={{ margin: "4px 0 12px" }}>
+                    当前地址没有足够的活动数据，无法完成风险筛查。该结论不代表低风险，也不代表链上无活动。
+                  </Typography.Paragraph>
+                </div>
               ) : (
                 <>
                   <div className="risk-score-hero">
@@ -148,12 +147,9 @@ export default function RiskAnalysisPage() {
       ) : null}
 
       {address && !risk && !loading && !error ? (
-        <Alert
-          className="analytics-page-alert"
-          type="info"
-          showIcon
-          message="该地址无风险评分数据"
-          description="地址可能不在当前数据集内，或尚未生成风险指标。"
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="该地址暂无风险评分数据；地址可能不在当前数据集内，或尚未生成风险指标。"
         />
       ) : null}
 

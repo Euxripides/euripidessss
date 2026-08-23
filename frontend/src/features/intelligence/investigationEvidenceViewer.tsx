@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { List, Progress, Space, Table, Tag, Typography } from "antd";
 import { DetailPanel } from "../../design-system/DesignSystem";
 import { EVIDENCE_TYPE_LABEL, getInvestigationEvidence, type Evidence } from "./intelligenceApi";
+import { useAnalysisContext } from "../explorer-intelligence/analysisContext";
+import { TxHashLink } from "../transaction/TxHashLink";
 
 const { Text } = Typography;
 
@@ -24,6 +26,7 @@ function confidenceColor(c: number): string {
 
 // EvidenceViewer 展示调查证据链（独立请求，轮询刷新直到调查完成）。
 export function EvidenceViewer({ investigationId, done }: { investigationId: string; done: boolean }) {
+  const { state: analysisState } = useAnalysisContext();
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -73,7 +76,7 @@ export function EvidenceViewer({ investigationId, done }: { investigationId: str
       dataIndex: "tx_hash",
       key: "tx_hash",
       ellipsis: true,
-      render: (v?: string) => (v ? <Text code>{v.slice(0, 12)}…</Text> : "-"),
+      render: (v?: string) => (v ? <TxHashLink chainId={analysisState.chain} hash={v} /> : "-"),
     },
     {
       title: "地址",
@@ -131,6 +134,7 @@ export function EvidenceViewer({ investigationId, done }: { investigationId: str
 
 // EvidenceList 紧凑模式：直接从调查对象读取证据（SSE 实时，无独立请求）。
 export function EvidenceList({ evidence }: { evidence?: Evidence[] }) {
+  const { state: analysisState } = useAnalysisContext();
   if (!evidence || evidence.length === 0) return null;
   return (
     <List
@@ -142,7 +146,7 @@ export function EvidenceList({ evidence }: { evidence?: Evidence[] }) {
             <Tag color={EVIDENCE_COLOR[ev.evidence_type] ?? "default"}>
               {EVIDENCE_TYPE_LABEL[ev.evidence_type as keyof typeof EVIDENCE_TYPE_LABEL] ?? ev.evidence_type}
             </Tag>
-            <Text code>{ev.tx_hash ? ev.tx_hash.slice(0, 12) + "…" : ev.detail.slice(0, 40)}</Text>
+            {ev.tx_hash ? <TxHashLink chainId={analysisState.chain} hash={ev.tx_hash} /> : <Text code>{ev.detail.slice(0, 40)}</Text>}
             <Text type="secondary">可信度 {(ev.confidence ?? 0) * 100}%</Text>
           </Space>
         </List.Item>

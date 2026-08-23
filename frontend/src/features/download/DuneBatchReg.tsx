@@ -1,5 +1,5 @@
 import { DeleteOutlined, DownloadOutlined, PlayCircleOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons';
-import { Alert, Button, Form, Input, InputNumber, message, Popconfirm, Radio, Select, Space, Table, Tag } from 'antd';
+import { Button, Form, Input, InputNumber, message, Popconfirm, Radio, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 import {
@@ -172,8 +172,11 @@ export function DuneBatchReg() {
           </div>
         )}
 
-        {!isRegister && waitCount > 0 && <Alert type="info" showIcon style={{ marginBottom: 12 }} message={`${waitCount} 个账户待验证登录`} />}
-        {!isRegister && waitCount === 0 && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="没有待验证账户" />}
+        {!isRegister && (
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+            {waitCount > 0 ? `${waitCount} 个账户待验证登录` : '没有待验证账户'}
+          </Typography.Paragraph>
+        )}
 
         <Space wrap style={{ marginBottom: 12 }}>
           <Button type="primary" htmlType="submit" icon={<PlayCircleOutlined />} loading={loading}

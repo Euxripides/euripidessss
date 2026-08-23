@@ -33,9 +33,9 @@ var (
 	// fingerprint) per pool entry; rebuilt whenever the pool changes.
 	csvHTTPClients []*http.Client
 
-	csvIMAPProxyMu    sync.Mutex
-	csvIMAPProxies    []string
-	csvIMAPProxyIndex atomic.Uint64
+	csvIMAPProxyMu           sync.Mutex
+	csvIMAPProxies           []string
+	csvIMAPProxyIndex        atomic.Uint64
 	csvIMAPProxyCurrent      string
 	csvIMAPProxyCurrentSince time.Time
 	csvIMAPProxyCurrentUses  int
@@ -48,9 +48,9 @@ var (
 
 	// Health check bookkeeping: consecutive TCP failures put an IP on the
 	// cooldown list so rotation skips dead proxies.
-	csvProxyHealthMu           sync.Mutex
-	csvProxyHealthFailures     = map[string]int{}
-	csvProxyHealthCheckOnce    sync.Once
+	csvProxyHealthMu            sync.Mutex
+	csvProxyHealthFailures      = map[string]int{}
+	csvProxyHealthCheckOnce     sync.Once
 	csvProxyHealthCheckInterval = 5 * time.Minute
 	csvProxyHealthFailThreshold = 2
 )
@@ -294,6 +294,14 @@ func csvHTTPProxyIndexForUse(pin int) int {
 	csvHTTPProxyCurrentSince = now
 	csvHTTPProxyCurrentUses = 1
 	return index
+}
+
+// csvHTTPProxyCount returns the number of configured HTTP proxy pool
+// entries (0 = no pool).
+func csvHTTPProxyCount() int {
+	csvHTTPProxyMu.Lock()
+	defer csvHTTPProxyMu.Unlock()
+	return len(csvHTTPProxies)
 }
 
 // csvHTTPProxyByIndex returns the pool entry for an index, or nil when out

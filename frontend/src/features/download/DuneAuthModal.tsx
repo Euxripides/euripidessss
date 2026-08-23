@@ -1,5 +1,5 @@
 import { SaveOutlined } from '@ant-design/icons';
-import { Alert, Button, Form, Input, Modal, Space, Tag } from 'antd';
+import { Button, Form, Input, Modal, Space, Tag, Typography } from 'antd';
 import type { FormInstance } from 'antd';
 import { useEffect, useState } from 'react';
 import type { DuneAuthStatus } from './duneApi';
@@ -121,14 +121,12 @@ export function DuneAuthModal({ open, form, onClose, onSave, authStatus }: DuneA
 
   return (
     <Modal title="Dune 鉴权保存" open={open} onCancel={onClose} footer={null} width={640}>
-      <Alert
-        className="download-alert"
-        type="info"
-        showIcon
-        message="粘贴 Dune 参数"
-        description="支持浏览器扩展复制的 JSON 或 .env 格式，自动识别并填入下方字段。也可手动编辑。"
-        style={{ marginBottom: 12 }}
-      />
+      <Typography.Paragraph style={{ marginBottom: 12 }}>
+        <Typography.Text strong>粘贴 Dune 参数。</Typography.Text>{' '}
+        <Typography.Text type="secondary">
+          支持浏览器扩展复制的 JSON 或 .env 格式，自动识别并填入下方字段。也可手动编辑。
+        </Typography.Text>
+      </Typography.Paragraph>
 
       <TextArea
         autoSize={{ minRows: 4, maxRows: 10 }}

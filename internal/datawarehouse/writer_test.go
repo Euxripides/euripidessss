@@ -190,8 +190,9 @@ func TestWriterDecodesCanonicalEventLog(t *testing.T) {
 	if result.InputRows != 1 || result.InsertedRows != 1 || result.RejectedRows != 0 || result.ActivityRows != 0 {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(sink.inserts) != 1 || sink.inserts[0].table != "parsed_events" ||
-		!strings.Contains(sink.inserts[0].data, ",Transfer,") || !strings.Contains(sink.inserts[0].data, "TOPIC0_REGISTRY") {
+	if len(sink.inserts) != 2 || sink.inserts[0].table != "raw_logs" || sink.inserts[1].table != "parsed_events" ||
+		!strings.Contains(sink.inserts[0].data, topic0) || !strings.Contains(sink.inserts[0].data, data) ||
+		!strings.Contains(sink.inserts[1].data, ",Transfer,") || !strings.Contains(sink.inserts[1].data, "TOPIC0_REGISTRY") {
 		t.Fatalf("inserts = %+v", sink.inserts)
 	}
 }
@@ -226,6 +227,67 @@ func TestWriterMapsTokenAndInternalLogicalKeys(t *testing.T) {
 				t.Fatalf("inserts = %+v", sink.inserts)
 			}
 		})
+	}
+}
+
+func TestWriterPreservesTokenTransferBatchIndex(t *testing.T) {
+	sink := &fakeSink{}
+	csvData := "chain_id,block_number,block_time,transaction_hash,transaction_index,log_index,batch_index,token_id,token_address,token_standard,from_address,to_address,value_raw,source_provider\n" +
+		"56,200,1700000000,0xtoken,3,9,2,1001,0xtkn,ERC1155,0xaaa,0xbbb,100,sqd\n"
+	result, err := NewWriter(sink, fakeDuckDB{csv: csvData}).WriteIndexed(context.Background(), request(smartdownload.DatasetTokenTransfers, eDriveParquet(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.InsertedRows != 1 || len(sink.inserts) < 1 {
+		t.Fatalf("result=%+v inserts=%+v", result, sink.inserts)
+	}
+	row, err := csv.NewReader(strings.NewReader(sink.inserts[0].data)).Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{}
+	for i, column := range sink.inserts[0].columns {
+		values[column] = row[i]
+	}
+	for field, want := range map[string]string{"transaction_index": "3", "log_index": "9", "batch_index": "2", "token_id": "1001"} {
+		if values[field] != want {
+			t.Errorf("%s=%q want %q", field, values[field], want)
+		}
+	}
+}
+
+func TestWriterAssignsCanonicalStablecoinPegToTransferAndActivity(t *testing.T) {
+	sink := &fakeSink{}
+	csvData := "chain_id,block_number,block_time,transaction_hash,log_index,token_address,token_decimals,token_standard,from_address,to_address,value_raw,value_decimal,source_provider\n" +
+		"56,200,1700000000,0xtoken,9,0x55d398326f99059ff775485246999027b3197955,18,BEP20,0xaaa,0xbbb,1250000000000000000,1.25,rpc\n"
+	result, err := NewWriter(sink, fakeDuckDB{csv: csvData}).WriteIndexed(context.Background(), request(smartdownload.DatasetTokenTransfers, eDriveParquet(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.InsertedRows != 1 || result.ActivityRows != 2 || len(sink.inserts) != 2 {
+		t.Fatalf("result=%+v inserts=%+v", result, sink.inserts)
+	}
+	for _, insert := range sink.inserts {
+		row, err := csv.NewReader(strings.NewReader(insert.data)).Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		values := map[string]string{}
+		for i, column := range insert.columns {
+			values[column] = row[i]
+		}
+		if values["usd_value"] != "1.25" || values["price_source"] != "STABLECOIN_PEG" || values["price_confidence"] != "HIGH" {
+			t.Fatalf("table=%s values=%+v", insert.table, values)
+		}
+	}
+}
+
+func TestTokenActivityEventIndexMatchesCrossProviderLogicalKey(t *testing.T) {
+	if got := tokenActivityEventIndex("9", "0"); got != "log:9" {
+		t.Fatalf("ERC20 activity index=%q want log:9", got)
+	}
+	if got := tokenActivityEventIndex("9", "2"); got != "log:9:batch:2" {
+		t.Fatalf("ERC1155 batch activity index=%q", got)
 	}
 }
 
@@ -280,5 +342,20 @@ func TestWriterMetricsReportsRollingP95(t *testing.T) {
 	metrics := w.Metrics()
 	if metrics.InsertP95MS != 500 {
 		t.Fatalf("p95=%d want 500", metrics.InsertP95MS)
+	}
+}
+
+func TestRawLogDDLIsTransactionIndexedInBothSchemas(t *testing.T) {
+	for _, path := range []string{"../../deploy/clickhouse/schema.sql", "../../deploy/clickhouse/v2_semantic_schema.sql"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sql := string(data)
+		for _, required := range []string{"raw_logs", "topic0", "topic1", "topic2", "topic3", "data String", "ORDER BY (chain_id, tx_hash, log_index)"} {
+			if !strings.Contains(sql, required) {
+				t.Errorf("%s missing %q", path, required)
+			}
+		}
 	}
 }

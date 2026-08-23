@@ -12,6 +12,8 @@ type v33MockGroupAdapter struct {
 	calls    int
 	failures int
 	modeOK   *bool
+	started  chan struct{}
+	release  chan struct{}
 }
 
 func (a *v33MockGroupAdapter) Name() string { return "v33_group_mock" }
@@ -36,6 +38,15 @@ func (a *v33MockGroupAdapter) ExecuteGroupRange(_ context.Context, req GroupRang
 	a.mu.Lock()
 	a.calls++
 	a.mu.Unlock()
+	if a.started != nil {
+		select {
+		case a.started <- struct{}{}:
+		default:
+		}
+	}
+	if a.release != nil {
+		<-a.release
+	}
 	results := make(map[string]map[string]*ProviderResult, len(req.Addresses))
 	for _, address := range req.Addresses {
 		results[address] = make(map[string]*ProviderResult, len(req.Datasets))
@@ -290,6 +301,69 @@ func TestV33CrossBatchJoinCancelAndFanout(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestV33LateJoinWhileSharedWorkRunningIsFannedOut(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := DefaultOptions()
+	opts.Workers = 1
+	svc := NewService(store, opts, NewJSONLPartWriter(root))
+	t.Cleanup(func() {
+		svc.Shutdown()
+		// Range completion starts validation/indexing asynchronously. Let final
+		// atomic registry writes close before Windows removes TempDir.
+		time.Sleep(500 * time.Millisecond)
+	})
+	adapter := &v33MockGroupAdapter{started: make(chan struct{}, 1), release: make(chan struct{})}
+	svc.RegisterAdapter(adapter)
+	req := v33Request("0x0000000000000000000000000000000000000021")
+	first, err := svc.CreateBatch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.Start(first.Batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first shared provider request did not start")
+	}
+	second, err := svc.CreateBatch(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := svc.BatchAccelerator(second.Batch.ID)
+	if plan == nil || len(plan.SharedWorkloads) != 1 || plan.SharedWorkloads[0].Status != sharedWorkRunning {
+		t.Fatalf("late batch did not join running shared work: %+v", plan)
+	}
+	if err = svc.Start(second.Batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	close(adapter.release)
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		allTerminal := true
+		for _, address := range store.ListAddressesByBatch(second.Batch.ID) {
+			for _, dataset := range store.ListDatasetsByAddress(address.ID) {
+				for _, rangeJob := range store.ListRangesByDataset(dataset.ID) {
+					allTerminal = allTerminal && rangeJob.Status.Terminal()
+					if rangeJob.SharedWorkID != "" && rangeJob.Status.Terminal() {
+						t.Fatalf("terminal late-join range retained shared ownership: %+v", rangeJob)
+					}
+				}
+			}
+		}
+		if allTerminal {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("late-join ranges remained pending after shared provider completion")
 }
 
 func TestV33SingleWorkHonorsPreferredProviderBeforeGroupAdapter(t *testing.T) {

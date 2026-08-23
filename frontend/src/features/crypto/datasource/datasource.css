@@ -58,7 +58,6 @@
 .datasource-test-running { display: flex; flex-direction: column; align-items: center; gap: 15px; padding: 38px 28px 30px; text-align: center; }
 .datasource-test-running .ant-progress { width: 80%; }
 .datasource-test-running span { color: #7f899c; font-size: 12px; }
-.datasource-config-alert { margin-bottom: 17px; }
 .datasource-empty { padding: 90px 0; border: 1px dashed #dce3ee; border-radius: 10px; background: #fbfcfe; }
 @media (max-width: 1280px) {
   .datasource-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }

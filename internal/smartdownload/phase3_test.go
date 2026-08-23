@@ -9,7 +9,18 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/analysis/duckdb"
+	"github.com/etl/backend/internal/cryptodownload"
 )
+
+type zeroExactProbeProvider struct {
+	*MockProvider
+	calls int
+}
+
+func (p *zeroExactProbeProvider) Probe(_ context.Context, req ProbeRequest) (ProbeResult, error) {
+	p.calls++
+	return ProbeResult{FirstBlock: req.FromBlock, LastBlock: req.ToBlock, Confidence: 0.9}, nil
+}
 
 // TestValidationCoverageDupProviderCount 验收：coverage=100%、unknown=0、dup=0、provider count 一致。
 func TestValidationCoverageDupProviderCount(t *testing.T) {
@@ -43,6 +54,79 @@ func TestValidationCoverageDupProviderCount(t *testing.T) {
 	if !report.LevelFile || !report.LevelRecord || !report.LevelCoverage || !report.LevelProviderCnt {
 		t.Fatalf("L1-L4 未全过: %+v", report)
 	}
+}
+
+func TestOKLinkAllTimeProbeIsExcludedFromWindowCrossCheck(t *testing.T) {
+	if supportsExactRangeProbe(&CSVAdapter{}) {
+		t.Fatal("OKLink all-time count must not be used as an exact block-window cross-check")
+	}
+	if !supportsExactRangeProbe(NewMockProvider()) {
+		t.Fatal("providers without an all-time marker must retain exact-window cross-check behavior")
+	}
+}
+
+func TestCrossCheckSkipsOKLinkAllTimeProbe(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(root))
+	t.Cleanup(svc.Shutdown)
+	csv := configuredCSVAdapter(cryptodownload.ExportData{})
+	csvCalls := 0
+	csv.countRows = func(context.Context, cryptodownload.Config, string, string) (int64, error) {
+		csvCalls++
+		return 784, nil
+	}
+	exact := &zeroExactProbeProvider{MockProvider: NewMockNamedProvider("rpc")}
+	svc.RegisterAdapter(csv)
+	svc.RegisterAdapter(exact)
+	report := svc.validator.crossCheck(context.Background(), &DatasetJob{
+		Address: addrA, ChainKey: "bsc", Dataset: DatasetTokenTransfers, EstimatedRows: 784,
+	}, &CheckpointV3{CompletedRanges: []BlockRange{{From: 0, To: 199}, {From: 200, To: 399}, {From: 400, To: 599}}}, nil,
+		[]LedgerEntry{{Provider: "sqd"}})
+	if csvCalls != 0 {
+		t.Fatalf("OKLink all-time probe was called %d times for narrow-window cross-check", csvCalls)
+	}
+	if exact.calls != 2 || report.Status != "PASS" || report.Mismatch != 0 {
+		t.Fatalf("exact cross-check calls=%d report=%+v", exact.calls, report)
+	}
+}
+
+func TestRepairRevalidationContinuesToCertification(t *testing.T) {
+	provider := NewMockProvider()
+	store, svc, batchID := newSwitchService(t, provider)
+	t.Cleanup(svc.Shutdown)
+	if err := svc.Start(batchID); err != nil {
+		t.Fatal(err)
+	}
+	waitCompleted(t, svc, batchID)
+	ds := store.ListDatasets()[0]
+	waitFor(t, 30*time.Second, "initial validation", func() bool {
+		current := store.GetDataset(ds.ID)
+		return current != nil && current.Status == DatasetCompleted && current.Validation != nil
+	})
+
+	partial := store.GetDataset(ds.ID)
+	partial.Status = DatasetPartial
+	partial.Certification = CertificationPending
+	partial.FinishedAt = nil
+	partial.UpdatedAt = time.Now().UTC()
+	if err := store.SaveDataset(partial); err != nil {
+		t.Fatal(err)
+	}
+	report, err := svc.RepairDatasetGaps(ds.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "VALIDATED" {
+		t.Fatalf("revalidation status=%s errors=%v", report.Status, report.Errors)
+	}
+	waitFor(t, 30*time.Second, "revalidation certification", func() bool {
+		current := store.GetDataset(ds.ID)
+		return current != nil && current.Status == DatasetCompleted && current.Certification == CertificationDataset
+	})
 }
 
 // TestGapRepair 验收：L5 缺口补洞——手工取消的 Range 自动重建并补下载，最终 coverage=100%。

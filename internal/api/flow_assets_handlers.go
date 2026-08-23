@@ -51,7 +51,7 @@ type addressAssetsRequest struct {
 // validChainKey 校验链 key 白名单（LOW 修复：防快照目录嵌套子目录噪音）。
 func validChainKey(chain string) bool {
 	switch strings.ToLower(chain) {
-	case "bsc", "eth":
+	case "bsc", "eth", "base", "arbitrum":
 		return true
 	}
 	return false
@@ -77,7 +77,7 @@ func handleAddressAssets(c *gin.Context) {
 		req.Chain = "bsc"
 	}
 	if !validChainKey(req.Chain) {
-		c.JSON(400, gin.H{"detail": "chain 不受支持（仅 bsc/eth）"})
+		c.JSON(400, gin.H{"detail": "chain 不受支持（仅 bsc/eth/base/arbitrum）"})
 		return
 	}
 	for _, t := range req.Tokens {
@@ -126,7 +126,7 @@ func handleAddressAssetsRefresh(c *gin.Context) {
 		req.Chain = "bsc"
 	}
 	if !validChainKey(req.Chain) {
-		c.JSON(400, gin.H{"detail": "chain 不受支持（仅 bsc/eth）"})
+		c.JSON(400, gin.H{"detail": "chain 不受支持（仅 bsc/eth/base/arbitrum）"})
 		return
 	}
 	// 低危修复：refresh 端点同样校验 tokens（与单地址/批量端点一致）
@@ -185,7 +185,7 @@ func handleAddressAssetsBatch(c *gin.Context) {
 		req.Chain = "bsc"
 	}
 	if !validChainKey(req.Chain) {
-		c.JSON(400, gin.H{"detail": "chain 不受支持（仅 bsc/eth）"})
+		c.JSON(400, gin.H{"detail": "chain 不受支持（仅 bsc/eth/base/arbitrum）"})
 		return
 	}
 	for _, addr := range req.Addresses {

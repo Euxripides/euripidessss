@@ -10,7 +10,7 @@
 // 保留能力：BFS 聚焦/方向/深度、DuckDB 统计、实时资产、快照、Investigation 联动。
 // 只重构 UI Layer；graphUpgrade.ts / 后端逻辑零改动。
 
-import { DoubleRightOutlined, ExperimentOutlined, HistoryOutlined } from "@ant-design/icons";
+import { DoubleRightOutlined } from "@ant-design/icons";
 import { Button as AntButton, Drawer, message, Modal, Space } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useEdgesState, useNodesState, type Edge, type Node, type ReactFlowInstance } from "@xyflow/react";
@@ -151,7 +151,6 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   const [groups, setGroups] = useState<TempGroup[]>([]);
   const [coverage, setCoverage] = useState<CoverageQueryResult | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [hypothesisResult, setHypothesisResult] = useState<string | null>(null);
   const [entityCollapse, setEntityCollapse] = useState(false);
   const [replayMin, setReplayMin] = useState(0);
   const [replayMax, setReplayMax] = useState(0);
@@ -163,8 +162,6 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   const [multiRootResult, setMultiRootResult] = useState<FundFlowAnalysis | null>(null);
   const [showCommonOnly, setShowCommonOnly] = useState(false);
   const [baseline, setBaseline] = useState<FundFlowAnalysis | null>(null);
-  const [diffOpen, setDiffOpen] = useState(false);
-  const [diffText, setDiffText] = useState("");
   const [hypotheses, setHypotheses] = useState<Array<{ name: string; addresses: string[]; status: string; createdAt: string }>>([]);
   const [historyPast, setHistoryPast] = useState<Array<{ viewMode: GraphViewMode; lens: string; filters: GraphFilters }>>([]);
   const [historyFuture, setHistoryFuture] = useState<Array<{ viewMode: GraphViewMode; lens: string; filters: GraphFilters }>>([]);
@@ -458,7 +455,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
       const curIds = new Set(b.nodes?.map((n) => n.id) ?? []);
       const added = [...curIds].filter((id) => !prevIds.has(id)).length;
       const removed = [...prevIds].filter((id) => !curIds.has(id)).length;
-      setDiffText(`快照对比：新增节点 ${added}，移除节点 ${removed}，模式 ${prev.mode} → ${viewMode}`);
+      void message.info(`快照对比：新增节点 ${added}，移除节点 ${removed}，模式 ${prev.mode} → ${viewMode}`);
     }
     void message.success("书签已保存");
   };
@@ -544,15 +541,12 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
     }
     if (entities.size === 1) {
       const result = `支持：${selectedNodes.length} 个地址均属于实体「${[...names][0]}」`;
-      setHypothesisResult(result);
       void message.info(result);
     } else if (entities.size > 1) {
       const result = `弱支持/反证：命中 ${entities.size} 个不同实体（${[...names].slice(0, 3).join("、")}）`;
-      setHypothesisResult(result);
       void message.info(result);
     } else {
       const result = "未验证：所选地址暂无实体归属，需要更多证据";
-      setHypothesisResult(result);
       void message.info(result);
     }
   };
@@ -1001,8 +995,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
   const compareDiff = () => {
     const cur = multiRootResult ?? fundFlow;
     if (!baseline || !cur) {
-      setDiffText("请先保存对比基线");
-      setDiffOpen(true);
+      void message.warning("请先保存对比基线");
       return;
     }
     const basePaths = new Set((baseline.paths ?? []).map((p) => p.id));
@@ -1011,8 +1004,7 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
     const removed = (baseline.paths ?? []).filter((p) => !curPaths.has(p.id)).length;
     const cashAdded = Math.max(0, (cur.cashouts?.length ?? 0) - (baseline.cashouts?.length ?? 0));
     const settleAdded = Math.max(0, (cur.settlements?.length ?? 0) - (baseline.settlements?.length ?? 0));
-    setDiffText(`新增路径 ${added}，移除路径 ${removed}，新增落点 ${cashAdded}，新增沉淀 ${settleAdded}`);
-    setDiffOpen(true);
+    void message.info(`新增路径 ${added}，移除路径 ${removed}，新增落点 ${cashAdded}，新增沉淀 ${settleAdded}`);
   };
 
   useEffect(() => {
@@ -1385,14 +1377,6 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
 
   return (
     <div className={`ds-page analytics-page analytics-graph-page${lightMode ? " graph-light" : ""}`}>
-      {hypothesisResult && (
-        <div className="flow-hypothesis-banner">
-          <ExperimentOutlined /> 假设验证：{hypothesisResult}
-          <AntButton size="small" type="text" onClick={() => setHypothesisResult(null)}>
-            关闭
-          </AntButton>
-        </div>
-      )}
       <FlowWorkspaceHeader
         searchInput={searchInput}
         onSearchInput={setSearchInput}
@@ -1542,15 +1526,6 @@ export default function GraphPage({ onOpenAddress }: GraphPageProps) {
           onChange={setReplayTime}
           onSpeed={setReplaySpeed}
         />
-      )}
-
-      {diffText && (
-        <div className="flow-hypothesis-banner flow-diff-banner">
-          <HistoryOutlined /> 图谱 Diff：{diffText}
-          <AntButton size="small" type="text" onClick={() => setDiffText("")}>
-            关闭
-          </AntButton>
-        </div>
       )}
 
       <div className="flow-workspace-statusbar">

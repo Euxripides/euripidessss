@@ -88,6 +88,8 @@ var (
 	safeDatasetJobID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 	decimalPattern   = regexp.MustCompile(`^-?[0-9]+(?:\.[0-9]+)?$`)
 	methodIDPattern  = regexp.MustCompile(`^0x[0-9a-f]{8}$`)
+	rawTopicPattern  = regexp.MustCompile(`^0x[0-9a-f]{64}$`)
+	rawDataPattern   = regexp.MustCompile(`^0x(?:[0-9a-f]{2})*$`)
 )
 
 func NewWriter(sink ClickHouseSink, engine DuckDBQuery) *Writer {
@@ -116,9 +118,9 @@ var transactionColumns = []string{
 }
 
 var tokenTransferColumns = []string{
-	"chain_id", "block_number", "block_time", "tx_hash", "log_index",
+	"chain_id", "block_number", "block_time", "tx_hash", "transaction_index", "log_index", "batch_index",
 	"token_address", "token_name", "token_symbol", "token_decimals", "token_standard", "from_address", "to_address", "raw_value",
-	"value_decimal", "usd_price", "usd_value", "price_time", "price_source", "price_confidence",
+	"value_decimal", "token_id", "usd_price", "usd_value", "price_time", "price_source", "price_confidence",
 	"source_provider", "parser_version", "normalizer_version", "schema_version", "ingest_job_id", "source_range_id",
 }
 
@@ -145,6 +147,12 @@ var parsedEventColumns = []string{
 	"chain_id", "block_number", "block_time", "tx_hash", "log_index", "contract_address", "topic0",
 	"event_name", "event_signature", "decoded_fields", "decoder_source", "decoder_confidence", "parser_version",
 	"schema_version", "source_provider", "normalizer_version", "ingest_job_id", "source_range_id",
+}
+
+var rawLogColumns = []string{
+	"chain_id", "block_number", "block_hash", "block_time", "tx_hash", "transaction_index", "log_index",
+	"contract_address", "topic0", "topic1", "topic2", "topic3", "data", "removed", "source_provider",
+	"parser_version", "normalizer_version", "schema_version", "ingest_job_id", "source_range_id",
 }
 
 var activityColumns = []string{
@@ -206,7 +214,8 @@ func (w *Writer) WriteIndexed(ctx context.Context, req smartdownload.IndexedWrit
 	tablePath := filepath.Join(stageDir, table+".csv")
 	activityPath := filepath.Join(stageDir, "address_activity.csv")
 	contractPath := filepath.Join(stageDir, "contracts.csv")
-	result, err := mapCanonicalCSV(ctx, w.eventDecoder, req, canonicalPath, tablePath, activityPath, contractPath)
+	parsedEventPath := filepath.Join(stageDir, "parsed_events.csv")
+	result, err := mapCanonicalCSV(ctx, w.eventDecoder, req, canonicalPath, tablePath, activityPath, contractPath, parsedEventPath)
 	if err != nil {
 		return result, err
 	}
@@ -232,6 +241,12 @@ func (w *Writer) WriteIndexed(ctx context.Context, req smartdownload.IndexedWrit
 		}
 		w.insertBatches.Add(1)
 	}
+	if req.Dataset == smartdownload.DatasetLogs && result.InsertedRows > 0 {
+		if err := insertFile(ctx, w.sink, "parsed_events", parsedEventColumns, parsedEventPath); err != nil {
+			return result, fmt.Errorf("insert parsed_events: %w", err)
+		}
+		w.insertBatches.Add(1)
+	}
 	if verifier, ok := w.sink.(clickHouseQuery); ok && result.InsertedRows > 0 {
 		rows, err := verifyLogicalRows(ctx, verifier, table, req)
 		if err != nil {
@@ -254,8 +269,17 @@ func (w *Writer) WriteIndexed(ctx context.Context, req smartdownload.IndexedWrit
 				return result, fmt.Errorf("verify contracts logical rows: db=%d writer_success=%d: %w", contractRows, result.InsertedRows, err)
 			}
 		}
+		if req.Dataset == smartdownload.DatasetLogs {
+			parsedRows, err := verifyIngestRows(ctx, verifier, "parsed_events", req.DatasetJobID)
+			if err != nil || parsedRows != result.InsertedRows {
+				return result, fmt.Errorf("verify parsed_events logical rows: db=%d writer_success=%d: %w", parsedRows, result.InsertedRows, err)
+			}
+		}
 	}
 	w.insertRows.Add(uint64(result.InsertedRows + result.ActivityRows))
+	if req.Dataset == smartdownload.DatasetLogs {
+		w.insertRows.Add(uint64(result.InsertedRows))
+	}
 	if w.refresher != nil && req.Address != "" {
 		if err := w.refresher.RefreshAddressAnalytics(ctx, uint32(req.ChainID), req.Address); err != nil {
 			// Canonical rows have already been inserted and reconciled at this
@@ -307,7 +331,7 @@ func datasetTarget(dataset string) (string, []string, bool) {
 	case smartdownload.DatasetContractCreations:
 		return "contract_creations", contractCreationColumns, true
 	case smartdownload.DatasetLogs:
-		return "parsed_events", parsedEventColumns, true
+		return "raw_logs", rawLogColumns, true
 	default:
 		return "", nil, false
 	}
@@ -336,7 +360,7 @@ func insertFile(ctx context.Context, sink ClickHouseSink, table string, columns 
 	return sink.InsertCSV(ctx, table, columns, f)
 }
 
-func mapCanonicalCSV(ctx context.Context, decoder *eventdecoder.Decoder, req smartdownload.IndexedWriteRequest, sourcePath, tablePath, activityPath, contractPath string) (smartdownload.IndexedWriteResult, error) {
+func mapCanonicalCSV(ctx context.Context, decoder *eventdecoder.Decoder, req smartdownload.IndexedWriteRequest, sourcePath, tablePath, activityPath, contractPath, parsedEventPath string) (smartdownload.IndexedWriteResult, error) {
 	var result smartdownload.IndexedWriteResult
 	in, err := os.Open(sourcePath)
 	if err != nil {
@@ -358,6 +382,11 @@ func mapCanonicalCSV(ctx context.Context, decoder *eventdecoder.Decoder, req sma
 		return result, err
 	}
 	defer contracts.Close()
+	parsedEvents, err := os.Create(parsedEventPath)
+	if err != nil {
+		return result, err
+	}
+	defer parsedEvents.Close()
 
 	r := csv.NewReader(in)
 	r.FieldsPerRecord = -1
@@ -369,7 +398,7 @@ func mapCanonicalCSV(ctx context.Context, decoder *eventdecoder.Decoder, req sma
 	for i, name := range header {
 		index[strings.TrimSpace(name)] = i
 	}
-	tw, aw, cw := csv.NewWriter(out), csv.NewWriter(activities), csv.NewWriter(contracts)
+	tw, aw, cw, pw := csv.NewWriter(out), csv.NewWriter(activities), csv.NewWriter(contracts), csv.NewWriter(parsedEvents)
 	for {
 		record, readErr := r.Read()
 		if readErr == io.EOF {
@@ -385,6 +414,14 @@ func mapCanonicalCSV(ctx context.Context, decoder *eventdecoder.Decoder, req sma
 			result.RejectedRows++
 			continue
 		}
+		var parsed []string
+		if req.Dataset == smartdownload.DatasetLogs {
+			parsed, mapErr = mapParsedEventRow(ctx, decoder, req, index, record)
+			if mapErr != nil {
+				result.RejectedRows++
+				continue
+			}
+		}
 		if err := tw.Write(mapped); err != nil {
 			return result, err
 		}
@@ -399,11 +436,17 @@ func mapCanonicalCSV(ctx context.Context, decoder *eventdecoder.Decoder, req sma
 				return result, err
 			}
 		}
+		if req.Dataset == smartdownload.DatasetLogs {
+			if err := pw.Write(parsed); err != nil {
+				return result, err
+			}
+		}
 		result.InsertedRows++
 	}
 	tw.Flush()
 	aw.Flush()
 	cw.Flush()
+	pw.Flush()
 	if err := tw.Error(); err != nil {
 		return result, err
 	}
@@ -411,6 +454,9 @@ func mapCanonicalCSV(ctx context.Context, decoder *eventdecoder.Decoder, req sma
 		return result, err
 	}
 	if err := cw.Error(); err != nil {
+		return result, err
+	}
+	if err := pw.Error(); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -505,13 +551,22 @@ func mapRow(ctx context.Context, decoder *eventdecoder.Decoder, req smartdownloa
 			return nil, nil, fmt.Errorf("token transfer has no participant")
 		}
 		logIndex := uintOrZero(get("log_index"))
+		batchIndex := uintOrZero(firstNonEmpty(get("batch_index"), get("event_sub_index")))
 		token := strings.ToLower(get("token_address"))
-		mapped = []string{chainID, block, blockTime, txHash, logIndex, token, get("token_name"), get("token_symbol"),
+		usdPrice, usdValue := get("usd_price"), get("usd_value")
+		priceTime, priceSource, priceConfidence := get("price_time"), get("price_source"), strings.ToUpper(get("price_confidence"))
+		if usdValue == "" && isCanonicalStablecoin(chainID, token) {
+			usdPrice, usdValue = "1", value
+			priceTime, priceSource, priceConfidence = blockTime, "STABLECOIN_PEG", "HIGH"
+			baseActivity[12], baseActivity[21], baseActivity[22], baseActivity[23], baseActivity[24] = usdValue, usdPrice, priceTime, priceSource, priceConfidence
+		}
+		mapped = []string{chainID, block, blockTime, txHash, uintOrZero(get("transaction_index")), logIndex, batchIndex,
+			token, get("token_name"), get("token_symbol"),
 			uintOrZero(get("token_decimals")), get("token_standard"), from, to, get("value_raw"), value,
-			nullableDecimal(get("usd_price")), nullableDecimal(get("usd_value")), nullableDateTime(get("price_time")),
-			get("price_source"), strings.ToUpper(get("price_confidence")), provider, parserVersion, normalizerVersion,
+			get("token_id"), nullableDecimal(usdPrice), nullableDecimal(usdValue), nullableDateTime(priceTime),
+			priceSource, priceConfidence, provider, parserVersion, normalizerVersion,
 			schemaVersion, req.DatasetJobID, rangeID}
-		baseActivity[8], baseActivity[9], baseActivity[10] = "log:"+logIndex, token, get("token_symbol")
+		baseActivity[8], baseActivity[9], baseActivity[10] = tokenActivityEventIndex(logIndex, batchIndex), token, get("token_symbol")
 	case smartdownload.DatasetInternalTransactions:
 		if from == "" && to == "" {
 			return nil, nil, fmt.Errorf("internal transaction has no participant")
@@ -544,24 +599,97 @@ func mapRow(ctx context.Context, decoder *eventdecoder.Decoder, req smartdownloa
 		if contract == "" || json.Unmarshal([]byte(get("topics")), &topics) != nil || len(topics) == 0 {
 			return nil, nil, fmt.Errorf("event logical key or topics are incomplete")
 		}
-		if decoder == nil {
-			decoder = eventdecoder.New(nil)
+		if len(topics) > 4 {
+			return nil, nil, fmt.Errorf("event has more than four topics")
 		}
-		decoded, err := decoder.Decode(ctx, eventdecoder.Log{
-			ChainID: uint64(req.ChainID), Contract: contract, TransactionHash: txHash,
-			LogIndex: uint32Value(logIndex), Topics: topics, Data: get("data"),
-		})
-		if err != nil {
-			return nil, nil, err
+		padded := []string{"\\N", "\\N", "\\N", "\\N"}
+		for i, topic := range topics {
+			topic = strings.ToLower(strings.TrimSpace(topic))
+			if !rawTopicPattern.MatchString(topic) {
+				return nil, nil, fmt.Errorf("invalid event topic")
+			}
+			padded[i] = topic
 		}
-		mapped = []string{chainID, block, blockTime, txHash, logIndex, contract, strings.ToLower(topics[0]),
-			decoded.EventName, decoded.EventSignature, decoded.DecodedFieldsJSON(), decoded.DecoderSource, decoded.DecoderConfidence,
-			parserVersion, schemaVersion, provider, normalizerVersion, req.DatasetJobID, rangeID}
+		data := strings.ToLower(strings.TrimSpace(get("data")))
+		if !rawDataPattern.MatchString(data) {
+			return nil, nil, fmt.Errorf("invalid event data")
+		}
+		mapped = []string{chainID, block, get("block_hash"), blockTime, txHash, uintOrZero(get("transaction_index")), logIndex,
+			contract, padded[0], padded[1], padded[2], padded[3], data, boolValue(get("removed")), provider,
+			parserVersion, normalizerVersion, schemaVersion, req.DatasetJobID, rangeID}
 		return mapped, nil, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported dataset")
 	}
 	return mapped, activityRows(baseActivity, from, to), nil
+}
+
+func isCanonicalStablecoin(chainID, token string) bool {
+	key := strings.TrimSpace(chainID) + ":" + strings.ToLower(strings.TrimSpace(token))
+	switch key {
+	case "56:0x55d398326f99059ff775485246999027b3197955",
+		"56:0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+		"56:0xe9e7cea3dedca5984780bafc599bd69add087d56",
+		"56:0xc5f0f7b66764f6ec8c8dff7ba683102295e16409",
+		"1:0xdac17f958d2ee523a2206206994597c13d831ec7",
+		"1:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48":
+		return true
+	default:
+		return false
+	}
+}
+
+func tokenActivityEventIndex(logIndex, batchIndex string) string {
+	index := "log:" + logIndex
+	if batchIndex != "" && batchIndex != "0" {
+		index += ":batch:" + batchIndex
+	}
+	return index
+}
+
+func mapParsedEventRow(ctx context.Context, decoder *eventdecoder.Decoder, req smartdownload.IndexedWriteRequest, index map[string]int, record []string) ([]string, error) {
+	get := func(name string) string {
+		if i, ok := index[name]; ok && i < len(record) {
+			return strings.TrimSpace(record[i])
+		}
+		return ""
+	}
+	chainID := strconv.FormatInt(req.ChainID, 10)
+	if raw := get("chain_id"); raw != "" && raw != chainID {
+		return nil, fmt.Errorf("row chain_id %s does not match job chain %s", raw, chainID)
+	}
+	block := uintOrZero(get("block_number"))
+	blockTime, err := clickHouseTime(firstNonEmpty(get("block_time"), get("block_timestamp"), get("timestamp")))
+	if err != nil {
+		return nil, err
+	}
+	txHash := strings.ToLower(firstNonEmpty(get("tx_hash"), get("transaction_hash")))
+	contract := strings.ToLower(get("contract_address"))
+	logIndex := uintOrZero(get("log_index"))
+	var topics []string
+	if txHash == "" || contract == "" || json.Unmarshal([]byte(get("topics")), &topics) != nil || len(topics) == 0 || len(topics) > 4 {
+		return nil, fmt.Errorf("event logical key or topics are incomplete")
+	}
+	for i := range topics {
+		topics[i] = strings.ToLower(strings.TrimSpace(topics[i]))
+	}
+	if decoder == nil {
+		decoder = eventdecoder.New(nil)
+	}
+	decoded, err := decoder.Decode(ctx, eventdecoder.Log{ChainID: uint64(req.ChainID), Contract: contract, TransactionHash: txHash,
+		LogIndex: uint32Value(logIndex), Topics: topics, Data: strings.ToLower(get("data"))})
+	if err != nil {
+		return nil, err
+	}
+	schemaVersion := req.SchemaVersion
+	if schemaVersion == 0 {
+		schemaVersion = 2
+	}
+	return []string{chainID, block, blockTime, txHash, logIndex, contract, topics[0], decoded.EventName, decoded.EventSignature,
+		decoded.DecodedFieldsJSON(), decoded.DecoderSource, decoded.DecoderConfidence,
+		firstNonEmpty(req.ParserVersion, "smartdownload-v1"), strconv.FormatUint(uint64(schemaVersion), 10),
+		firstNonEmpty(req.SourceProvider, "unknown"), firstNonEmpty(req.NormalizerVersion, "canonical-writer-v2"),
+		req.DatasetJobID, fmt.Sprintf("%s:%d-%d", req.DatasetJobID, req.FromBlock, req.ToBlock)}, nil
 }
 
 func activityType(dataset string) string {

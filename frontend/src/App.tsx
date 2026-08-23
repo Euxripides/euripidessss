@@ -13,6 +13,7 @@ const SystemSettingsPage = lazy(() => import("./features/system/SystemSettingsPa
 const IntelligencePage = lazy(() => import("./features/intelligence/IntelligencePage"));
 const ReportPage = lazy(() => import("./features/reports/ReportPage"));
 const ExplorerPage = lazy(() => import("./features/explorer-intelligence/ExplorerPage"));
+const TransactionDetailPage = lazy(() => import("./features/transaction/TransactionDetailPage"));
 import {
   ApartmentOutlined,
   CloudDownloadOutlined,
@@ -57,7 +58,7 @@ import zhCN from "antd/locale/zh_CN";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
 import type { MenuProps, UploadFile } from "antd";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Controls,
   MiniMap,
@@ -225,6 +226,13 @@ import {
 import { useFlowOperations } from "./hooks/useFlowOperations";
 import { useFlowModals } from "./hooks/useFlowModals";
 import { useAnalysisContext } from "./features/explorer-intelligence/analysisContext";
+import {
+  buildAppURL,
+  normalizeChain,
+  parseAppRoute,
+  type AppChain,
+  type AppRoute,
+} from "./features/explorer-intelligence/appRoute";
 
 const { Sider, Content } = Layout;
 
@@ -286,12 +294,23 @@ const systemMenuItems: MenuProps["items"] = [
 export function App() {
   const { state: analysisState, update: updateAnalysis } = useAnalysisContext();
   const systemPreference = useMemo(() => loadSystemNavigationPreference(), []);
-  const [active, setActive] = useState(() => systemPreference.rememberLastPage ? window.localStorage.getItem("etl.app.active.v1") || systemPreference.defaultPage : systemPreference.defaultPage);
+  const initialAppRoute = useMemo(() => parseAppRoute(window.location), []);
+  // active 初始化优先级：显式 URL 路由 > localStorage 偏好 > 默认页（UAT-FIX-002）
+  const [active, setActive] = useState(() => {
+    if (initialAppRoute) return initialAppRoute.active;
+    return systemPreference.rememberLastPage ? window.localStorage.getItem("etl.app.active.v1") || systemPreference.defaultPage : systemPreference.defaultPage;
+  });
+  const [transactionRoute, setTransactionRoute] = useState<{ chain: AppChain; hash: string } | null>(() => initialAppRoute?.active === "transaction" && initialAppRoute.chain && initialAppRoute.txHash ? { chain: initialAppRoute.chain, hash: initialAppRoute.txHash } : null);
   const [activeAddressParam, setActiveAddressParam] = useState<string | undefined>(undefined);
+  const [smartDownloadPrefill, setSmartDownloadPrefill] = useState<{ address: string; chain: AppChain } | null>(null);
   const [sideCollapsed, setSideCollapsed] = useState(() => systemPreference.compactSidebar);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [globalQuery, setGlobalQuery] = useState("");
   const [serviceHealthy, setServiceHealthy] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (transactionRoute) updateAnalysis({ chain: transactionRoute.chain });
+  }, [transactionRoute?.chain, updateAnalysis]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ProcessResponse | null>(null);
   const [processProgress, setProcessProgress] = useState<ProcessProgress | null>(null);
@@ -460,10 +479,8 @@ export function App() {
 
   const handleMenuClick: MenuProps["onClick"] = (item) => {
     const nextActive = String(item.key);
-    setActive(nextActive);
-    if (systemPreference.rememberLastPage) {
-      window.localStorage.setItem("etl.app.active.v1", nextActive);
-    }
+    if (nextActive === "smart-download") setSmartDownloadPrefill(null);
+    navigateTo(nextActive);
     // 进入资金追踪自动收起左侧导航（画布全屏）；其他页面恢复展开
     setSideCollapsed(nextActive === "analytics-graph" || systemPreference.compactSidebar);
     setMobileNavOpen(false);
@@ -476,6 +493,55 @@ export function App() {
     if (active !== "analytics-graph" && systemPreference.compactSidebar) setSideCollapsed(true);
   }, [active]);
 
+  // 统一导航（UAT-FIX-001/002）：页面切换 pushState 产生历史，popstate 按 URL 恢复。
+  const navigateTo = useCallback((page: string, routeState?: { chain?: AppChain; address?: string; txHash?: string }, mode: "push" | "replace" = "push") => {
+    const route: AppRoute = { active: page, chain: routeState?.chain, address: routeState?.address, txHash: routeState?.txHash };
+    const url = buildAppURL(route);
+    if (mode === "push") window.history.pushState(null, "", url);
+    else window.history.replaceState(null, "", url);
+    setActive(page);
+    if (page === "transaction" && routeState?.chain && routeState.txHash) setTransactionRoute({ chain: routeState.chain, hash: routeState.txHash });
+    if (routeState?.chain || routeState?.address) {
+      updateAnalysis({ chain: normalizeChain(routeState.chain, analysisState.chain), rootAddress: routeState.address ?? "" });
+    }
+    if (systemPreference.rememberLastPage) {
+      window.localStorage.setItem("etl.app.active.v1", page);
+    }
+  }, [analysisState.chain, systemPreference.rememberLastPage, updateAnalysis]);
+
+  // 首次加载：URL 无业务路由时用 pushState 建立应用入口，保留“/”作为可返回历史项
+  useEffect(() => {
+    if (!parseAppRoute(window.location)) {
+      const initial = buildAppURL({ active });
+      window.history.pushState(null, "", initial);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // popstate：后退/前进按 URL 恢复页面状态；无业务路由的“/”回到默认页并修正 URL
+  useEffect(() => {
+    const onPopState = () => {
+      const route = parseAppRoute(window.location);
+      if (route) {
+        setActive(route.active);
+        if (route.active === "transaction" && route.chain && route.txHash) setTransactionRoute({ chain: route.chain, hash: route.txHash });
+        if (route.active === "explorer") {
+          updateAnalysis({ chain: normalizeChain(route.chain, analysisState.chain), rootAddress: route.address ?? "", pendingQuery: "" });
+        }
+        if (systemPreference.rememberLastPage) {
+          window.localStorage.setItem("etl.app.active.v1", route.active);
+        }
+      } else {
+        // 后退到应用入口“/”（或未知路径）：回默认页并修正 URL，避免 about:blank/错位
+        const fallback = systemPreference.rememberLastPage ? window.localStorage.getItem("etl.app.active.v1") || systemPreference.defaultPage : systemPreference.defaultPage;
+        setActive(fallback);
+        window.history.replaceState(null, "", buildAppURL({ active: fallback }));
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [analysisState.chain, systemPreference.defaultPage, systemPreference.rememberLastPage, updateAnalysis]);
+
   // 全局搜索 → 地址详情页（图谱页搜索框合并复用同一入口）
   const openAddressDetail = (address: string, chainKey = analysisState.chain) => {
     const normalized = address.trim().toLowerCase();
@@ -486,19 +552,23 @@ export function App() {
       return;
     }
     setActiveAddressParam(normalized);
-    updateAnalysis({ chain: chainKey, rootAddress: normalized, pendingQuery: "", tab: "overview" });
-    setActive("explorer");
+    updateAnalysis({ chain: normalizeChain(chainKey, analysisState.chain), rootAddress: normalized, pendingQuery: "", tab: "overview" });
+    navigateTo("explorer", { chain: normalizeChain(chainKey, analysisState.chain), address: normalized });
     setMobileNavOpen(false);
   };
 
   const runGlobalSearch = () => {
     const normalized = globalQuery.trim().toLowerCase();
+    if (/^0x[0-9a-f]{64}$/.test(normalized)) {
+      navigateTo("transaction", { chain: normalizeChain(analysisState.chain), txHash: normalized });
+      return;
+    }
     if (/^0x[0-9a-f]{40}$/.test(normalized)) {
       openAddressDetail(normalized);
       return;
     }
     updateAnalysis({ pendingQuery: globalQuery.trim() });
-    setActive("explorer");
+    navigateTo("explorer");
   };
 
   return (
@@ -515,20 +585,22 @@ export function App() {
           colorBgLayout: "#f4f7fc",
           colorBorder: "#e3eaf5",
           borderRadius: 10,
-          fontFamily: '"Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif',
+          fontFamily: active === "explorer"
+            ? '"Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", Arial, sans-serif'
+            : '"Microsoft YaHei", "PingFang SC", "Segoe UI", system-ui, sans-serif',
         },
       }}
     >
       <AntdApp>
       <Button
-        className="mobile-nav-trigger"
+        className={`mobile-nav-trigger ${active === "transaction" ? "mobile-nav-trigger-transaction" : ""}`}
         type="primary"
         icon={<MenuOutlined />}
         aria-label="打开导航"
         onClick={() => setMobileNavOpen(true)}
       />
       <Drawer
-        className="mobile-nav-drawer"
+        className={`mobile-nav-drawer ${active === "explorer" ? "mobile-nav-drawer-explorer" : ""}`}
         placement="left"
         width={286}
         title="链上分析"
@@ -546,7 +618,7 @@ export function App() {
           <Menu mode="inline" selectedKeys={[active]} items={systemMenuItems} onClick={handleMenuClick} />
         </div>
       </Drawer>
-      <Layout className="app-shell">
+      <Layout className={`app-shell ${active === "explorer" ? "app-shell-explorer" : ""}`}>
         <Sider
           width={208}
           collapsedWidth={64}
@@ -573,7 +645,7 @@ export function App() {
         </Sider>
         <Layout className="app-main">
           {/* 地址关系图为沉浸式全屏工作台：隐藏顶部横条（搜索功能已并入图谱页搜索框） */}
-          {active !== "analytics-graph" && active !== "explorer" ? (
+          {active !== "analytics-graph" && active !== "explorer" && active !== "transaction" ? (
             <header className="app-header">
               <div className="app-header-search">
                 <AddressLibraryInput
@@ -595,7 +667,7 @@ export function App() {
               </div>
             </header>
           ) : null}
-          <Content className={`content ${active === "graph" ? "content-graph" : ""} ${active === "explorer" ? "content-explorer" : ""}`}>
+          <Content className={`content ${active === "graph" ? "content-graph" : ""} ${active === "explorer" ? "content-explorer" : ""} ${active === "transaction" ? "content-transaction" : ""}`}>
             {active === "clean" && (
               <section className="topbar">
                 <div>
@@ -666,15 +738,45 @@ export function App() {
             {active === "crypto-parquet" && <CryptoParquetPanel />}
             {active === "smart-download" && (
               <SmartDownloadPage
+                initialAddress={smartDownloadPrefill?.address}
+                initialChain={smartDownloadPrefill?.chain}
                 onOpenAddress={openAddressDetail}
-                onNavigate={(page) => setActive(page)}
+                onNavigate={(page) => navigateTo(page)}
               />
             )}
             {active === "crypto-rpc" && <RpcSettingsPage />}
             {active === "crypto-datasource" && <DataSourcePage onOpenRpc={() => setActive("crypto-rpc")} />}
             {active === "crypto-address" && <CryptoAddressPanel />}
             <Suspense fallback={null}>
-              {active === "explorer" && <ExplorerPage onNavigate={(page, address) => { if (address) updateAnalysis({ rootAddress: address }); setActive(page === "fund-flow" ? "analytics-graph" : page); }} />}
+              {active === "explorer" && <ExplorerPage onNavigate={(page, address) => {
+                const targetPage = page === "fund-flow" ? "analytics-graph" : page;
+                if (address) {
+                  const normalizedAddress = address.trim();
+                  updateAnalysis({ rootAddress: normalizedAddress });
+                  if (targetPage === "smart-download") {
+                    setSmartDownloadPrefill({ address: normalizedAddress, chain: analysisState.chain });
+                  }
+                  navigateTo(targetPage, { chain: analysisState.chain, address: normalizedAddress });
+                  return;
+                }
+                navigateTo(targetPage);
+              }} />}
+              {active === "transaction" && transactionRoute && <TransactionDetailPage
+                chain={transactionRoute.chain}
+                hash={transactionRoute.hash}
+                onNavigate={(page, context) => {
+                  if (context) {
+                    updateAnalysis({
+                      chain: transactionRoute.chain,
+                      rootAddress: context.fromAddress ?? "",
+                      fromAddress: context.fromAddress,
+                      toAddress: context.toAddress,
+                      selectedRows: [context.txHash],
+                    });
+                  }
+                  navigateTo(page);
+                }}
+              />}
               {active === "analytics-dashboard" && <AnalyticsDashboardPage onNavigate={(p, a) => { if (a) setActiveAddressParam(a); setActive(p); }} />}
               {active === "analytics-address" && <AnalyticsAddressPage initialAddress={activeAddressParam} />}
               {active === "analytics-graph" && <AnalyticsGraphPage onOpenAddress={openAddressDetail} />}

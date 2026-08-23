@@ -1,7 +1,6 @@
 // 资金流智能（Fund Flow Intelligence V2）：路径评分 / 获利归因 / 沉淀识别 / 兑现候选 / 回流 / 守恒。
 import { useState } from "react";
 import {
-  Alert,
   Button,
   Card,
   Descriptions,
@@ -277,14 +276,13 @@ export default function FundFlowPage() {
           {(analysis.conservation ?? []).length > 0 && (
             <Card title="资金守恒检查">
               {(analysis.conservation ?? []).slice(0, 10).map((c) => (
-                <Alert
-                  key={c.address}
-                  style={{ marginBottom: 8 }}
-                  type={c.pass ? "success" : "warning"}
-                  showIcon
-                  message={`${c.address} 偏差 ${(c.deviation * 100).toFixed(0)}%`}
-                  description={c.reason || "流入/流出基本一致"}
-                />
+                <div key={c.address} style={{ marginBottom: 8 }}>
+                  <Typography.Text type={c.pass ? "success" : "warning"} strong>
+                    {c.address} 偏差 {(c.deviation * 100).toFixed(0)}%
+                  </Typography.Text>
+                  <br />
+                  <Typography.Text type="secondary">{c.reason || "流入/流出基本一致"}</Typography.Text>
+                </div>
               ))}
             </Card>
           )}

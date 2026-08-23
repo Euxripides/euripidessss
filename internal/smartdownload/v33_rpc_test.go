@@ -33,6 +33,8 @@ func (f *v33RPCFake) respond(method string, params any) (json.RawMessage, string
 	switch method {
 	case "eth_getBlockByNumber":
 		return json.RawMessage(`{"timestamp":"0x65920080"}`), "fake", nil
+	case "eth_call":
+		return json.RawMessage(`"0x12"`), "fake", nil
 	case "eth_getLogs":
 		f.logCalls++
 		filter := params.([]any)[0].(map[string]any)
@@ -83,7 +85,7 @@ func TestV33RPCGroupOneCallFor100AddressesAndDatasetFanout(t *testing.T) {
 	if fake.logCalls != 3 {
 		t.Fatalf("eth_getLogs provider calls=%d want=3", fake.logCalls)
 	}
-	if fake.normalCalls != 0 || fake.turboCalls != 4 {
+	if fake.normalCalls != 0 || fake.turboCalls != 5 {
 		t.Fatalf("Turbo context lost: normal=%d turbo=%d", fake.normalCalls, fake.turboCalls)
 	}
 	var gotAddresses []string

@@ -274,12 +274,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.crypto-parquet-preview .ant-alert {
-  margin-top: 10px;
-  padding: 7px 10px;
-  font-size: 12px;
-}
-
 .crypto-parquet-pipeline {
   display: grid;
   grid-template-columns: repeat(4, minmax(105px, 1fr));

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/etl/backend/internal/cryptodownload"
@@ -30,16 +31,38 @@ type CSVAdapter struct {
 	resolveBlockTime BlockTimeResolver
 	loadConfig       func(string, string) (cryptodownload.Config, error)
 	newCollector     func(cryptodownload.Config) csvExportCollector
+	countRows        func(context.Context, cryptodownload.Config, string, string) (int64, error)
 	runtimeReady     func(string) error
+	probeMu          sync.Mutex
+	probeCache       map[string]csvProbeCacheEntry
+	availabilityMu   sync.Mutex
+	availabilityAt   time.Time
+	availabilityOK   bool
 }
+
+type csvProbeCacheEntry struct {
+	result ProbeResult
+	at     time.Time
+}
+
+const (
+	csvProbeTimeout = 6 * time.Second
+	csvProbeTTL     = 2 * time.Minute
+)
 
 // NewCSVAdapter keeps the zero-config constructor for diagnostics/tests. Such
 // an adapter is unavailable until configured with a resolver and local secrets.
 func NewCSVAdapter() *CSVAdapter {
 	return &CSVAdapter{loadConfig: cryptodownload.LoadCSVAutomationConfig,
 		runtimeReady: cryptodownload.ValidateCSVAutomationRuntime,
+		probeCache:   map[string]csvProbeCacheEntry{},
 		newCollector: func(cfg cryptodownload.Config) csvExportCollector {
 			return cryptodownload.NewCSVExportClient(cfg)
+		},
+		countRows: func(ctx context.Context, cfg cryptodownload.Config, chainKey, dataset string) (int64, error) {
+			client := cryptodownload.NewCSVExportClient(cfg)
+			defer client.Close()
+			return client.CountAddressRows(ctx, cfg, chainKey, dataset)
 		}}
 }
 
@@ -54,21 +77,35 @@ func NewProductionCSVAdapter(configDir, rawRoot string, resolver BlockTimeResolv
 func (p *CSVAdapter) Name() string { return "csv" }
 
 func (p *CSVAdapter) Available() bool {
-	if p == nil || p.resolveBlockTime == nil || p.loadConfig == nil || p.newCollector == nil || p.runtimeReady == nil ||
+	if p == nil {
+		return false
+	}
+	p.availabilityMu.Lock()
+	defer p.availabilityMu.Unlock()
+	if !p.availabilityAt.IsZero() && time.Since(p.availabilityAt) < 30*time.Second {
+		return p.availabilityOK
+	}
+	if p.resolveBlockTime == nil || p.loadConfig == nil || p.newCollector == nil || p.runtimeReady == nil ||
 		strings.TrimSpace(p.configDir) == "" || strings.TrimSpace(p.rawRoot) == "" {
+		p.availabilityAt = time.Now()
+		p.availabilityOK = false
 		return false
 	}
 	cfg, err := p.loadConfig(p.configDir, p.rawRoot)
+	available := err == nil && p.runtimeReady(cfg.BaseURL) == nil
+	p.availabilityAt = time.Now()
+	p.availabilityOK = available
 	if err != nil {
 		return false
 	}
-	return p.runtimeReady(cfg.BaseURL) == nil
+	return available
 }
 
 func (p *CSVAdapter) AvailableForChain(chainKey string) bool {
-	if !p.Available() {
-		return false
-	}
+	return p.Available() && csvSupportedChain(chainKey)
+}
+
+func csvSupportedChain(chainKey string) bool {
 	switch strings.ToLower(strings.TrimSpace(chainKey)) {
 	case "bsc", "eth", "ethereum":
 		return true
@@ -87,15 +124,76 @@ func (p *CSVAdapter) Supports(dataset string) bool {
 	return dataset == DatasetTransactions || dataset == DatasetTokenTransfers
 }
 
-// Probe intentionally does not submit an export request. CSV availability is
-// represented by CandidatesFor; without a real count, confidence must remain 0
-// so L6 cross-check never treats an unknown estimate as authoritative zero.
-func (p *CSVAdapter) Probe(_ context.Context, req ProbeRequest) (ProbeResult, error) {
-	if !p.AvailableForChain(req.ChainKey) || !p.Supports(req.Dataset) {
+// ExactRangeProbe is false because OKLink's lightweight count is all-time.
+// It is authoritative for preflight sizing/routing, but cannot validate a
+// sampled block window.
+func (p *CSVAdapter) ExactRangeProbe() bool { return false }
+
+// Probe uses OKLink's lightweight address count endpoint. It never submits a
+// CSV export request, waits for email, or downloads result files.
+func (p *CSVAdapter) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, error) {
+	// ProbeWith already checked production availability. Avoid starting the
+	// signer-runtime readiness path a second time for the same count request.
+	if !csvSupportedChain(req.ChainKey) || !p.Supports(req.Dataset) {
 		return ProbeResult{Confidence: 0}, nil
 	}
-	return ProbeResult{FirstBlock: req.FromBlock, LastBlock: req.ToBlock,
-		Confidence: 0, ProbeProvider: p.Name()}, nil
+	if strings.TrimSpace(req.Address) == "" {
+		return ProbeResult{FirstBlock: req.FromBlock, LastBlock: req.ToBlock, ProbeProvider: p.Name()}, nil
+	}
+	if cached, ok := p.CachedProbe(req); ok {
+		return cached, nil
+	}
+	if p.countRows == nil {
+		return ProbeResult{FirstBlock: req.FromBlock, LastBlock: req.ToBlock, ProbeProvider: p.Name()}, nil
+	}
+	cfg, err := p.loadConfig(p.configDir, p.rawRoot)
+	if err != nil {
+		return ProbeResult{}, fmt.Errorf("CSV 预检加载配置: %w", err)
+	}
+	cfg.Address = strings.ToLower(strings.TrimSpace(req.Address))
+	probeCtx, cancel := context.WithTimeout(ctx, csvProbeTimeout)
+	defer cancel()
+	total, err := p.countRows(probeCtx, cfg, strings.ToLower(strings.TrimSpace(req.ChainKey)), req.Dataset)
+	if err != nil {
+		return ProbeResult{}, fmt.Errorf("OKLink 数据量查询: %w", err)
+	}
+	if total < 0 {
+		return ProbeResult{}, fmt.Errorf("OKLink 数据量查询返回负数: %d", total)
+	}
+	confidence := 0.98
+	if req.FromBlock > 0 {
+		// OKLink list total is all-time. For a partial block window it is a safe
+		// upper bound for routing, but not an exact range count.
+		confidence = 0.75
+	}
+	result := ProbeResult{EstimatedRows: uint64(total), EstimatedBytes: uint64(total) * 160,
+		FirstBlock: req.FromBlock, LastBlock: req.ToBlock, Confidence: confidence, ProbeProvider: p.Name()}
+	p.probeMu.Lock()
+	p.probeCache[p.probeKey(req)] = csvProbeCacheEntry{result: result, at: time.Now()}
+	p.probeMu.Unlock()
+	return result, nil
+}
+
+func (p *CSVAdapter) CachedProbe(req ProbeRequest) (ProbeResult, bool) {
+	if p == nil {
+		return ProbeResult{}, false
+	}
+	p.probeMu.Lock()
+	defer p.probeMu.Unlock()
+	entry, ok := p.probeCache[p.probeKey(req)]
+	if !ok || time.Since(entry.at) > csvProbeTTL {
+		if ok {
+			delete(p.probeCache, p.probeKey(req))
+		}
+		return ProbeResult{}, false
+	}
+	return entry.result, true
+}
+
+func (p *CSVAdapter) probeKey(req ProbeRequest) string {
+	return strings.Join([]string{strings.ToLower(strings.TrimSpace(req.ChainKey)),
+		strings.ToLower(strings.TrimSpace(req.Address)), strings.ToLower(strings.TrimSpace(req.Dataset)),
+		strconv.FormatUint(req.FromBlock, 10), strconv.FormatUint(req.ToBlock, 10)}, "|")
 }
 
 func (p *CSVAdapter) ExecuteRange(ctx context.Context, req RangeRequest) (*ProviderResult, error) {

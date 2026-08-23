@@ -11,7 +11,6 @@ import {
   WalletOutlined,
 } from '@ant-design/icons';
 import {
-  Alert,
   Button,
   DatePicker,
   Empty,
@@ -31,6 +30,7 @@ import {
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { TxHashLink } from '../transaction/TxHashLink';
 import type { ReactNode } from 'react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
@@ -264,13 +264,12 @@ export function AddressAnalyticsPanel() {
       ) : summary ? (
         <>
           {!summary.rpc_configured && (
-            <Alert
-              className="address-analytics-rpc-alert"
-              type="warning"
-              showIcon
-              message="RPC 尚未配置，实时状态检测未执行"
-              description={`${summary.rpc_env} 未配置：地址类型显示“未检测”，Token Metadata 不推测，余额快照暂不可用。`}
-            />
+            <Typography.Paragraph>
+              <Typography.Text strong>RPC 尚未配置，实时状态检测未执行。</Typography.Text>{' '}
+              <Typography.Text type="secondary">
+                {summary.rpc_env} 未配置：地址类型显示“未检测”，Token Metadata 不推测，余额快照暂不可用。
+              </Typography.Text>
+            </Typography.Paragraph>
           )}
           <section className="address-analytics-identity">
             <div>
@@ -330,7 +329,7 @@ export function AddressAnalyticsPanel() {
           </div>
         </>
       ) : searched ? (
-        <Alert type="info" showIcon message="该链地址暂无 V1.3 分析数据，请先在 Parquet 下载页面完成对应地址任务。" />
+        <Empty description="该链地址暂无 V1.3 分析数据，请先在 Parquet 下载页面完成对应地址任务。" />
       ) : (
         <Empty className="address-analytics-empty" description="选择网络并输入地址，查看统一链上画像" />
       )}
@@ -403,10 +402,11 @@ function ExplorerIdentifier({
   kind: 'address' | 'tx';
 }) {
   const label = kind === 'tx' ? compactHash(value) : compactAddress(value);
+  if (kind === 'tx') return <TxHashLink chainId={chainKey} hash={value} showCopy showExternal />;
   return (
     <Space size={3} className="address-analytics-identifier">
       <Typography.Text copyable={{ text: value }}>{label}</Typography.Text>
-      <Tooltip title={kind === 'tx' ? '在区块浏览器查看交易' : '在区块浏览器查看地址'}>
+      <Tooltip title="在区块浏览器查看地址">
         <Button
           type="text"
           size="small"
@@ -414,7 +414,7 @@ function ExplorerIdentifier({
           href={explorerURL(chainKey, kind, value)}
           target="_blank"
           rel="noreferrer"
-          aria-label={kind === 'tx' ? '打开交易浏览器' : '打开地址浏览器'}
+          aria-label="打开地址浏览器"
         />
       </Tooltip>
     </Space>

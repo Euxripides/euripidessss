@@ -6,7 +6,7 @@ import {
   SafetyCertificateOutlined,
   SwapOutlined,
 } from "@ant-design/icons";
-import { Alert, Button, Card, Empty, Select, Skeleton, Statistic, Table, Tag, Tooltip } from "antd";
+import { Button, Card, Empty, message, Select, Skeleton, Statistic, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { PageHeader, Section } from "../../design-system/DesignSystem";
@@ -71,8 +71,10 @@ export default function FinancialQualityPage({
       })
       .catch((reason: unknown) => {
         if (!active) return;
+        const detail = reason instanceof Error ? reason.message : "金融质量读取失败";
         setReport(null);
-        setError(reason instanceof Error ? reason.message : "金融质量读取失败");
+        setError(detail);
+        void message.error(`金融质量加载失败：${detail}`);
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -127,16 +129,6 @@ export default function FinancialQualityPage({
         )}
       />
 
-      {error ? (
-        <Alert
-          type="error"
-          showIcon
-          message="金融质量加载失败"
-          description={error}
-          action={<Button size="small" onClick={refresh}>重试</Button>}
-        />
-      ) : null}
-
       {loading && !report ? <QualitySkeleton /> : null}
 
       {!loading && !error && !report ? (
@@ -164,13 +156,13 @@ export default function FinancialQualityPage({
           </div>
 
           {!report.cost_basis.coverage.available ? (
-            <Alert
-              className="financial-quality-notice"
-              type="warning"
-              showIcon
-              message="成本基础覆盖当前不可计算"
-              description="系统尚无独立的 Canonical 成本批次台账。转账不会被推断为买卖，PnL 也不会显示虚假的 0 成本或 0% 覆盖。"
-            />
+            <div className="financial-quality-notice">
+              <Typography.Text type="warning" strong>成本基础覆盖当前不可计算</Typography.Text>
+              <br />
+              <Typography.Text type="secondary">
+                系统尚无独立的 Canonical 成本批次台账。转账不会被推断为买卖，PnL 也不会显示虚假的 0 成本或 0% 覆盖。
+              </Typography.Text>
+            </div>
           ) : null}
 
           <Section

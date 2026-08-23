@@ -114,12 +114,55 @@ type ActivityQuery struct {
 	Activity ActivityKind
 	PageSize int
 	Cursor   string
+	Filters  ActivityFilters
 }
 
 type ActivityPage struct {
 	Items      []Activity `json:"items"`
 	NextCursor string     `json:"next_cursor,omitempty"`
 	HasMore    bool       `json:"has_more"`
+}
+
+// ActivityFilters is the shared, validated filter contract used by both the
+// paginated activity list and its full-result statistics.
+type ActivityFilters struct {
+	TransactionHash   string
+	Direction         string
+	Counterparty      string
+	FromAddress       string
+	ToAddress         string
+	TokenAddresses    []string
+	TokenSymbol       string
+	MinUSD            string
+	MaxUSD            string
+	Methods           []string
+	Statuses          []string
+	EntityTypes       []string
+	Entity            string
+	Protocols         []string
+	ValuationStatuses []string
+	From              string
+	To                string
+}
+
+type ActivityStatsQuery struct {
+	ChainID  uint32
+	Address  string
+	Activity ActivityKind
+	Filters  ActivityFilters
+}
+
+type ActivityStats struct {
+	ActivityCount        uint64  `json:"activity_count"`
+	TransactionCount     uint64  `json:"transaction_count"`
+	IncomingCount        uint64  `json:"incoming_count"`
+	OutgoingCount        uint64  `json:"outgoing_count"`
+	SelfCount            uint64  `json:"self_count"`
+	PricedCount          uint64  `json:"priced_count"`
+	IncomingUSD          *string `json:"incoming_usd"`
+	OutgoingUSD          *string `json:"outgoing_usd"`
+	NetflowUSD           *string `json:"netflow_usd"`
+	UniqueCounterparties uint64  `json:"unique_counterparties"`
 }
 
 // CounterpartyStat is a pre-aggregated relationship between an address and one

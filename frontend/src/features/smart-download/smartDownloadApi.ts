@@ -364,6 +364,16 @@ export interface PreflightEstimate {
   estimated_disk_growth_bytes: number;
   confidence: number;
   basis: string[];
+  dataset_estimates: Array<{
+    address: string;
+    chain_key: string;
+    dataset: string;
+    estimated_rows: number;
+    estimated_bytes: number;
+    confidence: number;
+    source: string;
+    preferred_provider?: string;
+  }>;
   resource_profile: ResourceProfile;
   profile: {
     workers: number;
@@ -614,6 +624,19 @@ export async function preflightBatch(body: CreateBatchRequest): Promise<Prefligh
     const storage = normalizeGuard(guards.storage ?? envelope.storage_guard);
     const rpc = normalizeGuard(guards.rpc ?? envelope.rpc_guard);
     const cloud = normalizeGuard(guards.cloud ?? envelope.cloud_guard);
+    const datasetEstimates = asArray(envelope.dataset_estimates).map((value) => {
+      const item = asRecord(value);
+      return {
+        address: asString(item.address) ?? "",
+        chain_key: asString(item.chain_key) ?? body.chain_key,
+        dataset: asString(item.dataset) ?? "",
+        estimated_rows: asNumber(item.estimated_rows),
+        estimated_bytes: asNumber(item.estimated_bytes),
+        confidence: asNumber(item.confidence),
+        source: asString(item.source) ?? "unknown",
+        preferred_provider: asString(item.preferred_provider),
+      };
+    });
     const allowed = typeof guards.allowed === "boolean" ? guards.allowed : undefined;
     const blockReasons = [storage, rpc, cloud]
       .filter((guard) => guard.status === "BLOCKED" || guard.status === "CRITICAL")
@@ -631,6 +654,7 @@ export async function preflightBatch(body: CreateBatchRequest): Promise<Prefligh
       estimated_disk_growth_bytes: asNumber(estimate.disk_growth_bytes ?? estimate.estimated_disk_growth_bytes),
       confidence: normalizeConfidence(envelope.confidence ?? eta.confidence ?? estimate.confidence),
       basis: asStrings(envelope.basis ?? eta.basis ?? estimate.basis),
+      dataset_estimates: datasetEstimates,
       resource_profile: asResourceProfile(estimate.resource_profile ?? envelope.resource_profile),
       profile: {
         workers: asNumber(profile.workers),

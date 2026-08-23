@@ -127,12 +127,88 @@ func TestListActivityUsesStableKeysetCursorWithoutOffset(t *testing.T) {
 		if strings.Contains(strings.ToUpper(query), "OFFSET") {
 			t.Fatalf("OFFSET is forbidden: %s", query)
 		}
-		if !strings.Contains(query, "ORDER BY a.block_time DESC, a.block_number DESC, a.tx_hash DESC, a.event_index DESC") {
+		if !strings.Contains(query, "ORDER BY block_time DESC,block_number DESC,tx_hash DESC,event_index DESC") {
 			t.Fatalf("unstable order: %s", query)
 		}
 	}
 	if !strings.Contains(stub.queries[1], "(a.block_time, a.block_number, a.tx_hash, a.event_index) <") || !strings.Contains(stub.queries[1], "'2'") {
 		t.Fatalf("second query does not resume strictly after last item: %s", stub.queries[1])
+	}
+}
+
+func TestActivityFiltersAreValidatedCombinedAndBoundToCursor(t *testing.T) {
+	token := "0x3333333333333333333333333333333333333333"
+	filters := ActivityFilters{
+		TransactionHash: testHash, Direction: "out", Counterparty: "0x2222222222222222222222222222222222222222",
+		TokenAddresses: []string{token}, TokenSymbol: "USDT", MinUSD: "10", MaxUSD: "1000",
+		Methods: []string{"withdraw"}, Statuses: []string{"success"}, ValuationStatuses: []string{"valued"},
+		From: "2026-01-01T00:00:00Z", To: "2026-12-31T23:59:59Z",
+	}
+	stub := &queryStub{rows: [][]map[string]any{{activityRow(100, "1"), activityRow(99, "1")}}}
+	repo := NewRepository(stub)
+	page, err := repo.ListActivity(context.Background(), ActivityQuery{ChainID: 56, Address: testAddress, Activity: ActivityTokenTransfers, PageSize: 1, Filters: filters})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := stub.queries[0]
+	for _, want := range []string{
+		"tx_hash='" + testHash + "'", "direction='OUT'", "token_address IN ('" + token + "')",
+		"lowerUTF8(token_symbol)=lowerUTF8('USDT')", ">=10", "<=1000", "positionCaseInsensitive(concat(method_id,' ',method_name),'withdraw')>0",
+		"status IN ('SUCCESS')", "VALUED", "block_time>=parseDateTime64BestEffort('2026-01-01T00:00:00Z'",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("combined filter missing %q: %s", want, query)
+		}
+	}
+	_, err = repo.ListActivity(context.Background(), ActivityQuery{ChainID: 56, Address: testAddress, Activity: ActivityTokenTransfers, PageSize: 1, Cursor: page.NextCursor, Filters: ActivityFilters{Direction: "IN"}})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("cursor reused across filters: %v", err)
+	}
+	if len(stub.queries) != 1 {
+		t.Fatalf("filter-mismatched cursor reached database")
+	}
+}
+
+func TestActivityFiltersRejectUnsafeInputsBeforeQuery(t *testing.T) {
+	for _, filters := range []ActivityFilters{
+		{Methods: []string{"withdraw' OR 1=1 --"}},
+		{Counterparty: "0x1234"},
+		{MinUSD: "-1"},
+		{MinUSD: "100", MaxUSD: "10"},
+		{Statuses: []string{"SUCCESS) OR 1=1"}},
+		{From: "not-a-time"},
+	} {
+		stub := &queryStub{}
+		_, err := NewRepository(stub).ListActivity(context.Background(), ActivityQuery{ChainID: 56, Address: testAddress, Activity: ActivityAll, Filters: filters})
+		if !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("expected invalid filter for %+v, got %v", filters, err)
+		}
+		if len(stub.queries) != 0 {
+			t.Fatalf("invalid filter reached database")
+		}
+	}
+}
+
+func TestGetActivityStatsUsesSameFiltersAndDecodesNullableValues(t *testing.T) {
+	stub := &queryStub{rows: [][]map[string]any{{{
+		"activity_count": "784", "transaction_count": "251", "incoming_count": "92", "outgoing_count": "692", "self_count": "0",
+		"priced_count": "592", "incoming_usd": "136480.177177", "outgoing_usd": "136480.177177", "netflow_usd": "0", "unique_counterparties": "154",
+	}}}}
+	stats, err := NewRepository(stub).GetActivityStats(context.Background(), ActivityStatsQuery{
+		ChainID: 56, Address: testAddress, Activity: ActivityTokenTransfers,
+		Filters: ActivityFilters{Direction: "OUT", TokenSymbol: "USDT", MinUSD: "100"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.ActivityCount != 784 || stats.TransactionCount != 251 || stats.PricedCount != 592 || stats.NetflowUSD == nil || *stats.NetflowUSD != "0" {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	query := stub.queries[0]
+	for _, want := range []string{"countIf(direction='IN')", "uniqExact(tx_hash)", "uniqExactIf(counterparty_address", "direction='OUT'", "lowerUTF8(token_symbol)=lowerUTF8('USDT')", ">=100", "onchain.chain_transactions AS tx FINAL"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("stats query missing %q: %s", want, query)
+		}
 	}
 }
 
@@ -144,7 +220,16 @@ func TestListActivityQueryShapeAndBoundedPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := stub.queries[0]
-	for _, want := range []string{"FROM onchain.address_activity AS a FINAL", "a.address = '" + testAddress + "'", "INTERNAL_TRANSFER", "LIMIT 201"} {
+	for _, want := range []string{
+		"FROM onchain.address_activity AS a FINAL",
+		"LEFT JOIN onchain.chain_transactions AS tx FINAL",
+		"a.chain_id = tx.chain_id AND a.tx_hash = tx.tx_hash",
+		"if(a.method_id!='',a.method_id,tx.method_id) AS method_id",
+		"if(a.method_name!='',a.method_name,tx.method_name) AS method_name",
+		"a.address = '" + testAddress + "'",
+		"INTERNAL_TRANSFER",
+		"LIMIT 201",
+	} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("query missing %q: %s", want, query)
 		}

@@ -84,6 +84,19 @@ export interface ClickHouseActivityPage {
   has_more: boolean;
 }
 
+export interface ClickHouseActivityStats {
+  activity_count: number;
+  transaction_count: number;
+  incoming_count: number;
+  outgoing_count: number;
+  self_count: number;
+  priced_count: number;
+  incoming_usd: string | null;
+  outgoing_usd: string | null;
+  netflow_usd: string | null;
+  unique_counterparties: number;
+}
+
 export interface ClickHouseActivityQuery {
   chain?: ExplorerChain;
   pageSize?: number;
@@ -168,6 +181,108 @@ export interface ClickHouseTransactionDetail {
   created_contract_address: string;
   error_message: string;
   source_provider: string;
+}
+
+export interface ClickHouseTransactionDataset<T> {
+  chain_id: number;
+  transaction_hash: string;
+  count: number;
+  total_count: number;
+  items: T[];
+  next_cursor?: string;
+}
+
+export interface ClickHouseCanonicalAddress {
+  address: string;
+  label?: string;
+  label_type?: string;
+  entity_id?: string;
+  entity_name?: string;
+  entity_type?: string;
+  entity_role?: string;
+  label_source?: string;
+  label_confidence?: string;
+}
+
+export interface ClickHouseCanonicalAmount {
+  raw: string;
+  decimal: string;
+  formatted: string;
+}
+
+export interface ClickHouseCanonicalProvenance {
+  source_provider: string;
+  source_type: string;
+  download_job_id?: string;
+  source_range_id?: string;
+  parser_version?: string;
+  normalizer_version?: string;
+  schema_version: number;
+  ingested_at: string;
+}
+
+export interface ClickHouseTransactionTokenTransfer {
+  log_index: number;
+  batch_index: number;
+  from: ClickHouseCanonicalAddress;
+  to: ClickHouseCanonicalAddress;
+  token: {
+    chain_id: number;
+    contract: string;
+    name: string;
+    symbol: string;
+    decimals: number;
+    standard: string;
+    logo_uri?: string;
+    verified: boolean;
+    spam: boolean;
+  };
+  amount: ClickHouseCanonicalAmount;
+  usd: {
+    usd_value: string;
+    price_usd?: string;
+    price_time?: string;
+    price_source: string;
+    price_confidence: string;
+  } | null;
+  standard: string;
+  provenance: ClickHouseCanonicalProvenance;
+}
+
+export interface ClickHouseTransactionInternal {
+  trace_address: string;
+  trace_index: number;
+  call_type: string;
+  depth: number;
+  parent_trace_index?: number;
+  from: ClickHouseCanonicalAddress;
+  to: ClickHouseCanonicalAddress;
+  amount: ClickHouseCanonicalAmount;
+  input: string;
+  output: string;
+  gas: number;
+  gas_used: number;
+  success: boolean;
+  error?: string;
+  provenance: ClickHouseCanonicalProvenance;
+}
+
+export interface ClickHouseTransactionLog {
+  block_number: number;
+  block_time: string;
+  transaction_index: number;
+  log_index: number;
+  contract: ClickHouseCanonicalAddress;
+  event_name?: string;
+  event_signature?: string;
+  topic0?: string;
+  topic1?: string;
+  topic2?: string;
+  topic3?: string | null;
+  data?: string;
+  decoded?: Record<string, unknown> | null;
+  removed?: boolean;
+  provenance: ClickHouseCanonicalProvenance;
 }
 
 export interface ClickHouseContractDetail {

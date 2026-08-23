@@ -204,25 +204,6 @@
   font-size: 11px;
   color: var(--fg-text-dim);
 }
-.smart-fill-boundary {
-  background: rgba(127, 157, 181, 0.08);
-  border-color: var(--fg-panel-border);
-  border-radius: 6px;
-}
-.smart-fill-boundary .ant-alert-message {
-  color: var(--fg-text);
-  font-size: 12px;
-}
-.smart-fill-boundary .ant-alert-description {
-  color: var(--fg-text-dim);
-  font-size: 11px;
-}
-.smart-fill-boundary .ant-alert-icon {
-  color: var(--fg-accent);
-}
-.smart-fill-cloud-alert {
-  margin-bottom: 10px;
-}
 .smart-fill-footer {
   display: flex;
   justify-content: flex-end;

@@ -61,7 +61,7 @@ func registerFinancialV1Routes(api *gin.RouterGroup) {
 	api.GET("/v2/pricing/:chain/token/:token/resolve", handleResolvePriceV1)
 	api.GET("/v2/pricing/:chain/token/:token/gaps", handlePriceGapsV1)
 	api.GET("/v2/financial-quality/:chain", handleFinancialQualityV1)
-	api.GET("/v2/financial-export/:chain/address/:address.csv", handleFinancialExportV1)
+	api.GET("/v2/financial-export/:chain/address/:address", handleFinancialExportV1)
 }
 
 func financialScope(c *gin.Context) (uint32, bool) {
@@ -341,12 +341,36 @@ func handleFinancialExportV1(c *gin.Context) {
 	if !ok {
 		return
 	}
-	now := time.Now().UTC()
-	from, ok := parseFinancialTime(c, "from", now.Add(-30*24*time.Hour))
+	to, ok := parseFinancialTime(c, "to", time.Now().UTC())
 	if !ok {
 		return
 	}
-	to, ok := parseFinancialTime(c, "to", now)
+	window := strings.ToUpper(defaultString(c.Query("window"), "30D"))
+	var defaultFrom time.Time
+	switch financialanalytics.Window(window) {
+	case financialanalytics.Window24H:
+		defaultFrom = to.Add(-24 * time.Hour)
+	case financialanalytics.Window7D:
+		defaultFrom = to.Add(-7 * 24 * time.Hour)
+	case financialanalytics.Window30D:
+		defaultFrom = to.Add(-30 * 24 * time.Hour)
+	case financialanalytics.Window90D:
+		defaultFrom = to.Add(-90 * 24 * time.Hour)
+	case financialanalytics.Window1Y:
+		defaultFrom = to.AddDate(-1, 0, 0)
+	case financialanalytics.WindowAll:
+		defaultFrom = time.Unix(0, 0).UTC()
+	case financialanalytics.WindowCustom:
+		if strings.TrimSpace(c.Query("from")) == "" || strings.TrimSpace(c.Query("to")) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"detail": "custom window requires from and to"})
+			return
+		}
+		defaultFrom = to.Add(-30 * 24 * time.Hour)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "unsupported financial window"})
+		return
+	}
+	from, ok := parseFinancialTime(c, "from", defaultFrom)
 	if !ok {
 		return
 	}
@@ -357,9 +381,15 @@ func handleFinancialExportV1(c *gin.Context) {
 	}
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", `attachment; filename="financial_export.csv"`)
-	_, err = financialExporterV1.StreamHistoricalCSV(c.Request.Context(), c.Writer, financialintegration.ExportRequest{Dataset: financialintegration.ExportDataset(defaultString(c.Query("dataset"), "historical_activity")), ChainID: id, Address: c.Param("address"), From: from, To: to, TokenAddress: strings.ToLower(c.Query("token")), MinUSD: defaultString(c.Query("min_usd"), "0"), Limit: limit})
+	address := strings.TrimSuffix(c.Param("address"), ".csv")
+	_, err = financialExporterV1.StreamHistoricalCSV(c.Request.Context(), c.Writer, financialintegration.ExportRequest{Dataset: financialintegration.ExportDataset(defaultString(c.Query("dataset"), "historical_activity")), ChainID: id, Address: address, From: from, To: to, TokenAddress: strings.ToLower(c.Query("token")), MinUSD: defaultString(c.Query("min_usd"), "0"), Limit: limit})
 	if err != nil {
 		log.Warn().Err(err).Msg("financial_export_failed")
+		if !c.Writer.Written() {
+			c.Writer.Header().Del("Content-Type")
+			c.Writer.Header().Del("Content-Disposition")
+			writeFinancialError(c, err)
+		}
 	}
 }
 

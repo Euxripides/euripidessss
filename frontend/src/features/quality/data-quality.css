@@ -13,10 +13,6 @@
   min-width: 190px;
 }
 
-.data-quality-alert {
-  margin-bottom: var(--ds-space-3);
-}
-
 .data-quality-snapshot {
   display: flex;
   align-items: center;

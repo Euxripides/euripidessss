@@ -10,10 +10,15 @@ import type {
   ClickHouseDailyStatsQuery,
   ClickHouseTokenMetadata,
   ClickHouseTransactionDetail,
+  ClickHouseTransactionDataset,
+  ClickHouseTransactionInternal,
+  ClickHouseTransactionLog,
+  ClickHouseTransactionTokenTransfer,
   ExplorerChain,
 } from "./ClickHouseExplorerTypes";
 
 const DEFAULT_CHAIN: ExplorerChain = "bsc";
+const transactionOverviewCache = new Map<string, Promise<ClickHouseTransactionDetail>>();
 
 interface ApiErrorPayload {
   detail?: string;
@@ -116,9 +121,73 @@ export async function fetchClickHouseTransactionDetail(
   transactionHash: string,
   chain: ExplorerChain = DEFAULT_CHAIN,
 ): Promise<ClickHouseTransactionDetail> {
-  return explorerGet<ClickHouseTransactionDetail>(
+  const key = `${chain}:${transactionHash.toLowerCase()}`;
+  const cached = transactionOverviewCache.get(key);
+  if (cached) return cached;
+  const request = explorerGet<ClickHouseTransactionDetail>(
     `/api/v1/explorer/${encodeURIComponent(chain)}/tx/${encodeURIComponent(transactionHash)}`,
     "ClickHouse 交易详情查询失败",
+  );
+  transactionOverviewCache.set(key, request);
+  try {
+    return await request;
+  } catch (error) {
+    transactionOverviewCache.delete(key);
+    throw error;
+  }
+}
+
+export function prefetchClickHouseTransactionDetail(transactionHash: string, chain: ExplorerChain = DEFAULT_CHAIN): void {
+  void fetchClickHouseTransactionDetail(transactionHash, chain).catch(() => undefined);
+}
+
+function transactionDatasetPath(chain: ExplorerChain, transactionHash: string, dataset: string): string {
+  return `/api/v2/explorer/${encodeURIComponent(chain)}/tx/${encodeURIComponent(transactionHash)}/${dataset}`;
+}
+
+export interface TransactionCollectionQuery {
+  limit?: number;
+  cursor?: string;
+}
+
+function transactionCollectionURL(chain: ExplorerChain, transactionHash: string, dataset: string, query: TransactionCollectionQuery): string {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const suffix = params.size ? `?${params.toString()}` : "";
+  return `${transactionDatasetPath(chain, transactionHash, dataset)}${suffix}`;
+}
+
+export function fetchClickHouseTransactionTokenTransfers(
+  transactionHash: string,
+  chain: ExplorerChain = DEFAULT_CHAIN,
+  query: TransactionCollectionQuery = { limit: 500 },
+): Promise<ClickHouseTransactionDataset<ClickHouseTransactionTokenTransfer>> {
+  return explorerGet(
+    transactionCollectionURL(chain, transactionHash, "token-transfers", query),
+    "交易代币转账查询失败",
+  );
+}
+
+export function fetchClickHouseTransactionInternals(
+  transactionHash: string,
+  chain: ExplorerChain = DEFAULT_CHAIN,
+  query: TransactionCollectionQuery = { limit: 500 },
+): Promise<ClickHouseTransactionDataset<ClickHouseTransactionInternal>> {
+  return explorerGet(
+    transactionCollectionURL(chain, transactionHash, "internal-transactions", query),
+    "交易内部调用查询失败",
+  );
+}
+
+export function fetchClickHouseTransactionLogs(
+  transactionHash: string,
+  chain: ExplorerChain = DEFAULT_CHAIN,
+  query: TransactionCollectionQuery = { limit: 500 },
+): Promise<ClickHouseTransactionDataset<ClickHouseTransactionLog>> {
+  return explorerGet(
+    transactionCollectionURL(chain, transactionHash, "logs", query),
+    "交易事件日志查询失败",
   );
 }
 

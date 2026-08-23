@@ -1,7 +1,6 @@
 // 调查报告中心（Investigation Report Engine V2）。
 import { useEffect, useState } from "react";
 import {
-  Alert,
   Button,
   Card,
   Descriptions,
@@ -16,6 +15,7 @@ import {
 } from "antd";
 import { DownloadOutlined, FileTextOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
+import { TxHashLink } from "../transaction/TxHashLink";
 import {
   createReport,
   diffReports,
@@ -134,7 +134,7 @@ export default function ReportPage() {
     { title: "Evidence ID", dataIndex: "id", width: 220, render: (v) => <code>{v}</code> },
     { title: "类型", dataIndex: "type", width: 140 },
     { title: "地址", dataIndex: "address", width: 220, render: (v) => (v ? <code>{v}</code> : "—") },
-    { title: "TxHash", dataIndex: "tx_hash", width: 180, render: (v) => (v ? <code>{v}</code> : "—") },
+    { title: "TxHash", dataIndex: "tx_hash", width: 180, render: (v) => (v ? <TxHashLink chainId={56} hash={v} /> : "—") },
     { title: "数据集", dataIndex: "dataset_id", width: 120 },
     { title: "认证", dataIndex: "certification", width: 110 },
     { title: "证据哈希", dataIndex: "evidence_hash", width: 160, render: (v) => <code>{v?.slice(0, 16)}…</code> },

@@ -42,7 +42,7 @@ func TestClickHouseIntegrationWriterIdempotencyAndExplorer(t *testing.T) {
 	defer func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
-		for _, target := range [][2]string{{"chain_transactions", jobID}, {"chain_transactions", failedJobID}, {"chain_transactions", contractTxJobID}, {"token_transfers", tokenJobID}, {"contract_creations", contractJobID}, {"contracts", contractJobID}, {"parsed_events", logJobID}, {"address_activity", jobID}, {"address_activity", failedJobID}, {"address_activity", contractTxJobID}, {"address_activity", tokenJobID}, {"address_activity", contractJobID}} {
+		for _, target := range [][2]string{{"chain_transactions", jobID}, {"chain_transactions", failedJobID}, {"chain_transactions", contractTxJobID}, {"token_transfers", tokenJobID}, {"contract_creations", contractJobID}, {"contracts", contractJobID}, {"raw_logs", logJobID}, {"parsed_events", logJobID}, {"address_activity", jobID}, {"address_activity", failedJobID}, {"address_activity", contractTxJobID}, {"address_activity", tokenJobID}, {"address_activity", contractJobID}} {
 			_ = client.Exec(cleanup, fmt.Sprintf("ALTER TABLE onchain.%s DELETE WHERE ingest_job_id='%s' SETTINGS mutations_sync=2", target[0], target[1]))
 		}
 	}()
@@ -167,8 +167,27 @@ func TestClickHouseIntegrationWriterIdempotencyAndExplorer(t *testing.T) {
 			transfer, _ = transfers[0].(map[string]any)
 		}
 		usd, _ := transfer["usd"].(map[string]any)
-		if response.StatusCode != http.StatusOK || decodeErr != nil || canonical["status"] != "SUCCESS" || method["name"] != "transfer" || len(events) != 1 || len(transfers) != 1 || usd["usd_value"] != "100" || usd["price_source"] != "TETHER_USD_PEG_FALLBACK" {
+		if response.StatusCode != http.StatusOK || decodeErr != nil || canonical["status"] != "SUCCESS" || method["name"] != "transfer" || len(events) != 1 || len(transfers) != 1 || usd["usd_value"] != "100" || usd["price_source"] != "PEG_FALLBACK" {
 			t.Fatalf("Canonical V2 HTTP: status=%d payload=%v decode=%v", response.StatusCode, canonical, decodeErr)
+		}
+		for resource, wantCount := range map[string]int{"token-transfers": 1, "internal-transactions": 0, "logs": 1} {
+			response, err = http.Get(fmt.Sprintf("%s/api/v2/explorer/bsc/tx/%s/%s", baseURL, txHash, resource))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var page map[string]any
+			decodeErr = json.NewDecoder(response.Body).Decode(&page)
+			_ = response.Body.Close()
+			items, _ := page["items"].([]any)
+			if response.StatusCode != http.StatusOK || decodeErr != nil || int(page["count"].(float64)) != wantCount || int(page["total_count"].(float64)) != wantCount || len(items) != wantCount {
+				t.Fatalf("Canonical tx resource %s: status=%d payload=%v decode=%v", resource, response.StatusCode, page, decodeErr)
+			}
+			if resource == "logs" {
+				logItem, _ := items[0].(map[string]any)
+				if _, ok := logItem["decoded"].(map[string]any); !ok || logItem["topic0"] != topic0 || logItem["data"] == "" {
+					t.Fatalf("Canonical raw log lost fields or decoded JSON object: %v", logItem)
+				}
+			}
 		}
 		response, err = http.Get(fmt.Sprintf("%s/api/v2/explorer/bsc/tx/%s", baseURL, failedHash))
 		if err != nil {

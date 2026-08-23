@@ -1,5 +1,5 @@
 // V2.0 实时资产 API（设计 §15/§16）
-import { getJson, postJson } from "../../api/client";
+import { getJson, parseJsonResponse } from "../../api/client";
 
 export type AssetState = "fresh" | "cached" | "stale" | "partial" | "failed";
 
@@ -32,9 +32,28 @@ export interface AddressAssetsRequest {
   force_refresh?: boolean;
 }
 
-export async function fetchAddressAssets(req: AddressAssetsRequest): Promise<AddressAssets | null> {
-  const r = await postJson<AddressAssets>("/api/flow/address-assets", req, "实时资产查询失败");
-  return r.payload ?? null;
+function apiDetail(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === "object" && "detail" in payload) {
+    const detail = String((payload as { detail?: unknown }).detail ?? "").trim();
+    if (detail) return detail;
+  }
+  return fallback;
+}
+
+async function postAssetJson<T>(url: string, body: unknown, fallback: string, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const payload = await parseJsonResponse<T>(response, fallback);
+  if (!response.ok) throw new Error(apiDetail(payload, fallback));
+  return payload;
+}
+
+export async function fetchAddressAssets(req: AddressAssetsRequest, signal?: AbortSignal): Promise<AddressAssets | null> {
+  return await postAssetJson<AddressAssets>("/api/flow/address-assets", req, "实时资产查询失败", signal) ?? null;
 }
 
 export async function fetchAddressAssetsBatch(
@@ -43,12 +62,11 @@ export async function fetchAddressAssetsBatch(
   addresses: string[],
   tokens?: string[],
 ): Promise<{ total: number; assets: AddressAssets[] } | null> {
-  const r = await postJson<{ total: number; assets: AddressAssets[] }>(
+  return await postAssetJson<{ total: number; assets: AddressAssets[] }>(
     "/api/flow/address-assets/batch",
     { chain, chain_id: chainId, addresses, tokens },
     "批量资产查询失败",
   );
-  return r.payload ?? null;
 }
 
 // ── 余额快照（设计 §8）──
@@ -86,12 +104,11 @@ export async function saveBalanceSnapshot(
   address: string,
   tokens?: string[],
 ): Promise<SaveSnapshotResult | null> {
-  const r = await postJson<SaveSnapshotResult>(
+  return await postAssetJson<SaveSnapshotResult>(
     "/api/flow/balance-snapshot",
     { chain, chain_id: chainId, address, tokens },
     "保存余额快照失败",
   );
-  return r.payload ?? null;
 }
 
 export async function fetchBalanceSnapshots(chain: string, address: string): Promise<BalanceSnapshot[] | null> {

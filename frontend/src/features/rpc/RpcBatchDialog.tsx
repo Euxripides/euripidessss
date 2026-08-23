@@ -1,4 +1,4 @@
-import { Alert, Col, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Typography, message } from 'antd';
+import { Col, Form, Input, InputNumber, Modal, Row, Segmented, Select, Space, Switch, Typography, message } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { rpcApi } from './rpcApi';
 import type { RpcBatchFailure, RpcEndpointInput } from './rpcTypes';
@@ -171,12 +171,14 @@ export function RpcBatchDialog({ open, onClose, onCreated }: {
         <Form.Item name="enabled" label="添加后加入自动路由" valuePropName="checked"><Switch /></Form.Item>
       </Form>
       {failures.length ? (
-        <Alert
-          type="error"
-          showIcon
-          message={`${failures.length} 条添加失败`}
-          description={failures.map((failure) => <Typography.Paragraph key={failure.index} style={{ marginBottom: 4 }}>第 {failure.index + 1} 行 {failure.display_name || '未命名'}：{failure.detail}</Typography.Paragraph>)}
-        />
+        <div>
+          <Typography.Text strong type="danger">{failures.length} 条添加失败</Typography.Text>
+          {failures.map((failure) => (
+            <Typography.Paragraph key={failure.index} type="danger" style={{ marginBottom: 4 }}>
+              第 {failure.index + 1} 行 {failure.display_name || '未命名'}：{failure.detail}
+            </Typography.Paragraph>
+          ))}
+        </div>
       ) : null}
     </Modal>
   );

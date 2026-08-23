@@ -1,5 +1,9 @@
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$ForceBuild,
+    [switch]$ForceRestart,
+    [ValidateRange(15, 600)]
+    [int]$StartupTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,7 +36,37 @@ $RetryInterval = 2
 Write-Host "=== ETL Backend Startup ==="
 
 # ---- Build ----
-if (-not $SkipBuild) {
+if ($SkipBuild -and $ForceBuild) {
+    Write-Host "[ERROR] -SkipBuild and -ForceBuild cannot be used together"
+    exit 1
+}
+
+$BuildRequired = -not $SkipBuild
+if ($BuildRequired -and -not $ForceBuild -and (Test-Path -LiteralPath $BinPath)) {
+    $BinModifiedAt = (Get-Item -LiteralPath $BinPath).LastWriteTimeUtc
+    $SourceRoots = @(
+        (Join-Path $ProjectRoot "cmd"),
+        (Join-Path $ProjectRoot "internal")
+    )
+    $ChangedSource = Get-ChildItem -LiteralPath $SourceRoots -File -Recurse -ErrorAction Stop |
+        Where-Object { $_.LastWriteTimeUtc -gt $BinModifiedAt } |
+        Select-Object -First 1
+    if (-not $ChangedSource) {
+        foreach ($ModuleFile in @("go.mod", "go.sum")) {
+            $ModulePath = Join-Path $ProjectRoot $ModuleFile
+            if ((Test-Path -LiteralPath $ModulePath) -and (Get-Item -LiteralPath $ModulePath).LastWriteTimeUtc -gt $BinModifiedAt) {
+                $ChangedSource = Get-Item -LiteralPath $ModulePath
+                break
+            }
+        }
+    }
+    if (-not $ChangedSource) {
+        $BuildRequired = $false
+        Write-Host "[BUILD] Binary is up to date; skipping rebuild (use -ForceBuild to rebuild)"
+    }
+}
+
+if ($BuildRequired) {
     Write-Host "[BUILD] Building windows/amd64..."
     Push-Location $ProjectRoot
     $PreviousGoArch = $env:GOARCH
@@ -48,9 +82,27 @@ if (-not $SkipBuild) {
         }
         Pop-Location
     }
-} elseif (-not (Test-Path $BinPath)) {
+} elseif (-not (Test-Path -LiteralPath $BinPath)) {
     Write-Host "[ERROR] Binary not found: $BinPath"
     exit 1
+}
+
+# ---- Healthy no-op ----
+# 日常重复执行 run.ps1 时，如果代码未变化且当前服务已经健康，不再无意义地
+# 杀进程、重载数万条历史状态。需要明确重启时使用 -ForceRestart。
+if (-not $BuildRequired -and -not $ForceRestart) {
+    $runningProcesses = @(Get-Process -Name "etl-server" -ErrorAction SilentlyContinue)
+    if ($runningProcesses.Count -gt 0) {
+        try {
+            $body = & $Curl -s --connect-timeout 2 $HealthUrl 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0 -and $body -like '*"status":"ok"*') {
+                Write-Host "[CHECK] Server already healthy; no restart needed (PID: $($runningProcesses[0].Id), use -ForceRestart to restart)"
+                exit 0
+            }
+        } catch {
+            # Existing process is unhealthy; continue with normal replacement.
+        }
+    }
 }
 
 # ---- Kill old process tree ----
@@ -110,19 +162,30 @@ Write-Host "[START] Starting server..."
 $proc = Start-Process -FilePath $BinPath -WindowStyle Hidden -PassThru
 Start-Sleep -Milliseconds 500
 
-# ---- Health check (max 15s) ----
-Write-Host "[CHECK] Waiting for server..."
-for ($i = 0; $i -lt 15; $i++) {
+# ---- Health check ----
+$startupWatch = [System.Diagnostics.Stopwatch]::StartNew()
+Write-Host "[CHECK] Waiting for server (timeout: ${StartupTimeoutSeconds}s)..."
+for ($i = 0; $i -lt $StartupTimeoutSeconds; $i++) {
     Start-Sleep -Seconds 1
+    $proc.Refresh()
+    if ($proc.HasExited) {
+        Write-Host "[ERROR] Server process exited early (PID: $($proc.Id), exit code: $($proc.ExitCode))"
+        exit 1
+    }
     try {
         $body = & $Curl -s --connect-timeout 2 $HealthUrl 2>&1 | Out-String
         if ($LASTEXITCODE -eq 0 -and $body -like '*"status":"ok"*') {
-            Write-Host "[CHECK] Server ready (PID: $($proc.Id))"
+            $startupWatch.Stop()
+            Write-Host "[CHECK] Server ready in $([math]::Round($startupWatch.Elapsed.TotalSeconds, 1))s (PID: $($proc.Id))"
             exit 0
         }
     } catch {
         # Not ready yet
     }
+    if (($i + 1) % 10 -eq 0) {
+        Write-Host "[CHECK] Still starting... $($i + 1)s elapsed"
+    }
 }
-Write-Host "[ERROR] Server not ready after 15s"
+$startupWatch.Stop()
+Write-Host "[ERROR] Server not ready after ${StartupTimeoutSeconds}s (PID: $($proc.Id))"
 exit 1

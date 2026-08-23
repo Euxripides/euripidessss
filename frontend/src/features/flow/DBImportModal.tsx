@@ -11,7 +11,7 @@ import {
   ReloadOutlined,
   TableOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Tree, message } from 'antd';
+import { Button, Checkbox, Empty, Form, Input, InputNumber, Modal, Progress, Select, Space, Table, Tabs, Tag, Tooltip, Tree, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { DataNode } from 'antd/es/tree';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -559,12 +559,10 @@ const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
           </div>
 
           {requiredMissing || lowConfidence ? (
-            <Alert
-              type="warning"
-              showIcon
-              message="字段映射需要确认"
-              description="必填字段缺失、低置信度或新表结构会阻止直接导入，请在字段映射页确认并保存。"
-            />
+            <Typography.Paragraph type="warning">
+              <Typography.Text strong>字段映射需要确认。</Typography.Text>
+              必填字段缺失、低置信度或新表结构会阻止直接导入，请在字段映射页确认并保存。
+            </Typography.Paragraph>
           ) : null}
 
           <Tabs

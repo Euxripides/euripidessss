@@ -71,6 +71,44 @@ func TestResolveTokenSpecsETHDecimals(t *testing.T) {
 	}
 }
 
+func TestResolveTokenSpecsExplorerChains(t *testing.T) {
+	tests := []struct {
+		chain       string
+		chainID     int64
+		native      string
+		usdcAddress string
+	}{
+		{chain: "base", chainID: 8453, native: "ETH", usdcAddress: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"},
+		{chain: "arbitrum", chainID: 42161, native: "ETH", usdcAddress: "0xaf88d065e77c8cc2239327c5edb3a432268e5831"},
+	}
+	for _, test := range tests {
+		t.Run(test.chain, func(t *testing.T) {
+			cfg, ok := chainAssetsFor(test.chain)
+			if !ok {
+				t.Fatalf("%s 应存在资产配置", test.chain)
+			}
+			if cfg.ChainID != test.chainID || cfg.NativeSymbol != test.native || cfg.USDCAddress != test.usdcAddress || cfg.USDCDecimals != 6 {
+				t.Fatalf("%s 资产配置错误: %+v", test.chain, cfg)
+			}
+			specs := resolveTokenSpecs(cfg, nil)
+			if len(specs) != 2 {
+				t.Fatalf("%s 默认应为 native + USDC，got %d: %+v", test.chain, len(specs), specs)
+			}
+			if specs[0].Symbol != test.native || specs[0].Address != "" {
+				t.Fatalf("%s native 配置错误: %+v", test.chain, specs[0])
+			}
+			if specs[1].Symbol != "USDC" || specs[1].Address != test.usdcAddress || specs[1].Decimals != 6 {
+				t.Fatalf("%s USDC 配置错误: %+v", test.chain, specs[1])
+			}
+			for _, spec := range specs {
+				if spec.Symbol == "USDT" || (spec.Address == "" && spec.Symbol != test.native) {
+					t.Fatalf("%s 不应生成空地址稳定币: %+v", test.chain, specs)
+				}
+			}
+		})
+	}
+}
+
 // ── 余额格式化 ──
 
 func TestFormatBalance(t *testing.T) {
