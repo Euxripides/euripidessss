@@ -11697,3 +11697,4 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 - 补充验证：`go test ./internal/... -short -count=1 -timeout=3m` 全部通过，Smart Download 包用时 57.752s。
 - Git 提交钩子自动重新生成 `docs/cpg/{cpg.json,deps.dot,deps.mmd,summary.md}`，一并纳入提交。首次摘要增强调用报路径写入错误，直接使用已安装的 Python 生成成功；提交时临时从 PATH 排除 WindowsApps 的 Python 别名，保留正常钩子执行。
 - 推送结果：本地提交已完成；`git push origin main` 停在凭据管理器，非交互重试明确返回 `could not read Username`，本机没有可用的 GitHub HTTPS 登录凭据。远端仍为 `4e714274b72010d362f94eb2d4c9466e8cfa4023`，需完成 GitHub 登录后重试推送。
+- 后续结果：用户完成 GitHub 设备授权后，`git push origin main` 成功，将远端从 `4e714274` 推进至 `7bccb9b14066ab30c2d2dbfaa0b202c3f82fd78f`；`git ls-remote origin refs/heads/main` 与本地 HEAD 完全一致。此前的凭据阻塞已解除，推送已完成。本次仅补充同步结果，无代码、接口、数据库或前端变更。

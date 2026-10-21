@@ -9041,3 +9041,4 @@ ormalizeFilterBoundary 精确时间边界处理。
 - `go test ./internal/... -short -count=1 -timeout=3m` 全部通过，Smart Download 包用时 57.752s。
 - Git 钩子自动刷新 4 个 `docs/cpg/` 文件；处理 Python 别名导致的首次路径写入错误后，继续按原钩子提交流程执行。
 - 本地提交完成，云端推送因缺少 GitHub HTTPS 登录凭据未完成；非交互重试返回 `could not read Username`，远端尚未更新。
+- 用户完成 GitHub 设备授权后推送成功，远端 `main` 已更新至 `7bccb9b14066ab30c2d2dbfaa0b202c3f82fd78f`，独立查询远端哈希与本地一致；凭据阻塞已解除。本次仅补充交接及变更记录。
