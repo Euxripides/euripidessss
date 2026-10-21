@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/etl/backend/internal/analyticsapi"
+	"github.com/etl/backend/internal/cloudruntime"
 	"github.com/etl/backend/internal/datasetevents"
 	"github.com/etl/backend/internal/downloadscheduler"
 	"github.com/etl/backend/internal/logger"
@@ -97,22 +98,132 @@ func (h *SchedulerHandler) metrics(w http.ResponseWriter, r *http.Request) {
 			cancelTotal++
 		}
 	}
+	cloudMetrics := cloudLifecycleMetrics(h.scheduler.CloudRuntimeStatus(), h.scheduler.CloudJobs(), time.Now().UTC())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"requirements_total":      len(h.scheduler.Plans()),
-		"coverage_hit_ratio":      0, // 需 Coverage Resolver 统计接口，暂缺
-		"provider_success_rate":   0,
-		"provider_p95_ms":         0,
-		"cloud_fallback_ratio":    h.scheduler.CloudFallbackRatio(),
-		"event_total":             len(events),
-		"event_lag_ms":            0,
-		"investigation_resume_ms": 0,
-		"graph_increment_ms":      0,
-		"registry_rows":           registryRows,
-		"multipart_parts_total":   registryFiles,
-		"resume_total":            resumeTotal,
-		"cancel_total":            cancelTotal,
-		"local_sync_retry_total":  0,
+		"requirements_total":              len(h.scheduler.Plans()),
+		"coverage_hit_ratio":              0, // 需 Coverage Resolver 统计接口，暂缺
+		"provider_success_rate":           0,
+		"provider_p95_ms":                 0,
+		"cloud_fallback_ratio":            h.scheduler.CloudFallbackRatio(),
+		"event_total":                     len(events),
+		"event_lag_ms":                    0,
+		"investigation_resume_ms":         0,
+		"graph_increment_ms":              0,
+		"registry_rows":                   registryRows,
+		"multipart_parts_total":           registryFiles,
+		"resume_total":                    resumeTotal,
+		"cancel_total":                    cancelTotal,
+		"local_sync_retry_total":          0,
+		"cloud_workers_total":             cloudMetrics.WorkersTotal,
+		"cloud_workers_configured":        cloudMetrics.WorkersConfigured,
+		"cloud_workers_alive":             cloudMetrics.WorkersAlive,
+		"cloud_workers_busy":              cloudMetrics.WorkersBusy,
+		"cloud_workers_idle":              cloudMetrics.WorkersIdle,
+		"cloud_worker_slots":              cloudMetrics.WorkerSlots,
+		"cloud_max_sqd_inflight_requests": cloudMetrics.MaxSQDInflightRequests,
+		"jobs_queued":                     cloudMetrics.JobsQueued,
+		"jobs_leased":                     cloudMetrics.JobsLeased,
+		"jobs_running":                    cloudMetrics.JobsRunning,
+		"jobs_uploading":                  cloudMetrics.JobsUploading,
+		"jobs_syncing":                    cloudMetrics.JobsSyncing,
+		"jobs_validating":                 cloudMetrics.JobsValidating,
+		"jobs_completed_1h":               cloudMetrics.JobsCompleted1H,
+		"jobs_failed_1h":                  cloudMetrics.JobsFailed1H,
 	})
+}
+
+type cloudLifecycleMetricSnapshot struct {
+	WorkersConfigured, WorkersTotal, WorkersAlive, WorkersBusy, WorkersIdle int
+	MaxSQDInflightRequests                                                  int
+	WorkerSlots                                                             []cloudruntime.WorkerSlotStatus
+	JobsQueued, JobsLeased, JobsRunning                                     int
+	JobsUploading, JobsSyncing, JobsValidating                              int
+	JobsCompleted1H, JobsFailed1H                                           int
+}
+
+func cloudLifecycleMetrics(runtime downloadscheduler.CloudRuntimeStatus, jobs []cloudruntime.Job, now time.Time) cloudLifecycleMetricSnapshot {
+	var out cloudLifecycleMetricSnapshot
+	if runtime.WorkersTotal > 0 {
+		out.WorkersConfigured = runtime.ConfiguredConcurrency
+		out.WorkersTotal = runtime.WorkersTotal
+		out.WorkersAlive = runtime.WorkersAlive
+		out.WorkersBusy = runtime.WorkersBusy
+		out.WorkersIdle = runtime.WorkersIdle
+		out.MaxSQDInflightRequests = runtime.MaxSQDInflightRequests
+		out.WorkerSlots = append([]cloudruntime.WorkerSlotStatus(nil), runtime.WorkerSlots...)
+	}
+	for _, job := range jobs {
+		stage := strings.ToLower(strings.TrimSpace(job.Stage))
+		switch stage {
+		case "queued":
+			out.JobsQueued++
+		case "leased":
+			out.JobsLeased++
+		case "uploading", "manifesting":
+			out.JobsUploading++
+		case "syncing":
+			out.JobsSyncing++
+		case "validating":
+			out.JobsValidating++
+		case "running":
+			out.JobsRunning++
+		default:
+			switch strings.ToLower(strings.TrimSpace(job.State)) {
+			case "queued":
+				out.JobsQueued++
+			case "running":
+				out.JobsRunning++
+			}
+		}
+		if completed := firstCloudJobTime(job.CompletedAt, job.FinishedAt); completed != nil &&
+			!completed.After(now) && now.Sub(*completed) <= time.Hour {
+			out.JobsCompleted1H++
+		}
+		if failed := firstCloudJobTime(job.FailedAt, failedFinishedAt(job)); failed != nil &&
+			!failed.After(now) && now.Sub(*failed) <= time.Hour {
+			out.JobsFailed1H++
+		}
+	}
+	if runtime.QueuedJobs > out.JobsQueued {
+		out.JobsQueued = runtime.QueuedJobs
+	}
+	if runtime.LeasedJobs > out.JobsLeased {
+		out.JobsLeased = runtime.LeasedJobs
+	}
+	state := strings.ToUpper(strings.TrimSpace(runtime.State))
+	if runtime.WorkersTotal > 0 {
+		return out
+	}
+	switch state {
+	case "DEPLOYING", "STARTING", "READY", "BUSY", "IDLE", "DEGRADED", "FAILED", "REMOVING":
+		out.WorkersTotal = 1
+	}
+	switch state {
+	case "READY", "BUSY", "IDLE":
+		out.WorkersAlive = 1
+	}
+	active := out.JobsLeased + out.JobsRunning + out.JobsUploading + out.JobsSyncing + out.JobsValidating
+	if out.WorkersAlive > 0 && (state == "BUSY" || runtime.LeasedJobs > 0 || runtime.RunningJob != "" || active > 0) {
+		out.WorkersBusy = 1
+	}
+	out.WorkersIdle = out.WorkersAlive - out.WorkersBusy
+	return out
+}
+
+func firstCloudJobTime(values ...*time.Time) *time.Time {
+	for _, value := range values {
+		if value != nil && !value.IsZero() {
+			return value
+		}
+	}
+	return nil
+}
+
+func failedFinishedAt(job cloudruntime.Job) *time.Time {
+	if strings.EqualFold(job.State, "failed") {
+		return job.FinishedAt
+	}
+	return nil
 }
 
 // cloudJobCancel POST /cloud/jobs/cancel — 写入 Cloud Cancel Marker（Phase 5.2 §6）。

@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "name": "BASELINE_C1_50K",
+  "status": "TERMINAL",
+  "prefix": "bsc/benchmarks/baseline-c1-50k-v5/",
+  "configuration": {
+    "build_version": "5bf8c10f5f40e39e81d42af35911da784af8d012",
+    "worker_count": 1,
+    "concurrency": 1,
+    "span": 50000,
+    "dataset": "token_transfer",
+    "chain": "bsc",
+    "address_count": 21,
+    "block_range": [
+      114000000,
+      115499999
+    ],
+    "jobs": 30,
+    "workload_sha256": "326cff437cd237860e91f1596b62e536184f978b5828921dc0205aaa1d0b1d2d"
+  },
+  "progress": {
+    "completed_jobs": 30,
+    "failed_jobs": 0,
+    "pending_jobs": 0,
+    "leased_jobs": 0
+  },
+  "metrics": {
+    "requests_total": 407,
+    "success_total": 372,
+    "failed_total": 35,
+    "total_503": 0,
+    "total_429": 0,
+    "timeout_total": 0,
+    "retry_total": 5,
+    "network_error_total": 0,
+    "dns_error_total": 0,
+    "cancelled_total": 30,
+    "total_3xx": 0,
+    "total_4xx_other": 0,
+    "total_5xx_other": 5,
+    "total_http_other": 0,
+    "logical_queries_total": 30,
+    "logical_queries_success_total": 30,
+    "logical_queries_failed_total": 0,
+    "unclassified_failed_total": 0,
+    "success_rate": 0.914004914004914,
+    "rate_503": 0,
+    "rate_429": 0,
+    "timeout_rate": 0,
+    "retry_rate": 0.012285012285012284,
+    "request_duration_ms": {
+      "samples": 407,
+      "p50_ms": 193,
+      "p90_ms": 385,
+      "p95_ms": 424,
+      "p99_ms": 522
+    },
+    "query_duration_ms": {
+      "samples": 30,
+      "p50_ms": 9463,
+      "p90_ms": 18775,
+      "p95_ms": 19891,
+      "p99_ms": 20016
+    },
+    "ttfa_ms": {
+      "samples": 30,
+      "p50_ms": 9462,
+      "p90_ms": 18773,
+      "p95_ms": 19891,
+      "p99_ms": 20015
+    },
+    "worker_idle_between_jobs_ms": {
+      "samples": 29,
+      "p50_ms": 9059,
+      "p90_ms": 10039,
+      "p95_ms": 10294,
+      "p99_ms": 10584
+    },
+    "claim_ms": {
+      "samples": 30,
+      "p50_ms": 3803,
+      "p90_ms": 4408,
+      "p95_ms": 4818,
+      "p99_ms": 5132
+    },
+    "lease_acquire_ms": {
+      "samples": 30,
+      "p50_ms": 2204,
+      "p90_ms": 2602,
+      "p95_ms": 2885,
+      "p99_ms": 3633
+    },
+    "r2_upload_ms": {
+      "samples": 30,
+      "p50_ms": 2075,
+      "p90_ms": 2447,
+      "p95_ms": 2533,
+      "p99_ms": 2689
+    },
+    "rows": 63944,
+    "bytes": 2763398,
+    "blocks_completed": 1500000,
+    "elapsed_ms": 680312,
+    "jobs_per_hour": 158.750690859488,
+    "blocks_per_second": 2204.870706381778,
+    "rows_per_second": 93.99216829925093
+  },
+  "integrity": {
+    "failures": 0,
+    "duplicate_part_hashes": 0,
+    "coverage_percent": 100
+  },
+  "safety_gate": {
+    "status": "PASS",
+    "reason": "THRESHOLDS_SATISFIED"
+  }
+}

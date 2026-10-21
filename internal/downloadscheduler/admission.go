@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/etl/backend/internal/cloudruntime"
 )
 
 // CloudBudget Cloud 预算 Guard（设计 §82/§107：保守 V1 上限）。
@@ -148,16 +150,23 @@ func (s *CloudUsageStore) save(u CloudUsage) error {
 
 // CloudRuntimeStatus Cloud 运行时状态（Admission Gate 输入，避免调度器依赖 cloudruntime 类型）。
 type CloudRuntimeStatus struct {
-	State                   string `json:"state"`
-	Mode                    string `json:"mode,omitempty"`
-	Available               bool   `json:"available"`
-	Reason                  string `json:"reason,omitempty"`
-	QueuedJobs              int    `json:"queued_jobs"`
-	LeasedJobs              int    `json:"leased_jobs"`
-	RunningJob              string `json:"running_job,omitempty"`
-	FailureCooldownUntil    string `json:"failure_cooldown_until,omitempty"`
-	DeploymentKeyConfigured bool   `json:"deployment_key_configured"`
-	R2Configured            bool   `json:"r2_configured"`
+	State                   string                          `json:"state"`
+	Mode                    string                          `json:"mode,omitempty"`
+	Available               bool                            `json:"available"`
+	Reason                  string                          `json:"reason,omitempty"`
+	QueuedJobs              int                             `json:"queued_jobs"`
+	LeasedJobs              int                             `json:"leased_jobs"`
+	RunningJob              string                          `json:"running_job,omitempty"`
+	FailureCooldownUntil    string                          `json:"failure_cooldown_until,omitempty"`
+	DeploymentKeyConfigured bool                            `json:"deployment_key_configured"`
+	R2Configured            bool                            `json:"r2_configured"`
+	ConfiguredConcurrency   int                             `json:"configured_concurrency,omitempty"`
+	WorkersTotal            int                             `json:"workers_total,omitempty"`
+	WorkersAlive            int                             `json:"workers_alive,omitempty"`
+	WorkersBusy             int                             `json:"workers_busy,omitempty"`
+	WorkersIdle             int                             `json:"workers_idle,omitempty"`
+	MaxSQDInflightRequests  int                             `json:"max_sqd_inflight_requests,omitempty"`
+	WorkerSlots             []cloudruntime.WorkerSlotStatus `json:"worker_slots,omitempty"`
 }
 
 // CloudAdmissionDecision Cloud Admission Gate 判定结果（设计 §15/§80）。

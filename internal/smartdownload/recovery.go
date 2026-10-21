@@ -84,6 +84,9 @@ func (s *Service) RecoverAll(ctx context.Context) error {
 }
 
 func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
+	initialBatch := s.store.GetBatch(batchID)
+	wasPaused := initialBatch != nil &&
+		(initialBatch.Status == BatchPaused || initialBatch.Status == BatchPausedByPriority)
 	for _, a := range s.store.ListAddressesByBatch(batchID) {
 		if a.CancelRequested || a.Status == AddressCanceled {
 			s.mu.Lock()
@@ -106,7 +109,9 @@ func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
 			}
 			if ds.Status == DatasetDBWriteFailed || ds.Status == DatasetIndexing {
 				// 已认证/已合并数据只重试索引；绝不重建或重新下载 Range。
-				go s.indexDataset(ds.ID)
+				if ok := s.enqueueClickHouse(ds.ID, false); !ok {
+					logger.Log.Warn().Str("dataset_job", ds.ID).Msg("smartdownload_recover_clickhouse_queue_full")
+				}
 				continue
 			}
 			if err := s.recoverDataset(ctx, ds.ID); err != nil {
@@ -121,7 +126,9 @@ func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
 			}
 			// 校验中任务在重启后重新触发校验（不标记失败）
 			if current := s.store.GetDataset(ds.ID); current != nil && current.Status == DatasetValidating {
-				go s.validateDatasetAndFinalize(ds.ID)
+				if ok := s.enqueueValidation(ds.ID); !ok {
+					logger.Log.Warn().Str("dataset_job", ds.ID).Msg("smartdownload_recover_validation_queue_full")
+				}
 			}
 		}
 		// 地址级状态重算
@@ -129,7 +136,7 @@ func (s *Service) recoverBatch(ctx context.Context, batchID string) error {
 	}
 	s.recomputeBatchStatus(batchID)
 	if batch := s.store.GetBatch(batchID); batch != nil &&
-		(batch.PauseRequested || batch.Status == BatchPaused || batch.Status == BatchPausedByPriority) {
+		(wasPaused || batch.PauseRequested || batch.Status == BatchPaused || batch.Status == BatchPausedByPriority) {
 		s.mu.Lock()
 		s.transitionBatchPausedLocked(batchID)
 		s.mu.Unlock()

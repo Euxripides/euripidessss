@@ -157,6 +157,13 @@ func (s *Scheduler) CloudRuntimeStatus() CloudRuntimeStatus {
 		RunningJob:              st.RunningJob,
 		DeploymentKeyConfigured: st.DeploymentKeyConfigured,
 		R2Configured:            st.R2Configured,
+		ConfiguredConcurrency:   st.ConfiguredConcurrency,
+		WorkersTotal:            st.WorkersTotal,
+		WorkersAlive:            st.WorkersAlive,
+		WorkersBusy:             st.WorkersBusy,
+		WorkersIdle:             st.WorkersIdle,
+		MaxSQDInflightRequests:  st.MaxSQDInflightRequests,
+		WorkerSlots:             append([]cloudruntime.WorkerSlotStatus(nil), st.WorkerSlots...),
 	}
 	if st.FailureCooldownUntil != nil {
 		rt.FailureCooldownUntil = st.FailureCooldownUntil.Format(time.RFC3339)

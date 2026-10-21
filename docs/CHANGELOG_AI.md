@@ -1,3 +1,28 @@
+## 2026-08-26 — Smart Download SQD Cloud 物理聚合与自适应 Range 收敛
+
+### 新增/变更
+
+- `internal/smartdownload/cloud_adapter.go`
+  - `sqd_cloud` 现在实现 grouped adapter 能力，能把同窗多地址任务提交成一个物理 Cloud Job。
+  - Group completion 后按地址/数据集 fan-out 回逻辑 Range。
+- `internal/smartdownload/discovery/rangeplanner.go`
+  - 新增 `PlanSegmentsBySpan`，把 discovery 的 `SuggestedRangeSpan` 直接用于实际 Range 切分。
+- `internal/smartdownload/service.go`
+  - `CreateBatch` 的 projected range 统计改为纯算术计数，避免 10K 地址下反复构造临时切片。
+
+### 验证
+
+- `go test ./internal/smartdownload -run 'TestCloudAdapterReconcilesManifestAndParquetRows|TestCloudAdapterExecutesGroupedAddressesInOneJob|TestV33CloudRangesAggregateIntoOnePhysicalWork|TestV33RangeRefsPreserveCloudAndRPCOwners|TestAdaptiveRangesCreation|TestPackCreation10K' -count=1`
+- `cd frontend && npm run build`
+- `go vet ./...`
+- `.\run.ps1 -ForceRestart`
+- `GET /api/health` = `ok`
+
+### 未完成事项
+
+- `go test ./internal/... -count=1 -timeout=15m` 在记录时仍在执行，当前只确认前半段已通过；若要最终收口，需要再看整包是否全部收尾。
+- 本次未变更 API 路径、数据库结构或前端页面。
+
 ## 2026-08-23 — 修复 Excel 式筛选候选值被当前筛选收缩
 
 ### 新增/变更
@@ -8870,3 +8895,149 @@ ormalizeFilterBoundary 精确时间边界处理。
 - 方法签名来源为 FOURBYTE_DIRECTORY，confidence=MEDIUM、is_verified=false；不宣称 ABI 已验证。
 - 无源代码、API 或 Schema 变化；Smart Download 验证批次 `f15db4d7-2bf9-4ff3-ac75-8f4742f61e24` 已取消，内部交易仍为 0/未完成独立认证。
 - 验证：health=ok；交易/代币分页唯一键 246/784；Receipt 246/246、gas_used 零值 0；覆盖证据 SHA256=`1aa22dfbbd6a7479d228aa68ee27d4d684e83790fa7012e8a40875f5f84fa5fd`。
+## 2026-08-26 — 创建 21 个 BSC LP 地址 SQD Cloud 下载任务（运行中）
+
+- 创建并启动主批次 `11abc33f-3cbd-4158-a959-a3ccf920c1b5`：BSC、21 地址、`token_transfers`、`TURBO/HIGH/PERFORMANCE`，范围 `55972770-118026722`（北京时间 2025-08-01 00:00 起）。
+- 主批次含 21 Dataset、26,082 Range；初始 25,851 Cloud 历史分片 + 231 RPC 尾部分片。当前状态 `RUNNING`，但仍为 0 行/0 bytes，尚无 Cloud Job、Parquet 或 Registry 增长。
+- 使用现有凭据成功部署 `supreme/bsc-emergency-worker@v2`，`sqd list` 权威状态为 `DEPLOYED`（2026-08-25 16:20:55 UTC）。
+- 客户端超时的 BLOCK 重试最终形成未启动副本 `d3c97ebc-445f-4ae4-923d-4a16ca4b8794`；取消请求受 26,082 Range 全局锁遍历阻塞，副本仍为 `CREATED`，禁止启动。
+- 验证：`/api/health` 正常；Smart Download 四 Adapter 注册；主批次状态文件为 RUNNING；抽样 Range 出现 RPC 解析失败并回到 READY；截至 2026-08-26 00:22 +08:00 Cloud Jobs=0。
+- 未修改代码、接口、数据库结构或前端；未重启服务。后续必须以 Cloud Job、输出 bytes/Parquet、Registry 和覆盖认证判断完成度。
+## 2026-08-26 — 21 LP SQD Cloud 下载阻塞原因复核
+
+- 排除配置问题：部署密钥、R2、CLI 均存在，远端 `supreme/bsc-emergency-worker@v2` 仍为 DEPLOYED。
+- 确认实际阻塞：26,082 Range 的 TURBO 重平衡在全局 `service.mu` 内逐 Range `SaveRange`；Cloud Job 提交、Range 回写和重复批次取消均排队等待，最新 Range 写入停在 00:01:03，Cloud Jobs=0。
+- 主批次仍 RUNNING 但 0 行/0 bytes；副本仍 CREATED。未修改代码或重启服务。
+
+## 2026-08-26 — 修复 SQD Cloud 大批次无法持续领取
+
+- 修复 TURBO 调度器在全局锁内无条件重写所有 Range 的性能阻塞；改为差异持久化和并行 `SaveRanges`。
+- Store 新增 Dataset→Range 索引及低开销安全克隆，消除反复全表扫描和 JSON 克隆。
+- 修复 RPC/Cloud 并发配额：为 Cloud 预留槽位、SharedWork 按唯一执行计数、Cloud worker 优先领取 Cloud owner Range，并解绑遗留的 Cloud→RPC SharedWork。
+- 修改 `internal/smartdownload/store.go`、`service.go`、`v31.go`、`v33.go`、`turbo.go`；新增 `turbo_rebalance_persistence_test.go`。无 API、Schema 或前端变化。
+- 定向 7 项回归、`go vet ./...`、后端构建均通过；`run.ps1 -ForceRestart` 后 health=ok、首页 200、PID 22256 正常监听。
+- 实时验收：主批次 `11abc33f-3cbd-4158-a959-a3ccf920c1b5` 为 RUNNING；重复批次已 CANCELED；远端 Worker 为 DEPLOYED；SQD Cloud 作业由 0 增至 3 且全部 done/no error，前三段结果已回写为 EMPTY，随后 2 个 Cloud Range 已接力 RUNNING。
+- 批次已有 6 个 RPC 链头 Range 完成并真实写入 515 行、46,281 bytes；当前聚合为 COMPLETED=6、EMPTY=18、PENDING=25,845、READY=211、RUNNING=2。
+- 下载尚未完成：总计 26,082 Range；不得把 RUNNING、前三个 Cloud 空作业或当前 515 行表述为全量完成。
+
+## 2026-08-26 — 修复 Smart Download 暂停无法收敛
+
+- 主批次 `11abc33f-3cbd-4158-a959-a3ccf920c1b5` 已按用户要求正式暂停，状态为 PAUSED，现有输出保留。
+- 修复暂停排空期间仍可领取新 Range 的竞态；`pause_requested` 生效后立即停止 claim，只等待既有执行收尾。
+- 新增暂停期间不继续 claim 的回归测试，并与重启恢复暂停测试一起通过；`go vet ./...` 通过。
+- `run.ps1 -ForceRestart` 后 health=ok、PID 39252；无 API、Schema 或前端变化。
+### 2026-08-25 Smart Download Turbo Phase 1 diagnostics
+
+- 修复/补充：
+  - 为 `TurboStatus` 增加 `logical_ranges`、`unique_block_windows`、`duplicate_block_window_ratio`、`address_fan_in`，用于定位 range 爆炸和重复扫描。
+  - `TurboStatus` 现在会按 `from_block/to_block` 聚合唯一窗口并统计地址 fan-in，便于判断是否存在 `Address × Dataset × Range` 乘法放大。
+  - 新增回归测试，覆盖 Turbo 状态的重复窗口统计。
+- 当前状态：
+  - 主批次 `11abc33f-3cbd-4158-a959-a3ccf920c1b5` 已暂停，服务健康正常。
+  - 实测诊断值：`logical_ranges=26082`、`unique_block_windows=1242`、`duplicate_block_window_ratio=21`、`address_fan_in=21`。
+- 已验证命令：
+  - `POST /api/smart-download/batches/11abc33f-3cbd-4158-a959-a3ccf920c1b5/pause`
+  - `GET /api/health`
+  - `GET /api/smart-download/batches/11abc33f-3cbd-4158-a959-a3ccf920c1b5/turbo-status`
+  - `go test ./internal/smartdownload -run TestTurboRejectsRegularOnlyProvider -count=1`
+- 未完成事项：
+  - 还没有实施 CloudRangeAggregator / adaptive span，只完成 Phase 1 可观测性修复。
+
+## 2026-08-26 — SQD Cloud/RPC Turbo Phase 1–2 与暂停恢复修复
+
+- 新增 `docs/turbo_cloud_bottleneck_gap_report.md`、`docs/turbo_bottleneck_report.json`，记录 12 项检查、逻辑/物理 Range 放大基线及阶段边界。
+- Turbo Status 新增 logical address/dataset/range、unique block windows、duplicate ratio、address fan-in、estimated Cloud/RPC jobs 和 range explosion warning。
+- Cloud Job 新增从 queued 到 coverage commit 的完整可选时间戳，耗时字段对齐方案：queue wait、lease-to-start、SQD TTFA/scan、Parquet、R2、manifest、local sync、validation、coverage commit、total job；缺失端点保持 null。
+- Scheduler Metrics 新增 Cloud Worker 与 Job lifecycle stage 计数。
+- Processor 生产入口补齐真实 lifecycle 上报并重新部署 `supreme/bsc-emergency-worker@v2`（DEPLOYED，2026-08-25 20:04:30 UTC）。
+- 修复 TURBO Cloud-first Worker 遗漏 RPC-owned Range，以及 Cloud 预留占满全部 claim 导致 RPC lane 永久不可领取的问题。
+- 修复服务重启把已暂停批次复活为 RUNNING；新增 already-paused recovery 回归测试。
+- 测试修复：`TestGapRepair` 注册 Service Shutdown，消除后台写入与 TempDir 清理竞态。
+- 验证：Go 全包测试全绿，Smart Download 全包最终 83.195s；Go vet、后端构建、前端构建、Processor 2/2 测试与构建均通过。
+- 最终运行态：PID 43800、health=ok、首页 200；主批次 API/落盘均 PAUSED，running=0、completed=31；未恢复下载。
+- 独立 2-Range 验收批次 `a4028c4b-1790-49fe-8c31-fa2d9bfdd00e` 已 COMPLETED，Cloud Job `sd-ed012eca-c9ed-45f0-94e1-48fd2bcd2822` 真实完成；生命周期耗时已由 API 返回，0 行时 TTFA 保持 null，Metrics completed_1h=1/failed_1h=0。主批次全程仍为 PAUSED。
+- 无 API 路径、数据库 Schema、前端页面/组件变更。下一步是独立小 Job 生命周期验收与 1/2/4 benchmark，之后才可决定聚合、adaptive span 和 pipeline 改造。
+
+## 2026-08-26 — SQD Processor 并发 2 稳定性与 Manifest 行数修复
+
+- Processor 生产命令改为常驻 `lib/worker.js`，支持 `WORKER_CONCURRENCY`（1–16），当前部署值 2。
+- 修复并发子进程 Prometheus 端口冲突：slot 使用 3000、3001 等独立端口；R2 失败目录新增脱敏 `runner-stderr.log`，已凭该证据确认旧失败为 `EADDRINUSE :::3000`。
+- 修复 Cloud manifest `parts[].rows` 缺失：逐 Parquet 解析 footer `num_rows` 并写入 manifest/checkpoint，无法精确恢复时拒绝发布，不再生成会被 Go 严格校验拒绝的 `rows=0` part。
+- 修改 Processor：`src/{worker.ts,job-runner.ts,upload.ts,main.ts,lifecycle.test.ts}`、`squid.yaml`；ETL 本轮仅更新诊断报告与交接文档，无新增 API、数据库 Schema、前端页面/组件。
+- 验证：Processor `npm test` 3/3、TypeScript build 通过；`sqd deploy . --org supreme` 更新 `supreme/bsc-emergency-worker@v2` 成功。
+- 真实验收：并发 2 批次 3 个 Cloud Job 全部 done/0 新失败；修复后 Job `sd-cc17d955-a33a-4b0b-87a3-3a9b5ef4ec3d` done、2 rows、validation=37ms，未出现该 Job 的 `LOCAL_VALIDATION_FAILED`。SQD scan 129,906ms，显著高于 R2 2,682ms 与 manifest 2,513ms。
+- 主批次 `11abc33f-3cbd-4158-a959-a3ccf920c1b5` 最终仍为 PAUSED，未恢复。并发 4 因缺少相同 workload A/B 且当前瓶颈位于 SQD scan 暂缓，生产值保留 2。
+
+## 2026-08-26 — SQD Cloud Logical→Physical Range 聚合
+
+- `sqd_cloud` 新增多地址 Group Range：同链、同 owner、同 dataset/window 最多 25 地址合并为一次物理 Cloud 提交，再按 `from_address`/`to_address` 回写各 Logical Range。
+- SharedWork 新增 owner/priority/cloud tier，RPC 与 Cloud 物理任务严格隔离；TURBO Start 在 owner 重平衡后解绑遗留 RPC 引用并重新聚合 Cloud Range。
+- 修复重复 attach 导致逻辑引用重复追加的问题；已有 `shared_work_id` 的 Pending/Ready Range 不再二次挂载。
+- 修改 `internal/smartdownload/{cloud_adapter.go,rpc_adapter.go,service.go,v33.go,cloud_adapter_quality_test.go,v33_test.go}`；无 API 路径、数据库 Schema、前端页面或组件变化。
+- 回归：Go 全包、Smart Download 最终全包、`go vet ./...`、后端构建和前端 build 均通过；服务重启后 health=ok、首页 200。
+- 真实验收批次 `a8e53b57-5a2f-444e-86c2-358a0728459e` 已 COMPLETED：3 个 Cloud Logical Range → 1 个物理 Job `sd-4658ae58-27ab-416d-bced-69a6ab1fd258`，50 物理行按地址回写 2/12/36 行，全部认证；批次 6/6 Range、Coverage 100%、失败 0。
+- 主批次 `11abc33f-3cbd-4158-a959-a3ccf920c1b5` 仍为 PAUSED，running=0、completed=31；未恢复下载。剩余为严格 1/2/4 benchmark、Adaptive Span 与 pipeline 解耦。
+
+## 2026-08-26 — Cloud Worker Slot 遥测与并发校准安全门
+
+- Processor 新增每 slot R2 heartbeat、真实 busy/idle、累计忙时、完成/失败计数、全局 `MAX_SQD_INFLIGHT_REQUESTS` 闸门，以及成功/失败 Job 的 503/429/timeout/retry 与 CPU/RSS diagnostics。
+- `JOB_QUEUE_PREFIX` 改为可配置，默认仍 `bsc/jobs/`；隔离 benchmark 不再经过 Smart Download、RPC 或 Coverage。
+- ETL Cloud Runtime/Scheduler/API 增加 slot telemetry 读取与透传；`/api/scheduler/metrics` 实测 configured=2、alive=2、busy=0、idle=2、max inflight=8。
+- 当前镜像 `ps` 采样不可用，已修正为 `resource_sampling_supported=false`，避免零值误报。
+- Processor 8/8 测试与 build、Go 全包、vet 和后端 build 全部通过；远端生产 Worker 已恢复并发 2/生产 Queue并 DEPLOYED。
+- 校准 Case 1：21 地址、12×50K、600,000 唯一区块、98,859 行、4,322,367 bytes、505,410ms、p50 27,226ms、p95 48,155ms，12/12 完成、最终失败 0。
+- 因记录到 503=7、429=2、retry=3 且缺少总请求数分母，按文档安全门停止，没有运行并发 2/4；不能宣称正式 benchmark 完成。
+- 主批次仍为 PAUSED、running=0；无数据库 Schema 或前端变化。
+
+## 2026-08-26 — SQD Fetch / R2 Publish 有界流水线解耦
+
+- 修改 `E:\Code\Processor-only\src\job-runner.ts`：增加 `fetch()`/`publish()` 两阶段接口，Parquet 完成后释放 SQD inflight；保留 `run()` 兼容行为。
+- 修改 `E:\Code\Processor-only\src\worker.ts`：增加独立 R2 upload semaphore、容量 semaphore 和 upload active/outstanding 心跳字段；发布失败继续写 failed 对象，成功只在 `_SUCCESS` 后计数。
+- 修改 `E:\Code\Processor-only\squid.yaml`：生产新增 `R2_UPLOAD_WORKERS=2`、`R2_UPLOAD_QUEUE_CAPACITY=4`，最终恢复 `POLL_INTERVAL_MS=5000`、`JOB_QUEUE_PREFIX=bsc/jobs/`。
+- 更新 `docs/turbo_bottleneck_report.json`、`docs/turbo_cloud_bottleneck_gap_report.md`、`docs/AI_HANDOFF.md`；无 API、数据库 Schema、前端页面或组件变化。
+- 验证：Processor `npm test` 9/9、build 通过，新增 `UPLOAD_QUEUED`→显式 publish→completed `_SUCCESS` 协议测试；两个隔离 campaign 共 8/8 Job 成功、24,327 行、8 Part、0 最终失败，R2 upload 1,892–2,305ms；真实样本没有形成同槽 fetch/upload 重叠，因此不宣称吞吐提升。
+- 最终远端 Worker 为 DEPLOYED，configured/alive/idle=2/2/2；主批次 `11abc33f-3cbd-4158-a959-a3ccf920c1b5` 保持 `PAUSED`、running=0、completed=31，未恢复下载。
+- 未完成：Adaptive Span、Local Sync 背压验证、补齐请求分母后的正式 1/2/4 benchmark。
+
+## 2026-08-27 — SQD 性能证据与安全门实测补全
+
+- 新增 Processor 物理 SQD request Counter、状态分类、duration samples、logical query、TTFA、retry backoff、CPU/RSS、claim/lease timing 和 Worker idle reason；结构化数据写入 Manifest/status/_SUCCESS。
+- 修复并发 4 下 R2 lease 非原子导致同 Job 重复领取的竞态；单 Worker claim 串行，fetch 与 publish 并行不变。
+- 新增 `scripts/benchmark-campaign.js`、`scripts/benchmark-compare.js`：隔离 Queue、固定 workload、finalized-head 安全预检、资源/完整性/错误安全门和对比报告。
+- ETL 新增 loopback-only `/api/debug/sqd/metrics`、`/api/debug/cloud/workers`、`/api/debug/cloud/queue`、`/api/debug/cloud/timing`、`/api/debug/benchmark/current`、`/api/debug/backpressure`；Go Runtime 聚合结构化 Processor Counter 和完整 claim/lease 生命周期。
+- 正式结果：C1/C2/C4 50K 为 2,204.87/4,051.61/6,521.03 blocks/s；100K/200K/500K 为 9,487.04/14,430.36/21,510.40 blocks/s，均通过对应安全门。1M 在 5 个样本后仅 7,182.64 blocks/s，较 500K -66.61%，提前停止，2M 未解锁。
+- 最终推荐：`WORKER_CONCURRENCY=4`、`span=500000`；Worker 恢复 `JOB_QUEUE_PREFIX=bsc/jobs/` 并部署。主批次继续 `PAUSED`、running=0、completed=31，未恢复下载。
+- 验证：Processor 15/15、Go 全包、go vet、前端 build 全通过。无数据库 Schema 或前端 UI 变更。
+- `run.ps1 -ForceRestart` 后服务 PID 35628，health=ok、首页 200；远端 Worker configured/alive/busy/idle=4/4/0/4，生产 Queue=`bsc/jobs/`。
+- 未完成：Local Sync/Validation/ClickHouse 背压吞吐与降载行为仍缺端到端验证；Debug Backpressure 当前仅 observational-only，因此不得自动恢复主批次。
+
+## 2026-08-26 — SQD 性能 Observability 第一轮差距检查
+
+- 新增 `docs/sqd_performance_observability_gap_report.md`，按新方案核对 SQD request/retry 入口、错误计数、生命周期、Worker、R2 claim/lease、Local Sync 和 Metrics。
+- 结论：现有 503/429/timeout/retry 来自 stderr 文本，不存在物理 `sqd_requests_total`；Safety Gate 为 `BLOCKED: MISSING_REQUEST_TOTAL`。
+- 确认 Portal 数据流最终使用 `@subsquid/http-client` 1.8.1，PortalClient 默认最多重试 6 次；可通过 `DataSourceBuilder.setPortal()` 注入观测客户端，无需修改依赖包。
+- 方案列出的 6 个 `/api/debug/*` 端点实测均为 404；Local Sync 有起止时间但没有 queue/backpressure 指标，`local_sync_retry_total` 仍为固定 0。
+- 本轮未修改功能行为、API、数据库 Schema 或前端；无需重启。主批次继续 `PAUSED`，Cloud Worker 2/2 存活且空闲。
+
+## 2026-08-27 — Local Pipeline / Backpressure 第一轮差距检查
+
+- 新增 `docs/local_pipeline_backpressure_gap_report.md`，完成 Local Sync、Validation、ClickHouse ingest、Coverage 和 Backpressure 的现有调用链、同步阻塞、队列、Worker、重试、幂等与恢复门检查。
+- 确认四个下游阶段均没有方案要求的显式有界 queue/worker pool；现有 `/api/debug/backpressure` 与 Smart Download V3.1 Governor 尚未统一。
+- 确认默认可选 ClickHouse 写入不满足“Validation + ClickHouse 成功后才提交 Coverage”的新恢复硬门；ClickHouse 实例当前不可连接，无法提供真实 ingest 证据。
+- 无后端、前端、API 或数据库 Schema 变更。最终复核发现 8000 listener 已退出，执行 `run.ps1` 恢复既有二进制（PID 31284），health=ok、首页 200；主批次仍 `PAUSED`、running=0、completed=31，恢复结论为 `NO_GO`。
+
+## 2026-09-09 — 项目启动
+
+- 执行 `run.ps1` 构建并启动后端，启动脚本确认 PID `79256` 就绪。
+- 独立验证 `/api/health=ok`、首页 HTTP 200、8000 listener PID 一致。
+- 无代码、API、数据库 Schema、前端页面或组件变更。
+- 启动期间发现历史 SQD manifest 校验警告，但不影响当前服务健康；未修改或清理相关历史数据。
+
+## 2026-10-21 — Git 提交与云端同步
+
+- 按用户要求提交积累的代码、测试、部署文档和 22 份基准结果至 `origin/main`；本机运行配置和桌面任务元数据留在本地。
+- 本次仅更新交接与变更记录，未新增业务接口、数据库结构或前端组件；既有源码变更一并归档。
+- `go vet ./...` 通过。全量测试出现写入重试回调计数不符和 10K 创建耗时超目标两项失败；单独复测 `TestIndexedWriterFailureIsRetryableWithoutDownload|TestPackCreation10K` 通过。本轮未实施额外修复。
+- `go test ./internal/... -short -count=1 -timeout=3m` 全部通过，Smart Download 包用时 57.752s。
+- Git 钩子自动刷新 4 个 `docs/cpg/` 文件；处理 Python 别名导致的首次路径写入错误后，继续按原钩子提交流程执行。
+- 本地提交完成，云端推送因缺少 GitHub HTTPS 登录凭据未完成；非交互重试返回 `could not read Username`，远端尚未更新。

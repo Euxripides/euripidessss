@@ -1,0 +1,12 @@
+{
+  "action": "enqueue",
+  "name": "SPAN_C4_500K",
+  "prefix": "bsc/benchmarks/span-c4-500k-v1/",
+  "created": 30,
+  "skipped": 0,
+  "jobs": 30,
+  "finalized_head": 118329430,
+  "head_safety_blocks": 10000,
+  "highest_requested_block": 116999999,
+  "workload_sha256": "c4035e3a0cc6de789b65977eb9f65029e75285c929369c0a55c42ca8a35f2fc2"
+}

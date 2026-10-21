@@ -432,6 +432,42 @@ func TestRecoveryNormalizesPersistedBatchPauseRequest(t *testing.T) {
 	}
 }
 
+func TestRecoveryPreservesAlreadyPausedBatch(t *testing.T) {
+	store, svc, _ := testService(t)
+	t.Cleanup(svc.Shutdown)
+	skip := false
+	created, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey: "bsc", Addresses: []string{addrA}, Datasets: []string{DatasetTransactions}, SkipCovered: &skip,
+		DefaultRange: &RangeSpec{Mode: RangeModeBlock, FromBlock: 10, ToBlock: 10},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := store.GetBatch(created.Batch.ID)
+	batch.Status = BatchPaused
+	batch.PauseRequested = false
+	_ = store.SaveBatch(batch)
+	a := store.ListAddressesByBatch(batch.ID)[0]
+	a.Status = AddressPaused
+	_ = store.SaveAddress(a)
+	ds := store.ListDatasetsByAddress(a.ID)[0]
+	ds.Status = DatasetPaused
+	_ = store.SaveDataset(ds)
+
+	if err := svc.RecoverAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.GetBatch(batch.ID); got.Status != BatchPaused || got.PauseRequested {
+		t.Fatalf("already-paused batch revived during recovery: %+v", got)
+	}
+	if got := store.GetAddress(a.ID); got.Status != AddressPaused {
+		t.Fatalf("address below paused batch revived during recovery: %+v", got)
+	}
+	if got := store.GetDataset(ds.ID); got.Status != DatasetPaused {
+		t.Fatalf("dataset below paused batch revived during recovery: %+v", got)
+	}
+}
+
 func TestBlockRangeWithEqualBoundsStaysSingleBlock(t *testing.T) {
 	store, svc, _ := testService(t)
 	t.Cleanup(svc.Shutdown)

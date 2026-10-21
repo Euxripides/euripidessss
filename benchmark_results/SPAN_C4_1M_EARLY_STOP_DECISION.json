@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "candidate": "SPAN_C4_1M",
+  "baseline": "SPAN_C4_500K",
+  "decision": {
+    "status": "FAIL",
+    "reason": "EFFECTIVE_THROUGHPUT_REGRESSION",
+    "stopped_early": true,
+    "completed_sample_jobs": 5,
+    "completed_sample_blocks": 5000000,
+    "unlock_2m": false,
+    "recommended_concurrency": 4,
+    "recommended_span": 500000
+  },
+  "observations": {
+    "candidate_blocks_per_second": 7182.638700344623,
+    "baseline_blocks_per_second": 21510.403147975798,
+    "throughput_ratio": 0.3339146482254813,
+    "throughput_change_percent": -66.60853517745187,
+    "candidate_rows_per_second": 575.1756514294169,
+    "baseline_rows_per_second": 1437.1788676063368,
+    "rows_per_second_ratio": 0.40021159814810575,
+    "candidate_query_p95_ms": 340074,
+    "baseline_query_p95_ms": 97361,
+    "query_p95_ratio": 3.4929181088937047,
+    "query_p95_change_percent": 249.29181088937048,
+    "candidate_failed_jobs": 0,
+    "candidate_timeout_total": 0,
+    "candidate_503_total": 0,
+    "candidate_429_total": 0,
+    "candidate_peak_memory_mb": 146.25390625
+  },
+  "source_files": [
+    "E:\\codex\\etl\\benchmark_results\\SPAN_C4_500K.json",
+    "E:\\codex\\etl\\benchmark_results\\SPAN_C4_1M.json"
+  ]
+}

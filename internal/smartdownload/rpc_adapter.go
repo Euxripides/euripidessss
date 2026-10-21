@@ -103,6 +103,8 @@ func (p *RPCTransferAdapter) Supports(d string) bool {
 	return d == DatasetBalances || d == DatasetTokenTransfers || d == DatasetLogs
 }
 
+func (p *RPCTransferAdapter) GroupRangeOwner() RangeOwner { return RangeOwnerRPC }
+
 // MaxAddressGroupSize reports the fail-closed RPC eth_getLogs group limit.
 func (p *RPCTransferAdapter) MaxAddressGroupSize(dataset string) int {
 	if dataset == DatasetTokenTransfers || dataset == DatasetLogs {

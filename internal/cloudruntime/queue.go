@@ -57,23 +57,35 @@ func uploadParquetFiles(ctx context.Context, store ObjectStore, outDir, leasedDi
 
 // buildManifest 构建 Phase 4 §22 Manifest。
 func buildManifest(job *Job, files []FileInfo) map[string]any {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC()
 	return map[string]any{
-		"schema_version": 1,
-		"job_id":         job.ID,
-		"chunk_id":       job.ChunkID,
-		"provider":       "SQD_CLOUD_EXPORT",
-		"chain_id":       56,
-		"dataset":        "token_transfer",
-		"from_block":     job.FromBlock,
-		"to_block":       job.ToBlock,
-		"address_count":  len(job.Addresses),
-		"addresses":      job.Addresses,
-		"row_count":      job.Rows,
-		"files":          files,
-		"started_at":     job.StartedAt,
-		"completed_at":   now,
-		"completed":      true,
+		"schema_version":        1,
+		"job_id":                job.ID,
+		"chunk_id":              job.ChunkID,
+		"provider":              "SQD_CLOUD_EXPORT",
+		"chain_id":              56,
+		"dataset":               "token_transfer",
+		"from_block":            job.FromBlock,
+		"to_block":              job.ToBlock,
+		"address_count":         len(job.Addresses),
+		"addresses":             job.Addresses,
+		"row_count":             job.Rows,
+		"files":                 files,
+		"started_at":            job.StartedAt,
+		"queued_at":             job.QueuedAt,
+		"leased_at":             job.LeasedAt,
+		"worker_started_at":     job.WorkerStartedAt,
+		"sqd_query_started_at":  job.SQDQueryStartedAt,
+		"sqd_first_byte_at":     job.SQDFirstByteAt,
+		"sqd_query_finished_at": job.SQDQueryFinishedAt,
+		"parquet_started_at":    job.ParquetStartedAt,
+		"parquet_finished_at":   job.ParquetFinishedAt,
+		"r2_upload_started_at":  job.R2UploadStartedAt,
+		"r2_upload_finished_at": job.R2UploadFinishedAt,
+		"manifest_started_at":   job.ManifestStartedAt,
+		"manifest_finished_at":  job.ManifestFinishedAt,
+		"completed_at":          now,
+		"completed":             true,
 	}
 }
 

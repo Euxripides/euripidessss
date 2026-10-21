@@ -43,7 +43,15 @@ type Manager struct {
 	loopStarted bool
 	statePath   string
 	jobsDir     string
+	workerSlots []WorkerSlotStatus
+	slotsReadAt time.Time
 }
+
+const (
+	workerSlotPrefix          = "bsc/workers/"
+	workerSlotFreshness       = 90 * time.Second
+	workerSlotRefreshInterval = 15 * time.Second
+)
 
 // New 创建运行时管理器。
 func New(cfg Config) *Manager {
@@ -132,9 +140,74 @@ func New(cfg Config) *Manager {
 
 // Status 返回运行时状态快照。
 func (m *Manager) Status() Status {
+	m.refreshWorkerSlots()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.statusLocked()
+}
+
+func (m *Manager) refreshWorkerSlots() {
+	m.mu.Lock()
+	if m.store == nil || (!m.slotsReadAt.IsZero() && time.Since(m.slotsReadAt) < workerSlotRefreshInterval) {
+		m.mu.Unlock()
+		return
+	}
+	m.slotsReadAt = time.Now()
+	store := m.store
+	m.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	slots, err := readWorkerSlots(ctx, store, time.Now().UTC())
+	if err != nil {
+		logger.Log.Warn().Err(err).Msg("cloud_worker_slot_telemetry_read_failed")
+		return
+	}
+	m.mu.Lock()
+	m.workerSlots = slots
+	m.mu.Unlock()
+}
+
+func readWorkerSlots(ctx context.Context, store ObjectStore, now time.Time) ([]WorkerSlotStatus, error) {
+	objects, err := store.List(ctx, workerSlotPrefix)
+	if err != nil {
+		return nil, err
+	}
+	slotsByKey := make(map[string]WorkerSlotStatus)
+	for _, object := range objects {
+		key := strings.TrimSpace(object.Key)
+		if !strings.HasSuffix(strings.ToLower(key), ".json") || !strings.Contains(key, "/slots/") {
+			continue
+		}
+		body, getErr := store.Get(ctx, key)
+		if getErr != nil {
+			continue
+		}
+		var slot WorkerSlotStatus
+		if json.Unmarshal(body, &slot) != nil || strings.TrimSpace(slot.WorkerID) == "" || slot.UpdatedAt.IsZero() {
+			continue
+		}
+		slot.State = strings.ToUpper(strings.TrimSpace(slot.State))
+		if slot.State != "BUSY" && slot.State != "IDLE" {
+			continue
+		}
+		slot.Alive = !slot.UpdatedAt.Before(now.Add(-workerSlotFreshness)) && !slot.UpdatedAt.After(now.Add(30*time.Second))
+		identity := fmt.Sprintf("%s/%d", slot.WorkerID, slot.Slot)
+		if previous, ok := slotsByKey[identity]; !ok || slot.UpdatedAt.After(previous.UpdatedAt) {
+			slotsByKey[identity] = slot
+		}
+	}
+	slots := make([]WorkerSlotStatus, 0, len(slotsByKey))
+	for _, slot := range slotsByKey {
+		slots = append(slots, slot)
+	}
+	sort.Slice(slots, func(i, j int) bool {
+		if slots[i].WorkerID == slots[j].WorkerID {
+			return slots[i].Slot < slots[j].Slot
+		}
+		return slots[i].WorkerID < slots[j].WorkerID
+	})
+	return slots, nil
 }
 
 func (m *Manager) statusLocked() Status {
@@ -162,6 +235,27 @@ func (m *Manager) statusLocked() Status {
 		RunningJob:              m.runningJob,
 		DeploymentKeyConfigured: m.cfg.DeployKey != "",
 		R2Configured:            m.cfg.R2Configured,
+	}
+	if len(m.workerSlots) > 0 {
+		st.WorkerSlots = append([]WorkerSlotStatus(nil), m.workerSlots...)
+		for _, slot := range st.WorkerSlots {
+			st.WorkersTotal++
+			if slot.ConfiguredConcurrency > st.ConfiguredConcurrency {
+				st.ConfiguredConcurrency = slot.ConfiguredConcurrency
+			}
+			if slot.MaxSQDInflightRequests > st.MaxSQDInflightRequests {
+				st.MaxSQDInflightRequests = slot.MaxSQDInflightRequests
+			}
+			if !slot.Alive {
+				continue
+			}
+			st.WorkersAlive++
+			if slot.State == "BUSY" {
+				st.WorkersBusy++
+			} else {
+				st.WorkersIdle++
+			}
+		}
 	}
 	if !m.lastActive.IsZero() {
 		v := m.lastActive
@@ -538,6 +632,9 @@ func (m *Manager) SubmitJob(ctx context.Context, job Job) (string, error) {
 	job.Mode = m.cfg.Mode
 	job.State = "queued"
 	job.CreatedAt = time.Now()
+	queuedAt := job.CreatedAt
+	job.QueuedAt = &queuedAt
+	job.Stage = "queued"
 	if err := m.enqueuePending(ctx, &job); err != nil {
 		return "", fmt.Errorf("Cloud Job 入队失败（worker=%s）: %w", m.cfg.WorkerName, err)
 	}
@@ -580,6 +677,7 @@ func (m *Manager) JobStatus(id string) (Job, error) {
 			if remote.FinishedAt != nil {
 				existing.FinishedAt = remote.FinishedAt
 			}
+			mergeJobLifecycle(existing, &remote)
 			remote = *existing
 		} else {
 			copyJob := remote
@@ -611,6 +709,8 @@ func (m *Manager) MaterializeJobResult(ctx context.Context, id string) (string, 
 	if job.State != "done" || job.ChunkID == "" {
 		return "", fmt.Errorf("Cloud 任务 %s 尚未完成", id)
 	}
+	m.BeginLocalSync(id)
+	defer m.FinishLocalSync(id)
 	completedDir := completedChunkDir(id, job.ChunkID)
 	payload, err := m.store.Get(ctx, completedDir+"/manifest.json")
 	if err != nil {
@@ -669,6 +769,48 @@ func (m *Manager) MaterializeJobResult(ctx context.Context, id string) (string, 
 		return "", err
 	}
 	return destRoot, nil
+}
+
+// BeginLocalSync and FinishLocalSync record the actual local materialization
+// boundary. They do not infer remote timestamps and are safe no-ops for an
+// unknown job ID.
+func (m *Manager) BeginLocalSync(id string)  { m.recordLocalLifecycleEvent(id, "local_sync_started") }
+func (m *Manager) FinishLocalSync(id string) { m.recordLocalLifecycleEvent(id, "local_sync_finished") }
+
+// BeginValidation and FinishValidation are called by the Smart Download
+// adapter around real Parquet parsing and row-count reconciliation.
+func (m *Manager) BeginValidation(id string)  { m.recordLocalLifecycleEvent(id, "validation_started") }
+func (m *Manager) FinishValidation(id string) { m.recordLocalLifecycleEvent(id, "validation_finished") }
+
+func (m *Manager) recordLocalLifecycleEvent(id, event string) {
+	now := time.Now().UTC()
+	m.mu.Lock()
+	job, ok := m.jobs[id]
+	if ok {
+		switch event {
+		case "local_sync_started":
+			job.LocalSyncStartedAt = &now
+			job.Stage = "syncing"
+		case "local_sync_finished":
+			job.LocalSyncFinishedAt = &now
+			job.Stage = "completed"
+		case "validation_started":
+			job.ValidationStartedAt = &now
+			job.Stage = "validating"
+		case "validation_finished":
+			job.ValidationFinishedAt = &now
+			job.Stage = "completed"
+		}
+		deriveJobDurations(job)
+	}
+	var snapshot Job
+	if ok {
+		snapshot = *job
+	}
+	m.mu.Unlock()
+	if ok {
+		m.persistJob(&snapshot)
+	}
 }
 
 // Jobs 返回全部已知任务（新→旧）。
@@ -773,6 +915,8 @@ func (m *Manager) workerLoop() {
 		now := time.Now()
 		job.State = "running"
 		job.StartedAt = &now
+		job.WorkerStartedAt = &now
+		job.Stage = "running"
 		m.mu.Lock()
 		m.runningJob = job.ID
 		m.state = WorkerBusy
@@ -795,6 +939,8 @@ func (m *Manager) workerLoop() {
 		job.FinishedAt = &finished
 		if runErr != nil {
 			job.State = "failed"
+			job.Stage = "failed"
+			job.FailedAt = &finished
 			job.Error = runErr.Error()
 			m.state = WorkerFailed
 			m.reason = "Cloud Job 执行失败: " + runErr.Error()
@@ -806,6 +952,8 @@ func (m *Manager) workerLoop() {
 			_ = m.store.Delete(ctx, leased+"/lease.json")
 		} else {
 			job.State = "done"
+			job.Stage = "completed"
+			job.CompletedAt = &finished
 			m.state = WorkerIdle
 			m.reason = "Cloud Job 已完成，Worker 空闲"
 			m.lastActive = finished
@@ -848,11 +996,32 @@ func (m *Manager) uploadAndComplete(ctx context.Context, job *Job) error {
 	}
 	job.Rows = rows
 	leasedDir := leasedChunkDir(job.ID, job.ChunkID)
+	uploadStarted := time.Now().UTC()
+	job.Stage = "uploading"
+	job.R2UploadStartedAt = &uploadStarted
+	_ = m.writeLeasedStatus(ctx, job, "UPLOADING", rows, job.ToBlock)
 	files, err := uploadParquetFiles(ctx, m.store, outDir, leasedDir)
 	if err != nil {
 		return err
 	}
+	uploadFinished := time.Now().UTC()
+	job.R2UploadFinishedAt = &uploadFinished
+	manifestStarted := time.Now().UTC()
+	job.ManifestStartedAt = &manifestStarted
+	job.Stage = "manifesting"
+	_ = m.writeLeasedStatus(ctx, job, "MANIFESTING", rows, job.ToBlock)
 	manifest := buildManifest(job, files)
+	// Lifecycle metadata is additive and does not participate in the immutable
+	// artifact identity checks. Persist only timestamps actually observed.
+	manifest["worker_started_at"] = job.WorkerStartedAt
+	manifest["sqd_query_started_at"] = job.SQDQueryStartedAt
+	manifest["sqd_first_byte_at"] = job.SQDFirstByteAt
+	manifest["sqd_query_finished_at"] = job.SQDQueryFinishedAt
+	manifest["parquet_started_at"] = job.ParquetStartedAt
+	manifest["parquet_finished_at"] = job.ParquetFinishedAt
+	manifest["r2_upload_started_at"] = job.R2UploadStartedAt
+	manifest["r2_upload_finished_at"] = job.R2UploadFinishedAt
+	manifest["manifest_started_at"] = job.ManifestStartedAt
 	manifestPayload, _ := json.MarshalIndent(manifest, "", "  ")
 	successPayload, _ := json.MarshalIndent(map[string]any{
 		"job_id": job.ID, "chunk_id": job.ChunkID, "rows": rows, "completed": true,
@@ -872,6 +1041,8 @@ func (m *Manager) uploadAndComplete(ctx context.Context, job *Job) error {
 	if err := m.store.Put(ctx, completedDir+"/_SUCCESS", successPayload); err != nil {
 		return err
 	}
+	manifestFinished := time.Now().UTC()
+	job.ManifestFinishedAt = &manifestFinished
 	_ = m.writeLeasedStatus(ctx, job, "COMPLETED", rows, job.ToBlock)
 	return nil
 }
@@ -913,9 +1084,10 @@ func (m *Manager) acquirePendingJob(ctx context.Context) (*Job, error) {
 		if ok, _ := m.store.Exists(ctx, leaseKey); ok {
 			continue
 		}
+		leasedAt := time.Now().UTC()
 		lease := map[string]any{
 			"job_id": jobID, "chunk_id": chunkID,
-			"worker_id": m.workerID, "leased_at": time.Now().Format(time.RFC3339),
+			"worker_id": m.workerID, "leased_at": leasedAt.Format(time.RFC3339),
 			"lease_expires_at": time.Now().Add(10 * time.Minute).Format(time.RFC3339),
 			"heartbeat_at":     time.Now().Format(time.RFC3339),
 		}
@@ -923,6 +1095,8 @@ func (m *Manager) acquirePendingJob(ctx context.Context) (*Job, error) {
 		if err := m.store.Put(ctx, leaseKey, leasePayload); err != nil {
 			return nil, err
 		}
+		job.LeasedAt = &leasedAt
+		job.Stage = "leased"
 		_ = m.store.Delete(ctx, key)
 		return &job, nil
 	}
@@ -930,17 +1104,46 @@ func (m *Manager) acquirePendingJob(ctx context.Context) (*Job, error) {
 }
 
 type publishedManifest struct {
-	SchemaVersion int        `json:"schema_version"`
-	JobID         string     `json:"job_id"`
-	ChunkID       string     `json:"chunk_id"`
-	ChainID       int        `json:"chain_id"`
-	Dataset       string     `json:"dataset"`
-	FromBlock     uint64     `json:"from_block"`
-	ToBlock       uint64     `json:"to_block"`
-	Addresses     []string   `json:"addresses"`
-	RowCount      int64      `json:"row_count"`
-	Files         []FileInfo `json:"files"`
-	Completed     bool       `json:"completed"`
+	SchemaVersion            int             `json:"schema_version"`
+	JobID                    string          `json:"job_id"`
+	ChunkID                  string          `json:"chunk_id"`
+	ChainID                  int             `json:"chain_id"`
+	Dataset                  string          `json:"dataset"`
+	FromBlock                uint64          `json:"from_block"`
+	ToBlock                  uint64          `json:"to_block"`
+	Addresses                []string        `json:"addresses"`
+	RowCount                 int64           `json:"row_count"`
+	Files                    []FileInfo      `json:"files"`
+	Completed                bool            `json:"completed"`
+	StartedAt                *time.Time      `json:"started_at,omitempty"`
+	CompletedAt              *time.Time      `json:"completed_at,omitempty"`
+	QueuedAt                 *time.Time      `json:"queued_at,omitempty"`
+	ClaimStartedAt           *time.Time      `json:"claim_started_at,omitempty"`
+	LeaseAcquiredAt          *time.Time      `json:"lease_acquired_at,omitempty"`
+	ClaimedAt                *time.Time      `json:"claimed_at,omitempty"`
+	LeasedAt                 *time.Time      `json:"leased_at,omitempty"`
+	WorkerStartedAt          *time.Time      `json:"worker_started_at,omitempty"`
+	SQDQueryStartedAt        *time.Time      `json:"sqd_query_started_at,omitempty"`
+	SQDFirstByteAt           *time.Time      `json:"sqd_first_byte_at,omitempty"`
+	SQDQueryFinishedAt       *time.Time      `json:"sqd_query_finished_at,omitempty"`
+	ParquetStartedAt         *time.Time      `json:"parquet_started_at,omitempty"`
+	ParquetFinishedAt        *time.Time      `json:"parquet_finished_at,omitempty"`
+	R2UploadStartedAt        *time.Time      `json:"r2_upload_started_at,omitempty"`
+	R2UploadFinishedAt       *time.Time      `json:"r2_upload_finished_at,omitempty"`
+	ManifestStartedAt        *time.Time      `json:"manifest_started_at,omitempty"`
+	ManifestFinishedAt       *time.Time      `json:"manifest_finished_at,omitempty"`
+	LocalSyncStartedAt       *time.Time      `json:"local_sync_started_at,omitempty"`
+	LocalSyncFinishedAt      *time.Time      `json:"local_sync_finished_at,omitempty"`
+	ValidationStartedAt      *time.Time      `json:"validation_started_at,omitempty"`
+	ValidationFinishedAt     *time.Time      `json:"validation_finished_at,omitempty"`
+	CoverageCommitStartedAt  *time.Time      `json:"coverage_commit_started_at,omitempty"`
+	CoverageCommitFinishedAt *time.Time      `json:"coverage_commit_finished_at,omitempty"`
+	Diagnostics              *JobDiagnostics `json:"diagnostics,omitempty"`
+	QueuePollMS              *int64          `json:"queue_poll_ms,omitempty"`
+	JobPayloadLoadMS         *int64          `json:"job_payload_load_ms,omitempty"`
+	LeaseAcquireMS           *int64          `json:"lease_acquire_ms,omitempty"`
+	LeaseWriteMS             *int64          `json:"lease_write_ms,omitempty"`
+	ClaimMS                  *int64          `json:"claim_ms,omitempty"`
 }
 
 type completionMarker struct {
@@ -1099,13 +1302,40 @@ func (m *Manager) remoteJobStatus(ctx context.Context, id string) (Job, error) {
 					if err := m.validatePublishedManifest(ctx, manifest, id, manifest.ChunkID); err != nil {
 						return Job{ID: id, ChunkID: manifest.ChunkID, State: "failed", Error: "Cloud 完成产物质量校验失败: " + err.Error()}, nil
 					}
-					job := Job{ID: id, ChunkID: manifest.ChunkID, State: "done", Rows: manifest.RowCount}
-					finished := time.Now()
-					job.FinishedAt = &finished
+					job := Job{
+						ID: id, ChunkID: manifest.ChunkID, State: "done", Stage: "completed",
+						Rows: manifest.RowCount, StartedAt: manifest.StartedAt,
+						QueuedAt: manifest.QueuedAt, LeasedAt: manifest.LeasedAt,
+						ClaimStartedAt: manifest.ClaimStartedAt, LeaseAcquiredAt: manifest.LeaseAcquiredAt, ClaimedAt: manifest.ClaimedAt,
+						WorkerStartedAt: manifest.WorkerStartedAt, FinishedAt: manifest.CompletedAt,
+						CompletedAt:              manifest.CompletedAt,
+						SQDQueryStartedAt:        manifest.SQDQueryStartedAt,
+						SQDFirstByteAt:           manifest.SQDFirstByteAt,
+						SQDQueryFinishedAt:       manifest.SQDQueryFinishedAt,
+						ParquetStartedAt:         manifest.ParquetStartedAt,
+						ParquetFinishedAt:        manifest.ParquetFinishedAt,
+						R2UploadStartedAt:        manifest.R2UploadStartedAt,
+						R2UploadFinishedAt:       manifest.R2UploadFinishedAt,
+						ManifestStartedAt:        manifest.ManifestStartedAt,
+						ManifestFinishedAt:       manifest.ManifestFinishedAt,
+						LocalSyncStartedAt:       manifest.LocalSyncStartedAt,
+						LocalSyncFinishedAt:      manifest.LocalSyncFinishedAt,
+						ValidationStartedAt:      manifest.ValidationStartedAt,
+						ValidationFinishedAt:     manifest.ValidationFinishedAt,
+						CoverageCommitStartedAt:  manifest.CoverageCommitStartedAt,
+						CoverageCommitFinishedAt: manifest.CoverageCommitFinishedAt,
+						Diagnostics:              manifest.Diagnostics,
+						QueuePollMS:              manifest.QueuePollMS,
+						JobPayloadLoadMS:         manifest.JobPayloadLoadMS,
+						LeaseAcquireMS:           manifest.LeaseAcquireMS,
+						LeaseWriteMS:             manifest.LeaseWriteMS,
+						ClaimMS:                  manifest.ClaimMS,
+					}
 					// P0-3：completed 为最终幂等判据；active lease/status 清理为 tombstone
 					leased := leasedChunkDir(id, manifest.ChunkID)
 					_ = m.store.Delete(ctx, leased+"/lease.json")
 					_ = m.store.Delete(ctx, leased+"/status.json")
+					deriveJobDurations(&job)
 					return job, nil
 				}
 			}
@@ -1123,11 +1353,14 @@ func (m *Manager) remoteJobStatus(ctx context.Context, id string) (Job, error) {
 			if strings.HasSuffix(o.Key, "/error.json") {
 				payload, _ := m.store.Get(ctx, o.Key)
 				var failed struct {
-					JobID string `json:"job_id"`
-					Error string `json:"error"`
+					JobID       string          `json:"job_id"`
+					Error       string          `json:"error"`
+					FailedAt    *time.Time      `json:"failed_at"`
+					Diagnostics *JobDiagnostics `json:"diagnostics,omitempty"`
 				}
 				if json.Unmarshal(payload, &failed) == nil && failed.JobID == id {
-					job := Job{ID: id, State: "failed", Error: failed.Error}
+					job := Job{ID: id, State: "failed", Stage: "failed", Error: failed.Error, FailedAt: failed.FailedAt, FinishedAt: failed.FailedAt, Diagnostics: failed.Diagnostics}
+					deriveJobDurations(&job)
 					return job, nil
 				}
 			}
@@ -1138,10 +1371,28 @@ func (m *Manager) remoteJobStatus(ctx context.Context, id string) (Job, error) {
 			if strings.HasSuffix(o.Key, "/status.json") {
 				payload, _ := m.store.Get(ctx, o.Key)
 				var st struct {
-					JobID   string `json:"job_id"`
-					ChunkID string `json:"chunk_id"`
-					Status  string `json:"status"`
-					Rows    int64  `json:"rows_written"`
+					JobID                    string          `json:"job_id"`
+					ChunkID                  string          `json:"chunk_id"`
+					Status                   string          `json:"status"`
+					Rows                     int64           `json:"rows_written"`
+					StartedAt                *time.Time      `json:"started_at"`
+					WorkerStartedAt          *time.Time      `json:"worker_started_at"`
+					SQDQueryStartedAt        *time.Time      `json:"sqd_query_started_at"`
+					SQDFirstByteAt           *time.Time      `json:"sqd_first_byte_at"`
+					SQDQueryFinishedAt       *time.Time      `json:"sqd_query_finished_at"`
+					ParquetStartedAt         *time.Time      `json:"parquet_started_at"`
+					ParquetFinishedAt        *time.Time      `json:"parquet_finished_at"`
+					R2UploadStartedAt        *time.Time      `json:"r2_upload_started_at"`
+					R2UploadFinishedAt       *time.Time      `json:"r2_upload_finished_at"`
+					ManifestStartedAt        *time.Time      `json:"manifest_started_at"`
+					ManifestFinishedAt       *time.Time      `json:"manifest_finished_at"`
+					LocalSyncStartedAt       *time.Time      `json:"local_sync_started_at"`
+					LocalSyncFinishedAt      *time.Time      `json:"local_sync_finished_at"`
+					ValidationStartedAt      *time.Time      `json:"validation_started_at"`
+					ValidationFinishedAt     *time.Time      `json:"validation_finished_at"`
+					CoverageCommitStartedAt  *time.Time      `json:"coverage_commit_started_at"`
+					CoverageCommitFinishedAt *time.Time      `json:"coverage_commit_finished_at"`
+					Diagnostics              *JobDiagnostics `json:"diagnostics,omitempty"`
 				}
 				if json.Unmarshal(payload, &st) == nil && st.JobID == id {
 					state := "running"
@@ -1151,7 +1402,30 @@ func (m *Manager) remoteJobStatus(ctx context.Context, id string) (Job, error) {
 					case "FAILED":
 						state = "failed"
 					}
-					return Job{ID: id, ChunkID: st.ChunkID, State: state, Rows: st.Rows}, nil
+					job := Job{
+						ID: id, ChunkID: st.ChunkID, State: state, Stage: normalizeLifecycleStage(st.Status), Rows: st.Rows,
+						StartedAt: st.StartedAt, WorkerStartedAt: st.WorkerStartedAt,
+						SQDQueryStartedAt: st.SQDQueryStartedAt, SQDFirstByteAt: st.SQDFirstByteAt,
+						SQDQueryFinishedAt: st.SQDQueryFinishedAt, ParquetStartedAt: st.ParquetStartedAt,
+						ParquetFinishedAt: st.ParquetFinishedAt, R2UploadStartedAt: st.R2UploadStartedAt,
+						R2UploadFinishedAt: st.R2UploadFinishedAt, ManifestStartedAt: st.ManifestStartedAt,
+						ManifestFinishedAt: st.ManifestFinishedAt, LocalSyncStartedAt: st.LocalSyncStartedAt,
+						LocalSyncFinishedAt: st.LocalSyncFinishedAt, ValidationStartedAt: st.ValidationStartedAt,
+						ValidationFinishedAt:     st.ValidationFinishedAt,
+						CoverageCommitStartedAt:  st.CoverageCommitStartedAt,
+						CoverageCommitFinishedAt: st.CoverageCommitFinishedAt,
+						Diagnostics:              st.Diagnostics,
+					}
+					if leasePayload, err := m.store.Get(ctx, leasedChunkDir(id, st.ChunkID)+"/lease.json"); err == nil {
+						var lease struct {
+							LeasedAt *time.Time `json:"leased_at"`
+						}
+						if json.Unmarshal(leasePayload, &lease) == nil {
+							job.LeasedAt = lease.LeasedAt
+						}
+					}
+					deriveJobDurations(&job)
+					return job, nil
 				}
 			}
 		}
@@ -1159,18 +1433,202 @@ func (m *Manager) remoteJobStatus(ctx context.Context, id string) (Job, error) {
 		// 避免本地调度器误判“任务不存在”而无限等待。
 		for _, o := range objs {
 			if strings.HasSuffix(o.Key, "/lease.json") {
-				return Job{ID: id, State: "running"}, nil
+				payload, _ := m.store.Get(ctx, o.Key)
+				var lease struct {
+					ChunkID  string     `json:"chunk_id"`
+					LeasedAt *time.Time `json:"leased_at"`
+				}
+				_ = json.Unmarshal(payload, &lease)
+				job := Job{ID: id, ChunkID: lease.ChunkID, State: "running", Stage: "leased", LeasedAt: lease.LeasedAt}
+				deriveJobDurations(&job)
+				return job, nil
 			}
 		}
 	}
 	if objs, err := m.store.List(ctx, queuePrefix+"pending/"+id+"/"); err == nil {
 		for _, o := range objs {
 			if strings.HasSuffix(o.Key, "/request.json") {
-				return Job{ID: id, State: "queued"}, nil
+				payload, _ := m.store.Get(ctx, o.Key)
+				var job Job
+				_ = json.Unmarshal(payload, &job)
+				job.ID = id
+				job.State = "queued"
+				job.Stage = "queued"
+				if job.QueuedAt == nil && !job.CreatedAt.IsZero() {
+					queuedAt := job.CreatedAt
+					job.QueuedAt = &queuedAt
+				}
+				deriveJobDurations(&job)
+				return job, nil
 			}
 		}
 	}
 	return Job{}, errors.New("远端 Cloud 任务不存在: " + id)
+}
+
+func normalizeLifecycleStage(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "QUEUED", "PENDING":
+		return "queued"
+	case "LEASED":
+		return "leased"
+	case "UPLOADING", "EXPORTING":
+		return "uploading"
+	case "SYNCING", "LOCAL_SYNC":
+		return "syncing"
+	case "VALIDATING", "VALIDATION":
+		return "validating"
+	case "MANIFESTING":
+		return "manifesting"
+	case "COMPLETED", "DONE":
+		return "completed"
+	case "FAILED":
+		return "failed"
+	default:
+		return "running"
+	}
+}
+
+func firstTime(values ...*time.Time) *time.Time {
+	for _, value := range values {
+		if value != nil && !value.IsZero() {
+			return value
+		}
+	}
+	return nil
+}
+
+func mergeJobLifecycle(dst, src *Job) {
+	if src.Stage != "" {
+		dst.Stage = src.Stage
+	}
+	if src.StartedAt != nil {
+		dst.StartedAt = src.StartedAt
+	}
+	if src.FinishedAt != nil {
+		dst.FinishedAt = src.FinishedAt
+	}
+	if src.QueuedAt != nil {
+		dst.QueuedAt = src.QueuedAt
+	}
+	if src.LeasedAt != nil {
+		dst.LeasedAt = src.LeasedAt
+	}
+	if src.WorkerStartedAt != nil {
+		dst.WorkerStartedAt = src.WorkerStartedAt
+	}
+	if src.SQDQueryStartedAt != nil {
+		dst.SQDQueryStartedAt = src.SQDQueryStartedAt
+	}
+	if src.SQDFirstByteAt != nil {
+		dst.SQDFirstByteAt = src.SQDFirstByteAt
+	}
+	if src.SQDQueryFinishedAt != nil {
+		dst.SQDQueryFinishedAt = src.SQDQueryFinishedAt
+	}
+	if src.ParquetStartedAt != nil {
+		dst.ParquetStartedAt = src.ParquetStartedAt
+	}
+	if src.ParquetFinishedAt != nil {
+		dst.ParquetFinishedAt = src.ParquetFinishedAt
+	}
+	if src.R2UploadStartedAt != nil {
+		dst.R2UploadStartedAt = src.R2UploadStartedAt
+	}
+	if src.R2UploadFinishedAt != nil {
+		dst.R2UploadFinishedAt = src.R2UploadFinishedAt
+	}
+	if src.ManifestStartedAt != nil {
+		dst.ManifestStartedAt = src.ManifestStartedAt
+	}
+	if src.ManifestFinishedAt != nil {
+		dst.ManifestFinishedAt = src.ManifestFinishedAt
+	}
+	if src.LocalSyncStartedAt != nil {
+		dst.LocalSyncStartedAt = src.LocalSyncStartedAt
+	}
+	if src.LocalSyncFinishedAt != nil {
+		dst.LocalSyncFinishedAt = src.LocalSyncFinishedAt
+	}
+	if src.ValidationStartedAt != nil {
+		dst.ValidationStartedAt = src.ValidationStartedAt
+	}
+	if src.ValidationFinishedAt != nil {
+		dst.ValidationFinishedAt = src.ValidationFinishedAt
+	}
+	if src.CoverageCommitStartedAt != nil {
+		dst.CoverageCommitStartedAt = src.CoverageCommitStartedAt
+	}
+	if src.CoverageCommitFinishedAt != nil {
+		dst.CoverageCommitFinishedAt = src.CoverageCommitFinishedAt
+	}
+	if src.CompletedAt != nil {
+		dst.CompletedAt = src.CompletedAt
+	}
+	if src.FailedAt != nil {
+		dst.FailedAt = src.FailedAt
+	}
+	if src.Diagnostics != nil {
+		diagnostics := *src.Diagnostics
+		diagnostics.SQDRequestDurationMSSamples = append([]int64(nil), src.Diagnostics.SQDRequestDurationMSSamples...)
+		dst.Diagnostics = &diagnostics
+	}
+	deriveJobDurations(dst)
+}
+
+func durationMS(start, end *time.Time) *int64 {
+	if start == nil || end == nil || start.IsZero() || end.IsZero() || end.Before(*start) {
+		return nil
+	}
+	value := end.Sub(*start).Milliseconds()
+	return &value
+}
+
+func deriveJobDurations(job *Job) {
+	if job == nil {
+		return
+	}
+	end := firstTime(job.CompletedAt, job.FailedAt, job.FinishedAt)
+	d := &JobDurations{
+		QueueWaitMS:       durationMS(firstTime(job.QueuedAt, nonZeroTime(job.CreatedAt)), job.LeasedAt),
+		ClaimMS:           firstInt64(job.ClaimMS, durationMS(job.ClaimStartedAt, job.ClaimedAt)),
+		LeaseAcquireMS:    firstInt64(job.LeaseAcquireMS, durationMS(job.ClaimStartedAt, job.LeaseAcquiredAt)),
+		ClaimToFetchMS:    durationMS(job.ClaimStartedAt, job.SQDQueryStartedAt),
+		PreFetchPrepareMS: durationMS(job.ClaimedAt, job.SQDQueryStartedAt),
+		LeaseToStartMS:    durationMS(job.LeasedAt, job.WorkerStartedAt),
+		SQDTTFAMS:         durationMS(job.SQDQueryStartedAt, job.SQDFirstByteAt),
+		SQDScanMS:         durationMS(job.SQDQueryStartedAt, job.SQDQueryFinishedAt),
+		ParquetWriteMS:    durationMS(job.ParquetStartedAt, job.ParquetFinishedAt),
+		R2UploadMS:        durationMS(job.R2UploadStartedAt, job.R2UploadFinishedAt),
+		ManifestMS:        durationMS(job.ManifestStartedAt, job.ManifestFinishedAt),
+		LocalSyncMS:       durationMS(job.LocalSyncStartedAt, job.LocalSyncFinishedAt),
+		ValidationMS:      durationMS(job.ValidationStartedAt, job.ValidationFinishedAt),
+		CoverageCommitMS:  durationMS(job.CoverageCommitStartedAt, job.CoverageCommitFinishedAt),
+		TotalJobMS:        durationMS(nonZeroTime(job.CreatedAt), end),
+	}
+	if d.QueueWaitMS == nil && d.ClaimMS == nil && d.LeaseAcquireMS == nil && d.ClaimToFetchMS == nil && d.PreFetchPrepareMS == nil && d.LeaseToStartMS == nil && d.SQDTTFAMS == nil && d.SQDScanMS == nil &&
+		d.ParquetWriteMS == nil && d.R2UploadMS == nil && d.ManifestMS == nil && d.LocalSyncMS == nil &&
+		d.ValidationMS == nil && d.CoverageCommitMS == nil && d.TotalJobMS == nil {
+		job.Durations = nil
+		return
+	}
+	job.Durations = d
+}
+
+func firstInt64(values ...*int64) *int64 {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func nonZeroTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 // Reconcile 重启对账（Phase 4 §60-61）：sqd list --org {org} 检查托管 Worker 是否已存在。
@@ -1354,7 +1812,23 @@ func (m *Manager) writeLeasedStatus(ctx context.Context, job *Job, status string
 	payload, _ := json.MarshalIndent(map[string]any{
 		"job_id": job.ID, "chunk_id": job.ChunkID, "status": status,
 		"worker_id": m.workerID, "started_at": job.StartedAt,
-		"current_block": currentBlock, "rows_written": rows,
+		"worker_started_at":           job.WorkerStartedAt,
+		"sqd_query_started_at":        job.SQDQueryStartedAt,
+		"sqd_first_byte_at":           job.SQDFirstByteAt,
+		"sqd_query_finished_at":       job.SQDQueryFinishedAt,
+		"parquet_started_at":          job.ParquetStartedAt,
+		"parquet_finished_at":         job.ParquetFinishedAt,
+		"r2_upload_started_at":        job.R2UploadStartedAt,
+		"r2_upload_finished_at":       job.R2UploadFinishedAt,
+		"manifest_started_at":         job.ManifestStartedAt,
+		"manifest_finished_at":        job.ManifestFinishedAt,
+		"local_sync_started_at":       job.LocalSyncStartedAt,
+		"local_sync_finished_at":      job.LocalSyncFinishedAt,
+		"validation_started_at":       job.ValidationStartedAt,
+		"validation_finished_at":      job.ValidationFinishedAt,
+		"coverage_commit_started_at":  job.CoverageCommitStartedAt,
+		"coverage_commit_finished_at": job.CoverageCommitFinishedAt,
+		"current_block":               currentBlock, "rows_written": rows,
 		"last_progress_at": time.Now().Format(time.RFC3339),
 	}, "", "  ")
 	return m.store.Put(ctx, leasedChunkDir(job.ID, job.ChunkID)+"/status.json", payload)

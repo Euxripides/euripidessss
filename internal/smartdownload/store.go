@@ -23,6 +23,8 @@ type Store struct {
 	addresses          map[string]*AddressJob
 	datasets           map[string]*DatasetJob
 	ranges             map[string]*RangeJob
+	rangeIDsByDataset  map[string]map[string]struct{}
+	rangeDatasetByID   map[string]string
 	revision           uint64
 	activeWrites       int
 	loadedFromSnapshot bool
@@ -34,11 +36,13 @@ func NewStore(root string) (*Store, error) {
 		return nil, fmt.Errorf("smartdownload store root 不能为空")
 	}
 	s := &Store{
-		root:      root,
-		batches:   map[string]*BatchJob{},
-		addresses: map[string]*AddressJob{},
-		datasets:  map[string]*DatasetJob{},
-		ranges:    map[string]*RangeJob{},
+		root:              root,
+		batches:           map[string]*BatchJob{},
+		addresses:         map[string]*AddressJob{},
+		datasets:          map[string]*DatasetJob{},
+		ranges:            map[string]*RangeJob{},
+		rangeIDsByDataset: map[string]map[string]struct{}{},
+		rangeDatasetByID:  map[string]string{},
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -50,6 +54,7 @@ func (s *Store) Root() string { return s.root }
 
 func (s *Store) load() error {
 	if s.loadSnapshot() {
+		s.rebuildRangeDatasetIndex()
 		s.loadedFromSnapshot = true
 		return nil
 	}
@@ -64,6 +69,23 @@ func (s *Store) load() error {
 	// 快照只是可重建缓存；写入失败不应阻断权威 JSON 状态恢复。
 	_ = s.writeSnapshot()
 	return nil
+}
+
+func (s *Store) rebuildRangeDatasetIndex() {
+	s.rangeIDsByDataset = map[string]map[string]struct{}{}
+	s.rangeDatasetByID = map[string]string{}
+	for id, value := range s.ranges {
+		if value == nil || value.DatasetJobID == "" {
+			continue
+		}
+		ids := s.rangeIDsByDataset[value.DatasetJobID]
+		if ids == nil {
+			ids = map[string]struct{}{}
+			s.rangeIDsByDataset[value.DatasetJobID] = ids
+		}
+		ids[id] = struct{}{}
+		s.rangeDatasetByID[id] = value.DatasetJobID
+	}
 }
 
 // loadDirectory 并行完成独立 JSON 文件的磁盘读取和反序列化，再按 ReadDir
@@ -178,7 +200,24 @@ func (s *Store) mergeLoadedValue(dir string, value any) {
 		}
 	case *RangeJob:
 		if dir == "ranges" {
+			if previousDataset := s.rangeDatasetByID[typed.ID]; previousDataset != "" && previousDataset != typed.DatasetJobID {
+				if ids := s.rangeIDsByDataset[previousDataset]; ids != nil {
+					delete(ids, typed.ID)
+					if len(ids) == 0 {
+						delete(s.rangeIDsByDataset, previousDataset)
+					}
+				}
+			}
 			s.ranges[typed.ID] = typed
+			s.rangeDatasetByID[typed.ID] = typed.DatasetJobID
+			if typed.DatasetJobID != "" {
+				ids := s.rangeIDsByDataset[typed.DatasetJobID]
+				if ids == nil {
+					ids = map[string]struct{}{}
+					s.rangeIDsByDataset[typed.DatasetJobID] = ids
+				}
+				ids[typed.ID] = struct{}{}
+			}
 		}
 	}
 }
@@ -207,6 +246,41 @@ func (s *Store) SaveDataset(v *DatasetJob) error {
 
 func (s *Store) SaveRange(v *RangeJob) error {
 	return s.save("ranges", v.ID, v)
+}
+
+// SaveRanges persists independent Range jobs concurrently. Large TURBO
+// batches can legitimately change thousands of range owners in one allocator
+// pass; serial file writes while Service.mu is held would otherwise block
+// claims and lifecycle operations for minutes.
+func (s *Store) SaveRanges(values []*RangeJob) error {
+	if len(values) == 0 {
+		return nil
+	}
+	workers := storeLoadWorkerCount(len(values))
+	jobs := make(chan *RangeJob, workers)
+	var wg sync.WaitGroup
+	var firstErr error
+	var errOnce sync.Once
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func() {
+			defer wg.Done()
+			for value := range jobs {
+				if value == nil {
+					continue
+				}
+				if err := s.SaveRange(value); err != nil {
+					errOnce.Do(func() { firstErr = err })
+				}
+			}
+		}()
+	}
+	for _, value := range values {
+		jobs <- value
+	}
+	close(jobs)
+	wg.Wait()
+	return firstErr
 }
 
 func (s *Store) save(kind, id string, v any) error {
@@ -251,7 +325,11 @@ func (s *Store) finishMutation(kind, id string, v any, committed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if committed {
-		s.mergeLoadedValue(kind, cloneJSON(v))
+		value := cloneJSON(v)
+		if rangeJob, ok := v.(*RangeJob); ok {
+			value = cloneRangeJob(rangeJob)
+		}
+		s.mergeLoadedValue(kind, value)
 	}
 	s.activeWrites--
 }
@@ -295,7 +373,7 @@ func (s *Store) GetRange(id string) *RangeJob {
 	if !ok {
 		return nil
 	}
-	return cloneJSON(v).(*RangeJob)
+	return cloneRangeJob(v)
 }
 
 // ── 列表 ──
@@ -340,10 +418,11 @@ func (s *Store) ListDatasetsByAddress(addressJobID string) []*DatasetJob {
 func (s *Store) ListRangesByDataset(datasetJobID string) []*RangeJob {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []*RangeJob
-	for _, v := range s.ranges {
-		if v.DatasetJobID == datasetJobID {
-			out = append(out, cloneJSON(v).(*RangeJob))
+	ids := s.rangeIDsByDataset[datasetJobID]
+	out := make([]*RangeJob, 0, len(ids))
+	for id := range ids {
+		if v := s.ranges[id]; v != nil {
+			out = append(out, cloneRangeJob(v))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -380,9 +459,56 @@ func (s *Store) ListRanges() []*RangeJob {
 	defer s.mu.Unlock()
 	out := make([]*RangeJob, 0, len(s.ranges))
 	for _, v := range s.ranges {
-		out = append(out, cloneJSON(v).(*RangeJob))
+		out = append(out, cloneRangeJob(v))
 	}
 	return out
+}
+
+// RunningExecutionCountsByBatch counts active provider executions without
+// cloning the complete range store. Followers of one SharedWork represent one
+// provider request and therefore consume one execution slot together.
+func (s *Store) RunningExecutionCountsByBatch(batchID string, owner RangeOwner) (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	totalRunning, laneRunning := 0, 0
+	seenSharedWork := map[string]struct{}{}
+	for _, rangeJob := range s.ranges {
+		if rangeJob == nil || rangeJob.BatchID != batchID || rangeJob.Status != RangeRunning {
+			continue
+		}
+		if rangeJob.SharedWorkID != "" {
+			if _, seen := seenSharedWork[rangeJob.SharedWorkID]; seen {
+				continue
+			}
+			seenSharedWork[rangeJob.SharedWorkID] = struct{}{}
+		}
+		totalRunning++
+		if owner != "" && rangeJob.Owner == owner {
+			laneRunning++
+		}
+	}
+	return totalRunning, laneRunning
+}
+
+func cloneRangeJob(value *RangeJob) *RangeJob {
+	if value == nil {
+		return nil
+	}
+	out := *value
+	out.FailedProviders = append([]string(nil), value.FailedProviders...)
+	if value.CertifiedAt != nil {
+		certifiedAt := *value.CertifiedAt
+		out.CertifiedAt = &certifiedAt
+	}
+	if value.StartedAt != nil {
+		startedAt := *value.StartedAt
+		out.StartedAt = &startedAt
+	}
+	if value.FinishedAt != nil {
+		finishedAt := *value.FinishedAt
+		out.FinishedAt = &finishedAt
+	}
+	return &out
 }
 
 // ── 辅助 ──

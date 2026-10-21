@@ -1,0 +1,9 @@
+{
+  "action": "enqueue",
+  "name": "BENCH_C4_50K_V2",
+  "prefix": "bsc/benchmarks/bench-c4-50k-v2/",
+  "created": 30,
+  "skipped": 0,
+  "jobs": 30,
+  "workload_sha256": "326cff437cd237860e91f1596b62e536184f978b5828921dc0205aaa1d0b1d2d"
+}

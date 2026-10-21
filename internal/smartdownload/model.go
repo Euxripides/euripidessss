@@ -405,6 +405,15 @@ type TurboStatus struct {
 	Priority                  JobPriority  `json:"priority,omitempty"`
 	CloudRanges               int          `json:"cloud_ranges"`
 	RPCRanges                 int          `json:"rpc_ranges"`
+	LogicalAddressJobs        int          `json:"logical_address_jobs,omitempty"`
+	LogicalDatasetJobs        int          `json:"logical_dataset_jobs,omitempty"`
+	LogicalRanges             int          `json:"logical_ranges,omitempty"`
+	UniqueBlockWindows        int          `json:"unique_block_windows,omitempty"`
+	DuplicateBlockWindowRatio float64      `json:"duplicate_block_window_ratio,omitempty"`
+	AddressFanIn              float64      `json:"address_fan_in,omitempty"`
+	EstimatedCloudJobs        int          `json:"estimated_cloud_jobs,omitempty"`
+	EstimatedRPCJobs          int          `json:"estimated_rpc_jobs,omitempty"`
+	RangeExplosionWarning     string       `json:"range_explosion_warning,omitempty"`
 	PendingRanges             int          `json:"pending_ranges"`
 	RunningRanges             int          `json:"running_ranges"`
 	CompletedRanges           int          `json:"completed_ranges"`

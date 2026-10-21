@@ -141,6 +141,7 @@ func TestGapRepair(t *testing.T) {
 	opts.DefaultEndBlock = 399
 	opts.RangeChunkSize = 200
 	svc := NewService(store, opts, NewJSONLPartWriter(dir))
+	t.Cleanup(svc.Shutdown)
 	svc.RegisterAdapter(NewMockProvider())
 	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
 		ChainKey:  "bsc",

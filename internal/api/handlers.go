@@ -74,6 +74,7 @@ var (
 	intelligenceAPI         http.Handler
 	investigationV2API      http.Handler                     // V2 调查请求入口（/api/investigation/*）
 	schedulerAPI            http.Handler                     // Smart Download Orchestrator（/api/scheduler/*）
+	schedulerDebugAPI       http.Handler                     // 本机 SQD 可观测性（/api/debug/*）
 	investigationAgent      *intelligence.InvestigationAgent // Phase 5：数据索引后自动继续调查
 	datasetEventBus         *datasetevents.Bus               // Phase 5.3：Dataset Event Bus
 	graphIncrementer        *graphincrement.Incrementer      // Phase 5.3：Graph 增量物化
@@ -509,6 +510,7 @@ func setupDownloadScheduler() {
 		}
 	})
 	schedulerAPI = http.StripPrefix("/api/scheduler", NewSchedulerHandler(scheduler))
+	schedulerDebugAPI = NewSchedulerDebugHandler(scheduler)
 	// Phase 4 §60-61：cloud 模式启动后对账已部署 Worker（sqd list --org）
 	if cloudRuntime.Status().Mode == "cloud" {
 		go func() {
@@ -572,6 +574,25 @@ func setupSmartDownload() {
 	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_WORKERS")); v != "" {
 		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 64 {
 			opts.Workers = n
+		}
+	}
+	for _, stage := range []struct {
+		workersEnv, capacityEnv string
+		workers, capacity       *int
+	}{
+		{"SMART_DOWNLOAD_LOCAL_SYNC_WORKERS", "SMART_DOWNLOAD_LOCAL_SYNC_QUEUE_CAPACITY", &opts.LocalSyncWorkers, &opts.LocalSyncQueueCapacity},
+		{"SMART_DOWNLOAD_VALIDATION_WORKERS", "SMART_DOWNLOAD_VALIDATION_QUEUE_CAPACITY", &opts.ValidationWorkers, &opts.ValidationQueueCapacity},
+		{"SMART_DOWNLOAD_CLICKHOUSE_WORKERS", "SMART_DOWNLOAD_CLICKHOUSE_QUEUE_CAPACITY", &opts.ClickHouseWorkers, &opts.ClickHouseQueueCapacity},
+	} {
+		if v := strings.TrimSpace(os.Getenv(stage.workersEnv)); v != "" {
+			if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 16 {
+				*stage.workers = n
+			}
+		}
+		if v := strings.TrimSpace(os.Getenv(stage.capacityEnv)); v != "" {
+			if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 && n <= 1024 {
+				*stage.capacity = n
+			}
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("SMART_DOWNLOAD_TURBO_TAIL_BLOCKS")); v != "" {
@@ -1074,6 +1095,7 @@ func RegisterRoutes(r *gin.Engine) {
 		api.Any("/intelligence/*path", HandleIntelligence)
 		api.Any("/investigation/*path", HandleInvestigationV2)
 		api.Any("/scheduler/*path", HandleSchedulerAPI)
+		api.Any("/debug/*path", HandleSchedulerDebugAPI)
 		api.Any("/smart-download/*path", HandleSmartDownloadAPI)
 		registerAddressLibraryRoutes(api)
 		api.GET("/dataset/events", HandleDatasetEvents)

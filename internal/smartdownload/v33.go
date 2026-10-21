@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,6 +39,7 @@ type GroupRangeRequest struct {
 	Datasets     []string     `json:"datasets"`
 	FromBlock    uint64       `json:"from_block"`
 	ToBlock      uint64       `json:"to_block"`
+	CloudTier    string       `json:"cloud_tier,omitempty"`
 }
 
 // GroupProviderAdapter is opt-in. A provider may not claim grouping or bundle
@@ -47,6 +49,13 @@ type GroupProviderAdapter interface {
 	MaxAddressGroupSize(dataset string) int
 	SupportedDatasetBundles() [][]string
 	ExecuteGroupRange(context.Context, GroupRangeRequest) (map[string]map[string]*ProviderResult, error)
+}
+
+// GroupRangeOwnerProvider binds grouped execution to the same physical lane as
+// its logical ranges. Adapters that predate owner-aware grouping are treated as
+// RPC-lane providers for backward compatibility.
+type GroupRangeOwnerProvider interface {
+	GroupRangeOwner() RangeOwner
 }
 
 type SharedWorkRef struct {
@@ -69,6 +78,9 @@ type SharedWork struct {
 	Addresses    []string        `json:"addresses"`
 	FromBlock    uint64          `json:"from_block"`
 	ToBlock      uint64          `json:"to_block"`
+	Owner        RangeOwner      `json:"owner,omitempty"`
+	Priority     int             `json:"priority,omitempty"`
+	CloudTier    string          `json:"cloud_tier,omitempty"`
 	Status       string          `json:"status"`
 	RefCount     int             `json:"ref_count"`
 	Attempts     int             `json:"attempts"`
@@ -249,12 +261,7 @@ func (s *Service) batchRangeRefs(batchID string) []acceleratorRangeRef {
 	for _, address := range s.store.ListAddressesByBatch(batchID) {
 		for _, dataset := range s.store.ListDatasetsByAddress(address.ID) {
 			for _, rangeJob := range s.store.ListRangesByDataset(dataset.ID) {
-				// V3.3 grouped execution is currently implemented by the RPC
-				// adapter. Cloud-owned ranges must remain on the single-range
-				// scheduler so SubmitJob can deploy/queue the SQD Worker; attaching
-				// them to SharedWork would silently replace the selected Cloud lane
-				// with RPC.
-				if (rangeJob.Status == RangePending || rangeJob.Status == RangeReady) && rangeJob.Owner != RangeOwnerCloud {
+				if (rangeJob.Status == RangePending || rangeJob.Status == RangeReady) && rangeJob.SharedWorkID == "" {
 					refs = append(refs, acceleratorRangeRef{Range: rangeJob, Dataset: dataset, Address: address})
 				}
 			}
@@ -276,10 +283,17 @@ func datasetsMatchBundle(datasets []string, bundle []string) bool {
 	return true
 }
 
-func (s *Service) groupAdapterFor(datasets []string, chainKey string, mode DownloadMode) (GroupProviderAdapter, int, bool) {
+func groupAdapterOwns(group GroupProviderAdapter, owner RangeOwner) bool {
+	if ownerProvider, ok := group.(GroupRangeOwnerProvider); ok {
+		return owner == "" || ownerProvider.GroupRangeOwner() == owner
+	}
+	return owner == "" || owner == RangeOwnerRPC
+}
+
+func (s *Service) groupAdapterForOwner(datasets []string, chainKey string, mode DownloadMode, owner RangeOwner) (GroupProviderAdapter, int, bool) {
 	for _, adapter := range s.adapters {
 		group, ok := adapter.(GroupProviderAdapter)
-		if !ok || !adapterAvailableForMode(group, chainKey, mode) {
+		if !ok || !groupAdapterOwns(group, owner) || !adapterAvailableForMode(group, chainKey, mode) {
 			continue
 		}
 		bundleOK := len(datasets) == 1 && group.Supports(datasets[0])
@@ -309,7 +323,11 @@ func (s *Service) groupAdapterFor(datasets []string, chainKey string, mode Downl
 	return nil, 1, false
 }
 
-func (s *Service) acceleratorBundles(datasets []string, chainKey string, mode DownloadMode) [][]string {
+func (s *Service) groupAdapterFor(datasets []string, chainKey string, mode DownloadMode) (GroupProviderAdapter, int, bool) {
+	return s.groupAdapterForOwner(datasets, chainKey, mode, "")
+}
+
+func (s *Service) acceleratorBundles(datasets []string, chainKey string, mode DownloadMode, owner RangeOwner) [][]string {
 	remaining := make(map[string]bool)
 	for _, dataset := range sortedUniqueLower(datasets) {
 		remaining[dataset] = true
@@ -317,7 +335,7 @@ func (s *Service) acceleratorBundles(datasets []string, chainKey string, mode Do
 	var bundles [][]string
 	for _, adapter := range s.adapters {
 		group, ok := adapter.(GroupProviderAdapter)
-		if !ok || !adapterAvailableForMode(group, chainKey, mode) {
+		if !ok || !groupAdapterOwns(group, owner) || !adapterAvailableForMode(group, chainKey, mode) {
 			continue
 		}
 		for _, candidate := range group.SupportedDatasetBundles() {
@@ -380,7 +398,7 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 	}
 	byRange := make(map[string][]acceleratorRangeRef)
 	for _, ref := range refs {
-		key := fmt.Sprintf("%s|%d|%d", ref.Address.ChainKey, ref.Range.FromBlock, ref.Range.ToBlock)
+		key := fmt.Sprintf("%s|%s|%d|%d", ref.Address.ChainKey, ref.Range.Owner, ref.Range.FromBlock, ref.Range.ToBlock)
 		byRange[key] = append(byRange[key], ref)
 	}
 
@@ -399,8 +417,8 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 			datasets = append(datasets, dataset)
 		}
 		first := rangeRefs[0]
-		for _, bundle := range s.acceleratorBundles(datasets, first.Address.ChainKey, batch.Mode) {
-			_, maxGroup, grouped := s.groupAdapterFor(bundle, first.Address.ChainKey, batch.Mode)
+		for _, bundle := range s.acceleratorBundles(datasets, first.Address.ChainKey, batch.Mode, first.Range.Owner) {
+			_, maxGroup, grouped := s.groupAdapterForOwner(bundle, first.Address.ChainKey, batch.Mode, first.Range.Owner)
 			if !grouped {
 				// No provider capability means no SharedWork ownership. These refs
 				// remain on the proven single-address scheduler (group_size=1).
@@ -435,6 +453,7 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 					ChainID: first.Address.ChainID, Datasets: sortedUniqueLower(bundle),
 					Addresses: sortedUniqueLower(groupAddresses), FromBlock: first.Range.FromBlock,
 					ToBlock: first.Range.ToBlock, Status: sharedWorkPending,
+					Owner: first.Range.Owner, Priority: first.Range.Priority, CloudTier: first.Dataset.CloudTier,
 					Heavy:     len(groupAddresses) == 1 && first.Dataset.EstimatedRows > s.opts.TargetRowsPerShard,
 					CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 				}
@@ -459,7 +478,7 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 	for _, mutation := range mutations {
 		work := mutation.work
 		for _, existing := range s.v33.works {
-			if existing.Fingerprint == work.Fingerprint &&
+			if existing.Fingerprint == work.Fingerprint && existing.Owner == work.Owner &&
 				(existing.Status == sharedWorkPending || existing.Status == sharedWorkReady || existing.Status == sharedWorkRunning) {
 				work = existing
 				for i := range mutation.work.Refs {
@@ -483,20 +502,22 @@ func (s *Service) attachBatchAccelerator(batchID string) error {
 		s.v33.works = before
 		return err
 	}
+	changedRanges := make([]*RangeJob, 0, len(refs))
 	for _, mutation := range mutations {
 		for _, ref := range mutation.refs {
-			if err := s.store.SaveRange(ref.Range); err != nil {
-				for _, rollback := range refs {
-					if old, ok := oldRangeIDs[rollback.Range.ID]; ok {
-						rollback.Range.SharedWorkID = old
-						_ = s.store.SaveRange(rollback.Range)
-					}
-				}
-				s.v33.works = before
-				_ = s.v33.persistLocked()
-				return err
+			changedRanges = append(changedRanges, ref.Range)
+		}
+	}
+	if err := s.store.SaveRanges(changedRanges); err != nil {
+		for _, rollback := range refs {
+			if old, ok := oldRangeIDs[rollback.Range.ID]; ok {
+				rollback.Range.SharedWorkID = old
 			}
 		}
+		_ = s.store.SaveRanges(changedRanges)
+		s.v33.works = before
+		_ = s.v33.persistLocked()
+		return err
 	}
 	return nil
 }
@@ -519,7 +540,18 @@ type claimedSharedWork struct {
 	priority int
 }
 
+func sharedWorkOwner(work *SharedWork) RangeOwner {
+	if work != nil && work.Owner != "" {
+		return work.Owner
+	}
+	return RangeOwnerRPC
+}
+
 func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
+	return s.claimSharedWorkForOwner(batchID, "")
+}
+
+func (s *Service) claimSharedWorkForOwner(batchID string, desiredOwner RangeOwner) *claimedSharedWork {
 	if s.v33 == nil {
 		return nil
 	}
@@ -527,6 +559,18 @@ func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
 	defer s.mu.Unlock()
 	batch := s.store.GetBatch(batchID)
 	if batch == nil || batch.Status.Terminal() || batch.CancelRequested || batch.PauseRequested {
+		return nil
+	}
+	if batch.Status == BatchCreated {
+		batch.Status = BatchRunning
+		batch.UpdatedAt = time.Now().UTC()
+		if batch.StartedAt == nil {
+			now := time.Now().UTC()
+			batch.StartedAt = &now
+		}
+		_ = s.store.SaveBatch(batch)
+	}
+	if isTurboMode(batch.Mode) && !s.hasBatchClaimCapacityLocked(batchID) {
 		return nil
 	}
 	s.v33.mu.Lock()
@@ -541,12 +585,54 @@ func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
 		if work.Status != sharedWorkPending && work.Status != sharedWorkReady {
 			continue
 		}
+		if desiredOwner != "" && sharedWorkOwner(work) != desiredOwner {
+			continue
+		}
 		belongs := false
 		for _, ref := range work.Refs {
 			belongs = belongs || (!ref.Canceled && ref.BatchID == batchID)
 		}
 		if !belongs || work.RefCount == 0 {
 			continue
+		}
+		// Older persisted plans may still attach Cloud-owned TURBO ranges to
+		// RPC-only SharedWork. Detach those references before provider selection;
+		// otherwise grouped RPC execution silently overrides SQD Cloud ownership.
+		if isTurboMode(batch.Mode) && sharedWorkOwner(work) != RangeOwnerCloud {
+			detachedCloud := false
+			for i := range work.Refs {
+				ref := &work.Refs[i]
+				if ref.Canceled {
+					continue
+				}
+				rangeJob := s.store.GetRange(ref.RangeJobID)
+				if rangeJob == nil || rangeJob.Owner != RangeOwnerCloud {
+					continue
+				}
+				if rangeJob.SharedWorkID == work.ID {
+					rangeJob.SharedWorkID = ""
+					rangeJob.UpdatedAt = time.Now().UTC()
+					_ = s.store.SaveRange(rangeJob)
+				}
+				ref.Canceled = true
+				detachedCloud = true
+			}
+			if detachedCloud {
+				work.RefCount = activeRefCount(work.Refs)
+				work.Addresses, work.Datasets = activeSharedWorkDimensions(work.Refs)
+				work.UpdatedAt = time.Now().UTC()
+				if work.RefCount == 0 {
+					work.Status = sharedWorkSplit
+				}
+				_ = s.v33.persistLocked()
+				belongs = false
+				for _, ref := range work.Refs {
+					belongs = belongs || (!ref.Canceled && ref.BatchID == batchID)
+				}
+				if !belongs || work.RefCount == 0 {
+					continue
+				}
+			}
 		}
 		var group GroupProviderAdapter
 		groupOK := false
@@ -555,7 +641,7 @@ func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
 		// acceleration is only useful for an actual address or dataset group and
 		// otherwise lets map iteration order silently override that decision.
 		if len(work.Addresses) > 1 || len(work.Datasets) > 1 {
-			group, _, groupOK = s.groupAdapterFor(work.Datasets, work.ChainKey, batch.Mode)
+			group, _, groupOK = s.groupAdapterForOwner(work.Datasets, work.ChainKey, batch.Mode, sharedWorkOwner(work))
 		}
 		var adapter ProviderAdapter
 		if groupOK {
@@ -574,6 +660,19 @@ func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
 		}
 		if adapter == nil {
 			continue
+		}
+		if isTurboMode(batch.Mode) {
+			owner := RangeOwnerRPC
+			if adapter.Name() == "sqd_cloud" {
+				owner = RangeOwnerCloud
+			}
+			if !s.canClaimLaneLocked(batchID, owner) {
+				// SharedWork candidates are deterministically ordered and currently
+				// use the same grouped RPC lane. Once that lane is full, rescanning
+				// every remaining work would recompute whole-batch capacity hundreds
+				// of times while Service.mu is held.
+				return nil
+			}
 		}
 		work.Status = sharedWorkRunning
 		work.OwnerBatchID = batchID
@@ -595,9 +694,87 @@ func (s *Service) claimSharedWork(batchID string) *claimedSharedWork {
 			}
 		}
 		_ = s.v33.persistLocked()
-		return &claimedSharedWork{work: cloneSharedWork(work), group: group, adapter: adapter, mode: batch.Mode}
+		return &claimedSharedWork{work: cloneSharedWork(work), group: group, adapter: adapter, mode: batch.Mode, priority: work.Priority}
 	}
 	return nil
+}
+
+func activeSharedWorkDimensions(refs []SharedWorkRef) ([]string, []string) {
+	addresses := map[string]struct{}{}
+	datasets := map[string]struct{}{}
+	for _, ref := range refs {
+		if ref.Canceled {
+			continue
+		}
+		addresses[strings.ToLower(ref.Address)] = struct{}{}
+		datasets[ref.Dataset] = struct{}{}
+	}
+	addressList := make([]string, 0, len(addresses))
+	datasetList := make([]string, 0, len(datasets))
+	for address := range addresses {
+		addressList = append(addressList, address)
+	}
+	for dataset := range datasets {
+		datasetList = append(datasetList, dataset)
+	}
+	sort.Strings(addressList)
+	sort.Strings(datasetList)
+	return addressList, datasetList
+}
+
+// detachTurboCloudSharedWorkLocked repairs persisted plans created before
+// Cloud ownership was excluded from V3.3 RPC grouping. It batches all range
+// updates and writes the shared-work registry once so startup does not repeat a
+// multi-megabyte registry write for every historical block group.
+// The caller must hold Service.mu.
+func (s *Service) detachTurboCloudSharedWorkLocked() {
+	if s.v33 == nil {
+		return
+	}
+	s.v33.mu.Lock()
+	defer s.v33.mu.Unlock()
+	changedWorks := false
+	changedRanges := make([]*RangeJob, 0)
+	for _, work := range s.v33.works {
+		if work == nil || work.Status == sharedWorkRunning {
+			continue
+		}
+		if sharedWorkOwner(work) == RangeOwnerCloud {
+			continue
+		}
+		workChanged := false
+		for index := range work.Refs {
+			ref := &work.Refs[index]
+			if ref.Canceled {
+				continue
+			}
+			rangeJob := s.store.GetRange(ref.RangeJobID)
+			if rangeJob == nil || rangeJob.Owner != RangeOwnerCloud {
+				continue
+			}
+			if rangeJob.SharedWorkID == work.ID {
+				rangeJob.SharedWorkID = ""
+				rangeJob.UpdatedAt = time.Now().UTC()
+				changedRanges = append(changedRanges, rangeJob)
+			}
+			ref.Canceled = true
+			workChanged = true
+		}
+		if !workChanged {
+			continue
+		}
+		work.RefCount = activeRefCount(work.Refs)
+		work.Addresses, work.Datasets = activeSharedWorkDimensions(work.Refs)
+		work.UpdatedAt = time.Now().UTC()
+		if work.RefCount == 0 {
+			work.Status = sharedWorkSplit
+		}
+		changedWorks = true
+	}
+	_ = s.store.SaveRanges(changedRanges)
+	if changedWorks {
+		_ = s.v33.persistLocked()
+	}
 }
 
 type staticResultAdapter struct {
@@ -618,6 +795,48 @@ func (a staticResultAdapter) ExecuteRange(context.Context, RangeRequest) (*Provi
 func (s *Service) executeSharedWork(claim *claimedSharedWork) {
 	ctx, cancel := context.WithTimeout(s.ctx, s.providerAttemptTimeout(claim.adapter.Name()))
 	defer cancel()
+	if deferred, ok := claim.group.(deferredCloudGroupAdapter); ok && claim.adapter.Name() == "sqd_cloud" {
+		remote, err := deferred.ExecuteRemoteGroupRange(ctx, GroupRangeRequest{
+			SharedWorkID: claim.work.ID, Mode: claim.mode, Priority: claim.priority,
+			ChainKey: claim.work.ChainKey, ChainID: claim.work.ChainID,
+			Addresses: claim.work.Addresses, Datasets: claim.work.Datasets,
+			FromBlock: claim.work.FromBlock, ToBlock: claim.work.ToBlock,
+			CloudTier: claim.work.CloudTier,
+		})
+		if err != nil {
+			s.failSharedWork(claim, s.providerExecutionError(claim.adapter.Name(), err))
+			return
+		}
+		localSyncKey := fmt.Sprintf("shared:%s:%d", claim.work.ID, claim.work.UpdatedAt.UnixNano())
+		err = s.pipeline.localSync.enqueueBlocking(localSyncKey, func(workerCtx context.Context) pipelineOutcome {
+			result, syncErr := remote.sync(workerCtx)
+			if syncErr != nil {
+				s.failSharedWork(claim, fmt.Errorf("Cloud Local Sync 失败: %w", syncErr))
+				return pipelineOutcome{rows: remote.rows, bytes: remote.bytes, err: syncErr}
+			}
+			results := splitCloudGroupResult(GroupRangeRequest{
+				Addresses: claim.work.Addresses, Datasets: claim.work.Datasets,
+				FromBlock: claim.work.FromBlock, ToBlock: claim.work.ToBlock,
+			}, result)
+			s.completeSharedWorkResults(claim, results)
+			var completionErr error
+			for _, ref := range claim.work.Refs {
+				if ref.Canceled {
+					continue
+				}
+				rj := s.store.GetRange(ref.RangeJobID)
+				if rj == nil || (rj.Status != RangeCompleted && rj.Status != RangeEmpty) {
+					completionErr = fmt.Errorf("shared work %s local commit incomplete", claim.work.ID)
+					break
+				}
+			}
+			return pipelineOutcome{rows: uint64(len(result.Records)), bytes: result.Bytes, err: completionErr}
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.failSharedWork(claim, fmt.Errorf("Local Sync Queue 入队失败: %w", err))
+		}
+		return
+	}
 	results := make(map[string]map[string]*ProviderResult)
 	var err error
 	if claim.group != nil {
@@ -626,6 +845,7 @@ func (s *Service) executeSharedWork(claim *claimedSharedWork) {
 			ChainKey: claim.work.ChainKey, ChainID: claim.work.ChainID,
 			Addresses: claim.work.Addresses, Datasets: claim.work.Datasets,
 			FromBlock: claim.work.FromBlock, ToBlock: claim.work.ToBlock,
+			CloudTier: claim.work.CloudTier,
 		})
 	} else {
 		for _, ref := range claim.work.Refs {
@@ -649,6 +869,10 @@ func (s *Service) executeSharedWork(claim *claimedSharedWork) {
 		s.failSharedWork(claim, err)
 		return
 	}
+	s.completeSharedWorkResults(claim, results)
+}
+
+func (s *Service) completeSharedWorkResults(claim *claimedSharedWork, results map[string]map[string]*ProviderResult) {
 	// Provider execution can overlap a later identical batch attaching to this
 	// RUNNING work. Refresh the references and close shared ownership atomically;
 	// otherwise the late ranges are absent from claim.work's original snapshot
@@ -793,6 +1017,7 @@ func (s *Service) splitSharedWorkLocked(parent *SharedWork) {
 			ID: uuid.NewString(), ChainKey: parent.ChainKey, ChainID: parent.ChainID,
 			Datasets: append([]string(nil), parent.Datasets...), Addresses: append([]string(nil), groupAddresses...),
 			FromBlock: parent.FromBlock, ToBlock: parent.ToBlock, Status: sharedWorkReady,
+			Owner: parent.Owner, Priority: parent.Priority, CloudTier: parent.CloudTier,
 			ParentID: parent.ID, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 		}
 		addressSet := make(map[string]bool)
@@ -902,7 +1127,7 @@ func (s *Service) PlannerV2(ctx context.Context, req CreateBatchRequest) (*Accel
 	sort.Strings(chainKeys)
 	for _, chainKey := range chainKeys {
 		units := byChain[chainKey]
-		for _, bundle := range s.acceleratorBundles(datasets, chainKey, mode) {
+		for _, bundle := range s.acceleratorBundles(datasets, chainKey, mode, "") {
 			adapter, maxGroup, grouped := s.groupAdapterFor(bundle, chainKey, mode)
 			provider := ""
 			if adapter != nil {

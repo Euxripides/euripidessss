@@ -64,6 +64,36 @@ func PlanSegments(from, to uint64, segments []ActivitySegment, targetRowsPerRang
 	return out
 }
 
+// PlanSegmentsBySpan 把分段按固定建议跨度换算为 Range 列表。
+// 适合 discovery 已经给出可直接执行的 block span 的场景。
+func PlanSegmentsBySpan(from, to uint64, segments []ActivitySegment, span uint64) []BlockRange {
+	if span == 0 {
+		span = AdaptiveSpan(0, 0, 0, 0)
+	}
+	if len(segments) == 0 {
+		return splitSpan(from, to, span)
+	}
+	SortSegments(segments)
+	var out []BlockRange
+	for _, seg := range segments {
+		lo, hi := seg.FromBlock, seg.ToBlock
+		if lo < from {
+			lo = from
+		}
+		if hi > to {
+			hi = to
+		}
+		if hi < lo {
+			continue
+		}
+		out = append(out, splitSpan(lo, hi, span)...)
+	}
+	if len(out) == 0 {
+		return []BlockRange{{From: from, To: to}}
+	}
+	return out
+}
+
 // BlockRange 区块区间（避免与 smartdownload 类型耦合）。
 type BlockRange struct {
 	From uint64

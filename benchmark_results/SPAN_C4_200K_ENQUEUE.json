@@ -1,0 +1,9 @@
+{
+  "action": "enqueue",
+  "name": "SPAN_C4_200K",
+  "prefix": "bsc/benchmarks/span-c4-200k-v1/",
+  "created": 30,
+  "skipped": 0,
+  "jobs": 30,
+  "workload_sha256": "a63d03e0a34b037a128bb4addbc7fd3904a05192345985d5100c4a358a82aaf0"
+}

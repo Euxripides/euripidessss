@@ -2,6 +2,7 @@ package smartdownload
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -197,7 +198,7 @@ func TestV33FingerprintIsCanonical(t *testing.T) {
 	}
 }
 
-func TestV33AcceleratorDoesNotStealCloudOwnedRanges(t *testing.T) {
+func TestV33RangeRefsPreserveCloudAndRPCOwners(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
@@ -227,8 +228,79 @@ func TestV33AcceleratorDoesNotStealCloudOwnedRanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := svc.batchRangeRefs(batch.ID)
-	if len(refs) != 1 || refs[0].Range.ID != rpcRange.ID {
-		t.Fatalf("V3.3 accelerator stole Cloud ownership: %+v", refs)
+	if len(refs) != 2 {
+		t.Fatalf("V3.3 refs=%d, want Cloud and RPC ranges: %+v", len(refs), refs)
+	}
+	owners := map[RangeOwner]bool{}
+	for _, ref := range refs {
+		owners[ref.Range.Owner] = true
+	}
+	if !owners[RangeOwnerCloud] || !owners[RangeOwnerRPC] {
+		t.Fatalf("V3.3 owner boundary lost: %+v", owners)
+	}
+}
+
+func TestV33CloudRangesAggregateIntoOnePhysicalWork(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, DefaultOptions(), NewJSONLPartWriter(root))
+	t.Cleanup(svc.Shutdown)
+	svc.RegisterAdapter(NewSQDCloudAdapter(&materializedCloudRuntime{}))
+	now := time.Now().UTC()
+	batch := &BatchJob{ID: "cloud-aggregate-batch", ChainKey: "bsc", ChainID: 56, Mode: DownloadModeTurbo,
+		Status: BatchCreated, AddressCount: 21, CreatedAt: now, UpdatedAt: now}
+	if err = store.SaveBatch(batch); err != nil {
+		t.Fatal(err)
+	}
+	addresses := make([]string, 21)
+	for index := range addresses {
+		addresses[index] = fmt.Sprintf("0x%040x", index+1)
+	}
+	rangeIDs := make([]string, 0, len(addresses))
+	for index, wallet := range addresses {
+		addressJob := &AddressJob{ID: fmt.Sprintf("cloud-address-%d", index), BatchID: batch.ID, Address: wallet,
+			ChainKey: "bsc", ChainID: 56, Status: AddressWaiting, CreatedAt: now, UpdatedAt: now}
+		datasetJob := &DatasetJob{ID: fmt.Sprintf("cloud-dataset-%d", index), BatchID: batch.ID, AddressJobID: addressJob.ID,
+			Address: wallet, ChainKey: "bsc", Dataset: DatasetTokenTransfers, Status: DatasetPending,
+			CloudTier: "L", CreatedAt: now, UpdatedAt: now}
+		rangeJob := &RangeJob{ID: fmt.Sprintf("cloud-aggregate-range-%d", index), BatchID: batch.ID,
+			AddressJobID: addressJob.ID, DatasetJobID: datasetJob.ID, Address: wallet, Dataset: DatasetTokenTransfers,
+			Owner: RangeOwnerCloud, Priority: 1100, Status: RangePending, FromBlock: 100, ToBlock: 149,
+			CreatedAt: now, UpdatedAt: now}
+		if err = store.SaveAddress(addressJob); err != nil {
+			t.Fatal(err)
+		}
+		if err = store.SaveDataset(datasetJob); err != nil {
+			t.Fatal(err)
+		}
+		if err = store.SaveRange(rangeJob); err != nil {
+			t.Fatal(err)
+		}
+		rangeIDs = append(rangeIDs, rangeJob.ID)
+	}
+	if err = svc.attachBatchAccelerator(batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	first, last := store.GetRange(rangeIDs[0]), store.GetRange(rangeIDs[len(rangeIDs)-1])
+	if first.SharedWorkID == "" || first.SharedWorkID != last.SharedWorkID {
+		t.Fatalf("Cloud ranges were not aggregated: first=%+v last=%+v", first, last)
+	}
+	work := svc.v33.works[first.SharedWorkID]
+	if work == nil || work.Owner != RangeOwnerCloud || len(work.Addresses) != 21 || work.RefCount != 21 {
+		t.Fatalf("unexpected physical Cloud work: %+v", work)
+	}
+	if err = svc.attachBatchAccelerator(batch.ID); err != nil {
+		t.Fatal(err)
+	}
+	if work.RefCount != 21 || len(work.Refs) != 21 {
+		t.Fatalf("repeated attach duplicated logical refs: ref_count=%d refs=%d", work.RefCount, len(work.Refs))
+	}
+	claim := svc.claimSharedWorkForOwner(batch.ID, RangeOwnerCloud)
+	if claim == nil || claim.group == nil || claim.adapter.Name() != "sqd_cloud" {
+		t.Fatalf("Cloud physical work was not claimable by SQD Cloud: %+v", claim)
 	}
 }
 

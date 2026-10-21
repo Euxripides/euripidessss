@@ -117,6 +117,57 @@ func TestTurboPlannerAssignsNonOverlappingCloudAndRPCLanes(t *testing.T) {
 	if status.CoveragePercent != 100 || status.CompletedRanges != len(store.ListRanges()) {
 		t.Fatalf("unexpected turbo status: %+v", status)
 	}
+	if status.LogicalRanges != len(store.ListRanges()) {
+		t.Fatalf("logical_ranges=%d want %d", status.LogicalRanges, len(store.ListRanges()))
+	}
+	if status.UniqueBlockWindows != len(store.ListRanges()) {
+		t.Fatalf("unique_block_windows=%d want %d", status.UniqueBlockWindows, len(store.ListRanges()))
+	}
+	if status.DuplicateBlockWindowRatio != 1 {
+		t.Fatalf("duplicate_block_window_ratio=%v want 1", status.DuplicateBlockWindowRatio)
+	}
+	if status.AddressFanIn != 1 {
+		t.Fatalf("address_fan_in=%v want 1", status.AddressFanIn)
+	}
+}
+
+func TestTurboStatusReportsRangeExplosionAcrossAddresses(t *testing.T) {
+	store, svc := newTurboService(t)
+	t.Cleanup(svc.Shutdown)
+	addresses := []string{
+		"0x0000000000000000000000000000000000000001",
+		"0x0000000000000000000000000000000000000002",
+		"0x0000000000000000000000000000000000000003",
+		"0x0000000000000000000000000000000000000004",
+		"0x0000000000000000000000000000000000000005",
+		"0x0000000000000000000000000000000000000006",
+	}
+	resp, err := svc.CreateBatch(context.Background(), CreateBatchRequest{
+		ChainKey: "bsc", Mode: DownloadModeTurbo,
+		Addresses: addresses, Datasets: []string{DatasetTokenTransfers},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := svc.TurboStatus(resp.Batch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.LogicalAddressJobs != len(addresses) || status.LogicalDatasetJobs != len(addresses) {
+		t.Fatalf("logical jobs mismatch: %+v", status)
+	}
+	if status.LogicalRanges != len(store.ListRanges()) || status.UniqueBlockWindows == 0 {
+		t.Fatalf("range diagnostics missing: %+v", status)
+	}
+	if status.DuplicateBlockWindowRatio != float64(len(addresses)) || status.AddressFanIn != float64(len(addresses)) {
+		t.Fatalf("range explosion ratio mismatch: %+v", status)
+	}
+	if status.RangeExplosionWarning != "RANGE_EXPLOSION_WARNING" {
+		t.Fatalf("range explosion warning=%q", status.RangeExplosionWarning)
+	}
+	if status.EstimatedCloudJobs+status.EstimatedRPCJobs != status.LogicalRanges {
+		t.Fatalf("estimated jobs do not cover logical ranges: %+v", status)
+	}
 }
 
 func TestBatchModeSwitchReassignsOnlyUnfinishedRanges(t *testing.T) {

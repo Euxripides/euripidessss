@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "comparison_mode": "span",
+  "baseline": {
+    "name": "BENCH_C4_50K_V2",
+    "file": "E:\\codex\\etl\\benchmark_results\\BENCH_C4_50K_V2.json",
+    "concurrency": 4
+  },
+  "candidate": {
+    "name": "SPAN_C4_100K",
+    "file": "E:\\codex\\etl\\benchmark_results\\SPAN_C4_100K.json",
+    "concurrency": 4
+  },
+  "thresholds": {
+    "minimum_throughput_ratio": 1,
+    "maximum_query_p95_ratio": 1.5
+  },
+  "observations": {
+    "throughput_ratio": 1.4548369652869355,
+    "throughput_gain_percent": 45.48369652869355,
+    "query_p95_ratio": 2.1977102174331344,
+    "query_p95_change_percent": 119.77102174331344,
+    "request_p95_ratio": 0.9976798143851509,
+    "request_p95_change_percent": -0.23201856148491462
+  },
+  "checks": {
+    "comparison_cohort_pass": true,
+    "baseline_terminal": true,
+    "candidate_terminal": true,
+    "baseline_safety_gate_pass": true,
+    "candidate_safety_gate_pass": true,
+    "baseline_integrity_pass": true,
+    "candidate_integrity_pass": true,
+    "throughput_gain_pass": true
+  },
+  "decision": {
+    "status": "PASS",
+    "scale_up_allowed": true
+  }
+}

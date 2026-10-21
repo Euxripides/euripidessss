@@ -378,6 +378,7 @@ func (s *Service) allocateDatasetPendingLocked(batch *BatchJob, ds *DatasetJob, 
 		cloudWeight = math.Min(cloudWeight, float64(maxInt(1, state.Governor.ClaimsLimit)))
 	}
 	cloudAssigned, rpcAssigned := 0.0, 0.0
+	changedRanges := make([]*RangeJob, 0)
 	for _, r := range pending {
 		owner := RangeOwnerCloud
 		switch {
@@ -390,21 +391,27 @@ func (s *Service) allocateDatasetPendingLocked(batch *BatchJob, ds *DatasetJob, 
 		case rpcAssigned/rpcWeight <= cloudAssigned/cloudWeight:
 			owner = RangeOwnerRPC // pending work stealing into an idle RPC lane
 		}
+		lane := "bulk"
 		if owner == RangeOwnerRPC {
 			rpcAssigned++
-			r.Lane = "fast"
+			lane = "fast"
 		} else {
 			cloudAssigned++
-			r.Lane = "bulk"
 		}
+		priority := numericRangePriority(r.PriorityClass, owner, batch.Mode)
+		changed := r.Owner != owner || r.Lane != lane || r.Priority != priority
 		if r.Owner != owner {
 			r.Owner = owner
 			r.Provider = ""
-			r.UpdatedAt = time.Now().UTC()
 		}
-		r.Priority = numericRangePriority(r.PriorityClass, owner, batch.Mode)
-		_ = s.store.SaveRange(r)
+		r.Lane = lane
+		r.Priority = priority
+		if changed {
+			r.UpdatedAt = time.Now().UTC()
+			changedRanges = append(changedRanges, r)
+		}
 	}
+	_ = s.store.SaveRanges(changedRanges)
 }
 
 func (s *Service) reshardDensePendingLocked(ds *DatasetJob, state *batchV31State) {
@@ -535,19 +542,38 @@ func (s *Service) canClaimLaneLocked(batchID string, owner RangeOwner) bool {
 		if laneLimit <= 0 {
 			laneLimit = 1
 		}
-	} else if owner == RangeOwnerRPC && state.Governor.RPCClaimsLimit > 0 {
-		laneLimit = state.Governor.RPCClaimsLimit
-	}
-	totalRunning, laneRunning := 0, 0
-	for _, r := range s.store.ListRanges() {
-		if r.BatchID == batchID && r.Status == RangeRunning {
-			totalRunning++
-			if r.Owner == owner {
-				laneRunning++
-			}
+	} else if owner == RangeOwnerRPC {
+		if state.Governor.RPCClaimsLimit > 0 {
+			laneLimit = state.Governor.RPCClaimsLimit
+		}
+		// TURBO must leave capacity for the Cloud bulk lane. Without this
+		// reservation, higher numeric RPC priorities can occupy every worker
+		// before a Cloud-owned range is considered, making a configured Cloud
+		// runtime appear unused until long RPC attempts finish.
+		// Never reserve every claim for Cloud when RPC-owned work also exists.
+		// A full Cloud reservation made RPC ranges permanently unclaimable and
+		// prevented mixed-lane batches from reaching a terminal state.
+		cloudSlots := minInt(state.Burst.Jobs, maxInt(0, limit-1))
+		if cloudSlots > 0 {
+			laneLimit = minInt(laneLimit, maxInt(0, limit-cloudSlots))
 		}
 	}
+	totalRunning, laneRunning := s.runningClaimCountsLocked(batchID, owner)
 	return totalRunning < limit && laneRunning < laneLimit
+}
+
+func (s *Service) hasBatchClaimCapacityLocked(batchID string) bool {
+	state := s.v31StateLocked(batchID)
+	limit := state.Governor.ClaimsLimit
+	if limit <= 0 {
+		limit = s.opts.Workers
+	}
+	totalRunning, _ := s.runningClaimCountsLocked(batchID, "")
+	return totalRunning < limit
+}
+
+func (s *Service) runningClaimCountsLocked(batchID string, owner RangeOwner) (int, int) {
+	return s.store.RunningExecutionCountsByBatch(batchID, owner)
 }
 
 func (s *Service) sortAddressesByPriority(batchID string, addresses []*AddressJob) {

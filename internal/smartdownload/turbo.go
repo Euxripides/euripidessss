@@ -116,39 +116,48 @@ func (s *Service) applyModePlanLocked(batchID string, mode DownloadMode) error {
 			if maxBlock > tailBlocks {
 				cutoff = maxBlock - tailBlocks
 			}
+			changedRanges := make([]*RangeJob, 0)
 			for _, r := range ranges {
 				if r.Status != RangePending && r.Status != RangeReady {
 					continue
 				}
+				owner, lane, priority := r.Owner, r.Lane, r.Priority
 				if mode == DownloadModeAuto {
-					r.Owner, r.Lane, r.Priority = "", "", 0
+					owner, lane, priority = "", "", 0
 				} else {
 					useCloud := cloudAvailable && cloud.Supports(ds.Dataset) && r.ToBlock < cutoff
 					switch {
 					case useCloud:
-						r.Owner, r.Lane = RangeOwnerCloud, "bulk"
-						r.Priority = numericRangePriority(r.PriorityClass, RangeOwnerCloud, mode)
+						owner, lane = RangeOwnerCloud, "bulk"
+						priority = numericRangePriority(r.PriorityClass, RangeOwnerCloud, mode)
 					case rpcAvailable && rpc.Supports(ds.Dataset):
-						r.Owner, r.Lane = RangeOwnerRPC, "fast"
-						r.Priority = numericRangePriority(r.PriorityClass, RangeOwnerRPC, mode)
+						owner, lane = RangeOwnerRPC, "fast"
+						priority = numericRangePriority(r.PriorityClass, RangeOwnerRPC, mode)
 					case cloudAvailable && cloud.Supports(ds.Dataset):
-						r.Owner, r.Lane = RangeOwnerCloud, "bulk"
-						r.Priority = numericRangePriority(r.PriorityClass, RangeOwnerCloud, mode)
+						owner, lane = RangeOwnerCloud, "bulk"
+						priority = numericRangePriority(r.PriorityClass, RangeOwnerCloud, mode)
 					default:
 						return fmt.Errorf("Turbo 模式没有可用的 SQD Cloud/RPC lane: dataset=%s range=%d-%d", ds.Dataset, r.FromBlock, r.ToBlock)
 					}
 				}
-				r.Provider = ""
-				r.FailedProviders = nil
-				r.UpdatedAt = time.Now().UTC()
-				if err := s.store.SaveRange(r); err != nil {
-					return err
+				changed := r.Owner != owner || r.Lane != lane || r.Priority != priority || r.Provider != "" || len(r.FailedProviders) > 0
+				if changed {
+					r.Owner, r.Lane, r.Priority = owner, lane, priority
+					r.Provider = ""
+					r.FailedProviders = nil
+					r.UpdatedAt = time.Now().UTC()
+					changedRanges = append(changedRanges, r)
 				}
-				_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
-					Event: LedgerRangeAssigned, DatasetJobID: ds.ID,
-					RangeID:   BlockRange{From: r.FromBlock, To: r.ToBlock}.Key(),
-					FromBlock: r.FromBlock, ToBlock: r.ToBlock, Owner: string(r.Owner),
-				})
+				if changed {
+					_ = NewLedger(s.store.Root(), ds.ID).Append(LedgerEntry{
+						Event: LedgerRangeAssigned, DatasetJobID: ds.ID,
+						RangeID:   BlockRange{From: r.FromBlock, To: r.ToBlock}.Key(),
+						FromBlock: r.FromBlock, ToBlock: r.ToBlock, Owner: string(r.Owner),
+					})
+				}
+			}
+			if err := s.store.SaveRanges(changedRanges); err != nil {
+				return err
 			}
 		}
 	}
@@ -169,17 +178,32 @@ func (s *Service) TurboStatus(batchID string) (*TurboStatus, error) {
 	}
 	var firstData *time.Time
 	var firstRelevant *time.Time
-	for _, a := range s.store.ListAddressesByBatch(batchID) {
+	uniqueWindows := map[string]struct{}{}
+	windowFanIn := map[string]map[string]struct{}{}
+	addresses := s.store.ListAddressesByBatch(batchID)
+	status.LogicalAddressJobs = len(addresses)
+	status.AddressFanIn = float64(len(addresses))
+	for _, a := range addresses {
 		status.RowsPerSecond += a.Progress.SpeedRowsPerSec
 		if a.Progress.ETASeconds > status.ETASeconds {
 			status.ETASeconds = a.Progress.ETASeconds
 		}
 		for _, ds := range s.store.ListDatasetsByAddress(a.ID) {
+			status.LogicalDatasetJobs++
 			if adapterAvailableForMode(s.adapters["rpc"], ds.ChainKey, batch.Mode) {
 				status.RPCAvailable = true
 			}
 			ranges := s.store.ListRangesByDataset(ds.ID)
 			for _, r := range ranges {
+				status.LogicalRanges++
+				key := BlockRange{From: r.FromBlock, To: r.ToBlock}.Key()
+				uniqueWindows[key] = struct{}{}
+				bucket := windowFanIn[key]
+				if bucket == nil {
+					bucket = map[string]struct{}{}
+					windowFanIn[key] = bucket
+				}
+				bucket[a.ID] = struct{}{}
 				if r.ReshardDepth > 0 {
 					status.ReshardActive = true
 				}
@@ -239,6 +263,23 @@ func (s *Service) TurboStatus(batchID string) (*TurboStatus, error) {
 				return r.Status == RangeCompleted || r.Status == RangeEmpty
 			})
 		}
+	}
+	status.UniqueBlockWindows = len(uniqueWindows)
+	if status.UniqueBlockWindows > 0 {
+		status.DuplicateBlockWindowRatio = float64(status.LogicalRanges) / float64(status.UniqueBlockWindows)
+		var totalFanIn int
+		for _, bucket := range windowFanIn {
+			totalFanIn += len(bucket)
+		}
+		status.AddressFanIn = float64(totalFanIn) / float64(status.UniqueBlockWindows)
+	}
+	status.EstimatedCloudJobs = status.CloudRanges
+	status.EstimatedRPCJobs = status.RPCRanges
+	switch {
+	case status.DuplicateBlockWindowRatio > 20:
+		status.RangeExplosionWarning = "RANGE_EXPLOSION_BLOCK_START_REQUIRES_AGGREGATION"
+	case status.DuplicateBlockWindowRatio > 5:
+		status.RangeExplosionWarning = "RANGE_EXPLOSION_WARNING"
 	}
 	if status.TotalBlocks > 0 {
 		status.CoveragePercent = float64(status.CoveredBlocks) * 100 / float64(status.TotalBlocks)

@@ -239,6 +239,67 @@ func TestCloudModeSubmitAndRemoteStatus(t *testing.T) {
 	}
 }
 
+func TestRemoteJobStatusParsesLifecycleEvidenceAndDurations(t *testing.T) {
+	root := t.TempDir()
+	store := s3store.NewLocalStore(filepath.Join(root, "store"))
+	m := New(Config{
+		Mode: ModeCloud, DeployKey: "test-key", Store: store, JobsRoot: root,
+		CommandRunner: fakeSqdRunner("bsc-emergency-worker v2"),
+	})
+	id, err := m.SubmitJob(context.Background(), Job{
+		ChainKey: "bsc", ChunkID: "chunk-life", FromBlock: 1, ToBlock: 10,
+		Addresses: []string{"0xaaa"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := m.JobStatus(id)
+	if err != nil || queued.QueuedAt == nil || queued.Stage != "queued" {
+		t.Fatalf("queued lifecycle = %+v, err=%v", queued, err)
+	}
+	base := queued.CreatedAt.UTC().Add(time.Second)
+	leasePayload, _ := json.Marshal(map[string]any{
+		"job_id": id, "chunk_id": "chunk-life", "leased_at": base,
+	})
+	statusPayload, _ := json.Marshal(map[string]any{
+		"job_id": id, "chunk_id": "chunk-life", "status": "UPLOADING", "rows_written": 5,
+		"started_at":            base.Add(time.Second),
+		"sqd_query_started_at":  base.Add(2 * time.Second),
+		"sqd_first_byte_at":     base.Add(3 * time.Second),
+		"sqd_query_finished_at": base.Add(7 * time.Second),
+		"parquet_started_at":    base.Add(7 * time.Second),
+		"parquet_finished_at":   base.Add(9 * time.Second),
+		"r2_upload_started_at":  base.Add(9 * time.Second),
+	})
+	leasedDir := leasedChunkDir(id, "chunk-life")
+	if err := store.Put(context.Background(), leasedDir+"/lease.json", leasePayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), leasedDir+"/status.json", statusPayload); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Delete(context.Background(), pendingChunkDir(id, "chunk-life")+"/request.json")
+
+	job, err := m.JobStatus(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Stage != "uploading" || job.LeasedAt == nil || job.SQDQueryStartedAt == nil || job.R2UploadStartedAt == nil {
+		t.Fatalf("parsed lifecycle = %+v", job)
+	}
+	if job.WorkerStartedAt != nil {
+		t.Fatalf("worker_started_at must remain nil when the worker did not publish it: %v", job.WorkerStartedAt)
+	}
+	if job.Durations == nil || job.Durations.QueueWaitMS == nil || *job.Durations.QueueWaitMS != 1000 ||
+		job.Durations.LeaseToStartMS != nil ||
+		job.Durations.SQDTTFAMS == nil || *job.Durations.SQDTTFAMS != 1000 ||
+		job.Durations.SQDScanMS == nil || *job.Durations.SQDScanMS != 5000 ||
+		job.Durations.ParquetWriteMS == nil || *job.Durations.ParquetWriteMS != 2000 ||
+		job.Durations.R2UploadMS != nil {
+		t.Fatalf("derived durations = %+v", job.Durations)
+	}
+}
+
 func TestReconcileAdoptsAndAbsents(t *testing.T) {
 	root := t.TempDir()
 	newM := func(output string) *Manager {
@@ -853,5 +914,56 @@ func TestRemoveFailureDoesNotClaimAbsent(t *testing.T) {
 	}
 	if st := m.Status(); st.State != WorkerDegraded || st.Available || !strings.Contains(st.Reason, "移除失败") {
 		t.Fatalf("failed removal status = %+v, must not claim ABSENT", st)
+	}
+}
+
+func TestManagerStatusReadsFreshWorkerSlots(t *testing.T) {
+	root := t.TempDir()
+	store := s3store.NewLocalStore(filepath.Join(root, "store"))
+	now := time.Now().UTC().Truncate(time.Second)
+	putSlot := func(key string, payload map[string]any) {
+		t.Helper()
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Put(context.Background(), key, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := map[string]any{
+		"worker_id": "processor-a", "configured_concurrency": 3,
+		"max_sqd_inflight_requests": 8, "updated_at": now,
+		"completed_jobs": 4, "failed_jobs": 1, "busy_millis_total": 1200,
+	}
+	busy := make(map[string]any, len(base)+3)
+	for key, value := range base {
+		busy[key] = value
+	}
+	busy["slot"], busy["state"], busy["job_id"] = 0, "BUSY", "job-1"
+	putSlot("bsc/workers/processor-a/slots/0.json", busy)
+	idle := make(map[string]any, len(base)+2)
+	for key, value := range base {
+		idle[key] = value
+	}
+	idle["slot"], idle["state"] = 1, "IDLE"
+	putSlot("bsc/workers/processor-a/slots/1.json", idle)
+	stale := make(map[string]any, len(base)+2)
+	for key, value := range base {
+		stale[key] = value
+	}
+	stale["slot"], stale["state"], stale["updated_at"] = 2, "IDLE", now.Add(-91*time.Second)
+	putSlot("bsc/workers/processor-a/slots/2.json", stale)
+	putSlot("bsc/workers/processor-a/not-a-slot.json", base)
+
+	m := New(Config{Mode: ModeMock, JobsRoot: root, Store: store, RunJob: mockRunJob})
+	defer m.Close()
+	status := m.Status()
+	if status.ConfiguredConcurrency != 3 || status.WorkersTotal != 3 || status.WorkersAlive != 2 ||
+		status.WorkersBusy != 1 || status.WorkersIdle != 1 || status.MaxSQDInflightRequests != 8 {
+		t.Fatalf("worker slot metrics = %+v", status)
+	}
+	if len(status.WorkerSlots) != 3 || !status.WorkerSlots[0].Alive || !status.WorkerSlots[1].Alive || status.WorkerSlots[2].Alive {
+		t.Fatalf("worker slots freshness = %+v", status.WorkerSlots)
 	}
 }

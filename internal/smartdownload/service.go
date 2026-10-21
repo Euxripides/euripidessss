@@ -31,20 +31,26 @@ var evmAddressRE = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
 
 // Options 服务配置。
 type Options struct {
-	Workers                int           // 单批次并发 Worker 数
-	RetryLimit             int           // 单个 Range 重试上限
-	ProviderAttemptTimeout time.Duration // 单个前置 Provider 的墙钟预算（硬上限 10 分钟）
-	DefaultEndBlock        uint64        // FULL 模式未显式给 to_block 时的默认终点
-	RangeChunkSize         uint64        // Range 切分大小（区块数）
-	AdaptiveRanges         bool          // Discovery 驱动自适应 Range（默认固定分块）
-	TurboTailBlocks        uint64        // TURBO 中由 RPC 负责的动态链尾窗口
-	AllocatorInterval      time.Duration // V3.1 动态分配周期（10~30 秒）
-	CloudBurstMaxJobs      int           // Cloud hard concurrency guard
-	RPCHardClaims          int           // RPC hard claim quota
-	TargetRowsPerShard     uint64        // density-aware shard target
-	StallTimeout           time.Duration // V3.2 stage stall threshold
-	StallCheckInterval     time.Duration // V3.2 detector cadence
-	DiskReserveBytes       uint64        // estimated growth must leave this reserve
+	Workers                 int           // 单批次并发 Worker 数
+	RetryLimit              int           // 单个 Range 重试上限
+	ProviderAttemptTimeout  time.Duration // 单个前置 Provider 的墙钟预算（硬上限 10 分钟）
+	DefaultEndBlock         uint64        // FULL 模式未显式给 to_block 时的默认终点
+	RangeChunkSize          uint64        // Range 切分大小（区块数）
+	AdaptiveRanges          bool          // Discovery 驱动自适应 Range（默认固定分块）
+	TurboTailBlocks         uint64        // TURBO 中由 RPC 负责的动态链尾窗口
+	AllocatorInterval       time.Duration // V3.1 动态分配周期（10~30 秒）
+	CloudBurstMaxJobs       int           // Cloud hard concurrency guard
+	RPCHardClaims           int           // RPC hard claim quota
+	TargetRowsPerShard      uint64        // density-aware shard target
+	StallTimeout            time.Duration // V3.2 stage stall threshold
+	StallCheckInterval      time.Duration // V3.2 detector cadence
+	DiskReserveBytes        uint64        // estimated growth must leave this reserve
+	LocalSyncQueueCapacity  int           // bounded Local Sync queue
+	LocalSyncWorkers        int           // Local Sync worker pool size
+	ValidationQueueCapacity int           // bounded Validation queue
+	ValidationWorkers       int           // Validation worker pool size
+	ClickHouseQueueCapacity int           // bounded ClickHouse ingest queue
+	ClickHouseWorkers       int           // ClickHouse ingest worker pool size
 }
 
 // HeadBlockFunc 返回链当前高度（FULL/TIME 模式未显式给 to_block 时的终点；
@@ -84,7 +90,20 @@ func DefaultOptions() Options {
 		StallTimeout:           90 * time.Second,
 		StallCheckInterval:     15 * time.Second,
 		DiskReserveBytes:       2 << 30,
+		LocalSyncQueueCapacity: 16, LocalSyncWorkers: 2,
+		ValidationQueueCapacity: 16, ValidationWorkers: 2,
+		ClickHouseQueueCapacity: 16, ClickHouseWorkers: 2,
 	}
+}
+
+func rangeShardCount(from, to, chunkSize uint64) int {
+	if from > to {
+		return 0
+	}
+	if chunkSize == 0 {
+		chunkSize = 1
+	}
+	return int((to-from)/chunkSize) + 1
 }
 
 // Service SmartDownloadService（实施方案 §1：任务层是系统中心）。
@@ -121,6 +140,7 @@ type Service struct {
 	v31               *v31Runtime
 	v32               *v32Runtime
 	v33               *v33Runtime
+	pipeline          *downstreamPipeline
 	wg                sync.WaitGroup
 }
 
@@ -162,6 +182,12 @@ func NewService(store *Store, opts Options, writer PartWriter) *Service {
 	if opts.DiskReserveBytes == 0 {
 		opts.DiskReserveBytes = 2 << 30
 	}
+	opts.LocalSyncQueueCapacity = boundedPipelineCapacity(opts.LocalSyncQueueCapacity)
+	opts.ValidationQueueCapacity = boundedPipelineCapacity(opts.ValidationQueueCapacity)
+	opts.ClickHouseQueueCapacity = boundedPipelineCapacity(opts.ClickHouseQueueCapacity)
+	opts.LocalSyncWorkers = boundedPipelineWorkers(opts.LocalSyncWorkers)
+	opts.ValidationWorkers = boundedPipelineWorkers(opts.ValidationWorkers)
+	opts.ClickHouseWorkers = boundedPipelineWorkers(opts.ClickHouseWorkers)
 	ctx, cancel := context.WithCancel(context.Background())
 	svc := &Service{
 		store:             store,
@@ -199,6 +225,8 @@ func NewService(store *Store, opts Options, writer PartWriter) *Service {
 	svc.scheduler.SetHistoryBonus(func(chainID int64, dataset, provider, bucket string) float64 {
 		return svc.history.ScoreBonus(chainID, dataset, provider, bucket)
 	})
+	svc.pipeline = newDownstreamPipeline(ctx, &svc.wg, opts)
+	svc.startPipelineDispatcher()
 	svc.startV32Monitor()
 	return svc
 }
@@ -634,7 +662,7 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 			if estimate.PreferredProvider == "csv" {
 				projectedRanges++
 			} else {
-				projectedRanges += len(SplitBlockRange(requested.From, requested.To, s.opts.RangeChunkSize))
+				projectedRanges += rangeShardCount(requested.From, requested.To, s.opts.RangeChunkSize)
 			}
 		}
 	}
@@ -753,7 +781,7 @@ func (s *Service) CreateBatch(ctx context.Context, req CreateBatchRequest) (*Cre
 					dr, derr = s.discoverDataset(ctx, dsJob, requested.From, requested.To)
 				}
 				if derr == nil && dr != nil && len(dr.Segments) > 0 && dr.Confidence > 0 {
-					spans := discovery.PlanSegments(requested.From, requested.To, dr.Segments, 50_000)
+					spans := discovery.PlanSegmentsBySpan(requested.From, requested.To, dr.Segments, dr.SuggestedRangeSpan)
 					pendingRanges = pendingRanges[:0]
 					for _, sp := range spans {
 						pendingRanges = append(pendingRanges, BlockRange{From: sp.From, To: sp.To})
@@ -963,7 +991,19 @@ func (s *Service) Start(batchID string) error {
 			s.mu.Unlock()
 			return err
 		}
+		// Creation may have attached still-unallocated ranges to RPC SharedWork.
+		// Rebalance is the source of truth for the final lane, so detach refs that
+		// moved to Cloud before rebuilding owner-specific physical work below.
+		s.detachTurboCloudSharedWorkLocked()
 	}
+	s.mu.Unlock()
+	// Ownership is finalized before attaching SharedWork so Cloud and RPC
+	// physical jobs cannot be merged across lanes. This also upgrades batches
+	// created before Cloud grouping without starting any provider I/O.
+	if err := s.attachBatchAccelerator(batchID); err != nil {
+		return fmt.Errorf("V3.3 batch accelerator attach: %w", err)
+	}
+	s.mu.Lock()
 	s.preemptLowerPriorityLocked(batch)
 	if s.workers[batchID] {
 		s.mu.Unlock()
@@ -1552,11 +1592,34 @@ func (s *Service) runBatchWorker(batchID string) {
 			return
 		default:
 		}
-		if shared := s.claimSharedWork(batchID); shared != nil {
+		preferOwnedRange := false
+		if batch := s.store.GetBatch(batchID); batch != nil && isTurboMode(batch.Mode) {
+			cloud := s.adapters["sqd_cloud"]
+			preferOwnedRange = adapterAvailableForMode(cloud, batch.ChainKey, batch.Mode)
+		}
+		if preferOwnedRange {
+			if shared := s.claimSharedWorkForOwner(batchID, RangeOwnerCloud); shared != nil {
+				s.executeSharedWork(shared)
+				continue
+			}
+			if claim := s.claimNextForOwner(batchID, RangeOwnerCloud); claim != nil {
+				s.executeRange(claim)
+				continue
+			}
+		}
+		if shared := s.claimSharedWorkForOwner(batchID, RangeOwnerRPC); shared != nil {
 			s.executeSharedWork(shared)
 			continue
 		}
-		claim := s.claimNext(batchID)
+		var claim *claimedRange
+		if preferOwnedRange {
+			// The Cloud-first probe above must not turn into Cloud-only execution.
+			// Mixed TURBO plans contain RPC-owned fast-lane ranges that are not
+			// represented by SharedWork (for example a single-address batch).
+			claim = s.claimNextForOwner(batchID, RangeOwnerRPC)
+		} else {
+			claim = s.claimNext(batchID)
+		}
 		if claim == nil {
 			done := s.trySettle(batchID)
 			if done {
@@ -1575,6 +1638,10 @@ func (s *Service) runBatchWorker(batchID string) {
 
 // claimNext 领取下一个可执行 Range（原子：同一时刻只被一个 Worker 领取）。
 func (s *Service) claimNext(batchID string) *claimedRange {
+	return s.claimNextForOwner(batchID, "")
+}
+
+func (s *Service) claimNextForOwner(batchID string, desiredOwner RangeOwner) *claimedRange {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	batch := s.store.GetBatch(batchID)
@@ -1584,8 +1651,10 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 	if batch.CancelRequested {
 		return nil // 等当前 Range 结束后 settle 统一取消
 	}
-	if batch.PauseRequested && !s.batchHasRunningRange(batchID) {
-		s.transitionBatchPausedLocked(batchID)
+	if batch.PauseRequested {
+		if !s.batchHasRunningRange(batchID) {
+			s.transitionBatchPausedLocked(batchID)
+		}
 		return nil
 	}
 	if batch.Status == BatchCreated {
@@ -1599,6 +1668,12 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 	}
 	if isTurboMode(batch.Mode) {
 		_ = s.rebalanceBatchLocked(batchID, time.Now().UTC(), false)
+		if !s.hasBatchClaimCapacityLocked(batchID) {
+			return nil
+		}
+		if desiredOwner != "" && !s.canClaimLaneLocked(batchID, desiredOwner) {
+			return nil
+		}
 	}
 	addresses := s.store.ListAddressesByBatch(batchID)
 	s.sortAddressesByPriority(batchID, addresses)
@@ -1650,6 +1725,9 @@ func (s *Service) claimNext(batchID string) *claimedRange {
 			}
 			for _, r := range ranges {
 				if r.SharedWorkID != "" {
+					continue
+				}
+				if desiredOwner != "" && r.Owner != desiredOwner {
 					continue
 				}
 				if r.Status == RangePending || r.Status == RangeReady {
@@ -1740,12 +1818,44 @@ func (s *Service) executeRange(claim *claimedRange) {
 	if !ok {
 		return
 	}
-	defer finish()
 	adapter := claim.adapter
 	if adapter == nil || claim.provider == "" {
+		finish()
 		s.failRange(claim, fmt.Errorf("无可用 Provider（常规 Provider 均失败或未装配；Cloud 兜底不可用）"))
 		return
 	}
+	if deferred, ok := adapter.(deferredCloudRangeAdapter); ok && claim.provider == "sqd_cloud" {
+		remote, err := deferred.ExecuteRemoteRange(ctx, claim.req)
+		finish() // REMOTE_COMPLETED releases the Range Worker before local materialization.
+		if err != nil {
+			if s.rangeExecutionCanceled(claim) || (errors.Is(err, context.Canceled) && s.ctx.Err() != nil) {
+				return
+			}
+			s.failRange(claim, s.providerExecutionError(claim.provider, err))
+			return
+		}
+		if s.rangeExecutionCanceled(claim) {
+			return
+		}
+		key := claim.rangeID
+		if rj := s.store.GetRange(claim.rangeID); rj != nil {
+			key = fmt.Sprintf("%s:%d:%d", rj.ID, rj.Attempts, rj.UpdatedAt.UnixNano())
+		}
+		err = s.pipeline.localSync.enqueueBlocking(key, func(workerCtx context.Context) pipelineOutcome {
+			result, syncErr := remote.sync(workerCtx)
+			if syncErr != nil {
+				s.failRange(claim, fmt.Errorf("Cloud Local Sync 失败: %w", syncErr))
+				return pipelineOutcome{rows: remote.rows, bytes: remote.bytes, err: syncErr}
+			}
+			commitErr := s.commitRangeResult(claim, result)
+			return pipelineOutcome{rows: uint64(len(result.Records)), bytes: result.Bytes, err: commitErr}
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.failRange(claim, fmt.Errorf("Local Sync Queue 入队失败: %w", err))
+		}
+		return
+	}
+	defer finish()
 	result, err := adapter.ExecuteRange(ctx, claim.req)
 	if err != nil {
 		if s.rangeExecutionCanceled(claim) || (errors.Is(err, context.Canceled) && s.ctx.Err() != nil) {
@@ -1760,20 +1870,33 @@ func (s *Service) executeRange(claim *claimedRange) {
 	if s.rangeExecutionCanceled(claim) {
 		return
 	}
+	_ = s.commitRangeResult(claim, result)
+}
+
+// commitRangeResult owns the durable Part/checkpoint/range transition after a
+// provider result is available. Deferred Cloud local-sync workers and ordinary
+// Range Workers share this exact commit path.
+func (s *Service) commitRangeResult(claim *claimedRange, result *ProviderResult) error {
+	if result == nil {
+		err := errors.New("Provider 返回空结果")
+		s.failRange(claim, err)
+		return err
+	}
 	s.mu.Lock()
 	ds := s.store.GetDataset(claim.datasetJobID)
 	cp := s.checkpointLocked(claim.datasetJobID)
 	if ds == nil || cp == nil {
 		s.mu.Unlock()
-		s.failRange(claim, fmt.Errorf("数据集/checkpoint 缺失"))
-		return
+		err := fmt.Errorf("数据集/checkpoint 缺失")
+		s.failRange(claim, err)
+		return err
 	}
 	blockRange := BlockRange{From: claim.req.FromBlock, To: claim.req.ToBlock}
 	if len(result.Records) == 0 {
 		rj := s.store.GetRange(claim.rangeID)
 		if !s.acceptHedgeWinnerLocked(rj) {
 			s.mu.Unlock()
-			return
+			return nil
 		}
 		cp.ConfirmEmpty(blockRange)
 		_ = s.cp.Save(cp)
@@ -1798,12 +1921,12 @@ func (s *Service) executeRange(claim *claimedRange) {
 			DatasetJobID: claim.datasetJobID, RangeID: blockRange.Key(),
 			Provider: claim.provider, Status: "EMPTY",
 		})
-		return
+		return nil
 	}
 	partName := fmt.Sprintf("part-%012d-%012d-%s%s", blockRange.From, blockRange.To,
 		claim.rangeID[:min(8, len(claim.rangeID))], s.writer.Extension())
 	s.mu.Unlock() // Part 写入是 I/O，不持锁
-	written, werr := s.writer.WritePart(ctx, PartMeta{
+	written, werr := s.writer.WritePart(s.ctx, PartMeta{
 		DatasetJobID: claim.datasetJobID,
 		PartName:     partName,
 		Provider:     claim.provider,
@@ -1812,14 +1935,15 @@ func (s *Service) executeRange(claim *claimedRange) {
 	}, result.Records)
 	if werr != nil {
 		if s.rangeExecutionCanceled(claim) || (errors.Is(werr, context.Canceled) && s.ctx.Err() != nil) {
-			return
+			return werr
 		}
-		s.failRange(claim, fmt.Errorf("Part 写入失败: %w", werr))
-		return
+		err := fmt.Errorf("Part 写入失败: %w", werr)
+		s.failRange(claim, err)
+		return err
 	}
 	if s.rangeExecutionCanceled(claim) {
 		_ = os.Remove(written.Path)
-		return
+		return context.Canceled
 	}
 	s.mu.Lock()
 	ds = s.store.GetDataset(claim.datasetJobID)
@@ -1827,7 +1951,7 @@ func (s *Service) executeRange(claim *claimedRange) {
 	rj := s.store.GetRange(claim.rangeID)
 	if !s.acceptHedgeWinnerLocked(rj) {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	part := PartInfo{
 		Name: partName, SHA256: written.SHA256, Rows: written.Rows,
@@ -1872,6 +1996,7 @@ func (s *Service) executeRange(claim *claimedRange) {
 		Provider: claim.provider, Status: "COMPLETED",
 		Payload: map[string]any{"rows": part.Rows, "part": partName},
 	})
+	return nil
 }
 
 // certifyRangeOnlyLocked records immutable range evidence without promoting
@@ -2156,9 +2281,11 @@ func (s *Service) finalizeDatasetIfDoneLocked(datasetJobID string) {
 	default:
 		// 下载完成 ≠ 任务完成：进入 VALIDATING（Phase 3 Validation Pipeline）
 		ds.Status = DatasetValidating
-		go s.validateDatasetAndFinalize(ds.ID)
 		ds.UpdatedAt = now
 		_ = s.store.SaveDataset(ds)
+		// Non-blocking under service.mu. A single fixed dispatcher retries any
+		// persisted VALIDATING dataset when bounded capacity becomes available.
+		s.enqueueValidation(ds.ID)
 		return
 	}
 	ds.UpdatedAt = now
@@ -2229,8 +2356,68 @@ func (s *Service) validateDatasetAndFinalize(dsID string) {
 		_ = s.store.SaveDataset(ds)
 		s.mu.Unlock()
 		s.events.Publish(Event{Type: EventResultReady, DatasetJobID: dsID, Status: "VALIDATED", Message: "完整性校验通过"})
-		go s.indexDataset(dsID)
+		s.enqueueClickHouse(dsID, false)
 	}
+}
+
+func (s *Service) enqueueValidation(dsID string) bool {
+	key := dsID
+	if ds := s.store.GetDataset(dsID); ds != nil {
+		key = fmt.Sprintf("%s:%d", dsID, ds.UpdatedAt.UnixNano())
+	}
+	return s.pipeline.validation.tryEnqueue(key, func(_ context.Context) pipelineOutcome {
+		s.validateDatasetAndFinalize(dsID)
+		ds := s.store.GetDataset(dsID)
+		out := pipelineOutcome{}
+		if ds != nil {
+			out.rows = ds.DownloadedRows
+			if ds.Status == DatasetFailed {
+				out.err = errors.New(ds.Error)
+			}
+		}
+		if cp, err := s.cp.Load(dsID); err == nil {
+			for _, part := range cp.Parts {
+				if part.Bytes > 0 {
+					out.bytes += uint64(part.Bytes)
+				}
+			}
+		}
+		return out
+	})
+}
+
+func (s *Service) enqueueClickHouse(dsID string, reindex bool) bool {
+	if reindex {
+		s.pipeline.reindex.Store(dsID, true)
+	}
+	key := dsID
+	if ds := s.store.GetDataset(dsID); ds != nil {
+		key = fmt.Sprintf("%s:%d", dsID, ds.UpdatedAt.UnixNano())
+	}
+	return s.pipeline.clickhouse.tryEnqueue(key, func(_ context.Context) pipelineOutcome {
+		if value, ok := s.pipeline.reindex.LoadAndDelete(dsID); ok {
+			reindex, _ = value.(bool)
+		}
+		if reindex {
+			s.reindexDataset(dsID)
+		} else {
+			s.indexDataset(dsID)
+		}
+		ds := s.store.GetDataset(dsID)
+		out := pipelineOutcome{}
+		if ds != nil {
+			out.rows = ds.DownloadedRows
+			if ds.Status == DatasetFailed || ds.Status == DatasetDBWriteFailed {
+				out.err = errors.New(ds.Error)
+			}
+		}
+		if entry := s.results.find(dsID); entry != nil && entry.MergedParquet != "" {
+			if info, statErr := os.Stat(entry.MergedParquet); statErr == nil && info.Size() > 0 {
+				out.bytes = uint64(info.Size())
+			}
+		}
+		return out
+	})
 }
 
 // applyValidationQualityLocked makes validated unique rows the authoritative
@@ -2498,7 +2685,7 @@ func (s *Service) RetryIndexedDataset(dsID string) error {
 		return err
 	}
 	s.mu.Unlock()
-	go s.indexDataset(dsID)
+	s.enqueueClickHouse(dsID, false)
 	return nil
 }
 
@@ -2527,7 +2714,7 @@ func (s *Service) ReindexCompletedDataset(dsID string) error {
 		return err
 	}
 	s.mu.Unlock()
-	go s.reindexDataset(dsID)
+	s.enqueueClickHouse(dsID, true)
 	return nil
 }
 
@@ -3039,19 +3226,20 @@ func (s *Service) cancelDatasetLocked(datasetJobID string) {
 	if ds == nil || (ds.Status.Terminal() && ds.Status != DatasetCanceled) {
 		return
 	}
+	now := time.Now().UTC()
+	canceledRanges := make([]*RangeJob, 0)
 	for _, r := range s.store.ListRangesByDataset(datasetJobID) {
 		if !r.Status.Terminal() {
 			r.Status = RangeCanceled
-			now := time.Now().UTC()
 			r.FinishedAt = &now
 			r.UpdatedAt = now
-			_ = s.store.SaveRange(r)
+			canceledRanges = append(canceledRanges, r)
 		}
 	}
+	_ = s.store.SaveRanges(canceledRanges)
 	ds.CancelRequested = false
 	ds.PauseRequested = false
 	ds.Status = DatasetCanceled
-	now := time.Now().UTC()
 	ds.FinishedAt = &now
 	ds.UpdatedAt = now
 	_ = s.store.SaveDataset(ds)
