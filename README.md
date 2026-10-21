@@ -1,243 +1,215 @@
-# Funds ETL
+# Funds ETL · 资金数据智能分析平台
 
-> 面向资金调查、交易审计与关系研判的多源资金数据智能分析平台。
+面向资金调查、交易审计和链上资金追踪，整合银行、支付宝、微信流水整理，以及链上数据下载、查询、分析与可视化。
 
-![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)
-![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
-![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?logo=typescript&logoColor=white)
-![DuckDB](https://img.shields.io/badge/DuckDB-Analysis-FFF000?logo=duckdb&logoColor=black)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Supported-4169E1?logo=postgresql&logoColor=white)
-![MySQL](https://img.shields.io/badge/MySQL-Supported-4479A1?logo=mysql&logoColor=white)
+后端采用 Go + Gin，前端采用 React + TypeScript。一个后端进程同时提供 API 和构建后的前端页面，通过 PowerShell 脚本启动。
 
-Funds ETL 将银行、微信、支付宝等异构资金数据转化为结构一致、来源可追溯、过程可复核的分析资产。平台覆盖文件识别、分类合并、字段标准化、数据清洗、严格去重、质量审计、数据库入库与资金流向可视化，适用于大规模交易流水整理和后续资金关系分析。
+## 功能概览
 
-它并不只是"把表格拼在一起"。系统在每个处理阶段保留源文件和中间产物，并通过独立进度、实时速度、已用时间及预计剩余时间呈现执行状态，使数据从原始材料到分析结果的转换过程清晰、可验证、可复现。
+| 模块 | 主要功能 |
+| --- | --- |
+| 流水整理 | 文件识别、分类合并、字段映射、标准化清洗、去重、质量审计 |
+| 数据导入 | CSV、Excel 文件接入，整理结果导入 PostgreSQL 或 MySQL |
+| 资金关系图 | 主体与交易关系展示、组合筛选、路径分析、图层、人工标注和多格式导出 |
+| 链上查询 | 地址交易、代币转账、合约交互与交易明细，结合 RPC 补充回执信息 |
+| 下载中心 | CSV、RPC、SQD、SQD Cloud 数据源调度，任务分片、重试及恢复 |
+| 调查分析 | 资金追踪、地址画像、风险分析、案件与调查工作台 |
+| 数据质量 | 语义质量、金融质量及历史价格相关功能 |
+| 系统设置 | 数据源、并发、上传上限、分析存储和数据保留设置 |
 
----
-
-## 核心能力
-
-### 多源数据接入
-- 自动识别银行、微信、支付宝流水及相关账户资料
-- 支持 CSV、TSV、TXT、XLSX、XLSM、XLS 等常见文件格式
-- 按数据来源并行解析，降低大量文件连续处理的等待时间
-- 支持列签名识别、自定义字段映射和方向规则持久化
-
-### 分阶段合并
-平台采用可审计的分层处理策略：
-
-1. 完整保留用户提交的源文件
-2. 同类来源先合并为各自的原字段大 CSV
-3. 启用"统一来源字段"后，为每类来源生成标准字段 CSV，同时保留原字段 CSV
-4. 将各来源标准字段 CSV 合并为最终统一流水
-5. 输出清洗、重复、拒绝记录等审计产物
-
-未启用统一合并时，不同来源分别形成结果，不强行改变原始字段语义。
-
-### 标准化清洗
-- 统一日期时间、金额、币种和收付方向
-- 处理 BOM、全角空格、货币符号、千分位及常见脏值
-- 校验交易时间、交易金额、收付标志等关键字段
-- 基于来源、主体、流水号与完整业务指纹执行严格去重
-- 对无法通过质量规则的记录单独输出，不静默丢弃
-
-### 资金流分析
-- 以本方账户、交易对手和收付方向构建资金关系图
-- 支持主体、对手、时间、金额、方向和标签的组合筛选
-- 支持路径分析、环形关系识别、关键节点观察和交易明细追溯
-- 支持图层管理、人工标注、节点审核和样式配置
-- 可导出 PNG、JPEG、WebP、SVG、Mermaid、DOT、GraphML、draw.io、XMind、CSV 及完整 ZIP
-
-### 一键导入数据库
-- 支持 PostgreSQL 与 MySQL
-- 数据库连接配置可在界面中维护并进行连接测试
-- 支持追加导入或清空重建
-- 支持中文字段名或英文 `snake_case` 字段名
-- 支持跳过重复记录或保留重复记录
-- PostgreSQL 使用暂存表与批量导入，MySQL 使用分批写入
-- 追加到旧版目标表时，可自动补充新增加的统一业务字段
-
-### 加密货币地址分析 (V2 新增)
-- BSC 链上地址批量下载 — 通过 SQD 数据源获取交易记录
-- Parquet 格式大数据导出，支持地址级别的增量下载
-- 地址分析面板 — 统计概览、交易图谱、首次出现时间
-- 下载管理中心 — 任务队列可视化、进度追踪、断点续传
-- 多数据源适配 — SQD / Bridges / 通用 RPC 提供商
-
-### 下载引擎 (V2 新增)
-- 任务管理 — 创建、暂停、恢复、取消，支持断点续传
-- 智能规划器 — 自动将大地址集拆分为并发批次
-- 并发执行器 — Worker 池模型，可配置并发数和速率限制
-- 容灾机制 — 失败自动重试、降级策略、故障转移
-- 清单持久化 — 下载进度落盘，重启后增量续传
-- 数据迁移 — SQLite 控制面 → DuckDB 分析面自动迁移
-
-### 压测体系 (V2 新增)
-- BSC 性能基准 — 50 万真实地址全流程基准测试
-- 合成数据生成器 — 1 万 ~ 100 万地址规模压测
-- 真实与模拟双轨验证 — 确保生产环境性能可预期
-
----
-
-## 处理流程
-
-```mermaid
-flowchart LR
-    A["原始文件"] --> B["扫描与来源识别"]
-    B --> C1["银行分类合并"]
-    B --> C2["微信分类合并"]
-    B --> C3["支付宝分类合并"]
-
-    C1 --> D1["银行原字段 CSV"]
-    C2 --> D2["微信原字段 CSV"]
-    C3 --> D3["支付宝原字段 CSV"]
-
-    D1 --> E{"启用统一字段"}
-    D2 --> E
-    D3 --> E
-
-    E -- "否" --> F["按来源分别输出"]
-    E -- "是" --> G["字段映射与标准化"]
-    G --> H["清洗与严格去重"]
-    H --> I["34 字段统一流水"]
-    I --> J1["CSV / Excel"]
-    I --> J2["PostgreSQL / MySQL"]
-    I --> J3["资金流向图"]
-    H --> K["重复 / 拒绝 / 质量审计"]
-```
-
----
-
-## 统一数据模型
-
-最终统一流水采用 34 个业务字段。`商户流水号`位于`交易流水号`之后，用于区分平台交易编号和商户侧订单编号。
-
-| 分组 | 字段 |
-|---|---|
-| 本方主体 | 交易卡号、交易账号、交易户名、交易证件号码、交易方开户行、账户性质 |
-| 交易事实 | 交易时间、交易金额、交易余额、收付标志 |
-| 交易对手 | 交易对手账卡号、对手账户性质、现金标志、对手户名、对手身份证号、对手开户银行 |
-| 交易描述 | 摘要说明、交易币种、交易网点名称、交易发生地、交易是否成功 |
-| 技术与凭证 | 传票号、IP地址、MAC地址、对手交易余额、交易流水号、商户流水号、日志号、凭证种类、凭证号、交易柜员号 |
-| 反馈与来源 | 备注、查询反馈结果原因、数据来源 |
-
-以支付宝账户明细为例：
-
-| 支付宝原字段 | 统一字段 |
-|---|---|
-| 用户信息中的支付宝账号 | 交易账号、交易卡号 |
-| 用户信息中的姓名 | 交易户名 |
-| 固定来源 | 交易方开户行 = 支付宝 |
-| 交易创建时间 | 交易时间 |
-| 金额（元） | 交易金额 |
-| 收/支 | 收付标志 |
-| 交易对方信息 | 交易对手账卡号、对手户名、对手开户银行 |
-| 消费名称 | 摘要说明 |
-| 交易号 | 交易流水号 |
-| 商户订单号 | 商户流水号 |
-| 交易状态 | 交易是否成功 |
-
-支付宝余额明细转统一流水的能力予以保留，但默认关闭；源文件和原字段 CSV 始终保留。
-
----
-
-## 可审计性设计
-
-资金数据的可信度不仅取决于最终结果，也取决于结果能否回到原始证据。Funds ETL 因此将可审计性作为核心约束：
-
-- 源文件、中间文件和最终文件分阶段保存
-- 每个阶段使用独立进度状态，不以单一百分比掩盖处理过程
-- 重复记录和不合格记录生成独立审计文件
-- 数据来源字段保留来源身份，内部处理同时维护来源文件、来源表及行级证据
-- 数据库导入增加任务标识、行指纹和导入时间，支持重复控制与结果核对
-
----
-
-## 技术架构
-
-| 层级 | 技术 |
-|---|---|
-| 后端 | Go、Gin、Excelize、zerolog |
-| 前端 | React、TypeScript、Vite、Ant Design |
-| 图分析 | React Flow、Dagre |
-| 分析存储 | DuckDB、SQLite |
-| 外部数据库 | PostgreSQL、MySQL |
-| 链上数据 | SQD、Bridges、通用 RPC |
-| 压测 | Go benchmark、合成数据生成 |
-| 部署方式 | 单后端进程托管 API 与前端静态资源 |
-
-```
-cmd/server/                        服务入口
-internal/
-├── api/                           HTTP API 与任务进度
-├── scanner/                       文件扫描和来源识别
-├── parser/                        支付宝、微信及通用解析
-├── provider/                      银行等数据来源处理
-├── etl/                           清洗、去重、合并、导出与流图构建
-├── dbimport/                      PostgreSQL / MySQL 数据导入
-├── rules/                         内置规则和自定义规则
-├── storage/                       会话及文件存储
-├── analysis/duckdb/               DuckDB 分析引擎
-├── downloadengine/                下载引擎 — 任务/规划/执行/容灾 (V2)
-├── datasource/sqd/                SQD 链上数据源 (V2)
-├── datasourcemanager/             多数据源管理 (V2)
-└── parquetdownload/               Parquet 地址批量下载 (V2)
-frontend/src/features/
-├── upload/                        上传面板
-├── clean/                         数据清洗
-├── flow/                          资金流图 (20+ 组件)
-└── crypto/                        加密货币分析 (V2)
-    ├── AddressAnalyticsPanel.tsx   地址分析面板
-    ├── CryptoDownloadPanel.tsx     下载控制面板
-    ├── CryptoParquetPanel.tsx      Parquet 导出面板
-    └── DownloadCenterPage.tsx      下载管理中心
-backend/data/                      运行时上传、输出、日志和分析数据
-benchmark/                         BSC 性能基准测试 (V2)
-tools/
-├── cpg/                           代码属性图分析
-└── stress-test/                   压测工具 — 地址生成器 (V2)
-stress-data/                       压测数据集 — 真实 + 合成 (V2)
-.agents/                           Codex Agent 技能配置 (V2)
-```
-
----
+链上数据集的支持范围取决于具体链与 Provider。当前下载和性能验证主要围绕 BSC 展开。
 
 ## 快速开始
 
 ### 环境要求
-- Windows 10/11 或 Windows Server
-- Go 1.25+
-- Node.js 与 npm
 
-### 安装与构建
+- Windows 与 PowerShell，适配仓库提供的启动和部署脚本。
+- Go 1.25.0 或更高版本。
+- Node.js 20.x 且不低于 20.19.0，或 Node.js 22.12.0 及以上版本；使用 npm 管理前端依赖。
+- 链上查询默认使用 ClickHouse，Parquet 校验及部分分析任务需要 DuckDB CLI。
+
+### 安装与启动
 
 ```powershell
 git clone https://github.com/Euxripides/euripidessss.git
 cd euripidessss
 
 cd frontend
-npm install
+npm ci
 npm run build
 cd ..
 
 .\run.ps1
 ```
 
-服务启动后访问：
+打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。Gin 直接托管 `frontend/dist`，日常使用不需要单独启动 Vite。
 
-```
-http://127.0.0.1:8000
-```
-
-健康检查：
+检查服务：
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/api/health
 ```
 
-### 开发模式
+健康接口的 `status` 应为 `ok`。链上查询和下载还需对应数据库、数据源及 Worker 就绪，可在系统设置、数据源和下载任务页面检查。
 
-后端：
+### 启动参数
+
+```powershell
+# 判断后端是否需要构建，已有健康服务且无需构建时保持现有进程
+.\run.ps1
+
+# 使用已有二进制
+.\run.ps1 -SkipBuild
+
+# 强制构建后端并启动
+.\run.ps1 -ForceBuild
+
+# 强制重启
+.\run.ps1 -ForceRestart
+
+# 延长启动等待，适用于历史任务加载较多的环境
+.\run.ps1 -StartupTimeoutSeconds 600
+```
+
+脚本构建 Windows/amd64 后端，并检查 8000 端口及健康接口。前端需单独执行 `npm run build`。
+
+## 流水整理与资金关系图
+
+支持 `.csv`、`.tsv`、`.txt`、`.xlsx`、`.xlsm`、`.xls`。基础单文件上限为 500 MiB，可通过系统设置调整。
+
+文件按来源识别和分类合并，按处理选项生成原字段结果或统一字段结果。字段映射、列签名和收付方向别名可以保存复用；重复、拒绝记录及质量审计单独输出。
+
+```mermaid
+flowchart LR
+    A[银行 / 支付宝 / 微信文件] --> B[识别与分类合并]
+    B --> C[原字段结果]
+    C --> D[字段映射与标准化]
+    D --> E[清洗与去重]
+    E --> F[34 列统一流水]
+    E --> G[重复 / 拒绝 / 质量审计]
+    F --> H[CSV / Excel]
+    F --> I[PostgreSQL / MySQL]
+    F --> J[资金关系图]
+```
+
+资金关系图支持按主体、对手、时间、金额、方向和标签筛选，查看关联明细、分析路径、管理图层及添加人工标注。可导出图片、Mermaid、DOT、GraphML、draw.io、XMind、CSV 等格式。
+
+### 统一流水字段
+
+统一流水包含 34 个业务字段，与 `internal/etl/etl.go` 中的 `FinalTransactionColumns` 一致。
+
+| 类别 | 字段 |
+| --- | --- |
+| 本方主体 | 交易卡号、交易账号、交易户名、交易证件号码、交易方开户行、账户性质 |
+| 交易信息 | 交易时间、交易金额、交易余额、收付标志 |
+| 交易对手 | 交易对手账卡号、对手账户性质、现金标志、对手户名、对手身份证号、对手开户银行 |
+| 交易描述 | 摘要说明、交易币种、交易网点名称、交易发生地、交易是否成功 |
+| 凭证与设备 | 传票号、IP地址、MAC地址、对手交易余额、交易流水号、商户流水号、日志号、凭证种类、凭证号、交易柜员号 |
+| 来源与反馈 | 备注、查询反馈结果原因、数据来源 |
+
+`交易流水号`和`商户流水号`分别保留平台交易编号与商户订单编号。支付宝的`交易号`映射为`交易流水号`，`商户订单号`映射为`商户流水号`，`消费名称`映射为`摘要说明`。
+
+数据库导入支持 PostgreSQL 和 MySQL，可选择追加或重建、中文或英文列名，以及重复记录处理方式。
+
+## 链上数据下载
+
+Smart Download 以地址、数据集和区间组织任务，结合已有覆盖记录规划分片，管理执行、暂停、恢复、取消和失败重试。
+
+- SQD Cloud 支持聚合同一区块窗口的多地址 Range，再将物理任务结果回写到各逻辑 Range。
+- Local Sync、Validation、ClickHouse 三个下游阶段使用有容量上限的队列和固定 Worker 池。
+- 运行指标包括请求及错误计数、任务阶段耗时、Worker 状态、队列深度和处理速度。
+- 云端结果通过 R2 / S3 交换，本地完成同步、校验、写入及覆盖记录更新。
+
+```mermaid
+flowchart LR
+    A[地址 / 数据集 / 区间] --> B[任务规划与调度]
+    B --> C[CSV / RPC / SQD]
+    B --> D[SQD Cloud Worker]
+    D --> E[R2 / S3]
+    E --> F[Local Sync]
+    F --> G[Validation]
+    G --> H[ClickHouse 写入]
+    C --> I[结果校验与覆盖记录]
+    H --> I
+    I --> J[链上查询与资金追踪]
+```
+
+SQD Cloud Processor Worker 是独立项目，当前默认查找 `E:\Code\Processor-only`。本仓库提供运行时接入、任务调度和结果同步；克隆仓库不会同时安装 Worker 或部署云端服务。
+
+背压诊断当前标记为 `observational_only`，主动降载与恢复控制尚未完成端到端验收。[Local Pipeline 检查记录](docs/local_pipeline_backpressure_gap_report.md)保留了检查时点的状态，后续队列实现以当前源码为准。
+
+## 存储与配置
+
+### 存储分工
+
+| 存储 | 用途 |
+| --- | --- |
+| 文件系统 | 上传、导出、Parquet、任务清单及审计产物 |
+| SQLite | 本地控制面和任务元数据 |
+| DuckDB CLI | Parquet 读取、校验及相关分析 |
+| ClickHouse | 当前默认的链上查询数据源和链上数据写入 |
+| PostgreSQL / MySQL | 流水导入目标 |
+| R2 / S3 | SQD Cloud 任务与结果交换 |
+
+### 常用配置
+
+| 环境变量 | 默认值或行为 | 说明 |
+| --- | --- | --- |
+| `PORT` | `8000` | 后端监听端口 |
+| `DEBUG` | 值为 `1` 时启用 | 调试配置 |
+| `EXPLORER_DATASOURCE` | `clickhouse` | 可选 `clickhouse`、`duckdb`、`auto` |
+| `DUCKDB_PATH` | 自动查找 | DuckDB CLI 路径 |
+| `DUCKDB_DATABASE` | 默认分析数据库路径 | DuckDB 数据库文件 |
+| `DUCKDB_READER_ENABLED` | `false` | 启用相关 DuckDB / Parquet 分析读取服务 |
+| `CLICKHOUSE_CREDENTIAL_FILE` | `E:\database\clickhouse\config\clickhouse.env` | ClickHouse 配置文件 |
+| `CLICKHOUSE_ENABLED` | 根据凭据文件配置判断 | 启用 ClickHouse |
+| `CLICKHOUSE_REQUIRED` | `false` | 将 ClickHouse 设为必要依赖 |
+| `CLICKHOUSE_HOST` / `CLICKHOUSE_HTTP_PORT` | `127.0.0.1` / `8123` | ClickHouse HTTP 连接 |
+| `CLICKHOUSE_DATABASE` | `onchain` | ClickHouse 数据库 |
+| `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` | 配置文件或环境变量 | 应用账号 |
+| `SQD_CLOUD_MODE` | 自动选择运行模式 | SQD Cloud 运行时模式 |
+| `SQD_CLOUD_WORKER_DIR` | `E:\Code\Processor-only` | 本地 Processor Worker 项目目录 |
+| `SQD_CLOUD_DATA_ROOT` | `E:\codex\bsc_analytics\sqd-cloud` | Cloud 运行时任务和审计目录 |
+
+ClickHouse 连接参数优先读取环境变量，再读取指定凭据文件。系统设置中的持久化选项会覆盖对应启动配置，包括并发、上传上限、分析数据源、ClickHouse 开关及价格引擎开关。
+
+显式使用 `SQD_CLOUD_MODE=cloud` 时，启动脚本要求：
+
+```text
+SQD_DEPLOY_KEY
+R2_ENDPOINT
+R2_BUCKET
+R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY
+```
+
+密钥通过本机环境或凭据文件配置。`run.ps1` 不会自动加载仓库根目录的 `.env`。
+
+启动脚本的端口检测和健康检查固定使用 8000。通过 `PORT` 更换端口时，应直接运行后端，并同步调整前端开发代理。
+
+### ClickHouse 部署
+
+仓库提供专用 WSL2 发行版 `clickhouse-bsc` 的部署与启动脚本，默认存储目录为 `E:\database\clickhouse`。操作步骤见 [ClickHouse 部署说明](deploy/clickhouse/README.md)。
+
+部署后验证：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy\clickhouse\verify-clickhouse.ps1
+```
+
+验证覆盖 HTTP 健康、基础表结构、`CLICKHOUSE_REQUIRED` 设置，以及应用账号的写入和查询。
+
+### 数据位置
+
+项目内运行数据位于 `backend/data/`，包括上传、输出、日志、分析数据库、控制面和任务状态。系统设置保存在 `backend/config/system_settings.json`。
+
+部分链上模块仍使用固定数据根目录 `E:\codex\bsc_analytics`，价格数据默认位于 `E:\database\price_engine`。迁移机器或磁盘时，需要同时处理这些外部目录；移动项目目录不会迁移已有数据。
+
+## 开发与验证
+
+在两个 PowerShell 终端分别运行后端和前端。
+
+后端（项目根目录）：
 
 ```powershell
 go run .\cmd\server\
@@ -247,66 +219,46 @@ go run .\cmd\server\
 
 ```powershell
 cd frontend
+npm ci
 npm run dev
 ```
 
-前端开发服务器默认运行于 `http://127.0.0.1:5173`，并将 `/api` 请求代理到后端。
-
----
-
-## 配置
-
-| 环境变量 | 默认值 | 说明 |
-|---|---:|---|
-| `PORT` | `8000` | 后端监听端口 |
-| `DEBUG` | `0` | 设置为 `1` 启用调试模式 |
-| `DUCKDB_PATH` | 自动检测 | DuckDB 可执行文件路径 |
-| `DUCKDB_DATABASE` | 自动配置 | DuckDB 分析数据库路径 |
-| `SQD_API_KEY` | — | SQD 数据源 API 密钥 (V2) |
-
-单文件默认上限为 500 MB。数据库连接配置、字段映射规则和方向规则可通过界面维护。
-
----
-
-## 测试与质量检查
+前端开发地址为 [http://127.0.0.1:5173](http://127.0.0.1:5173)，`/api` 默认代理到 `http://127.0.0.1:8000`。
 
 ```powershell
-# 单元测试
-go test ./internal/...
+# 短测模式
+go test ./internal/... -short -count=1 -timeout=3m
 
-# 代码检查
+# 全量测试，包含耗时较长及依赖外部环境的场景
+go test ./internal/... -count=1 -timeout=10m
+
+# 静态检查
 go vet ./...
 
-# 构建
+# 后端构建
 go build -o bin\etl-server.exe .\cmd\server\
-cd frontend && npm run build
 
-# 性能基准
-go test -bench=. ./internal/etl/ -benchmem
-
-# V2 基准测试
-go test -bench=. ./benchmark/... -benchmem
-go test -bench=. ./internal/downloadengine/... -benchmem
+# 前端构建
+cd frontend
+npm run build
 ```
 
----
+基准结果保存在 [benchmark_results](benchmark_results/)，文件中记录工作负载、并发、Span、请求计数和运行结果。
 
-## 运行时数据
+## 代码导航
 
-```
-backend/data/
-├── uploads/          上传文件与导入会话
-├── outputs/          分阶段产物和最终导出
-├── logs/             运行日志
-├── analysis/         分析数据库 (DuckDB)
-├── control/          控制面数据库 (SQLite)
-└── rule_samples/     规则识别样本
-```
+| 路径 | 内容 |
+| --- | --- |
+| `cmd/server/` | 服务入口 |
+| `internal/api/` | API 路由与功能装配 |
+| `internal/scanner/`、`parser/`、`provider/`、`etl/` | 文件识别、解析、清洗与导出 |
+| `internal/dbimport/` | PostgreSQL / MySQL 导入 |
+| `internal/smartdownload/` | 下载规划、调度和下游流水线 |
+| `internal/downloadscheduler/`、`cloudruntime/`、`datasetsync/` | Provider 调度、Cloud 运行时与结果同步 |
+| `internal/analysis/duckdb/`、`clickhouse/` | 分析存储接入 |
+| `internal/explorer/`、`fundflow/`、`intelligence/` | 链上查询、资金流与调查分析 |
+| `frontend/src/` | React 页面、组件与状态管理 |
+| `deploy/clickhouse/` | ClickHouse 部署和验证脚本 |
+| `tools/cpg/` | 代码属性图生成工具 |
 
-运行时目录可能包含敏感资金数据。将项目提交到公开仓库前，请确认上传文件、输出结果、数据库配置、日志和调查样本均未被纳入版本控制。
-
----
-
-## 使用边界
-
-Funds ETL 提供数据整理、质量控制和关系分析能力，不替代调查人员对证据来源、主体身份、交易性质及分析结论的专业判断。用于正式调查或审计时，应保留原始材料、处理参数、审计产物和人工复核记录。
+交接和变更历史见 [AI_HANDOFF](docs/AI_HANDOFF.md) 与 [CHANGELOG_AI](docs/CHANGELOG_AI.md)，包依赖及调用关系见 [代码属性图摘要](docs/cpg/summary.md)。

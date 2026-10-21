@@ -11698,3 +11698,10 @@ cd E:\codex\etl; go test ./internal/...; go vet ./...
 - Git 提交钩子自动重新生成 `docs/cpg/{cpg.json,deps.dot,deps.mmd,summary.md}`，一并纳入提交。首次摘要增强调用报路径写入错误，直接使用已安装的 Python 生成成功；提交时临时从 PATH 排除 WindowsApps 的 Python 别名，保留正常钩子执行。
 - 推送结果：本地提交已完成；`git push origin main` 停在凭据管理器，非交互重试明确返回 `could not read Username`，本机没有可用的 GitHub HTTPS 登录凭据。远端仍为 `4e714274b72010d362f94eb2d4c9466e8cfa4023`，需完成 GitHub 登录后重试推送。
 - 后续结果：用户完成 GitHub 设备授权后，`git push origin main` 成功，将远端从 `4e714274` 推进至 `7bccb9b14066ab30c2d2dbfaa0b202c3f82fd78f`；`git ls-remote origin refs/heads/main` 与本地 HEAD 完全一致。此前的凭据阻塞已解除，推送已完成。本次仅补充同步结果，无代码、接口、数据库或前端变更。
+
+## 2026-10-21 — GitHub 首页 README 重写
+
+- 重写根目录 `README.md`，用于 GitHub 仓库首页，覆盖功能概览、快速启动、流水整理、34 列字段、链上下载、存储配置、ClickHouse 部署、数据目录、开发验证和代码导航。
+- 根据当前源码核对 ClickHouse 默认数据源、DuckDB Reader 默认关闭、持久化配置覆盖关系、SQD Cloud 独立 Worker、固定 E 盘目录及启动脚本固定 8000 端口；删除过时 V2 宣传和缺少依据的性能表述。
+- 修改文件：`README.md`、`docs/AI_HANDOFF.md`、`docs/CHANGELOG_AI.md`。无业务功能、API、数据库结构或前端组件变更，无需重启服务。
+- 验证：README 的 `git diff --check` 通过；20 个代码围栏配对、6 个仓库内链接目标存在；从源码提取统一字段数量为 34；无 TODO/TBD/FIXME 或旧 SQD_API_KEY 配置残留。本轮只改文档，不重复运行代码测试。

@@ -9042,3 +9042,9 @@ ormalizeFilterBoundary 精确时间边界处理。
 - Git 钩子自动刷新 4 个 `docs/cpg/` 文件；处理 Python 别名导致的首次路径写入错误后，继续按原钩子提交流程执行。
 - 本地提交完成，云端推送因缺少 GitHub HTTPS 登录凭据未完成；非交互重试返回 `could not read Username`，远端尚未更新。
 - 用户完成 GitHub 设备授权后推送成功，远端 `main` 已更新至 `7bccb9b14066ab30c2d2dbfaa0b202c3f82fd78f`，独立查询远端哈希与本地一致；凭据阻塞已解除。本次仅补充交接及变更记录。
+
+## 2026-10-21 — GitHub README 重写
+
+- 重写仓库首页 `README.md`，按当前功能、依赖、启动脚本和存储配置组织内容，补齐 ClickHouse、SQD Cloud、固定数据目录及开发验证说明，保留 34 列流水字段及资金关系图功能。
+- 修改 `README.md` 和两份交接文档；无代码、API、数据库或前端变更，不重启服务。
+- 验证：`git diff --check -- README.md` 通过；代码围栏配对、6 个本地链接有效、源码字段数为 34，未引入无依据的性能指标。
