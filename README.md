@@ -1,5 +1,11 @@
 # Funds ETL · 资金数据智能分析平台
 
+**Financial-record normalization and blockchain fund-flow analysis, maintained by LINDUJIAN.**
+
+Funds ETL combines bank, Alipay, and WeChat record processing with blockchain queries, resumable data collection, and interactive transaction graphs. It uses a Go backend and a React/TypeScript frontend, with a 34-field transaction schema and source-linked audit outputs.
+
+[English project overview](docs/PROJECT_OVERVIEW.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [MIT License](LICENSE)
+
 面向资金调查、交易审计和链上资金追踪，整合银行、支付宝、微信流水整理，以及链上数据下载、查询、分析与可视化。
 
 后端采用 Go + Gin，前端采用 React + TypeScript。一个后端进程同时提供 API 和构建后的前端页面，通过 PowerShell 脚本启动。
@@ -27,6 +33,8 @@
 - Go 1.25.0 或更高版本。
 - Node.js 20.x 且不低于 20.19.0，或 Node.js 22.12.0 及以上版本；使用 npm 管理前端依赖。
 - 链上查询默认使用 ClickHouse，Parquet 校验及部分分析任务需要 DuckDB CLI。
+
+部署前阅读 [安全说明](SECURITY.md)：当前后端默认监听所有网卡，未提供通用登录与多租户隔离。日常使用应限制主机端口访问，远程访问需由带身份认证的网关保护整个应用。
 
 ### 安装与启动
 
@@ -262,3 +270,17 @@ npm run build
 | `tools/cpg/` | 代码属性图生成工具 |
 
 交接和变更历史见 [AI_HANDOFF](docs/AI_HANDOFF.md) 与 [CHANGELOG_AI](docs/CHANGELOG_AI.md)，包依赖及调用关系见 [代码属性图摘要](docs/cpg/summary.md)。
+
+## 维护与参与
+
+维护者：**LINDUJIAN**，GitHub：[Euxripides](https://github.com/Euxripides)。
+
+欢迎贡献文件解析规则、字段映射、数据质量检查、Provider 适配、回归测试和文档。提交问题或补丁前请阅读 [贡献指南](CONTRIBUTING.md)，样例使用合成数据。安全问题按 [SECURITY.md](SECURITY.md) 提供的渠道报告。
+
+2026-10-21 的安全检查发现尚未关闭的依赖告警及历史认证资料，详见 [安全政策](SECURITY.md)。
+
+## 开源许可
+
+项目自有代码及文档采用 [MIT License](LICENSE)，版权署名为 **Copyright (c) 2026 LINDUJIAN**。
+
+第三方依赖保留各自的许可证与版权声明，见 [第三方许可说明](THIRD_PARTY_NOTICES.md)。用户资料、第三方数据及独立部署的外部软件不因本项目的 MIT 许可证而改变其授权条件。

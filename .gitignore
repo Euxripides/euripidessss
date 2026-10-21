@@ -90,3 +90,15 @@ backend/data/crypto_parquet/
 backend/data/fund-flow-cache/
 exports/
 %SystemDrive%/
+
+# Local conversations, agent state and machine-specific settings
+/.reasonix/
+/.claude-flow/policy/
+/.claude-flow/swarm/
+/.claude-flow/harness-active-policy.json
+/backend/config/system_settings.json
+/backend/data/dune/
+
+# Local security reviews and generated credential-scan reports
+/security-audit-local/
+gitleaks-report*.json

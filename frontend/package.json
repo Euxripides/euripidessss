@@ -1,15 +1,15 @@
 {
   "name": "frontend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Funds ETL frontend for financial-record normalization and blockchain fund-flow analysis",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "LINDUJIAN",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@ant-design/icons": "^6.2.3",
